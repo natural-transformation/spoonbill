@@ -1,12 +1,10 @@
-# Korolev
+# Spoonbill
 
-<img src="https://fomkin.org/korolev/korolev-face-margin.svg" align="right" width="260" />
+<img src="spoonbill.svg" align="right" width="260" />
 
-[![Join the chat at https://telegram.me/korolev_io](https://img.shields.io/badge/chat-on_telegram_(russian)-0088cc.svg)](https://telegram.me/korolev_io)
-
-Not long ago we have entered the era of single-page applications. Some people say that we no longer need a server. They say that JavaScript applications can connect to DBMS directly. Fat clients. **We disagree with this.** This project is an attempt to solve the problems of modern fat web.
-
-Korolev runs a single-page application on the server side, keeping in the browser only a bridge to receive commands and send events. The page loads instantly and works fast, because it does a minimal amount of computation. It's important that Korolev provides a unified environment for full stack development. Client and server are now combined into a single app without any REST protocol or something else in the middle.
+Spoonbill is a server-side single-page application framework for Scala 3.
+The browser runs a minimal JS bridge (~6kB). The server owns all application state and renders UI updates.
+Client and server are combined into a single app without any REST protocol in the middle.
 
 ## Why?
 
@@ -18,34 +16,28 @@ Korolev runs a single-page application on the server side, keeping in the browse
 * No need to make CRUD REST service
 * Connect to infrastructure (DBMS, Message queue) directly from application
 
-## Examples
+## Getting Started
 
-* [Features](https://github.com/fomkin/korolev/tree/master/examples)
-* [Multiplayer match-three game build on Korolev](https://match3.fomkin.org/)
- 
+```scala
+// build.sbt
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "<version>"
+```
+
+See the [examples](examples/) directory for working projects.
+
 ## Documentation
 
-* [User guide (open site)](https://fomkin.org/korolev/user-guide.html), [(download PDF)](https://fomkin.org/korolev/user-guide.pdf)
-* [API overview](https://www.javadoc.io/doc/org.fomkin/korolev_2.13/1.1.0) 
-
-## Articles
-
-* [Slimming pill for Web](https://dev.to/fomkin/korolev-slimming-pill-for-web-549a)
-* [Лекарство для веба](https://habr.com/ru/post/429028/)
-
-## Tools
-
-* [HTML to Levsha DSL converter](https://fomkin.org/korolev/html-to-levsha)
+* [User guide](docs/user-guide.adoc)
 
 ## Design
 
-Korolev is a server-side SPA framework built on top of **Levsha**.
+Spoonbill is a server-side SPA framework built on top of **Avocet**.
 The browser runs a small JS bridge.
 The server owns the application state and renders UI updates.
 
 ### High-level architecture
 
-Korolev keeps the “real app” on the server.
+Spoonbill keeps the "real app" on the server.
 The client is responsible for:
 
 - applying DOM changes sent by the server
@@ -53,10 +45,10 @@ The client is responsible for:
 
 ```mermaid
 flowchart LR
-  Browser["Browser<br/>Korolev JS bridge"] <-->|WebSocket| Frontend["Frontend"]
+  Browser["Browser<br/>Spoonbill JS bridge"] <-->|WebSocket| Frontend["Frontend"]
   Frontend --> App["ApplicationInstance<br/>(one session)"]
   App --> State["StateManager / StateStorage"]
-  App --> Render["Levsha DiffRenderContext<br/>render + diff"]
+  App --> Render["Avocet DiffRenderContext<br/>render + diff"]
   App --> Router["Router (optional)"]
 ```
 
@@ -64,13 +56,13 @@ flowchart LR
 
 - **`ApplicationInstance[F, S, M]`**: one running session. It owns the render loop, state stream, message stream, and the `Frontend`.
 - **`Frontend[F]`**: parses incoming client messages into typed streams (`domEventMessages`, `browserHistoryMessages`) and sends DOM changes back.
-- **`ComponentInstance[F, ...]`**: applies the Levsha document to the render context, collects event handlers, and runs transitions.
-- **`Effect[F[_]]`**: Korolev abstracts over the effect type (Future / cats-effect / ZIO / etc).
+- **`ComponentInstance[F, ...]`**: applies the Avocet document to the render context, collects event handlers, and runs transitions.
+- **`Effect[F[_]]`**: Spoonbill abstracts over the effect type (Future / cats-effect / ZIO / etc).
 
 ### Render/update loop
 
-When state changes, Korolev re-renders and computes a diff using Levsha.
-The server then ships a compact “DOM patch” to the browser.
+When state changes, Spoonbill re-renders and computes a diff using Avocet.
+The server then ships a compact "DOM patch" to the browser.
 
 ```mermaid
 sequenceDiagram
@@ -78,7 +70,7 @@ sequenceDiagram
   participant F as Frontend
   participant A as ApplicationInstance
   participant C as ComponentInstance
-  participant L as Levsha DiffRenderContext
+  participant L as Avocet DiffRenderContext
 
   B->>F: DomEventMessage(targetId, eventType, eventCounter)
   F->>A: domEventMessages stream
@@ -92,9 +84,9 @@ sequenceDiagram
   F->>B: apply DOM patch
 ```
 
-### Deterministic ids and “outdated DOM” protection
+### Deterministic ids and "outdated DOM" protection
 
-Korolev relies on Levsha’s deterministic ids (like `1_2_1`) for:
+Spoonbill relies on Avocet's deterministic ids (like `1_2_1`) for:
 
 - mapping DOM events back to server-side handlers
 - ensuring events from an outdated DOM are ignored
@@ -107,8 +99,8 @@ After handling a valid event, it increments the counter and tells the client the
 
 `ApplicationInstance.initialize()` has two important startup modes:
 
-- **pre-rendered page**: the browser already shows the initial DOM, so Korolev registers handlers and starts streams without needing an initial diff.
-- **dev mode saved render-context**: when `korolev.dev=true` and a saved render-context exists, Korolev loads it and diffs against it to update the browser after reloads.
+- **pre-rendered page**: the browser already shows the initial DOM, so Spoonbill registers handlers and starts streams without needing an initial diff.
+- **dev mode saved render-context**: when `spoonbill.dev=true` and a saved render-context exists, Spoonbill loads it and diffs against it to update the browser after reloads.
 
 ```mermaid
 flowchart TD
@@ -119,19 +111,19 @@ flowchart TD
   Pre --> Streams
 ```
 
-## Testing With `korolev-testkit`
+## Testing With `spoonbill-testkit`
 
-Korolev includes a renderer-level testkit (`modules/testkit`) for testing UI behavior without running a real browser session.
+Spoonbill includes a renderer-level testkit (`modules/testkit`) for testing UI behavior without running a real browser session.
 
 Key pieces:
-- `PseudoHtml.render(dom)` renders a Levsha node to pseudo DOM and keeps:
+- `PseudoHtml.render(dom)` renders an Avocet node to pseudo DOM and keeps:
   - DOM id to `ElementId` mapping
   - event handlers
 - `Browser.event(...)` simulates event propagation and returns captured actions (`Publish`, `Transition`, `PropertySet`, and so on).
 
-### New selector helpers
+### Selector helpers
 
-`PseudoHtml` now provides:
+`PseudoHtml` provides:
 - `byAttrEquals(name, value)` for exact attribute matching
 - `firstByTag(tagName)` for first-match tag lookup
 
@@ -144,7 +136,7 @@ val firstDivId = pd.firstByTag("div").map(_.id)
 
 ### Targeting by `ElementId`
 
-When a renderer uses explicit `elementId(...)`, tests can now target that Korolev id directly:
+When a renderer uses explicit `elementId(...)`, tests can target that Spoonbill id directly:
 
 ```scala
 val clickTarget = elementId(Some("click-target"))
@@ -160,7 +152,7 @@ val actionsF =
 
 ### Advanced targeting with element map
 
-For full control, use the overload that exposes the Levsha-to-`ElementId` map:
+For full control, use the overload that exposes the Avocet-to-`ElementId` map:
 
 ```scala
 Browser().event(
@@ -173,8 +165,21 @@ Browser().event(
 )
 ```
 
-### Run testkit tests
+### Run tests
 
 ```bash
 nix develop --command sbt test
 ```
+
+## Project History
+
+Spoonbill is a continuation and rebranding of [Korolev](https://github.com/natural-transformation/korolev), originally created by [Aleksey Fomkin](https://github.com/fomkin).
+
+Breaking changes from [Korolev](https://github.com/natural-transformation/korolev):
+
+- **Renamed** from Korolev to Spoonbill
+- **Scala 3 only** — Scala 2.13 support has been dropped
+- **Avocet** replaces the Levsha virtual DOM library
+
+For the original article:
+- [Korolev: Slimming pill for Web](https://dev.to/fomkin/korolev-slimming-pill-for-web-549a)
