@@ -1,11 +1,11 @@
-= Korolev: Single Page Applications Framework
+= Spoonbill: Single Page Applications Framework
 :source-highlighter: pygments
 :numbered:
 :toc:
 
 :version: 1.6.0
 :commit: 47197a88cff770ec254aeae5d5c684fb586e8e3a
-:code: https://gitflic.ru/project/fomkin/korolev/blob?commit={commit}&file=
+:code: https://github.com/natural-transformation/spoonbill/blob/{commit}/
 
 Aleksey Fomkin <a@fomkin.org>
 
@@ -13,7 +13,7 @@ Aleksey Fomkin <a@fomkin.org>
 
 Not long ago we have entered the era of single-page applications. Some people say that we no longer need a server. They say that JavaScript applications can connect to DBMS directly. Fat clients. We disagree with this. This project is an attempt to solve the problems of the modern fat web.
 
-Korolev runs a single-page application on the server side, keeping in the browser only a bridge to receive commands and send events. The page loads instantly and works fast because it does a minimal amount of computation. It's important that Korolev provides a unified environment for full stack development. Client and server are now combined into a single app without any REST protocol or something else in the middle.
+Spoonbill runs a single-page application on the server side, keeping in the browser only a bridge to receive commands and send events. The page loads instantly and works fast because it does a minimal amount of computation. It's important that Spoonbill provides a unified environment for full stack development. Client and server are now combined into a single app without any REST protocol or something else in the middle.
 
 Our project supports static page rendering so that search engines could index pages and users could view them immediately.
 
@@ -23,7 +23,7 @@ Our project supports static page rendering so that search engines could index pa
 
 2. **Immutable and pure.** Really, we don't need mutability even on the frontend. Especially on the frontend. The majority of modern JavaScript frameworks try to be functional. So we do.
 
-3. **Lack of dependencies.** Korolev does not impose to use cats, scalaz, Akka, or futures from the standard library. Use what you want. Korolev gives a way to integrate itself into any environment.
+3. **Lack of dependencies.** Spoonbill does not impose to use cats, scalaz, Akka, or futures from the standard library. Use what you want. Spoonbill gives a way to integrate itself into any environment.
 
 === Quick start
 
@@ -31,26 +31,26 @@ You need SBT and JDK 11+ installed. Once installed, run g8 template.
 
 [source,console]
 -----------------------------------
-$ sbt new fomkin/korolev.g8
-$ cd mykorolevproject
+$ sbt new fomkin/spoonbill.g8
+$ cd myspoonbillproject
 $ sbt
 > ~reStart
 -----------------------------------
 
-The sbt command `~reStart` will make sure that your Korolev application gets restarted and the browser window reloaded on source code changes.
+The sbt command `~reStart` will make sure that your Spoonbill application gets restarted and the browser window reloaded on source code changes.
 
-Ok, now you are ready to start hacking with Korolev.
+Ok, now you are ready to start hacking with Spoonbill.
 
-== Understanding Korolev
+== Understanding Spoonbill
 
 === Template DSL
 
-Korolev uses https://github.com/fomkin/levsha[Levsha] as DSL (domain specific language) for templating. The levsha DSL allows to declare DOM using Scala code. Take a look.
+Spoonbill uses https://github.com/fomkin/avocet[Avocet] as DSL (domain specific language) for templating. The avocet DSL allows to declare DOM using Scala code. Take a look.
 
 [source,scala]
 -----------------------------------
-import levsha.dsl._
-import levsha.dsl.html._
+import avocet.dsl._
+import avocet.dsl.html._
 
 div(
   backgroundColor @= "yellow",
@@ -83,7 +83,7 @@ You can define custom tags and styles using `TagDef`, `AttrDef` and `StyleDef` A
 
 [source,scala]
 -----------------------------------
-import levsha.dsl._
+import avocet.dsl._
 val myCustomElement = TagDef("myCustomElement")
 val myDataAttr = AttrDef("data-attr")
 val bottom = StyleDef("bottom")
@@ -94,16 +94,16 @@ If custom attribute and custom tag has same name, you can created mixed definiti
 [source,scala]
 ----------------------
 val awesome = TagDef with StyleDef {
-  val ns = levsha.XmlNs.html
+  val ns = avocet.XmlNs.html
   val name = "awesome"
 }
 ----------------------
 
 === Device and Session
 
-When a user opens Korolev application the first time, it sets a cookie named `device` with a unique identifier. After that, you can identify the user by `deviceId`.
+When a user opens Spoonbill application the first time, it sets a cookie named `device` with a unique identifier. After that, you can identify the user by `deviceId`.
 
-A session is created when the user opens a page. Every session has a unique identifier `sessionId`. Korolev has a separate _State_ for every session.
+A session is created when the user opens a page. Every session has a unique identifier `sessionId`. Spoonbill has a separate _State_ for every session.
 
 === State
 
@@ -142,7 +142,7 @@ The only way to modify the State is by applying a *transition* (see below).
 
 === Render
 
-Render is a map between state and view. In other words render is a function which takes state as an argument and returns a DOM. Korolev uses https://github.com/fomkin/levsha[Levsha DSL] to define templates using Scala code. Do not be afraid, you will quickly get used to it.
+Render is a map between state and view. In other words render is a function which takes state as an argument and returns a DOM. Spoonbill uses https://github.com/fomkin/avocet[Avocet DSL] to define templates using Scala code. Do not be afraid, you will quickly get used to it.
 
 [source,scala]
 -----------------------------------
@@ -172,7 +172,7 @@ val render: State => Node = {
 }
 -----------------------------------
 
-Render is called for each new state. It's important to understand that render produces a full DOM for every call. It does not mean that client receives a new page every time. Korolev makes a diff between current and latest DOM. Only changes between the two are sent to the client.
+Render is called for each new state. It's important to understand that render produces a full DOM for every call. It does not mean that client receives a new page every time. Spoonbill makes a diff between current and latest DOM. Only changes between the two are sent to the client.
 
 === Transitions
 
@@ -194,7 +194,7 @@ userService.addFriend(user.id, newFriend) flatMap { _ =>
 
 === Events
 
-Every DOM event emitted which had been emitted by browser's `document` object, can be handled by Korolev. Let's consider click event.
+Every DOM event emitted which had been emitted by browser's `document` object, can be handled by Spoonbill. Let's consider click event.
 
 [source,scala]
 --------------------------------------------------------------
@@ -258,9 +258,9 @@ Event handlers should return F[Unit] which will be implicitly converted to `Even
 
 === Stateful components
 
-In the world of front-end development people often call every thing that has HTML-like markup a "component". Until version 0.6, Korolev didn't have components support (except WebComponents on client side). When we say "component" we mean something that has its own state. In Korolev case, components also dispatch events to other components up in the hierarchy or to the application on the top.
+In the world of front-end development people often call every thing that has HTML-like markup a "component". Until version 0.6, Spoonbill didn't have components support (except WebComponents on client side). When we say "component" we mean something that has its own state. In Spoonbill case, components also dispatch events to other components up in the hierarchy or to the application on the top.
 
-Worth to note that application is a component too, so you can consider Korolev's components system as a system composed of applications. Korolev components are not lightweight, so if you can implement a feature without components, do it so. Use components only when they are really necessary.
+Worth to note that application is a component too, so you can consider Spoonbill's components system as a system composed of applications. Spoonbill components are not lightweight, so if you can implement a feature without components, do it so. Use components only when they are really necessary.
 
 Components are independent. Every component has its own context. It opens up a way to write reusable code.
 
@@ -269,8 +269,8 @@ Components are independent. Every component has its own context. It opens up a w
 object MyComponent extends Component[Future, ComponentState, ComponentParameters, EventType](initialState) {
 
   import context._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   def render(parameters: ComponentParameters, state: ComponentState): Node = {
     div(
@@ -394,11 +394,11 @@ form(
 
 === File streaming
 
-Don't get confused. Korolev applications works on the server side and client side is remote host. So when we say 'download' it means 'download from client to server'. When we say 'upload' it means 'upload from server to client'.
+Don't get confused. Spoonbill applications works on the server side and client side is remote host. So when we say 'download' it means 'download from client to server'. When we say 'upload' it means 'upload from server to client'.
 
 ==== Downloading
 
-Currently Korolev have few ways to download files from the client side:
+Currently Spoonbill have few ways to download files from the client side:
 1. Download all files, selected within input, as byte arrays.
 2. Download all files, but using streams.
 3. Manual selection files from input.
@@ -449,7 +449,7 @@ for {
 } yield ()
 -----------------------------------
 
-Note that `downloadFilesAsStream` gives you Korolev streams, which is not suitable to be used in applications. Korolev has built-in converters for popular stream libraries; see <<Streams>>.
+Note that `downloadFilesAsStream` gives you Spoonbill streams, which is not suitable to be used in applications. Spoonbill has built-in converters for popular stream libraries; see <<Streams>>.
 
 ==== Uploading
 
@@ -503,7 +503,7 @@ def render(state: Boolean) =
 
 === Extensions
 
-Korolev is not just request-response, but also push. One of the big advantages of Korolev is the ability to display server side events without additional code. Consider example where we have a page with some sort of notifications list.
+Spoonbill is not just request-response, but also push. One of the big advantages of Spoonbill is the ability to display server side events without additional code. Consider example where we have a page with some sort of notifications list.
 
 [source,scala]
 -----------------------------------
@@ -534,7 +534,7 @@ val notificationsExtension = Extension { access =>
   } yield Extension.Handlers(onDestroy = subscription.stop())
 }
 
-KorolevServiceConfig(
+SpoonbillServiceConfig(
   ...
   extensions = List(notificationsExtension)
 )
@@ -554,7 +554,7 @@ Let's pretends that your application is a blogging platform.
 -------------------------------------------------------------------------------
 case class MyState(author: String, title: String, text: String)
 
-KorolevServiceConfig(
+SpoonbillServiceConfig(
   ...
   // Render the article
   document = {
@@ -614,7 +614,7 @@ router = Router(
 
 {code}examples/routing/src/main/scala/PathAndQueryRoutingExample.scala[See full example]
 
-For easy parameter matching Korolev provide tree way for parameters matching:
+For easy parameter matching Spoonbill provide tree way for parameters matching:
 
 Exact parameter matching, be careful your parameter patterns order and count must have exact same order and count with request:
 
@@ -666,11 +666,11 @@ path match {
 }
 -------------------------------------------------------------------------------
 
-For more information about Path and Querry matching, please read {code}modules/web/src/test/scala/korolev/web/PathAndQuerySpec.scala[PathAndQuerySpec]
+For more information about Path and Querry matching, please read {code}modules/web/src/test/scala/spoonbill/web/PathAndQuerySpec.scala[PathAndQuerySpec]
 
 ==== Running at a nested path
 
-If Korolev is running at a nested path, e.g. `/ui/`, router's `rootPath` parameter should be set to a desired value:
+If Spoonbill is running at a nested path, e.g. `/ui/`, router's `rootPath` parameter should be set to a desired value:
 
 [source,scala]
 -------------------------------------------------------------------------------
@@ -709,7 +709,7 @@ def renderTab2(tab2: Tab2) = div(
 )
 -------------------------------------------------------------------------------
 
-Korolev provides two solutions to solve this problem. First one is Components (noticed above). The second solution is context scoping.
+Spoonbill provides two solutions to solve this problem. First one is Components (noticed above). The second solution is context scoping.
 
 [source,scala]
 -------------------------------------------------------------------------------
@@ -728,7 +728,7 @@ Also you can use similar approach on transition level.
 [source,scala]
 -------------------------------------------------------------------------------
 
-import korolev.util.Lens
+import spoonbill.util.Lens
 
 val scopedContext = Lens[ViewState, Tab2](
   read = { case ViewState(tab: Tab2) => tab },
@@ -748,21 +748,21 @@ access.transition(lens) { tab2 =>
 
 === Heartbeat and Reconnection
 
-By default, the Korolev client-side sends a heartbeat every `5` seconds and tracks how many heartbeats are lost. After two consecutive lost heartbeats, the client performs a forced reconnection to the server. The heartbeat interval can be controlled with `KorolevServiceConfig.heartbeatInterval`. Additionally, you can disable bidirectional heartbeat by setting `KorolevServiceConfig.heartbeatLimit = None`. As a result, the client-side will send messages to the server, but the server will not respond.
+By default, the Spoonbill client-side sends a heartbeat every `5` seconds and tracks how many heartbeats are lost. After two consecutive lost heartbeats, the client performs a forced reconnection to the server. The heartbeat interval can be controlled with `SpoonbillServiceConfig.heartbeatInterval`. Additionally, you can disable bidirectional heartbeat by setting `SpoonbillServiceConfig.heartbeatLimit = None`. As a result, the client-side will send messages to the server, but the server will not respond.
 
-=== Emitting Korolev IDs
+=== Emitting Spoonbill IDs
 
-In some cases, you may want to add analytics scripts or other third-party JavaScript to your page that modifies the DOM by adding elements to certain places. Sometimes this can lead to parts of your application ceasing to function. To address this issue, you can set `KorolevServiceConfig.presetIds=true`. As a result, all nodes managed by Korolev will receive an additional attribute `k="6", and Korolev will use these IDs to manage the DOM, ignoring any nodes added via third-party JavaScript.
+In some cases, you may want to add analytics scripts or other third-party JavaScript to your page that modifies the DOM by adding elements to certain places. Sometimes this can lead to parts of your application ceasing to function. To address this issue, you can set `SpoonbillServiceConfig.presetIds=true`. As a result, all nodes managed by Spoonbill will receive an additional attribute `k="6", and Spoonbill will use these IDs to manage the DOM, ignoring any nodes added via third-party JavaScript.
 
 === Delayed render
 
-In certain scenarios, multiple transitions can occur within a single event handler. If the page is resource-intensive or includes a stateful component with delayed state loading, it can result in decreased performance. However, Korolev has the capability to bundle these transitions together, thereby optimizing rendering.
+In certain scenarios, multiple transitions can occur within a single event handler. If the page is resource-intensive or includes a stateful component with delayed state loading, it can result in decreased performance. However, Spoonbill has the capability to bundle these transitions together, thereby optimizing rendering.
 
 [source,scala]
 ------------------------------
 import scala.concurrent.duration.*
 
-val config = KorolevServiceConfig(
+val config = SpoonbillServiceConfig(
   ...
   delayedRender = 2.millis
 )
@@ -775,17 +775,17 @@ The render function will now be called only 2 milliseconds after the initial tra
 In this case `transitionForce` will wait until delayed render be performed.
 ============
 
-== Testing Korolev applications
+== Testing Spoonbill applications
 
 === Testkit
 
-Use Korolev Test Kit to simulate environment for event listeners and extensions.
+Use Spoonbill Test Kit to simulate environment for event listeners and extensions.
 
 Add Test Kit dependency to your project. You can use use Test Kit with any suitable testing library which supports asynchronous testing.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-testkit" % "{version}" % Test
+libraryDependencies += "org.fomkin" %% "spoonbill-testkit" % "{version}" % Test
 ------------------------------
 
 Let's imagine that you are creating application which can to add two integer numbers and to show the result. The app has two text fields and a `span` tag to show the result. The view state of the app is `Option[Int]`. When one of the fields changes, the app reads values of inputs, adds them, and shows calculated result.
@@ -865,24 +865,24 @@ it should "be handled" in {
 
 === Selenium
 
-Korolev applications like any other web application could be tested using https://www.selenium.dev[Selenium].
+Spoonbill applications like any other web application could be tested using https://www.selenium.dev[Selenium].
 
 == JavaScript interoperability
 
 === WebComponents
 
-If you need to extend your application with something that you can't implement with Korolev, you may use https://github.com/w3c/webcomponents[Web Components]. In simple terms, it is a standard technology that allows you to create custom HTML tags.
+If you need to extend your application with something that you can't implement with Spoonbill, you may use https://github.com/w3c/webcomponents[Web Components]. In simple terms, it is a standard technology that allows you to create custom HTML tags.
 
 [NOTE]
 ============
-Korolev doesn't have any specific code to support WebComponents. WebComponent (Custom Elements + Shadow DOM) by design should behave as regular HTML tags. There is no difference between, for example, input or textarea, and any custom element.
+Spoonbill doesn't have any specific code to support WebComponents. WebComponent (Custom Elements + Shadow DOM) by design should behave as regular HTML tags. There is no difference between, for example, input or textarea, and any custom element.
 ============
 
 {code}examples/web-component/src/main/scala/WebComponentExample.scala[See full example]
 
 === Call JavaScript from server
 
-Korolev allows executing arbitrary JavaScript code on the client. Use `access.evalJs` to run JavaScript's `eval` method on the client and retrieve the result. The result is a JSON string, so you possibly need to add your favorite https://duckduckgo.com/?q=scala+json+libraries&t=hp&ia=web[JSON library] to project dependencies.
+Spoonbill allows executing arbitrary JavaScript code on the client. Use `access.evalJs` to run JavaScript's `eval` method on the client and retrieve the result. The result is a JSON string, so you possibly need to add your favorite https://duckduckgo.com/?q=scala+json+libraries&t=hp&ia=web[JSON library] to project dependencies.
 
 [source,scala]
 -------------------------------------------------------------------------------
@@ -945,7 +945,7 @@ Now invoke it from the client side.
 
 [source,javascript]
 -------------------------------------------------------------------------------
-Korolev.invokeCallback('myCallback', 'myArgValue');
+Spoonbill.invokeCallback('myCallback', 'myArgValue');
 -------------------------------------------------------------------------------
 
 {code}examples/evalJs/src/main/scala/EvalJsExample.scala[See full example]
@@ -954,11 +954,11 @@ Korolev.invokeCallback('myCallback', 'myArgValue');
 
 === Developer mode and "hot reload"
 
-Developer mode provides "hot reload" experience. Run your application with `korolev.dev=true` system property (or environment variable) and session will be kept alive after restart. We recommend to use https://github.com/spray/sbt-revolver[sbt-revolver] plugin.
+Developer mode provides "hot reload" experience. Run your application with `spoonbill.dev=true` system property (or environment variable) and session will be kept alive after restart. We recommend to use https://github.com/spray/sbt-revolver[sbt-revolver] plugin.
 
 [source,bash]
 -------------------------------------------------------------------------------
-reStart --- -Dkorolev.dev=true
+reStart --- -Dspoonbill.dev=true
 -------------------------------------------------------------------------------
 
 Make a change to your app source code and save the file. Switch to the browser and wait for changes to deliver.
@@ -967,7 +967,7 @@ Notice that developer mode does not work with custom `StateStorage`.
 
 [NOTE]
 ============
-Ensure that everything is stateless except Korolev part of the application. For example, if you keep some state outside of Korolev state, it won't be saved and will lead to inconsistency.
+Ensure that everything is stateless except Spoonbill part of the application. For example, if you keep some state outside of Spoonbill state, it won't be saved and will lead to inconsistency.
 ============
 
 === Serve files from resource directory
@@ -976,58 +976,58 @@ Everything placed in directory named `static` (in the classpath of the applicati
 
 [WARNING]
 ============
-Korolev is not some sort of CDN node. Avoid serving lots of large files using this feature.
+Spoonbill is not some sort of CDN node. Avoid serving lots of large files using this feature.
 ============
 
 == Interoperability
 
 === Slf4j
 
-By default Korolev log all messages to standard output. You can redirect logs to SLF4J backend.
+By default Spoonbill log all messages to standard output. You can redirect logs to SLF4J backend.
 
 Add the dependency.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-slf4j" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-slf4j" % "{version}"
 ------------------------------
 
 Configure reporter.
 
 [source,scala]
 ------------------------------
-val config = KorolevServiceConfig(
+val config = SpoonbillServiceConfig(
   ...
-  reporter = korolev.slf4j.Slf4jReporter
+  reporter = spoonbill.slf4j.Slf4jReporter
 )
 ------------------------------
 
 === Akka HTTP
 
-Korolev provides smooth Akka HTTP integration out of the box. To use it, add a dependency:
+Spoonbill provides smooth Akka HTTP integration out of the box. To use it, add a dependency:
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-akka" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-akka" % "{version}"
 ------------------------------
 
 [source,scala]
 ------------------------------
-val service = KorolevServiceConfig[...](
+val service = SpoonbillServiceConfig[...](
   ...
 ))
 ------------------------------
 
-And create Korolev route:
+And create Spoonbill route:
 
 [source,scala]
 ------------------------------
-val config = KorolevServiceConfig[Future, String, Any](
+val config = SpoonbillServiceConfig[Future, String, Any](
   stateLoader = StateLoader.default("world"),
   document = state => Html(body(div(s"Hello $state")))
 )
 
-val korolevRoute = akkaHttpService(config).apply(AkkaHttpServerConfig())
+val spoonbillRoute = akkaHttpService(config).apply(AkkaHttpServerConfig())
 ------------------------------
 
 Then embed the route into your Akka HTTP routes structure.
@@ -1037,34 +1037,34 @@ Then embed the route into your Akka HTTP routes structure.
 This integration overrides default logging behavior to `akka.event.Logging`.
 
 Despite the fact that Akka uses standard Scala futures, the module can
-work we any effect type supported by Korolev
+work we any effect type supported by Spoonbill
 
 === Pekko HTTP
 
-Korolev provides smooth Pekko HTTP integration out of the box. To use it, add a dependency:
+Spoonbill provides smooth Pekko HTTP integration out of the box. To use it, add a dependency:
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-pekko" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-pekko" % "{version}"
 ------------------------------
 
 [source,scala]
 ------------------------------
-val service = KorolevServiceConfig[...](
+val service = SpoonbillServiceConfig[...](
   ...
 ))
 ------------------------------
 
-And create Korolev route:
+And create Spoonbill route:
 
 [source,scala]
 ------------------------------
-val config = KorolevServiceConfig[Future, String, Any](
+val config = SpoonbillServiceConfig[Future, String, Any](
   stateLoader = StateLoader.default("world"),
   document = state => Html(body(div(s"Hello $state")))
 )
 
-val korolevRoute = akkaHttpService(config).apply(PekkoHttpServerConfig())
+val spoonbillRoute = akkaHttpService(config).apply(PekkoHttpServerConfig())
 ------------------------------
 
 Then embed the route into your Akka HTTP routes structure.
@@ -1074,33 +1074,33 @@ Then embed the route into your Akka HTTP routes structure.
 This integration overrides default logging behavior to `org.apache.pekko.event.Logging`.
 
 Despite the fact that Pekko uses standard Scala futures, the module can
-work we any effect type supported by Korolev
+work we any effect type supported by Spoonbill
 
 === Zio-Http
 
-Korolev provides smooth Zio-Http integration out of the box.
+Spoonbill provides smooth Zio-Http integration out of the box.
 
 To use it, add a dependency:
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-zio-http" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-zio-http" % "{version}"
 ------------------------------
 
-And create Korolev service:
+And create Spoonbill service:
 
 [source,scala]
 ------------------------------
 
 implicit val effect= new ZioEffect[ZEnv, Throwable](runtime, identity, identity)
 
-val config = KorolevServiceConfig[AppTask, String, Any](
+val config = SpoonbillServiceConfig[AppTask, String, Any](
   stateLoader = StateLoader.default("world"),
   document = state => Html(body(div(s"Hello $state")))
 )
 
 def route(): Routes[ZEnv, Response] = {
-  new ZioHttpKorolev[ZEnv].service(config)
+  new ZioHttpSpoonbill[ZEnv].service(config)
 }
 
 
@@ -1127,7 +1127,7 @@ val prog = for {
 
 === Effects
 
-In addition to standard Scala Futures, Korolev can work with popular effects libraries: ZIO, Cats Effect, and Monix. To use them, add the dependency and set `F` type parameter of` Context` and `KorolevServiceConfig` to demanded effect type.
+In addition to standard Scala Futures, Spoonbill can work with popular effects libraries: ZIO, Cats Effect, and Monix. To use them, add the dependency and set `F` type parameter of` Context` and `SpoonbillServiceConfig` to demanded effect type.
 
 ==== ZIO
 
@@ -1135,29 +1135,29 @@ Add dependency for ZIO interop.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-zio" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-zio" % "{version}"
 ------------------------------
 
 Or ZIO 2
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-zio2" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-zio2" % "{version}"
 ------------------------------
 
 Initialize your app with ZIO.
 
 [source,scala]
 ------------------------------
-import korolev.zio._
+import spoonbill.zio._
 
 implicit val runtime = new DefaultRuntime {}
 implicit val zioTaskEffectInstance = taskEffectInstance(runtime)
 val ctx = Context[zio.Task, MyState, Any]
-val config = KorolevServiceConfig[zio.Task, MyState, Any](...)
+val config = SpoonbillServiceConfig[zio.Task, MyState, Any](...)
 ------------------------------
 
-Korolev uses `Throwable` inside itself. That means if you want to work with your own, you should provide functions to convert `Throwable` to [[E]] and vice versa.
+Spoonbill uses `Throwable` inside itself. That means if you want to work with your own, you should provide functions to convert `Throwable` to [[E]] and vice versa.
 
 {code}examples/zio/src/main/scala/ZioExample.scala[See full example]
 
@@ -1167,17 +1167,17 @@ Add Monix interop dependency.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-monix" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-monix" % "{version}"
 ------------------------------
 
 Initialise your app with Monix. Ensure you have implicit `monix.execution.Scheduler` in the scope.
 
 [source,scala]
 ------------------------------
-import korolev.monix._
+import spoonbill.monix._
 
 val ctx = Context[monix.eval.Task, MyState, Any]
-val config = KorolevServiceConfig[monix.eval.Task, MyState, Any](...)
+val config = SpoonbillServiceConfig[monix.eval.Task, MyState, Any](...)
 ------------------------------
 
 {code}examples/monix/src/main/scala/MonixExample.scala[See full example]
@@ -1188,52 +1188,52 @@ Add Cats dependency. If you use Cats Effect 2
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-ce2" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-ce2" % "{version}"
 ------------------------------
 
 Or is you use Cats Effect 3
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-ce3" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-ce3" % "{version}"
 ------------------------------
 
 Initialise your app with IO.
 
 [source,scala]
 ------------------------------
-import korolev.cats._
+import spoonbill.cats._
 
 val ctx = Context[IO, MyState, Any]
-val config = KorolevServiceConfig[IO, MyState, Any](...)
+val config = SpoonbillServiceConfig[IO, MyState, Any](...)
 ------------------------------
 
 {code}examples/cats/src/main/scala/CatsIOExample.scala[See full example]
 
 === Streams
 
-Under the hood Korolev uses it's own simple pull based streams which can work with standard Futures. In the most cases you will not meet them, but sometimes you can.  Korolev streams is not suitable to be used in applications, so we offer converters for most popular stream libraries.
+Under the hood Spoonbill uses it's own simple pull based streams which can work with standard Futures. In the most cases you will not meet them, but sometimes you can.  Spoonbill streams is not suitable to be used in applications, so we offer converters for most popular stream libraries.
 
 ==== Reactive Streams
 
 https://www.reactive-streams.org[Reactive Streams]  is a part of <<Akka HTTP>> server integration.
 
-Conversion from Korolev to Publisher.
+Conversion from Spoonbill to Publisher.
 
 [source,scala]
 ------------------------------
-import korolev.akka.instances._
+import spoonbill.akka.instances._
 
-val publisher = myKorolevStream.asPublisher
+val publisher = mySpoonbillStream.asPublisher
 ------------------------------
 
 Subscribe to Publisher
 
 [source,scala]
 ------------------------------
-import korolev.akka.util.KorolevStreamSubscriber
+import spoonbill.akka.util.SpoonbillStreamSubscriber
 
-val subscriber = new KorolevStreamSubscriber[F, T]()
+val subscriber = new SpoonbillStreamSubscriber[F, T]()
 publisher.subscribe(result)
 ------------------------------
 
@@ -1242,24 +1242,24 @@ publisher.subscribe(result)
 Akka streams is a part of <<Akka HTTP>> server integration.
 
 
-Conversion from Akka Stream to Korolev.
+Conversion from Akka Stream to Spoonbill.
 
 [source,scala]
 ------------------------------
-import korolev.akka.instances._
+import spoonbill.akka.instances._
 
-val akkaSource = korolevStream.asAkkaSource
+val akkaSource = spoonbillStream.asAkkaSource
 ------------------------------
 
-Conversion from Akka Stream to Korolev.
+Conversion from Akka Stream to Spoonbill.
 
 [source,scala]
 ------------------------------
-import korolev.akka.instances._
+import spoonbill.akka.instances._
 
-val (stream, korolevSink) = Sink.korolevStream[F, String].preMaterialize()
+val (stream, spoonbillSink) = Sink.spoonbillStream[F, String].preMaterialize()
 
-myFlow.to(korolevSink)
+myFlow.to(spoonbillSink)
 ------------------------------
 
 ==== ZIO
@@ -1267,30 +1267,30 @@ myFlow.to(korolevSink)
 To use it, add a dependency:
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "korolev-zio-streams" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-zio-streams" % "{version}"
 ------------------------------
 
-Conversion from Korolev to ZIO:
+Conversion from Spoonbill to ZIO:
 
 [source,scala]
 ------------------------------
-val io = KorolevStream(values: _*)
+val io = SpoonbillStream(values: _*)
   .mat[Task]()
-  .flatMap { korolevStream: KorolevStream[Task, Int] =>
-    korolevStream
+  .flatMap { spoonbillStream: SpoonbillStream[Task, Int] =>
+    spoonbillStream
       .toZStream
       .run(ZSink.foldLeft(List.empty[Int]){ case (acc, v) => acc :+ v})
   }
 ------------------------------
 
-Conversion from ZIO to Korolev:
+Conversion from ZIO to Spoonbill:
 [source,scala]
 ------------------------------
 val values = Vector(1, 2, 3, 4, 5)
 val io = ZStream.fromIterable(values)
-  .toKorolev()
-  .flatMap { korolevStream =>
-    korolevStream
+  .toSpoonbill()
+  .flatMap { spoonbillStream =>
+    spoonbillStream
       .fold(Vector.empty[Int])((acc, value) => acc :+ value)
       .map(result => result shouldEqual values)
   }
@@ -1298,44 +1298,44 @@ val io = ZStream.fromIterable(values)
 
 ==== Fs2
 
-Conversion from Korolev to Fs2:
+Conversion from Spoonbill to Fs2:
 
 To use it, add a dependency.
 [source,scala,subs="attributes"]
 ------------------------------
 // For Fs2-2.* and Cats Effect 2:
-libraryDependencies += "org.fomkin" %% "korolev-fs2-ce2" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-fs2-ce2" % "{version}"
 // For Fs2-3.* and Cats Effect 3:
-libraryDependencies += "org.fomkin" %% "korolev-fs2-ce3" % "{version}"
+libraryDependencies += "org.fomkin" %% "spoonbill-fs2-ce3" % "{version}"
 ------------------------------
 
-Conversion from Korolev to Fs2.
+Conversion from Spoonbill to Fs2.
 
 [source,scala]
 ------------------------------
-val io = KorolevStream(values: _*)
+val io = SpoonbillStream(values: _*)
   .mat[Task]()
   .toFs2
 ------------------------------
 
-Conversion from Fs2 to Korolev.
+Conversion from Fs2 to Spoonbill.
 
 [source,scala]
 ------------------------------
 val values = Vector(1, 2, 3, 4, 5)
 val io = fs2.Stream.emits(values)
-  .toKorolev
+  .toSpoonbill
 ------------------------------
 
 == Troubleshooting
 
 === Debug mode
 
-You view Korolev's client-server exchange. Enter in developer console of your browser and execute this.
+You view Spoonbill's client-server exchange. Enter in developer console of your browser and execute this.
 
 [source,javascript]
 ------------------------------
-Korolev.setProtocolDebugEnabled(true)
+Spoonbill.setProtocolDebugEnabled(true)
 ------------------------------
 
 Now you can see something like this.
@@ -1350,11 +1350,11 @@ Now you can see something like this.
 ------------------------------
 
 Message starting with `->` is commands from server. Message started with `<-` is callback and client side events.
-First number is always an procedure or callback code. You can protocol description {code}modules/korolev/src/main/protocol.md[here].
+First number is always an procedure or callback code. You can protocol description {code}modules/spoonbill/src/main/protocol.md[here].
 
 === Reconnections under Kubernetes Ingress
 
-When using Korolev under Ingress you may face a problem with frequent recconections of websocket channel between browser and server.
+When using Spoonbill under Ingress you may face a problem with frequent recconections of websocket channel between browser and server.
 
 For Google Cloud hosting you can try the following:
 
