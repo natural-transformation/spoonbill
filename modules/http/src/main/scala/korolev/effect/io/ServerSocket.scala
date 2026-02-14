@@ -1,4 +1,4 @@
-package korolev.effect.io
+package spoonbill.effect.io
 
 import java.net.SocketAddress
 import java.nio.ByteBuffer
@@ -9,9 +9,9 @@ import java.nio.channels.{
   AsynchronousSocketChannel,
   CompletionHandler
 }
-import korolev.data.BytesLike
-import korolev.effect.{Close, Effect, Queue, Stream}
-import korolev.effect.syntax._
+import spoonbill.data.BytesLike
+import spoonbill.effect.{Close, Effect, Queue, Stream}
+import spoonbill.effect.syntax._
 import scala.concurrent.ExecutionContext
 
 /**

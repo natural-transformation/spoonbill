@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-package korolev.cats
+package spoonbill.cats
 
 import _root_.cats.Traverse
 import _root_.cats.effect._
 import _root_.cats.effect.unsafe.IORuntime
 import _root_.cats.instances.list._
-import korolev.effect.{Effect => KEffect}
+import spoonbill.effect.{Effect => KEffect}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Try
 

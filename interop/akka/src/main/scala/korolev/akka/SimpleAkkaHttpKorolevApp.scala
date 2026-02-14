@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package korolev.akka
+package spoonbill.akka
 
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 
-abstract class SimpleAkkaHttpKorolevApp(config: AkkaHttpServerConfig = null) {
+abstract class SimpleAkkaHttpSpoonbillApp(config: AkkaHttpServerConfig = null) {
 
   implicit val actorSystem: ActorSystem = ActorSystem()
 

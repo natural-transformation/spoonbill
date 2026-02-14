@@ -1,4 +1,4 @@
-package korolev.web
+package spoonbill.web
 
 import java.net.{URLDecoder, URLEncoder}
 import java.nio.charset.Charset
@@ -146,7 +146,7 @@ sealed trait PathAndQuery {
 }
 
 sealed trait Query extends PathAndQuery {
-  import korolev.web.PathAndQuery._
+  import spoonbill.web.PathAndQuery._
 
   def :&(next: (String, String)): Query =
     new :&(this, next)

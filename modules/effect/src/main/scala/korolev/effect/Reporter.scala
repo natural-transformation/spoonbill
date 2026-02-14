@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
 /**
- * Korolev INTERNAL reporting subsystem. Do not use it in application code.
+ * Spoonbill INTERNAL reporting subsystem. Do not use it in application code.
  */
 trait Reporter {
   implicit val Implicit: Reporter = this

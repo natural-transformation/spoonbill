@@ -1,18 +1,18 @@
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.concurrent.duration._
 
-object DelayExample extends SimpleAkkaHttpKorolevApp {
+object DelayExample extends SimpleAkkaHttpSpoonbillApp {
 
   val globalContext = Context[Future, Option[Int], Any]
 
   import globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   private val resetAfterDelay =
     Context.Delay[Future, Option[Int], Any](3.seconds, access =>
@@ -55,7 +55,7 @@ object DelayExample extends SimpleAkkaHttpKorolevApp {
   }
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, Option[Int], Any](
+    SpoonbillServiceConfig[Future, Option[Int], Any](
       stateLoader = StateLoader.default(Option.empty[Int]),
       document = document
     )

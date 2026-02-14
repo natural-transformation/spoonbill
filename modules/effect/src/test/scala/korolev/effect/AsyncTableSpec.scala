@@ -1,6 +1,6 @@
-package korolev.effect
+package spoonbill.effect
 
-import korolev.effect.AsyncTable.{AlreadyContainsKeyException, RemovedBeforePutException}
+import spoonbill.effect.AsyncTable.{AlreadyContainsKeyException, RemovedBeforePutException}
 import org.scalatest.freespec.AsyncFreeSpec
 import scala.concurrent.{ExecutionContext, Future}
 import syntax._

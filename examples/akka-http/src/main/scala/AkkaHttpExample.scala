@@ -1,9 +1,9 @@
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
@@ -14,10 +14,10 @@ object AkkaHttpExample extends App {
   val applicationContext = Context[Future, Boolean, Any]
 
   import applicationContext._
-  import levsha.dsl._
-  import levsha.dsl.html.{body, button, Html}
+  import avocet.dsl._
+  import avocet.dsl.html.{body, button, Html}
 
-  private val config = KorolevServiceConfig[Future, Boolean, Any](
+  private val config = SpoonbillServiceConfig[Future, Boolean, Any](
     stateLoader = StateLoader.default(false),
     document = s =>
       optimize {

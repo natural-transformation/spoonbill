@@ -1,6 +1,6 @@
-package korolev.data
+package spoonbill.data
 
-import korolev.internal.Frontend.CallbackType
+import spoonbill.internal.Frontend.CallbackType
 import ujson._
 
 sealed trait ToServer

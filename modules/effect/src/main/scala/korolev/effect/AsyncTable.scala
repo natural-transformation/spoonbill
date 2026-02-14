@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
-import korolev.effect.AsyncTable.{AlreadyContainsKeyException, RemovedBeforePutException}
-import korolev.effect.Effect.Promise
-import korolev.effect.syntax._
+import spoonbill.effect.AsyncTable.{AlreadyContainsKeyException, RemovedBeforePutException}
+import spoonbill.effect.Effect.Promise
+import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 
 final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {

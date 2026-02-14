@@ -1,11 +1,11 @@
-package korolev.http.protocol
+package spoonbill.http.protocol
 
-import korolev.data.BytesLike
-import korolev.data.syntax._
-import korolev.effect.{Decoder, Effect, Stream}
-import korolev.effect.syntax._
-import korolev.web.{Headers, PathAndQuery, Request, Response}
-import korolev.web.Response.Status
+import spoonbill.data.BytesLike
+import spoonbill.data.syntax._
+import spoonbill.effect.{Decoder, Effect, Stream}
+import spoonbill.effect.syntax._
+import spoonbill.web.{Headers, PathAndQuery, Request, Response}
+import spoonbill.web.Response.Status
 import scala.collection.mutable
 
 class Http11[B: BytesLike] {

@@ -1,8 +1,8 @@
-package korolev.http.protocol
+package spoonbill.http.protocol
 
-import korolev.data.Bytes
-import korolev.effect.{Decoder, Stream}
-import korolev.web.{PathAndQuery, Request, Response}
+import spoonbill.data.Bytes
+import spoonbill.effect.{Decoder, Stream}
+import spoonbill.web.{PathAndQuery, Request, Response}
 import org.scalacheck._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers

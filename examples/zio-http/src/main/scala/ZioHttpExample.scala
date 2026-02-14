@@ -1,9 +1,9 @@
-import korolev.Context
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.state.javaSerialization.*
-import korolev.web.PathAndQuery
-import korolev.zio.Zio2Effect
-import korolev.zio.http.ZioHttpKorolev
+import spoonbill.Context
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization.*
+import spoonbill.web.PathAndQuery
+import spoonbill.zio.Zio2Effect
+import spoonbill.zio.http.ZioHttpSpoonbill
 import scala.concurrent.ExecutionContext
 import zio.{ExitCode as ZExitCode, RIO, Runtime, ZIO, ZIOAppDefault}
 import zio.http.Response
@@ -14,8 +14,8 @@ object ZioHttpExample extends ZIOAppDefault {
 
   type AppTask[A] = RIO[Any, A]
 
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
   import scala.concurrent.duration._
 
   val ctx = Context[ZIO[Any, Throwable, *], Option[Int], Any]
@@ -67,14 +67,14 @@ object ZioHttpExample extends ZIOAppDefault {
     implicit val ec: ExecutionContext               = Runtime.defaultExecutor.asExecutionContext
     implicit val effect: Zio2Effect[Any, Throwable] = new Zio2Effect[Any, Throwable](runtime, identity, identity)
 
-    def config = KorolevServiceConfig[AppTask, Option[Int], Any](
+    def config = SpoonbillServiceConfig[AppTask, Option[Int], Any](
       stateLoader = StateLoader.default(Option.empty[Int]),
       rootPath = PathAndQuery.Root,
       document = document
     )
 
     def route(): Routes[Any, Response] =
-      new ZioHttpKorolev[Any].service(config)
+      new ZioHttpSpoonbill[Any].service(config)
 
   }
 

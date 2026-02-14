@@ -1,7 +1,7 @@
-package korolev.effect
+package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicInteger
-import korolev.effect.Reporter.PrintReporter.Implicit
+import spoonbill.effect.Reporter.PrintReporter.Implicit
 import org.scalatest.freespec.AsyncFreeSpec
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.concurrent.duration.{DurationInt, FiniteDuration}

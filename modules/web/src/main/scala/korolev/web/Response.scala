@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-package korolev.web
+package spoonbill.web
 
-import korolev.web.Response.Status
+import spoonbill.web.Response.Status
 import scala.annotation.switch
 
 final case class Response[Body](

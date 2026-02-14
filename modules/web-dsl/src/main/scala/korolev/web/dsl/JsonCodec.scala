@@ -1,4 +1,4 @@
-package korolev.web.dsl
+package spoonbill.web.dsl
 
 trait JsonCodec[J] {
   def encode(json: J): String

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package korolev
+package spoonbill
 
 import _root_.akka.actor.ActorSystem
 import _root_.akka.http.scaladsl.model.*
@@ -25,14 +25,14 @@ import _root_.akka.http.scaladsl.server.Route
 import _root_.akka.stream.Materializer
 import _root_.akka.stream.scaladsl.{Flow, Keep, Sink}
 import _root_.akka.util.ByteString
-import korolev.akka.util.LoggingReporter
-import korolev.data.{Bytes, BytesLike}
-import korolev.effect.{Effect, Reporter, Stream}
-import korolev.server.{HttpRequest as KorolevHttpRequest, KorolevService, KorolevServiceConfig}
-import korolev.server.{WebSocketRequest as KorolevWebSocketRequest, WebSocketResponse as KorolevWebSocketResponse}
-import korolev.server.internal.BadRequestException
-import korolev.state.{StateDeserializer, StateSerializer}
-import korolev.web.{PathAndQuery, Request as KorolevRequest, Response as KorolevResponse}
+import spoonbill.akka.util.LoggingReporter
+import spoonbill.data.{Bytes, BytesLike}
+import spoonbill.effect.{Effect, Reporter, Stream}
+import spoonbill.server.{HttpRequest as SpoonbillHttpRequest, SpoonbillService, SpoonbillServiceConfig}
+import spoonbill.server.{WebSocketRequest as SpoonbillWebSocketRequest, WebSocketResponse as SpoonbillWebSocketResponse}
+import spoonbill.server.internal.BadRequestException
+import spoonbill.state.{StateDeserializer, StateSerializer}
+import spoonbill.web.{PathAndQuery, Request as SpoonbillRequest, Response as SpoonbillResponse}
 import scala.concurrent.{ExecutionContext, Future}
 
 package object akka {
@@ -47,7 +47,7 @@ package object akka {
     protocols.exists(SupportedProtocols.contains)
 
   def akkaHttpService[F[_]: Effect, S: StateSerializer: StateDeserializer, M](
-    config: KorolevServiceConfig[F, S, M],
+    config: SpoonbillServiceConfig[F, S, M],
     wsLoggingEnabled: Boolean = false
   )(implicit actorSystem: ActorSystem, materializer: Materializer, ec: ExecutionContext): AkkaHttpService = {
     akkaHttpConfig =>
@@ -56,17 +56,17 @@ package object akka {
         if (config.reporter != Reporter.PrintReporter) config
         else config.copy(reporter = new LoggingReporter(actorSystem))
 
-      val korolevServer = korolev.server.korolevService(actualConfig)
-      val wsRouter      = configureWsRoute(korolevServer, akkaHttpConfig, actualConfig, wsLoggingEnabled)
-      val httpRoute     = configureHttpRoute(korolevServer)
+      val spoonbillServer = spoonbill.server.spoonbillService(actualConfig)
+      val wsRouter      = configureWsRoute(spoonbillServer, akkaHttpConfig, actualConfig, wsLoggingEnabled)
+      val httpRoute     = configureHttpRoute(spoonbillServer)
 
       wsRouter ~ httpRoute
   }
 
   private def configureWsRoute[F[_]: Effect, S: StateSerializer: StateDeserializer, M](
-    korolevServer: KorolevService[F],
+    spoonbillServer: SpoonbillService[F],
     akkaHttpConfig: AkkaHttpServerConfig,
-    korolevServiceConfig: KorolevServiceConfig[F, S, M],
+    spoonbillServiceConfig: SpoonbillServiceConfig[F, S, M],
     wsLoggingEnabled: Boolean
   )(implicit materializer: Materializer, ec: ExecutionContext): Route =
     extractRequest { request =>
@@ -74,20 +74,20 @@ package object akka {
         extractWebSocketUpgrade { upgrade =>
           val requestedProtocols = upgrade.requestedProtocols
           if (!acceptsProtocols(requestedProtocols)) {
-            // Reject non-Korolev WebSocket clients early for cost and security.
+            // Reject non-Spoonbill WebSocket clients early for cost and security.
             complete(HttpResponse(StatusCodes.BadRequest, entity = HttpEntity("Unsupported websocket subprotocol.")))
           } else {
             // inSink - consume messages from the client
             // outSource - push messages to the client
-            val (inStream, inSink) = Sink.korolevStream[F, Bytes].preMaterialize()
-            val korolevRequest     = mkKorolevRequest(request, path.toString, inStream)
+            val (inStream, inSink) = Sink.spoonbillStream[F, Bytes].preMaterialize()
+            val spoonbillRequest     = mkSpoonbillRequest(request, path.toString, inStream)
 
             complete {
-              val korolevWsRequest = KorolevWebSocketRequest(korolevRequest, requestedProtocols)
+              val spoonbillWsRequest = SpoonbillWebSocketRequest(spoonbillRequest, requestedProtocols)
               Effect[F]
-                .toFuture(korolevServer.ws(korolevWsRequest))
+                .toFuture(spoonbillServer.ws(spoonbillWsRequest))
                 .map {
-                  case KorolevWebSocketResponse(KorolevResponse(_, outStream, _, _), selectedProtocol) =>
+                  case SpoonbillWebSocketResponse(SpoonbillResponse(_, outStream, _, _), selectedProtocol) =>
                     val source = outStream.asAkkaSource
                       .map(text => BinaryMessage.Strict(text.as[ByteString]))
                     val sink = Flow[Message]
@@ -108,7 +108,7 @@ package object akka {
                             .map(message => Some(Bytes.wrap(message)))
                       }
                       .recover { case ex =>
-                        korolevServiceConfig.reporter.error(
+                        spoonbillServiceConfig.reporter.error(
                           s"WebSocket exception ${ex.getMessage}, shutdown output stream",
                           ex
                         )
@@ -122,7 +122,7 @@ package object akka {
 
                     upgrade.handleMessages(
                       if (wsLoggingEnabled) {
-                        Flow.fromSinkAndSourceCoupled(sink, source).log("korolev-ws")
+                        Flow.fromSinkAndSourceCoupled(sink, source).log("spoonbill-ws")
                       } else {
                         Flow.fromSinkAndSourceCoupled(sink, source)
                       },
@@ -139,11 +139,11 @@ package object akka {
     }
 
   private def configureHttpRoute[F[_]](
-    korolevServer: KorolevService[F]
+    spoonbillServer: SpoonbillService[F]
   )(implicit mat: Materializer, async: Effect[F], ec: ExecutionContext): Route =
     extractUnmatchedPath { path =>
       extractRequest { request =>
-        val sink = Sink.korolevStream[F, Bytes]
+        val sink = Sink.spoonbillStream[F, Bytes]
         val body =
           if (request.method == HttpMethods.GET) {
             Stream.empty[F, Bytes]
@@ -153,16 +153,16 @@ package object akka {
               .toMat(sink)(Keep.right)
               .run()
           }
-        val korolevRequest = mkKorolevRequest(request, path.toString, body)
-        val responseF      = handleHttpResponse(korolevServer, korolevRequest)
+        val spoonbillRequest = mkSpoonbillRequest(request, path.toString, body)
+        val responseF      = handleHttpResponse(spoonbillServer, spoonbillRequest)
         complete(responseF)
       }
     }
 
-  private def mkKorolevRequest[F[_], Body](request: HttpRequest, path: String, body: Body): KorolevRequest[Body] =
-    KorolevRequest(
+  private def mkSpoonbillRequest[F[_], Body](request: HttpRequest, path: String, body: Body): SpoonbillRequest[Body] =
+    SpoonbillRequest(
       pq = PathAndQuery.fromString(path).withParams(request.uri.rawQueryString),
-      method = KorolevRequest.Method.fromString(request.method.value),
+      method = SpoonbillRequest.Method.fromString(request.method.value),
       contentLength = request.headers.find(_.is("content-length")).map(_.value().toLong),
       renderedCookie = request.headers.find(_.is("cookie")).map(_.value()).getOrElse(""),
       headers = {
@@ -174,11 +174,11 @@ package object akka {
       body = body
     )
 
-  private def handleHttpResponse[F[_]: Effect](korolevServer: KorolevService[F], korolevRequest: KorolevHttpRequest[F])(
+  private def handleHttpResponse[F[_]: Effect](spoonbillServer: SpoonbillService[F], spoonbillRequest: SpoonbillHttpRequest[F])(
     implicit ec: ExecutionContext
   ): Future[HttpResponse] =
-    Effect[F].toFuture(korolevServer.http(korolevRequest)).map {
-      case response @ KorolevResponse(status, body, responseHeaders, _) =>
+    Effect[F].toFuture(spoonbillServer.http(spoonbillRequest)).map {
+      case response @ SpoonbillResponse(status, body, responseHeaders, _) =>
         val (contentTypeOpt, otherHeaders) = getContentTypeAndResponseHeaders(responseHeaders)
         val bytesSource                    = body.asAkkaSource.map(_.as[ByteString])
         HttpResponse(

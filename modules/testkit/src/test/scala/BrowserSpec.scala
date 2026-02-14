@@ -1,6 +1,6 @@
-import korolev.Context
-import korolev.Context.ElementId
-import korolev.testkit.{Action, Browser}
+import spoonbill.Context
+import spoonbill.Context.ElementId
+import spoonbill.testkit.{Action, Browser}
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.Future
@@ -84,8 +84,8 @@ class BrowserSpec extends AsyncFlatSpec with Matchers {
     val context = Context[Future, String, Any]
 
     import context._
-    import levsha.dsl._
-    import levsha.dsl.html._
+    import avocet.dsl._
+    import avocet.dsl.html._
 
     def onClick(access: Access) =
       access.publish("hello world")
@@ -115,8 +115,8 @@ class BrowserSpec extends AsyncFlatSpec with Matchers {
     val context = Context[Future, String, Any]
 
     import context._
-    import levsha.dsl._
-    import levsha.dsl.html._
+    import avocet.dsl._
+    import avocet.dsl.html._
 
     def onSubmit(access: Access) =
       access.publish("submitted")
@@ -147,8 +147,8 @@ class BrowserSpec extends AsyncFlatSpec with Matchers {
     val context = Context[Future, String, Any]
 
     import context._
-    import levsha.dsl._
-    import levsha.dsl.html._
+    import avocet.dsl._
+    import avocet.dsl.html._
 
     val clickTarget = elementId(Some("click-target"))
 

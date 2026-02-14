@@ -1,20 +1,20 @@
-package korolev
+package spoonbill
 
 import _root_.cats.effect.kernel.Concurrent
 import _root_.fs2.{Stream => Fs2Stream}
-import korolev.effect.{Effect => KorolevEffect, Queue, Stream => KorolevStream}
-import korolev.effect.syntax._
+import spoonbill.effect.{Effect => SpoonbillEffect, Queue, Stream => SpoonbillStream}
+import spoonbill.effect.syntax._
 import scala.concurrent.ExecutionContext
 
 object fs2 {
 
-  implicit class Fs2StreamOps[F[_]: KorolevEffect: Concurrent, O](stream: Fs2Stream[F, O]) {
+  implicit class Fs2StreamOps[F[_]: SpoonbillEffect: Concurrent, O](stream: Fs2Stream[F, O]) {
 
-    def toKorolev(bufferSize: Int = 1)(implicit ec: ExecutionContext): F[KorolevStream[F, O]] = {
+    def toSpoonbill(bufferSize: Int = 1)(implicit ec: ExecutionContext): F[SpoonbillStream[F, O]] = {
       val queue                                = new Queue[F, O](bufferSize)
       val cancelToken: Either[Throwable, Unit] = Right(())
 
-      KorolevEffect[F]
+      SpoonbillEffect[F]
         .start(
           stream
             .interruptWhen(queue.cancelSignal.as(cancelToken))
@@ -27,7 +27,7 @@ object fs2 {
     }
   }
 
-  implicit class KorolevStreamOps[F[_]: KorolevEffect, O](stream: KorolevStream[F, O]) {
+  implicit class SpoonbillStreamOps[F[_]: SpoonbillEffect, O](stream: SpoonbillStream[F, O]) {
     def toFs2: Fs2Stream[F, O] =
       Fs2Stream.unfoldEval(()) { _ =>
         stream

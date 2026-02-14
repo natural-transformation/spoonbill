@@ -2,9 +2,9 @@ package gp
 
 import io.circe.generic.auto._
 import io.circe.parser._
-import korolev._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import org.slf4j.LoggerFactory
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
@@ -38,8 +38,8 @@ object GuineaPigService {
   }
 
   import State.globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   val logger = LoggerFactory.getLogger("GuineaPig")
 
@@ -64,9 +64,9 @@ object GuineaPigService {
     )
   }
 
-  val service = KorolevServiceConfig[Future, State, Any](
+  val service = SpoonbillServiceConfig[Future, State, Any](
     stateLoader = StateLoader.default[Future, State](State()),
-    reporter = korolev.slf4j.Slf4jReporter,
+    reporter = spoonbill.slf4j.Slf4jReporter,
     document = { state =>
       Html(
         head(

@@ -1,6 +1,6 @@
-package korolev.testkit
+package spoonbill.testkit
 
-import korolev.Context.ElementId
+import spoonbill.Context.ElementId
 
 sealed trait Action[+F[_], +S, +M] {
   def transition(f: S => Boolean): Boolean = this match {

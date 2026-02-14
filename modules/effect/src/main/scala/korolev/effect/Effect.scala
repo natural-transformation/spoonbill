@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
-import korolev.effect.Effect.Fiber
+import spoonbill.effect.Effect.Fiber
 import scala.annotation.implicitNotFound
 import scala.concurrent.{blocking => futureBlocking, Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
 import scala.util.{Failure, Success, Try}
 
 /**
- * Korolev's internal presentation of effect (such as Future, cats.effect.IO,
- * Monix or ZIO tasks). Contains enough functionality to make Korolev works.
+ * Spoonbill's internal presentation of effect (such as Future, cats.effect.IO,
+ * Monix or ZIO tasks). Contains enough functionality to make Spoonbill works.
  */
 @implicitNotFound("Instance of Effect for ${F} is not found.")
 trait Effect[F[_]] {

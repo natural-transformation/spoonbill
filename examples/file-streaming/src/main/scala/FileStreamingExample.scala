@@ -1,27 +1,27 @@
 import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
-import korolev.Context
-import korolev.Context.FileHandler
-import korolev.akka._
-import korolev.data.Bytes
-import korolev.effect.io.FileIO
-import korolev.monix._
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.state.javaSerialization._
-import korolev.web.MimeTypes
+import spoonbill.Context
+import spoonbill.Context.FileHandler
+import spoonbill.akka._
+import spoonbill.data.Bytes
+import spoonbill.effect.io.FileIO
+import spoonbill.monix._
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization._
+import spoonbill.web.MimeTypes
 import monix.eval.Task
 import monix.execution.Scheduler.Implicits.global
 import scala.concurrent.duration.DurationInt
 
-object FileStreamingExample extends SimpleAkkaHttpKorolevApp {
+object FileStreamingExample extends SimpleAkkaHttpSpoonbillApp {
 
   case class State(aliveIndicator: Boolean, progress: Map[String, (Long, Long)], inProgress: Boolean)
 
   val globalContext = Context[Task, State, Any]
 
   import globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   val fileInput = elementId()
 
@@ -33,7 +33,7 @@ object FileStreamingExample extends SimpleAkkaHttpKorolevApp {
 
   def onUpload(access: Access): Task[Unit] =
     for {
-      stream <- korolev.effect.Stream("hello", " ", "world").mat()
+      stream <- spoonbill.effect.Stream("hello", " ", "world").mat()
       bytes   = stream.map(s => Bytes.wrap(s.getBytes(StandardCharsets.UTF_8)))
       _      <- access.uploadFile("hello-world.txt", bytes, Some(11L), MimeTypes.`text/plain`)
     } yield ()
@@ -73,7 +73,7 @@ object FileStreamingExample extends SimpleAkkaHttpKorolevApp {
   }
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Task, State, Any](
+    SpoonbillServiceConfig[Task, State, Any](
       stateLoader = StateLoader.default(State(aliveIndicator = false, Map.empty, inProgress = false)),
       document = { case State(aliveIndicator, progress, inProgress) =>
         optimize {

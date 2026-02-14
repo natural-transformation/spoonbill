@@ -1,24 +1,24 @@
 import java.nio.file.Paths
-import korolev.Context
-import korolev.Context.FileHandler
-import korolev.akka._
-import korolev.effect.io.FileIO
-import korolev.monix._
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.state.javaSerialization._
+import spoonbill.Context
+import spoonbill.Context.FileHandler
+import spoonbill.akka._
+import spoonbill.effect.io.FileIO
+import spoonbill.monix._
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization._
 import monix.eval.Task
 import monix.execution.Scheduler.Implicits.global
 import scala.concurrent.duration.DurationInt
 
-object OneByOneFileStreamingExample extends SimpleAkkaHttpKorolevApp {
+object OneByOneFileStreamingExample extends SimpleAkkaHttpSpoonbillApp {
 
   case class State(aliveIndicator: Boolean, progress: Map[String, (Long, Long)], inProgress: Boolean)
 
   val globalContext = Context[Task, State, Any]
 
   import globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   val fileInput = elementId()
 
@@ -65,7 +65,7 @@ object OneByOneFileStreamingExample extends SimpleAkkaHttpKorolevApp {
   }
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Task, State, Any](
+    SpoonbillServiceConfig[Task, State, Any](
       stateLoader = StateLoader.default(State(aliveIndicator = false, Map.empty, inProgress = false)),
       document = { case State(aliveIndicator, progress, inProgress) =>
         optimize {

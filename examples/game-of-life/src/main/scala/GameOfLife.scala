@@ -1,14 +1,14 @@
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object GameOfLife extends SimpleAkkaHttpKorolevApp {
+object GameOfLife extends SimpleAkkaHttpSpoonbillApp {
 
   import Universe.globalContext._
-  import levsha.dsl._
+  import avocet.dsl._
 
   val universeSize = 20
   val cellRadius   = 10
@@ -55,10 +55,10 @@ object GameOfLife extends SimpleAkkaHttpKorolevApp {
     }
   }
 
-  import levsha.dsl.html._
+  import avocet.dsl.html._
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, Universe, Any](
+    SpoonbillServiceConfig[Future, Universe, Any](
       stateLoader = StateLoader.default(Universe(universeSize)),
       document = universe =>
         optimize {

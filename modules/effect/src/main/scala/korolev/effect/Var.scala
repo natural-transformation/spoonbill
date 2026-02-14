@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
 

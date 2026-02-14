@@ -1,13 +1,13 @@
 import akka.stream.OverflowStrategy
 import akka.stream.scaladsl.{Sink, Source}
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object ExtensionExample extends SimpleAkkaHttpKorolevApp {
+object ExtensionExample extends SimpleAkkaHttpSpoonbillApp {
 
   private val ctx = Context[Future, List[String], String]
 
@@ -51,13 +51,13 @@ object ExtensionExample extends SimpleAkkaHttpKorolevApp {
   private val nameElement = elementId()
   private val textElement = elementId()
 
-  private val config = KorolevServiceConfig[Future, List[String], String](
+  private val config = SpoonbillServiceConfig[Future, List[String], String](
     stateLoader = StateLoader.default(Nil),
     extensions = List(topicListener),
     document = { message =>
 
-      import levsha.dsl._
-      import levsha.dsl.html._
+      import avocet.dsl._
+      import avocet.dsl.html._
 
       optimize {
         Html(

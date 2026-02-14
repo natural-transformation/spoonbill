@@ -73,8 +73,8 @@ jobs:
           SONATYPE_CENTRAL_PASSWORD: ${{ secrets.SONATYPE_CENTRAL_PASSWORD }}
           SONATYPE_STAGING_USERNAME: ${{ secrets.SONATYPE_STAGING_USERNAME }}
           SONATYPE_STAGING_PASSWORD: ${{ secrets.SONATYPE_STAGING_PASSWORD }}
-        # cross-publishes for Scala 2.13 + Scala 3.
-        run: nix develop --command sbt +publishSigned
+        # publishes for Scala 3.
+        run: nix develop --command sbt publishSigned
 
       - name: Sonatype Central Release
         env:

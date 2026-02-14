@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-package korolev.akka.util
+package spoonbill.akka.util
 
 import akka.actor.ActorSystem
 import akka.event.{Logging, LogSource}
-import korolev.effect.Reporter
+import spoonbill.effect.Reporter
 
 final class LoggingReporter(actorSystem: ActorSystem) extends Reporter {
 
   private implicit val logSource: LogSource[LoggingReporter] = new LogSource[LoggingReporter] {
-    def genString(t: LoggingReporter): String = "korolev"
+    def genString(t: LoggingReporter): String = "spoonbill"
   }
 
   private val log = Logging(actorSystem, this)

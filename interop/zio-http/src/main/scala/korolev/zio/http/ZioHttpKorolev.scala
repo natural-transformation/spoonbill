@@ -1,34 +1,34 @@
-package korolev.zio.http
+package spoonbill.zio.http
 
 import _root_.zio.{Chunk, RIO, ZIO}
 import _root_.zio.http.*
 import _root_.zio.http.codec.PathCodec
 import _root_.zio.stream.ZStream
-import korolev.data.{Bytes, BytesLike}
-import korolev.effect.{Queue, Reporter, Stream as KStream}
-import korolev.server.{
-  HttpRequest as KorolevHttpRequest,
-  KorolevService,
-  KorolevServiceConfig,
+import spoonbill.data.{Bytes, BytesLike}
+import spoonbill.effect.{Queue, Reporter, Stream as KStream}
+import spoonbill.server.{
+  HttpRequest as SpoonbillHttpRequest,
+  SpoonbillService,
+  SpoonbillServiceConfig,
   WebSocketRequest,
   WebSocketResponse
 }
-import korolev.server.internal.Cookies
-import korolev.state.{StateDeserializer, StateSerializer}
-import korolev.web.{PathAndQuery as PQ, Request as KorolevRequest, Response as KorolevResponse}
-import korolev.zio.ChunkBytesLike
-import korolev.zio.Zio2Effect
-import korolev.zio.streams.*
+import spoonbill.server.internal.Cookies
+import spoonbill.state.{StateDeserializer, StateSerializer}
+import spoonbill.web.{PathAndQuery as PQ, Request as SpoonbillRequest, Response as SpoonbillResponse}
+import spoonbill.zio.ChunkBytesLike
+import spoonbill.zio.Zio2Effect
+import spoonbill.zio.streams.*
 
-class ZioHttpKorolev[R] {
+class ZioHttpSpoonbill[R] {
 
   type ZEffect = Zio2Effect[R, Throwable]
 
   def service[S: StateSerializer: StateDeserializer, M](
-    config: KorolevServiceConfig[RIO[R, *], S, M]
+    config: SpoonbillServiceConfig[RIO[R, *], S, M]
   )(implicit eff: ZEffect): Routes[R, Response] = {
 
-    val korolevServer = korolev.server.korolevService(config)
+    val spoonbillServer = spoonbill.server.spoonbillService(config)
 
     val rootPath = Path.decode(config.rootPath.mkString)
 
@@ -43,8 +43,8 @@ class ZioHttpKorolev[R] {
       }
       val response =
         if (isWebSocket)
-          routeWsRequest(req, subPath, korolevServer, config.reporter, config.webSocketProtocolsEnabled)
-        else routeHttpRequest(subPath, req, korolevServer)
+          routeWsRequest(req, subPath, spoonbillServer, config.reporter, config.webSocketProtocolsEnabled)
+        else routeHttpRequest(subPath, req, spoonbillServer)
       response.mapError(Response.fromThrowable)
     }
 
@@ -54,20 +54,20 @@ class ZioHttpKorolev[R] {
   private def matchWebSocket(req: Request): Boolean =
     req.method == Method.GET && containsUpgradeHeader(req)
 
-  private def routeHttpRequest(subPath: String, req: Request, korolevServer: KorolevService[RIO[R, *]])(implicit
+  private def routeHttpRequest(subPath: String, req: Request, spoonbillServer: SpoonbillService[RIO[R, *]])(implicit
     eff: ZEffect
   ): ZIO[R, Throwable, Response] = {
     req match {
       case req if req.method == Method.GET =>
         val body           = KStream.empty[RIO[R, *], Bytes]
-        val korolevRequest = mkKorolevRequest(req, subPath, body)
-        handleHttpResponse(korolevServer, korolevRequest)
+        val spoonbillRequest = mkSpoonbillRequest(req, subPath, body)
+        handleHttpResponse(spoonbillServer, spoonbillRequest)
 
       case req =>
         for {
-          stream        <- toKorolevBody(req.body)
-          korolevRequest = mkKorolevRequest(req, subPath, stream)
-          response      <- handleHttpResponse(korolevServer, korolevRequest)
+          stream        <- toSpoonbillBody(req.body)
+          spoonbillRequest = mkSpoonbillRequest(req, subPath, stream)
+          response      <- handleHttpResponse(spoonbillServer, spoonbillRequest)
         } yield {
           response
         }
@@ -124,14 +124,14 @@ class ZioHttpKorolev[R] {
   private def routeWsRequest[S: StateSerializer: StateDeserializer, M](
     req: Request,
     fullPath: String,
-    korolevServer: KorolevService[RIO[R, *]],
+    spoonbillServer: SpoonbillService[RIO[R, *]],
     reporter: Reporter,
     webSocketProtocolsEnabled: Boolean
   )(implicit eff: ZEffect): ZIO[R, Throwable, Response] = {
 
     val fromClientKQueue = Queue[RIO[R, *], Bytes]()
-    val korolevRequest =
-      mkKorolevRequest[KStream[RIO[R, *], Bytes]](req, fullPath, fromClientKQueue.stream)
+    val spoonbillRequest =
+      mkSpoonbillRequest[KStream[RIO[R, *], Bytes]](req, fullPath, fromClientKQueue.stream)
     val protocols = parseProtocols(req)
     // When protocol negotiation is disabled, force JSON to keep codecs aligned.
     val sanitizedProtocols =
@@ -144,9 +144,9 @@ class ZioHttpKorolev[R] {
       ZIO.succeed(Response(status = Status.BadRequest))
     } else {
       for {
-        response <- korolevServer.ws(WebSocketRequest(korolevRequest, sanitizedProtocols))
+        response <- spoonbillServer.ws(WebSocketRequest(spoonbillRequest, sanitizedProtocols))
         (selectedProtocol, toClient) = response match {
-                                         case WebSocketResponse(KorolevResponse(_, outStream, _, _), selectedProtocol) =>
+                                         case WebSocketResponse(SpoonbillResponse(_, outStream, _, _), selectedProtocol) =>
                                            selectedProtocol -> outStream
                                              .map(out => WebSocketFrame.Binary(out.as[Chunk[Byte]]))
                                              .toZStream
@@ -248,12 +248,12 @@ class ZioHttpKorolev[R] {
            }.ensuring(sendFiber.interrupt)
     } yield ()
 
-  private def mkKorolevRequest[B](request: Request, path: String, body: B): KorolevRequest[B] = {
+  private def mkSpoonbillRequest[B](request: Request, path: String, body: B): SpoonbillRequest[B] = {
     val cookies = request.rawHeader(Header.Cookie)
     val params  = request.url.queryParams.map.collect { case (k, v) if v.nonEmpty => (k, v.head) }
-    KorolevRequest(
+    SpoonbillRequest(
       pq = PQ.fromString(path).withParams(params),
-      method = KorolevRequest.Method.fromString(request.method.name),
+      method = SpoonbillRequest.Method.fromString(request.method.name),
       renderedCookie = cookies.orNull,
       contentLength = request.header(Header.ContentLength).map(_.length),
       headers = {
@@ -270,10 +270,10 @@ class ZioHttpKorolev[R] {
   }
 
   private def handleHttpResponse(
-    korolevServer: KorolevService[RIO[R, *]],
-    korolevRequest: KorolevHttpRequest[RIO[R, *]]
+    spoonbillServer: SpoonbillService[RIO[R, *]],
+    spoonbillRequest: SpoonbillHttpRequest[RIO[R, *]]
   ): ZIO[R, Throwable, Response] =
-    korolevServer.http(korolevRequest).flatMap { case KorolevResponse(status, stream, responseHeaders, contentLength) =>
+    spoonbillServer.http(spoonbillRequest).flatMap { case SpoonbillResponse(status, stream, responseHeaders, contentLength) =>
       val headers = Headers(responseHeaders.map { case (name, value) => Header.Custom(name, value) })
       val body: ZStream[R, Throwable, Byte] =
         stream.toZStream.flatMap { (bytes: Bytes) =>
@@ -288,15 +288,15 @@ class ZioHttpKorolev[R] {
 
       bodyZio.map { body =>
         Response(
-          status = HttpStatusConverter.fromKorolevStatus(status),
+          status = HttpStatusConverter.fromSpoonbillStatus(status),
           headers = headers,
           body = body
         )
       }
     }
 
-  private def toKorolevBody(body: Body)(implicit eff: ZEffect): RIO[R, KStream[RIO[R, *], Bytes]] =
-    ZStreamOps[R, Byte](body.asStream).toKorolev(eff).map { kStream =>
+  private def toSpoonbillBody(body: Body)(implicit eff: ZEffect): RIO[R, KStream[RIO[R, *], Bytes]] =
+    ZStreamOps[R, Byte](body.asStream).toSpoonbill(eff).map { kStream =>
       kStream.map(bytes => Bytes.wrap(bytes.toArray))
     }
 

@@ -1,15 +1,15 @@
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object WebComponentExample extends SimpleAkkaHttpKorolevApp {
+object WebComponentExample extends SimpleAkkaHttpSpoonbillApp {
 
   import State.globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   private def setLatLon(lat: Double, lon: Double): (Access => EventResult) = { (access: Access) =>
     access.transition { case s =>
@@ -24,7 +24,7 @@ object WebComponentExample extends SimpleAkkaHttpKorolevApp {
   val zoom       = AttrDef("zoom")
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, State, Any](
+    SpoonbillServiceConfig[Future, State, Any](
       stateLoader = StateLoader.default(State()),
       document = state =>
         optimize {
@@ -42,7 +42,7 @@ object WebComponentExample extends SimpleAkkaHttpKorolevApp {
                 button("London", event("click")(setLatLon(51.528308, -0.3817983))),
                 button("New York", event("click")(setLatLon(40.705311, -74.2581908))),
                 button("Moscow", event("click")(setLatLon(55.748517, 37.0720941))),
-                button("Korolev", event("click")(setLatLon(55.9226846, 37.7961706)))
+                button("Spoonbill", event("click")(setLatLon(55.9226846, 37.7961706)))
               ),
               leafletMap(
                 width @= "500px",

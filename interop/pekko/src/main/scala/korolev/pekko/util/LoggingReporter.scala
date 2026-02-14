@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-package korolev.pekko.util
+package spoonbill.pekko.util
 
-import korolev.effect.Reporter
+import spoonbill.effect.Reporter
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.event.{Logging, LogSource}
 
 final class LoggingReporter(actorSystem: ActorSystem) extends Reporter {
 
   private implicit val logSource: LogSource[LoggingReporter] = new LogSource[LoggingReporter] {
-    def genString(t: LoggingReporter): String = "korolev"
+    def genString(t: LoggingReporter): String = "spoonbill"
   }
 
   private val log = Logging(actorSystem, this)

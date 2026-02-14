@@ -24,4 +24,4 @@ jobs:
         extra_nix_config: sandbox = true
 
     - name: Run tests
-      run: nix develop --command sbt --batch --supershell=false +test
+      run: nix develop --command sbt --batch --supershell=false test

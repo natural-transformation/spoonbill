@@ -1,8 +1,8 @@
-package korolev.web
+package spoonbill.web
 
-import korolev.effect.Effect
-import korolev.effect.syntax._
-import korolev.web.Response.Status
+import spoonbill.effect.Effect
+import spoonbill.effect.syntax._
+import spoonbill.web.Response.Status
 
 package object dsl {
 

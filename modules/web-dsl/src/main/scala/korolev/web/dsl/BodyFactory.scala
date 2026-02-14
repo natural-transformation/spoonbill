@@ -1,10 +1,10 @@
-package korolev.web.dsl
+package spoonbill.web.dsl
 
-import korolev.data.BytesLike
-import korolev.data.syntax._
-import korolev.effect.{Effect, Stream}
-import korolev.effect.syntax._
-import korolev.web.Headers
+import spoonbill.data.BytesLike
+import spoonbill.data.syntax._
+import spoonbill.effect.{Effect, Stream}
+import spoonbill.effect.syntax._
+import spoonbill.web.Headers
 
 trait BodyFactory[F[_], A, B] {
   def mkBody(source: A): F[BodyFactory.Body[B]]

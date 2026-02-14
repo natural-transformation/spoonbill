@@ -1,9 +1,9 @@
-package korolev.http.protocol
+package spoonbill.http.protocol
 
-import korolev.data.Bytes
-import korolev.effect.Decoder
-import korolev.web.{Request, Response}
-import korolev.web.PathAndQuery.Root
+import spoonbill.data.Bytes
+import spoonbill.effect.Decoder
+import spoonbill.web.{Request, Response}
+import spoonbill.web.PathAndQuery.Root
 import org.scalatest.Assertion
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers

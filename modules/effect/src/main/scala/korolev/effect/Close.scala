@@ -1,4 +1,4 @@
-package korolev.effect
+package spoonbill.effect
 
 trait Close[F[_], -T] {
   def onClose(that: T): F[Unit]

@@ -1,4 +1,4 @@
-package korolev.data
+package spoonbill.data
 
 case class Scenario(name: String, steps: Vector[ScenarioStep]) {
   def newState: ScenarioState = ScenarioState(this, 0)

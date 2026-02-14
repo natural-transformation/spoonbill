@@ -1,12 +1,12 @@
-package korolev.zio
+package spoonbill.zio
 
-import korolev.effect.{Effect as KorolevEffect, Stream as KorolevStream}
+import spoonbill.effect.{Effect as SpoonbillEffect, Stream as SpoonbillStream}
 import zio._
 import zio.stream.ZStream
 
 package object streams {
 
-  implicit class KorolevStreamOps[R, O](stream: KorolevStream[RIO[R, *], O]) {
+  implicit class SpoonbillStreamOps[R, O](stream: SpoonbillStream[RIO[R, *], O]) {
 
     def toZStream: ZStream[R, Throwable, O] =
       ZStream.unfoldZIO(()) { _ =>
@@ -20,23 +20,23 @@ package object streams {
 
   implicit class ZStreamOps[R, O](stream: ZStream[R, Throwable, O]) {
 
-    def toKorolev(implicit eff: KorolevEffect[RIO[R, *]]): RIO[R, ZKorolevStream[R, O]] = {
+    def toSpoonbill(implicit eff: SpoonbillEffect[RIO[R, *]]): RIO[R, ZSpoonbillStream[R, O]] = {
       Scope.make.flatMap { scope =>
         scope.use[R](
           for {
             pull    <- stream.toPull
-            zStream = ZKorolevStream[R, O](pull, scope.close(_))
+            zStream = ZSpoonbillStream[R, O](pull, scope.close(_))
           } yield zStream
         )
       }
     }
   }
 
-  private[streams] case class ZKorolevStream[R, O](
+  private[streams] case class ZSpoonbillStream[R, O](
     zPull: ZIO[R, Option[Throwable], Chunk[O]],
     finalizer: Finalizer
-  )(implicit eff: KorolevEffect[RIO[R, *]])
-      extends KorolevStream[RIO[R, *], Seq[O]] {
+  )(implicit eff: SpoonbillEffect[RIO[R, *]])
+      extends SpoonbillStream[RIO[R, *], Seq[O]] {
 
     def pull(): RIO[R, Option[Seq[O]]] =
       zPull.option

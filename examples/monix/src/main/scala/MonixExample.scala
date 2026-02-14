@@ -1,24 +1,24 @@
-import korolev.Context
-import korolev.akka._
-import korolev.monix._
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.state.javaSerialization._
+import spoonbill.Context
+import spoonbill.akka._
+import spoonbill.monix._
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization._
 import monix.eval.Task
 import monix.execution.Scheduler.Implicits.global
 
-object MonixExample extends SimpleAkkaHttpKorolevApp {
+object MonixExample extends SimpleAkkaHttpSpoonbillApp {
 
   val ctx = Context[Task, Option[String], Any]
 
   import ctx._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   private val aInput = elementId()
   private val bInput = elementId()
 
   def service: AkkaHttpService = akkaHttpService {
-    KorolevServiceConfig[Task, Option[String], Any](
+    SpoonbillServiceConfig[Task, Option[String], Any](
       stateLoader = StateLoader.default(None),
       document = maybeResult =>
         optimize {

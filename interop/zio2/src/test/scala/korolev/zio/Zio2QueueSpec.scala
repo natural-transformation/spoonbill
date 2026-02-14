@@ -1,7 +1,7 @@
-package korolev.zio
+package spoonbill.zio
 
 import QueueSpecUtil._
-import korolev.effect._
+import spoonbill.effect._
 import zio.{Queue as _, _}
 import zio.test._
 import zio.test.Assertion._

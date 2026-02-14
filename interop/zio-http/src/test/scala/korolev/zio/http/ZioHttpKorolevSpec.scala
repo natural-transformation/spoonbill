@@ -1,17 +1,17 @@
-package korolev.zio.http
+package spoonbill.zio.http
 
-import korolev.Context
+import spoonbill.Context
 import java.util.concurrent.atomic.AtomicReference
 
-import korolev.data.Bytes
-import korolev.effect.{Queue, Reporter}
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.server.internal.Cookies
-import korolev.state.javaSerialization.*
-import korolev.web.PathAndQuery
-import korolev.zio.Zio2Effect
-import levsha.dsl.*
-import levsha.dsl.html.*
+import spoonbill.data.Bytes
+import spoonbill.effect.{Queue, Reporter}
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.server.internal.Cookies
+import spoonbill.state.javaSerialization.*
+import spoonbill.web.PathAndQuery
+import spoonbill.zio.Zio2Effect
+import avocet.dsl.*
+import avocet.dsl.html.*
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import zio.http.*
@@ -21,16 +21,16 @@ import zio.{Chunk, Duration, Exit, NonEmptyChunk, Promise, RIO, Runtime, Unsafe,
 import scala.concurrent.ExecutionContext
 
 /**
- * Tests for ZioHttpKorolev integration to verify error handling behavior.
+ * Tests for ZioHttpSpoonbill integration to verify error handling behavior.
  * 
- * Issue observed: When using korolev-zio-http with zio-http 3.x, requests
+ * Issue observed: When using spoonbill-zio-http with zio-http 3.x, requests
  * to bridge/long-polling endpoints fail with InternalServerError.
  * 
  * The suspected issue is that mapError(Response.fromThrowable) at line 39
- * of ZioHttpKorolev.scala causes the handler error type to become Response,
+ * of ZioHttpSpoonbill.scala causes the handler error type to become Response,
  * which may not be properly handled by zio-http routing.
  */
-final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
+final class ZioHttpSpoonbillSpec extends AnyFlatSpec with Matchers {
 
   private type AppTask[A] = RIO[Any, A]
 
@@ -67,7 +67,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  private val simpleConfig = KorolevServiceConfig[AppTask, String, Any](
+  private val simpleConfig = SpoonbillServiceConfig[AppTask, String, Any](
     stateLoader = StateLoader.default("initial"),
     rootPath = PathAndQuery.Root,
     document = simpleDocument
@@ -88,9 +88,9 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
       .map(_.value.content)
       .toRight(new RuntimeException("Unable to find deviceId cookie in response headers"))
 
-  "ZioHttpKorolev.service" should "create routes that serve the root page" in {
-    val korolev = new ZioHttpKorolev[Any]
-    val routes = korolev.service(simpleConfig)
+  "ZioHttpSpoonbill.service" should "create routes that serve the root page" in {
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    val routes = spoonbill.service(simpleConfig)
 
     val testApp = routes.toHandler
     val request = Request.get(URL(Path.root))
@@ -120,8 +120,8 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "handle POST requests to bridge/long-polling without error" in {
-    val korolev = new ZioHttpKorolev[Any]
-    val routes = korolev.service(simpleConfig)
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    val routes = spoonbill.service(simpleConfig)
 
     val testApp = routes.toHandler
     
@@ -137,7 +137,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
         response.status shouldBe Status.Ok
         
         // Try a POST to /bridge/long-polling/session-id
-        // This tests whether the korolev service properly handles bridge requests
+        // This tests whether the spoonbill service properly handles bridge requests
         val postRequest = Request.post(
           URL(Path.decode("/bridge/long-polling/test-session")),
           Body.empty
@@ -164,20 +164,20 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
 
   it should "properly convert errors to HTTP 500 responses via mapError" in {
     // Test that errors are properly converted, not left as unhandled
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     
     // Create a config with a document that throws an exception
     val failingDocument: ctx.Render = { _ =>
       throw new RuntimeException("Simulated render failure")
     }
     
-    val failingConfig = KorolevServiceConfig[AppTask, String, Any](
+    val failingConfig = SpoonbillServiceConfig[AppTask, String, Any](
       stateLoader = StateLoader.default("initial"),
       rootPath = PathAndQuery.Root,
       document = failingDocument
     )
     
-    val routes = korolev.service(failingConfig)
+    val routes = spoonbill.service(failingConfig)
     val testApp = routes.toHandler
     val request = Request.get(URL(Path.root))
 
@@ -200,36 +200,36 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "parse websocket subprotocol header values" in {
-    val korolev = new ZioHttpKorolev[Any]
-    korolev.parseProtocolsValues(Seq("json, json-deflate")) shouldBe Seq("json", "json-deflate")
-    korolev.parseProtocolsValues(Seq(" json ", "json-deflate", "  ")) shouldBe Seq("json", "json-deflate")
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    spoonbill.parseProtocolsValues(Seq("json, json-deflate")) shouldBe Seq("json", "json-deflate")
+    spoonbill.parseProtocolsValues(Seq(" json ", "json-deflate", "  ")) shouldBe Seq("json", "json-deflate")
   }
 
   it should "return empty websocket protocols when none are provided" in {
-    val korolev = new ZioHttpKorolev[Any]
-    korolev.parseProtocolsValues(Nil) shouldBe empty
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    spoonbill.parseProtocolsValues(Nil) shouldBe empty
   }
 
-  it should "accept korolev websocket protocols" in {
-    val korolev = new ZioHttpKorolev[Any]
-    korolev.acceptsProtocols(Seq("json")) shouldBe true
-    korolev.acceptsProtocols(Seq("json-deflate")) shouldBe true
-    korolev.acceptsProtocols(Seq("json", "other")) shouldBe true
-    korolev.acceptsProtocols(Seq("other")) shouldBe false
-    korolev.acceptsProtocols(Nil) shouldBe false
+  it should "accept spoonbill websocket protocols" in {
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    spoonbill.acceptsProtocols(Seq("json")) shouldBe true
+    spoonbill.acceptsProtocols(Seq("json-deflate")) shouldBe true
+    spoonbill.acceptsProtocols(Seq("json", "other")) shouldBe true
+    spoonbill.acceptsProtocols(Seq("other")) shouldBe false
+    spoonbill.acceptsProtocols(Nil) shouldBe false
   }
 
   it should "sanitize websocket protocols to supported set" in {
-    val korolev = new ZioHttpKorolev[Any]
-    korolev.sanitizeProtocols(Seq("json", "json-deflate")) shouldBe Seq("json", "json-deflate")
-    korolev.sanitizeProtocols(Seq("json-deflate")) shouldBe Seq("json-deflate")
-    korolev.sanitizeProtocols(Seq("json")) shouldBe Seq("json")
-    korolev.sanitizeProtocols(Seq("other")) shouldBe empty
-    korolev.sanitizeProtocols(Seq("json", "other")) shouldBe Seq("json")
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    spoonbill.sanitizeProtocols(Seq("json", "json-deflate")) shouldBe Seq("json", "json-deflate")
+    spoonbill.sanitizeProtocols(Seq("json-deflate")) shouldBe Seq("json-deflate")
+    spoonbill.sanitizeProtocols(Seq("json")) shouldBe Seq("json")
+    spoonbill.sanitizeProtocols(Seq("other")) shouldBe empty
+    spoonbill.sanitizeProtocols(Seq("json", "other")) shouldBe Seq("json")
   }
 
-  it should "forward websocket frames to the Korolev queue" in {
-    val korolev = new ZioHttpKorolev[Any]
+  it should "forward websocket frames to the Spoonbill queue" in {
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val fromClientQueue = Queue[AppTask, Bytes]()
     val toClientStream = ZStream.empty
     val send = (_: ChannelEvent[WebSocketFrame]) => ZIO.unit
@@ -240,7 +240,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
       )
 
     val program = for {
-      _ <- korolev.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
+      _ <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
       message <- fromClientQueue.stream.pull().flatMap {
                    case Some(bytes) => ZIO.succeed(bytes)
                    case None        => ZIO.fail(new RuntimeException("Expected message from websocket"))
@@ -260,7 +260,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "close queue when websocket is unregistered" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val fromClientQueue = Queue[AppTask, Bytes]()
     val toClientStream = ZStream.empty
     val send = (_: ChannelEvent[WebSocketFrame]) => ZIO.unit
@@ -268,7 +268,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
       handler.applyOrElse(ChannelEvent.Unregistered, (_: ChannelEvent[WebSocketFrame]) => ZIO.unit)
 
     val program = for {
-      _ <- korolev.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
+      _ <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
       result <- fromClientQueue.stream.pull().timeoutFail(
                   new RuntimeException("Timed out waiting for queue close")
                 )(Duration.fromSeconds(1))
@@ -287,7 +287,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "close queue when websocket handshake times out" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val fromClientQueue = Queue[AppTask, Bytes]()
     val toClientStream = ZStream.empty
     val send = (_: ChannelEvent[WebSocketFrame]) => ZIO.unit
@@ -298,7 +298,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
       )
 
     val program = for {
-      _ <- korolev.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
+      _ <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
       result <- fromClientQueue.stream.pull().timeoutFail(
                   new RuntimeException("Timed out waiting for queue close")
                 )(Duration.fromSeconds(1))
@@ -317,7 +317,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "report websocket send stream failures" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val errorRef = new AtomicReference[Option[Throwable]](None)
     val reporter: Reporter = new Reporter {
       def error(message: String, cause: Throwable): Unit = errorRef.set(Some(cause))
@@ -338,7 +338,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
       handler(ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete)) *> ZIO.never
 
     val program = for {
-      fiber <- korolev.runSocket(send, receiveAll, toClientStream, fromClientQueue, reporter).fork
+      fiber <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, reporter).fork
       _ <- ZIO
              .succeed(errorRef.get)
              .repeatUntil(_.isDefined)
@@ -361,7 +361,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "wait for handshake event before sending websocket output" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val program = for {
       sentPromise <- Promise.make[Nothing, WebSocketFrame]
       handshakeTrigger <- Promise.make[Nothing, Unit]
@@ -385,7 +385,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
           _ <- ZIO.never
         } yield ()
 
-      fiber <- korolev.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter).fork
+      fiber <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter).fork
       
       // Verify nothing has been sent yet
       isSentBeforeHandshake <- sentPromise.isDone
@@ -414,7 +414,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "start sending after receiving a client frame without handshake event" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val program = for {
       sentPromise <- Promise.make[Nothing, WebSocketFrame]
       fromClientQueue = Queue[AppTask, Bytes]()
@@ -431,7 +431,7 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
       receiveAll = (handler: PartialFunction[ChannelEvent[WebSocketFrame], AppTask[Unit]]) =>
         handler(ChannelEvent.Read(WebSocketFrame.Text("client-msg"))) *> ZIO.never
 
-      fiber <- korolev.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter).fork
+      fiber <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter).fork
       frame <- sentPromise.await.timeoutFail(new RuntimeException("Timed out waiting for outbound frame"))(
                  Duration.fromSeconds(1)
                )
@@ -456,12 +456,12 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   // ============================================================================
 
   it should "configure WebSocket with subprotocol when protocols are enabled" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val fromClientQueue = Queue[AppTask, Bytes]()
     val toClientStream = ZStream.empty
 
     // Test buildSocket with a selected protocol
-    val program = korolev.buildSocket(toClientStream, fromClientQueue, silentReporter, Some("json"))
+    val program = spoonbill.buildSocket(toClientStream, fromClientQueue, silentReporter, Some("json"))
 
     val result = Unsafe.unsafe { implicit unsafe =>
       runtime.unsafe.run(program)
@@ -478,12 +478,12 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "configure WebSocket without subprotocol when None is passed" in {
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
     val fromClientQueue = Queue[AppTask, Bytes]()
     val toClientStream = ZStream.empty
 
     // Test buildSocket without a protocol (for webSocketProtocolsEnabled = false case)
-    val program = korolev.buildSocket(toClientStream, fromClientQueue, silentReporter, None)
+    val program = spoonbill.buildSocket(toClientStream, fromClientQueue, silentReporter, None)
 
     val result = Unsafe.unsafe { implicit unsafe =>
       runtime.unsafe.run(program)
@@ -501,37 +501,37 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
     // This unit test verifies that json-deflate is now properly accepted by sanitizeProtocols
     // Note: Full integration testing with deflate compression requires a client that supports
     // deflate encoding, which zio-http's test client doesn't natively support.
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
 
     // Both protocols should be accepted
-    korolev.acceptsProtocols(Seq("json-deflate")) shouldBe true
-    korolev.acceptsProtocols(Seq("json", "json-deflate")) shouldBe true
+    spoonbill.acceptsProtocols(Seq("json-deflate")) shouldBe true
+    spoonbill.acceptsProtocols(Seq("json", "json-deflate")) shouldBe true
 
     // Sanitize should preserve json-deflate
-    korolev.sanitizeProtocols(Seq("json-deflate")) shouldBe Seq("json-deflate")
-    korolev.sanitizeProtocols(Seq("json", "json-deflate")) shouldBe Seq("json", "json-deflate")
+    spoonbill.sanitizeProtocols(Seq("json-deflate")) shouldBe Seq("json-deflate")
+    spoonbill.sanitizeProtocols(Seq("json", "json-deflate")) shouldBe Seq("json", "json-deflate")
   }
 
   it should "reject requests with unsupported protocols when webSocketProtocolsEnabled is true" in {
     // This is a unit test for the acceptsProtocols function - verifying that unsupported
     // protocols are correctly identified. The actual HTTP 400 response is tested by the
     // server returning BadRequest status, which we verify via the acceptsProtocols logic.
-    val korolev = new ZioHttpKorolev[Any]
+    val spoonbill = new ZioHttpSpoonbill[Any]
 
     // Unsupported protocols should be rejected
-    korolev.acceptsProtocols(Seq("unsupported-protocol")) shouldBe false
-    korolev.acceptsProtocols(Seq("graphql-ws")) shouldBe false
-    korolev.acceptsProtocols(Nil) shouldBe false
+    spoonbill.acceptsProtocols(Seq("unsupported-protocol")) shouldBe false
+    spoonbill.acceptsProtocols(Seq("graphql-ws")) shouldBe false
+    spoonbill.acceptsProtocols(Nil) shouldBe false
 
     // But if ANY supported protocol is present, it should accept
-    korolev.acceptsProtocols(Seq("unsupported", "json")) shouldBe true
+    spoonbill.acceptsProtocols(Seq("unsupported", "json")) shouldBe true
   }
 
   it should "work without protocol header when webSocketProtocolsEnabled is false" in {
     // When protocols are disabled, the server should accept connections without protocol negotiation
     val protocolDisabledConfig = simpleConfig.copy(webSocketProtocolsEnabled = false)
-    val korolev = new ZioHttpKorolev[Any]
-    val routes = korolev.service(protocolDisabledConfig)
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    val routes = spoonbill.service(protocolDisabledConfig)
 
     val program = ZIO.scoped {
       for {
@@ -596,8 +596,8 @@ final class ZioHttpKorolevSpec extends AnyFlatSpec with Matchers {
   it should "receive server frames and send client response via WebSocket" in {
     // Use webSocketProtocolsEnabled = false for simpler test (no protocol negotiation)
     val config = simpleConfig.copy(webSocketProtocolsEnabled = false)
-    val korolev = new ZioHttpKorolev[Any]
-    val routes = korolev.service(config)
+    val spoonbill = new ZioHttpSpoonbill[Any]
+    val routes = spoonbill.service(config)
 
     val program = ZIO.scoped {
       for {

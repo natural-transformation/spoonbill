@@ -1,13 +1,13 @@
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
-import korolev.web.PathAndQuery.*&
-import korolev.web.PathAndQuery.OptionQueryParam
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
+import spoonbill.web.PathAndQuery.*&
+import spoonbill.web.PathAndQuery.OptionQueryParam
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object PathAndQueryRoutingExample extends SimpleAkkaHttpKorolevApp {
+object PathAndQueryRoutingExample extends SimpleAkkaHttpSpoonbillApp {
   object BeginOptionQueryParam extends OptionQueryParam("begin")
   object EndOptionQueryParam   extends OptionQueryParam("end")
 
@@ -18,14 +18,14 @@ object PathAndQueryRoutingExample extends SimpleAkkaHttpKorolevApp {
   }
 
   import State.globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   val beginElementId = elementId()
   val endElementId   = elementId()
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, State, Any](
+    SpoonbillServiceConfig[Future, State, Any](
       stateLoader = StateLoader.default(State()),
       document = state =>
         optimize {

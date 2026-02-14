@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
-import korolev.effect.Effect.Promise
-import korolev.effect.syntax._
+import spoonbill.effect.Effect.Promise
+import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue => IQueue}
 

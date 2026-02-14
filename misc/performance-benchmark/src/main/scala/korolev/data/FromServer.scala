@@ -1,7 +1,7 @@
-package korolev.data
+package spoonbill.data
 
 import akka.actor.typed.ActorRef
-import korolev.internal.Frontend
+import spoonbill.internal.Frontend
 import ujson._
 
 sealed trait FromServer

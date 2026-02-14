@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-package korolev.effect.io
+package spoonbill.effect.io
 
 import java.io.{BufferedReader, FileInputStream, FileOutputStream, FileReader}
 import java.nio.file.Path
-import korolev.data.BytesLike
-import korolev.effect.{Effect, Stream}
-import korolev.effect.syntax._
+import spoonbill.data.BytesLike
+import spoonbill.effect.{Effect, Stream}
+import spoonbill.effect.syntax._
 
 object FileIO {
 

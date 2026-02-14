@@ -1,7 +1,7 @@
-package korolev.akka.util
+package spoonbill.akka.util
 
 import java.util.concurrent.atomic.AtomicReference
-import korolev.effect.Effect
+import spoonbill.effect.Effect
 import scala.annotation.tailrec
 
 final class Countdown[F[_]: Effect] {

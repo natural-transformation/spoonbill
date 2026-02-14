@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-package korolev
+package spoonbill
 
 import _root_.zio.{Runtime, Task, ZIO}
-import korolev.effect.Effect
+import spoonbill.effect.Effect
 
 package object zio {
 
@@ -30,7 +30,7 @@ package object zio {
 
   /**
    * Provides [[Effect]] instance for ZIO with arbitrary runtime and error
-   * types. Korolev uses Throwable inside itself. That means if you want to work
+   * types. Spoonbill uses Throwable inside itself. That means if you want to work
    * with your own [[E]], you should provide functions to convert [[Throwable]]
    * to [[E]] and vice versa.
    *
@@ -44,7 +44,7 @@ package object zio {
    *   case class MyErrorException(error: MyError) extends Throwable
    *
    *   val runtime = new DefaultRuntime {}
-   *   implicit val zioEffect = korolev.zio.zioEffectInstance(runtime)(MyError.Unexpected)(MyErrorException)
+   *   implicit val zioEffect = spoonbill.zio.zioEffectInstance(runtime)(MyError.Unexpected)(MyErrorException)
    *
    *   val ctx = Context[IO[MyError, *], MyState, Any]
    * }}}

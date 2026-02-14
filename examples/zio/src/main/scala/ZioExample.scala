@@ -1,11 +1,11 @@
 import java.net.InetSocketAddress
-import korolev.Context
-import korolev.effect.Effect
-import korolev.server
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.server.standalone
-import korolev.state.javaSerialization.*
-import korolev.zio.taskEffectLayer
+import spoonbill.Context
+import spoonbill.effect.Effect
+import spoonbill.server
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.server.standalone
+import spoonbill.state.javaSerialization.*
+import spoonbill.zio.taskEffectLayer
 import scala.concurrent.ExecutionContext.Implicits.global
 import zio.*
 
@@ -20,8 +20,8 @@ object ZioExample extends ZIOAppDefault {
   val aInput = elementId()
   val bInput = elementId()
 
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   def renderForm(maybeResult: Option[Int]) = optimize {
     form(
@@ -53,7 +53,7 @@ object ZioExample extends ZIOAppDefault {
 
   final val app = ZIO.service[Effect[Task]].flatMap { implicit taskEffect =>
     val config =
-      KorolevServiceConfig[Task, Option[Int], Any](
+      SpoonbillServiceConfig[Task, Option[Int], Any](
         stateLoader = StateLoader.default(None),
         document = maybeResult =>
           optimize {
@@ -65,7 +65,7 @@ object ZioExample extends ZIOAppDefault {
     for {
       _ <- ZIO.logInfo(s"Try to start server at $address")
       handler <- standalone.buildServer[Task, Array[Byte]](
-                   service = server.korolevService(config),
+                   service = server.spoonbillService(config),
                    address = address,
                    gracefulShutdown = false
                  )

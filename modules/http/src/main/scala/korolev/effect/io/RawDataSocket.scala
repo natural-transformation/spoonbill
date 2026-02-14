@@ -1,14 +1,14 @@
-package korolev.effect.io
+package spoonbill.effect.io
 
 import java.net.SocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousChannelGroup, AsynchronousSocketChannel, CompletionHandler}
 import java.util.concurrent.atomic.AtomicReference
-import korolev.data.BytesLike
-import korolev.data.syntax._
-import korolev.effect.{Effect, Stream}
-import korolev.effect.io.DataSocket.CloseReason
-import korolev.effect.syntax._
+import spoonbill.data.BytesLike
+import spoonbill.data.syntax._
+import spoonbill.effect.{Effect, Stream}
+import spoonbill.effect.io.DataSocket.CloseReason
+import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 
 sealed class RawDataSocket[F[_]: Effect, B: BytesLike](

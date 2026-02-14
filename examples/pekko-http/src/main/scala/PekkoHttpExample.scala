@@ -1,9 +1,9 @@
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.http.scaladsl.Http
-import korolev._
-import korolev.pekko._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.pekko._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
@@ -15,10 +15,10 @@ object PekkoHttpExample extends App {
   val applicationContext = Context[Future, Boolean, Any]
 
   import applicationContext._
-  import levsha.dsl._
+  import avocet.dsl._
   import html.{body, button, Html}
 
-  private val config = KorolevServiceConfig[Future, Boolean, Any](
+  private val config = SpoonbillServiceConfig[Future, Boolean, Any](
     stateLoader = StateLoader.default(false),
     document = s => optimize {
       Html(

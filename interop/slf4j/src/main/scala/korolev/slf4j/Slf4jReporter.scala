@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-package korolev.slf4j
+package spoonbill.slf4j
 
-import korolev.effect.Reporter
+import spoonbill.effect.Reporter
 import org.slf4j.LoggerFactory
 
 object Slf4jReporter extends Reporter {
 
   // All messages will be emited from one source.
-  // It's unnecessary to show Korolev internals to enduser.
-  private val logger = LoggerFactory.getLogger("Korolev")
+  // It's unnecessary to show Spoonbill internals to enduser.
+  private val logger = LoggerFactory.getLogger("Spoonbill")
 
   def error(message: String, cause: Throwable): Unit   = logger.error(message, cause)
   def error(message: String): Unit                     = logger.error(message)

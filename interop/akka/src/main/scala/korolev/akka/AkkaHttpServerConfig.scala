@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package korolev.akka
+package spoonbill.akka
 
 import scala.concurrent.duration._
 

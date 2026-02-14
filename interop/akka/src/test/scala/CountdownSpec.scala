@@ -1,7 +1,7 @@
 import java.util.concurrent.atomic.AtomicReference
-import korolev.akka.util.Countdown
-import korolev.effect.Effect.FutureEffect
-import korolev.effect.syntax._
+import spoonbill.akka.util.Countdown
+import spoonbill.effect.Effect.FutureEffect
+import spoonbill.effect.syntax._
 import org.scalatest.freespec.AsyncFreeSpec
 import scala.concurrent.Future
 

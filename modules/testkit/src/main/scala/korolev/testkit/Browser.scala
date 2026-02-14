@@ -1,17 +1,17 @@
-package korolev.testkit
+package spoonbill.testkit
 
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.NoSuchElementException
-import korolev.{Context, Qsid, Transition, TransitionAsync}
-import korolev.Context.{Access, BaseAccessDefault, Binding, ElementId}
-import korolev.data.Bytes
-import korolev.effect.Effect
-import korolev.effect.Stream
-import korolev.effect.syntax.*
-import korolev.internal.Frontend.ClientSideException
-import korolev.util.JsCode
-import korolev.web.FormData
+import spoonbill.{Context, Qsid, Transition, TransitionAsync}
+import spoonbill.Context.{Access, BaseAccessDefault, Binding, ElementId}
+import spoonbill.data.Bytes
+import spoonbill.effect.Effect
+import spoonbill.effect.Stream
+import spoonbill.effect.syntax.*
+import spoonbill.internal.Frontend.ClientSideException
+import spoonbill.util.JsCode
+import spoonbill.web.FormData
 import org.graalvm.polyglot.HostAccess
 import scala.collection.immutable.Seq
 import scala.collection.mutable
@@ -78,9 +78,9 @@ case class Browser(
    */
   def event[F[_]: Effect, S, M](
     state: S,
-    dom: levsha.Document.Node[Binding[F, S, M]],
+    dom: avocet.Document.Node[Binding[F, S, M]],
     event: String,
-    target: PseudoHtml => Option[levsha.Id],
+    target: PseudoHtml => Option[avocet.Id],
     eventData: String = ""
   ): F[Seq[Action[F, S, M]]] = {
 
@@ -88,7 +88,7 @@ case class Browser(
       state = state,
       dom = dom,
       event = event,
-      target = (pseudoHtml: PseudoHtml, _: Map[levsha.Id, ElementId]) => target(pseudoHtml),
+      target = (pseudoHtml: PseudoHtml, _: Map[avocet.Id, ElementId]) => target(pseudoHtml),
       eventData = eventData
     )
 
@@ -96,20 +96,20 @@ case class Browser(
 
   /**
    * Simulate event propagation on the given DOM with access to the rendered
-   * Levsha-to-ElementId mapping.
+   * Avocet-to-ElementId mapping.
    */
   def event[F[_]: Effect, S, M](
     state: S,
-    dom: levsha.Document.Node[Binding[F, S, M]],
+    dom: avocet.Document.Node[Binding[F, S, M]],
     event: String,
-    target: (PseudoHtml, Map[levsha.Id, ElementId]) => Option[levsha.Id],
+    target: (PseudoHtml, Map[avocet.Id, ElementId]) => Option[avocet.Id],
     eventData: String
   ): F[Seq[Action[F, S, M]]] = {
 
     val rr = PseudoHtml.render(dom)
 
-    def collectActions(targetId: levsha.Id, eventType: String): F[Seq[Action[F, S, M]]] = {
-      val propagation = levsha.events.calculateEventPropagation(targetId, eventType)
+    def collectActions(targetId: avocet.Id, eventType: String): F[Seq[Action[F, S, M]]] = {
+      val propagation = avocet.events.calculateEventPropagation(targetId, eventType)
 
       Effect[F]
         .sequence {
@@ -131,7 +131,7 @@ case class Browser(
 
     def findElementPath(
       node: PseudoHtml,
-      targetId: levsha.Id
+      targetId: avocet.Id
     ): Option[(PseudoHtml.Element, List[PseudoHtml.Element])] = {
       def loop(
         current: PseudoHtml,
@@ -168,7 +168,7 @@ case class Browser(
       }
     }
 
-    def findSubmitForm(targetId: levsha.Id): Option[levsha.Id] =
+    def findSubmitForm(targetId: avocet.Id): Option[avocet.Id] =
       findElementPath(rr.pseudoDom, targetId).flatMap { case (targetElement, parents) =>
         if (isSubmitButton(targetElement)) {
           parents.find(_.tagName == "form").map(_.id)
@@ -195,11 +195,11 @@ case class Browser(
   }
 
   /**
-   * Simulate event propagation targeting a Korolev ElementId directly.
+   * Simulate event propagation targeting a Spoonbill ElementId directly.
    */
   def eventByElementId[F[_]: Effect, S, M](
     state: S,
-    dom: levsha.Document.Node[Binding[F, S, M]],
+    dom: avocet.Document.Node[Binding[F, S, M]],
     event: String,
     targetElementId: ElementId,
     eventData: String = ""
@@ -208,7 +208,7 @@ case class Browser(
       state = state,
       dom = dom,
       event = event,
-      target = (_: PseudoHtml, elementMap: Map[levsha.Id, ElementId]) =>
+      target = (_: PseudoHtml, elementMap: Map[avocet.Id, ElementId]) =>
         elementMap.collectFirst {
           case (domId, elementId) if elementId == targetElementId => domId
         },
@@ -224,7 +224,7 @@ case class Browser(
     initialState: S,
     f: Access[F, S, M] => F[Unit],
     eventData: String = "",
-    elements: Map[levsha.Id, ElementId] = Map.empty
+    elements: Map[avocet.Id, ElementId] = Map.empty
   ): F[Seq[Action[F, S, M]]] = {
 
     val ed           = eventData

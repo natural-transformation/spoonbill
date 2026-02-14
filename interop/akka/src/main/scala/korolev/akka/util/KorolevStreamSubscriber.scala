@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package korolev.akka.util
+package spoonbill.akka.util
 
-import korolev.effect.{Effect, Stream}
+import spoonbill.effect.{Effect, Stream}
 import org.reactivestreams.{Subscriber, Subscription}
 
-final class KorolevStreamSubscriber[F[_]: Effect, T] extends Stream[F, T] with Subscriber[T] {
+final class SpoonbillStreamSubscriber[F[_]: Effect, T] extends Stream[F, T] with Subscriber[T] {
 
   @volatile private var subscription: Subscription = _
 

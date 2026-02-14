@@ -1,18 +1,18 @@
-import korolev._
-import korolev.akka._
-import korolev.akka.{AkkaHttpServerConfig, SimpleAkkaHttpKorolevApp}
-import korolev.server._
-import korolev.state.javaSerialization._
-import korolev.web.FormData
-import levsha.XmlNs
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.akka.{AkkaHttpServerConfig, SimpleAkkaHttpSpoonbillApp}
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
+import spoonbill.web.FormData
+import avocet.XmlNs
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object FormDataExample extends SimpleAkkaHttpKorolevApp(AkkaHttpServerConfig(maxRequestBodySize = 20 * 1024 * 1024)) {
+object FormDataExample extends SimpleAkkaHttpSpoonbillApp(AkkaHttpServerConfig(maxRequestBodySize = 20 * 1024 * 1024)) {
 
   import State.globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   val role = AttrDef(XmlNs.html, "role")
 
@@ -22,7 +22,7 @@ object FormDataExample extends SimpleAkkaHttpKorolevApp(AkkaHttpServerConfig(max
   val multiLineText    = "multiLineText"
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, State, Any](
+    SpoonbillServiceConfig[Future, State, Any](
       stateLoader = StateLoader.default(State()),
       document = { state =>
         Html(

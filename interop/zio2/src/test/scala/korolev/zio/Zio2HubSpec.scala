@@ -1,6 +1,6 @@
-package korolev.zio
+package spoonbill.zio
 
-import korolev.effect._
+import spoonbill.effect._
 import zio.{Console as _, Hub as _, Queue as _, _}
 import zio.test.*
 import zio.test.Assertion.*

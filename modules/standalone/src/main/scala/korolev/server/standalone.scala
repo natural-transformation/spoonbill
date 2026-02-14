@@ -1,21 +1,21 @@
-package korolev.server
+package spoonbill.server
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousChannelGroup
-import korolev.data.{Bytes, BytesLike}
-import korolev.data.syntax.*
-import korolev.effect.{Effect, Stream}
-import korolev.effect.io.ServerSocket
-import korolev.effect.syntax.*
-import korolev.http.HttpServer
-import korolev.http.protocol.WebSocketProtocol
-import korolev.web.{Headers, Request}
+import spoonbill.data.{Bytes, BytesLike}
+import spoonbill.data.syntax.*
+import spoonbill.effect.{Effect, Stream}
+import spoonbill.effect.io.ServerSocket
+import spoonbill.effect.syntax.*
+import spoonbill.http.HttpServer
+import spoonbill.http.protocol.WebSocketProtocol
+import spoonbill.web.{Headers, Request}
 import scala.concurrent.ExecutionContext
 
 object standalone {
 
   def buildServer[F[_]: Effect, B: BytesLike](
-    service: KorolevService[F],
+    service: SpoonbillService[F],
     address: SocketAddress,
     group: AsynchronousChannelGroup = null,
     gracefulShutdown: Boolean

@@ -1,9 +1,9 @@
 import _root_.cats.effect.{IO, _}
 import _root_.cats.effect.unsafe.IORuntime
 import _root_.fs2.{Stream => Fs2Stream}
-import korolev.cats._
-import korolev.effect.{Effect => KorolevEffect, Queue, Stream => KorolevStream}
-import korolev.fs2._
+import spoonbill.cats._
+import spoonbill.effect.{Effect => SpoonbillEffect, Queue, Stream => SpoonbillStream}
+import spoonbill.fs2._
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -11,12 +11,12 @@ class Fs2InteropSpec extends AsyncFlatSpec with Matchers {
 
   private implicit val runtime: IORuntime = _root_.cats.effect.unsafe.IORuntime.global
 
-  "KorolevStream.toFs2" should "provide fs2.Stream that contain exactly same values as original Korolev stream" in {
+  "SpoonbillStream.toFs2" should "provide fs2.Stream that contain exactly same values as original Spoonbill stream" in {
     val values = List(1, 2, 3, 4, 5)
-    KorolevStream(values: _*)
+    SpoonbillStream(values: _*)
       .mat[IO]()
-      .flatMap { korolevStream =>
-        korolevStream.toFs2.compile.toList
+      .flatMap { spoonbillStream =>
+        spoonbillStream.toFs2.compile.toList
       }
       .unsafeToFuture()
       .map { result =>
@@ -28,7 +28,7 @@ class Fs2InteropSpec extends AsyncFlatSpec with Matchers {
     val queue = Queue[IO, Int]()
     val io =
       for {
-        fiber <- KorolevEffect[IO].start {
+        fiber <- SpoonbillEffect[IO].start {
                    queue.stream.toFs2.compile.toList
                  }
         _      <- queue.offer(1)
@@ -44,12 +44,12 @@ class Fs2InteropSpec extends AsyncFlatSpec with Matchers {
     io.unsafeToFuture()
   }
 
-  "Fs2Stream.toKorolevStream" should "provide korolev.effect.Stream that contain exactly same values as original fs2.Stream" in {
+  "Fs2Stream.toSpoonbillStream" should "provide spoonbill.effect.Stream that contain exactly same values as original fs2.Stream" in {
     val values = Vector(1, 2, 3, 4, 5)
     Fs2Stream[IO, Int](values: _*)
-      .toKorolev()
-      .flatMap { korolevStream =>
-        korolevStream
+      .toSpoonbill()
+      .flatMap { spoonbillStream =>
+        spoonbillStream
           .fold(Vector.empty[Int])((acc, value) => acc :+ value)
           .map(result => result shouldEqual values)
       }

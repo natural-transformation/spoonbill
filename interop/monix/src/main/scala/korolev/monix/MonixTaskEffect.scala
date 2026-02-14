@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package korolev.monix
+package spoonbill.monix
 
 import _root_.monix.eval.Task
 import _root_.monix.execution.Scheduler
-import korolev.effect.Effect
+import spoonbill.effect.Effect
 import scala.concurrent.{blocking => futureBlocking, ExecutionContext, Future}
 import scala.util.Try
 

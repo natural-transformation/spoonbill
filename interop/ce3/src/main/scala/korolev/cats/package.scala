@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package korolev
+package spoonbill
 
 import _root_.cats.effect.unsafe.IORuntime
 

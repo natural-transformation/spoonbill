@@ -1,10 +1,10 @@
-package korolev.zio.http
+package spoonbill.zio.http
 
-import korolev.web.Response.{Status => KStatus}
+import spoonbill.web.Response.{Status => KStatus}
 import zio.http.Status
 
 object HttpStatusConverter {
 
-  def fromKorolevStatus(kStatus: KStatus): Status =
+  def fromSpoonbillStatus(kStatus: KStatus): Status =
     Status.fromInt(kStatus.code)
 }

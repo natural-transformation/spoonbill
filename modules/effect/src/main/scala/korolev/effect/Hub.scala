@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicBoolean
-import korolev.effect.syntax._
+import spoonbill.effect.syntax._
 import scala.collection.concurrent.TrieMap
 
 /**

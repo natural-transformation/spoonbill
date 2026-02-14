@@ -1,14 +1,14 @@
-package korolev.http
+package spoonbill.http
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousChannelGroup
-import korolev.data.BytesLike
-import korolev.data.syntax._
-import korolev.effect.{Decoder, Effect, Stream}
-import korolev.effect.io.ServerSocket
-import korolev.effect.syntax._
-import korolev.http.protocol.Http11
-import korolev.web.{Request, Response}
+import spoonbill.data.BytesLike
+import spoonbill.data.syntax._
+import spoonbill.effect.{Decoder, Effect, Stream}
+import spoonbill.effect.io.ServerSocket
+import spoonbill.effect.syntax._
+import spoonbill.http.protocol.Http11
+import spoonbill.web.{Request, Response}
 import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
 

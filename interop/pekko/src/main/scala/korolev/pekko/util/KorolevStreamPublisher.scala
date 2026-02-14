@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-package korolev.pekko.util
+package spoonbill.pekko.util
 
-import korolev.effect.{Effect, Hub, Reporter, Stream}
-import korolev.effect.syntax._
-import korolev.pekko.util.KorolevStreamPublisher.MultipleSubscribersProhibitedException
+import spoonbill.effect.{Effect, Hub, Reporter, Stream}
+import spoonbill.effect.syntax._
+import spoonbill.pekko.util.SpoonbillStreamPublisher.MultipleSubscribersProhibitedException
 import org.reactivestreams.{Publisher, Subscriber, Subscription}
 import scala.concurrent.ExecutionContext
 
-final class KorolevStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fanout: Boolean)(implicit
+final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fanout: Boolean)(implicit
   ec: ExecutionContext
 ) extends Publisher[T] {
 
@@ -81,7 +81,7 @@ final class KorolevStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fanout
   }
 }
 
-object KorolevStreamPublisher {
+object SpoonbillStreamPublisher {
   final case class MultipleSubscribersProhibitedException()
-      extends Exception("Multiple subscribers prohibited for this KorolevStreamPublisher")
+      extends Exception("Multiple subscribers prohibited for this SpoonbillStreamPublisher")
 }

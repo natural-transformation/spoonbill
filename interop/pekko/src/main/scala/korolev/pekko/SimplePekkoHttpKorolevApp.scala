@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package korolev.pekko
+package spoonbill.pekko
 
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.http.scaladsl.Http
 
-abstract class SimplePekkoHttpKorolevApp(config: PekkoHttpServerConfig = null) {
+abstract class SimplePekkoHttpSpoonbillApp(config: PekkoHttpServerConfig = null) {
 
   implicit val actorSystem: ActorSystem = ActorSystem()
 

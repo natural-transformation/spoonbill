@@ -1,7 +1,7 @@
-package korolev.effect
+package spoonbill.effect
 
-import korolev.effect.Decoder.Action
-import korolev.effect.syntax._
+import spoonbill.effect.Decoder.Action
+import spoonbill.effect.syntax._
 
 class Decoder[F[_]: Effect, A](upstream: Stream[F, A]) extends Stream[F, A] { self =>
 

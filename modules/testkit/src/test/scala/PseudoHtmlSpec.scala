@@ -1,12 +1,12 @@
-import korolev.testkit._
-import levsha.{Id, XmlNs}
+import spoonbill.testkit._
+import avocet.{Id, XmlNs}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 
 class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
 
-  "PseudoDom.render" should "map levsha.Node to PseudoDom.Element" in {
-    import levsha.dsl.html._
+  "PseudoDom.render" should "map avocet.Node to PseudoDom.Element" in {
+    import avocet.dsl.html._
 
     val node = div()
     val rr   = PseudoHtml.render(node)
@@ -14,9 +14,9 @@ class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
     rr.pseudoDom shouldEqual PseudoHtml.Element(Id("1"), XmlNs.html, "div", Map.empty, Map.empty, List.empty)
   }
 
-  it should "map nested levsha.Node to correspondent pseudo DOM elements" in {
-    import levsha.dsl._
-    import levsha.dsl.html._
+  it should "map nested avocet.Node to correspondent pseudo DOM elements" in {
+    import avocet.dsl._
+    import avocet.dsl.html._
     import PseudoHtml._
 
     val node = body(ul(li("1"), li("2"), li("3")))
@@ -46,7 +46,7 @@ class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "map attributes well" in {
-    import levsha.dsl.html._
+    import avocet.dsl.html._
 
     val node = div(clazz := "foo bar", id := "baz")
     val rr   = PseudoHtml.render(node)
@@ -62,7 +62,7 @@ class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "map styles well" in {
-    import levsha.dsl.html._
+    import avocet.dsl.html._
 
     val node = div(backgroundColor @= "red", border @= "1px")
     val rr   = PseudoHtml.render(node)
@@ -79,8 +79,8 @@ class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
 
   "byName" should "find list of Element by value of name attribute" in {
 
-    import levsha.dsl._
-    import levsha.dsl.html._
+    import avocet.dsl._
+    import avocet.dsl.html._
 
     val dom = body(
       div("Hello world"),
@@ -96,8 +96,8 @@ class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
 
   "byAttrEquals" should "find list of Element by exact attribute value" in {
 
-    import levsha.dsl._
-    import levsha.dsl.html._
+    import avocet.dsl._
+    import avocet.dsl.html._
 
     val dom = body(
       button(name := "alpha", "A"),
@@ -111,8 +111,8 @@ class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
 
   "firstByTag" should "return the first matching element by tag" in {
 
-    import levsha.dsl._
-    import levsha.dsl.html._
+    import avocet.dsl._
+    import avocet.dsl.html._
 
     val dom = body(
       div("One"),

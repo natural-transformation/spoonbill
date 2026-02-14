@@ -1,4 +1,4 @@
-package korolev.data
+package spoonbill.data
 
 case class ScenarioState(scenario: Scenario, step: Int) {
 

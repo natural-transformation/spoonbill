@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-package korolev.pekko
+package spoonbill.pekko
 
-import korolev.Context
-import korolev.effect.Reporter
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.state.javaSerialization.*
-import korolev.web.PathAndQuery
-import levsha.dsl.*
-import levsha.dsl.html.*
+import spoonbill.Context
+import spoonbill.effect.Reporter
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization.*
+import spoonbill.web.PathAndQuery
+import avocet.dsl.*
+import avocet.dsl.html.*
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.http.scaladsl.Http
 import org.apache.pekko.http.scaladsl.model.*
@@ -42,7 +42,7 @@ import scala.concurrent.duration.*
 
 /**
  * End-to-end integration tests for Pekko HTTP WebSocket support.
- * These tests verify that the Korolev service properly handles WebSocket connections.
+ * These tests verify that the Spoonbill service properly handles WebSocket connections.
  */
 final class PekkoHttpIntegrationSpec extends AnyFreeSpec with Matchers with ScalaFutures with BeforeAndAfterAll {
 
@@ -82,7 +82,7 @@ final class PekkoHttpIntegrationSpec extends AnyFreeSpec with Matchers with Scal
     }
   }
 
-  private val simpleConfig = KorolevServiceConfig[Future, String, Any](
+  private val simpleConfig = SpoonbillServiceConfig[Future, String, Any](
     stateLoader = StateLoader.default("initial"),
     rootPath = PathAndQuery.Root,
     document = simpleDocument,

@@ -1,4 +1,4 @@
-package korolev.http
+package spoonbill.http
 
 import akka.http.scaladsl.model.ws.{BinaryMessage, Message, TextMessage}
 import akka.http.scaladsl.server.Route
@@ -6,16 +6,16 @@ import akka.stream.scaladsl.{Flow, Source}
 import java.io.ByteArrayInputStream
 import java.net.{BindException, InetSocketAddress, URI}
 import java.util.zip.GZIPInputStream
-import korolev.data.Bytes
-import korolev.data.syntax._
-import korolev.effect.{Queue, Reporter, Stream}
-import korolev.effect.Reporter.PrintReporter
-import korolev.effect.Reporter.PrintReporter.Implicit
-import korolev.http.protocol.WebSocketProtocol.Frame
-import korolev.web.{Headers, PathAndQuery, Request}
-import korolev.web.PathAndQuery._
-import korolev.web.Request.Method
-import korolev.web.Response.Status
+import spoonbill.data.Bytes
+import spoonbill.data.syntax._
+import spoonbill.effect.{Queue, Reporter, Stream}
+import spoonbill.effect.Reporter.PrintReporter
+import spoonbill.effect.Reporter.PrintReporter.Implicit
+import spoonbill.http.protocol.WebSocketProtocol.Frame
+import spoonbill.web.{Headers, PathAndQuery, Request}
+import spoonbill.web.PathAndQuery._
+import spoonbill.web.Request.Method
+import spoonbill.web.Response.Status
 import org.scalatest.freespec.AsyncFreeSpec
 import scala.concurrent.Future
 

@@ -1,8 +1,8 @@
-package korolev
+package spoonbill
 
 import akka.actor.typed.{ActorRef, Behavior, Terminated}
 import akka.actor.typed.scaladsl.Behaviors
-import korolev.data._
+import spoonbill.data._
 import scala.annotation.tailrec
 import scala.concurrent.duration.FiniteDuration
 

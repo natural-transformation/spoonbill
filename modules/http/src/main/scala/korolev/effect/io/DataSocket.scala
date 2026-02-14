@@ -1,8 +1,8 @@
-package korolev.effect.io
+package spoonbill.effect.io
 
-import korolev.effect.{Close, Effect, Stream}
-import korolev.effect.io.DataSocket.CloseReason
-import korolev.effect.syntax._
+import spoonbill.effect.{Close, Effect, Stream}
+import spoonbill.effect.io.DataSocket.CloseReason
+import spoonbill.effect.syntax._
 
 trait DataSocket[F[_], B] {
   def stream: Stream[F, B]

@@ -1,4 +1,4 @@
-package korolev.data
+package spoonbill.data
 
 import java.nio.ByteBuffer
 import java.nio.charset.{Charset, StandardCharsets}

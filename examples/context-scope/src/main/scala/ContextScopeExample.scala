@@ -1,19 +1,19 @@
 import ViewState.Tab.{About, Blog}
-import korolev.*
-import korolev.akka.*
-import korolev.server.*
-import korolev.state.javaSerialization.*
-import korolev.util.Lens
+import spoonbill.*
+import spoonbill.akka.*
+import spoonbill.server.*
+import spoonbill.state.javaSerialization.*
+import spoonbill.util.Lens
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object ContextScopeExample extends SimpleAkkaHttpKorolevApp {
+object ContextScopeExample extends SimpleAkkaHttpSpoonbillApp {
 
   val context = Context[Future, ViewState, Any]
 
   import context._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   final private val blogLens = Lens[ViewState, Blog](
     read = { case ViewState(_, blog: Blog) => blog },
@@ -23,7 +23,7 @@ object ContextScopeExample extends SimpleAkkaHttpKorolevApp {
   final private val blogView = new BlogView(context.scope(blogLens))
 
   val service: AkkaHttpService = akkaHttpService {
-    KorolevServiceConfig[Future, ViewState, Any](
+    SpoonbillServiceConfig[Future, ViewState, Any](
       stateLoader = StateLoader.default(ViewState("My blog", Blog.default)),
       document = { state =>
         val isBlog  = state.tab.isInstanceOf[Blog]

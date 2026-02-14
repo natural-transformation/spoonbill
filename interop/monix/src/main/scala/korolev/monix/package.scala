@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package korolev
+package spoonbill
 
 import _root_.monix.eval.Task
 import _root_.monix.execution.Scheduler
-import korolev.effect.Effect
+import spoonbill.effect.Effect
 
 package object monix {
 

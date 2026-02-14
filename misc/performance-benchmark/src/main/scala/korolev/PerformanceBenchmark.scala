@@ -1,4 +1,4 @@
-package korolev
+package spoonbill
 
 import akka.actor.ActorSystem
 import akka.actor.typed.Behavior
@@ -6,7 +6,7 @@ import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter._
 import com.typesafe.config.ConfigFactory
 import java.io.File
-import korolev.data.{FromServer, Report, Scenario, ToServer}
+import spoonbill.data.{FromServer, Report, Scenario, ToServer}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 
@@ -31,7 +31,7 @@ object PerformanceBenchmark extends App {
 
           case Report.MessagesFromClosedConnection(message) =>
             message match {
-              case FromServer.ErrorOccurred(korolev.data.Error.ArbitraryThrowable(e)) =>
+              case FromServer.ErrorOccurred(spoonbill.data.Error.ArbitraryThrowable(e)) =>
                 print(Console.RED)
                 println(s"${e.getMessage}, ${e.getCause}")
                 e.getStackTrace.foreach { s =>
@@ -48,7 +48,7 @@ object PerformanceBenchmark extends App {
         }
       }
 
-      def behavior(i: Int) = KorolevConnection(conf.host, conf.port, Some(conf.path), conf.ssl) {
+      def behavior(i: Int) = SpoonbillConnection(conf.host, conf.port, Some(conf.path), conf.ssl) {
         ctx.spawn(ScenarioExecutor(scenario, reporter, Some(1.seconds)), s"executor-$i")
       }
 

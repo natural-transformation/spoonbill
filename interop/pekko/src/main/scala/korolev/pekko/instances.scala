@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package korolev.pekko
+package spoonbill.pekko
 
-import korolev.data.BytesLike
-import korolev.effect.{Effect, Stream}
-import korolev.pekko.util.{KorolevStreamPublisher, KorolevStreamSubscriber, PekkoByteStringBytesLike}
+import spoonbill.data.BytesLike
+import spoonbill.effect.{Effect, Stream}
+import spoonbill.pekko.util.{SpoonbillStreamPublisher, SpoonbillStreamSubscriber, PekkoByteStringBytesLike}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.OverflowStrategy
 import org.apache.pekko.stream.scaladsl.{Sink, Source}
@@ -29,8 +29,8 @@ import scala.concurrent.ExecutionContext
 object instances {
 
   implicit final class SinkCompanionOps(value: Sink.type) {
-    def korolevStream[F[_]: Effect, T]: Sink[T, Stream[F, T]] = {
-      val subscriber = new KorolevStreamSubscriber[F, T]()
+    def spoonbillStream[F[_]: Effect, T]: Sink[T, Stream[F, T]] = {
+      val subscriber = new SpoonbillStreamSubscriber[F, T]()
       Sink
         .fromSubscriber(subscriber)
         .mapMaterializedValue(_ => subscriber)
@@ -39,16 +39,16 @@ object instances {
 
   implicit final class StreamCompanionOps(value: Stream.type) {
     def fromPublisher[F[_]: Effect, T](publisher: Publisher[T]): Stream[F, T] = {
-      val result = new KorolevStreamSubscriber[F, T]()
+      val result = new SpoonbillStreamSubscriber[F, T]()
       publisher.subscribe(result)
       result
     }
   }
 
-  implicit final class KorolevStreamsOps[F[_]: Effect, T](stream: Stream[F, T]) {
+  implicit final class SpoonbillStreamsOps[F[_]: Effect, T](stream: Stream[F, T]) {
 
     /**
-     * Converts korolev [[korolev.effect.Stream]] to [[Publisher]].
+     * Converts spoonbill [[spoonbill.effect.Stream]] to [[Publisher]].
      *
      * If `fanout` is `true`, the `Publisher` will support multiple
      * `Subscriber`s and the size of the `inputBuffer` configured for this
@@ -58,13 +58,13 @@ object instances {
      *
      * If `fanout` is `false` then the `Publisher` will only support a single
      * `Subscriber` and reject any additional `Subscriber`s with
-     * [[korolev.pekko.util.KorolevStreamPublisher.MultipleSubscribersProhibitedException]].
+     * [[spoonbill.pekko.util.SpoonbillStreamPublisher.MultipleSubscribersProhibitedException]].
      */
     def asPublisher(fanout: Boolean = false)(implicit ec: ExecutionContext): Publisher[T] =
-      new KorolevStreamPublisher(stream, fanout)
+      new SpoonbillStreamPublisher(stream, fanout)
 
     def asPekkoSource(implicit ec: ExecutionContext): Source[T, NotUsed] = {
-      val publisher = new KorolevStreamPublisher(stream, fanout = false)
+      val publisher = new SpoonbillStreamPublisher(stream, fanout = false)
       Source.fromPublisher(publisher)
     }
   }

@@ -1,4 +1,4 @@
-package korolev.effect
+package spoonbill.effect
 
 import java.nio.channels.CompletionHandler
 

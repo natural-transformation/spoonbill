@@ -1,6 +1,6 @@
-package korolev.web
+package spoonbill.web
 
-import korolev.web.PathAndQuery._
+import spoonbill.web.PathAndQuery._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.language.implicitConversions

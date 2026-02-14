@@ -1,18 +1,18 @@
-package korolev.server
+package spoonbill.server
 
 import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousChannelGroup
 import java.util.concurrent.Executors
-import korolev.Context
-import korolev.data.BytesLike
-import korolev.effect.Effect
-import korolev.effect.io.ServerSocket.ServerSocketHandler
-import korolev.effect.syntax._
-import korolev.state.{StateDeserializer, StateSerializer}
+import spoonbill.Context
+import spoonbill.data.BytesLike
+import spoonbill.effect.Effect
+import spoonbill.effect.io.ServerSocket.ServerSocketHandler
+import spoonbill.effect.syntax._
+import spoonbill.state.{StateDeserializer, StateSerializer}
 import scala.concurrent.{ExecutionContext, ExecutionContextExecutorService}
 
-abstract class KorolevApp[F[_]: Effect, B: BytesLike, S: StateSerializer: StateDeserializer, M](
+abstract class SpoonbillApp[F[_]: Effect, B: BytesLike, S: StateSerializer: StateDeserializer, M](
   address: SocketAddress = new InetSocketAddress("localhost", 8080),
   gracefulShutdown: Boolean = false
 ) {
@@ -22,16 +22,16 @@ abstract class KorolevApp[F[_]: Effect, B: BytesLike, S: StateSerializer: StateD
 
   val context: Context[F, S, M] = Context[F, S, M]
 
-  val config: F[KorolevServiceConfig[F, S, M]]
+  val config: F[SpoonbillServiceConfig[F, S, M]]
 
   val channelGroup: AsynchronousChannelGroup =
     AsynchronousChannelGroup.withThreadPool(executionContext)
 
-  private def logServerStarted(config: KorolevServiceConfig[F, S, M]) = Effect[F].delay {
+  private def logServerStarted(config: SpoonbillServiceConfig[F, S, M]) = Effect[F].delay {
     config.reporter.info(s"Server stated at $address")
   }
 
-  private def addShutdownHook(config: KorolevServiceConfig[F, S, M], handler: ServerSocketHandler[F]) =
+  private def addShutdownHook(config: SpoonbillServiceConfig[F, S, M], handler: ServerSocketHandler[F]) =
     Effect[F].delay {
       import config.reporter.Implicit
       Runtime.getRuntime.addShutdownHook(
@@ -53,7 +53,7 @@ abstract class KorolevApp[F[_]: Effect, B: BytesLike, S: StateSerializer: StateD
     val job =
       for {
         cfg     <- config
-        handler <- standalone.buildServer[F, B](korolevService(cfg), address, channelGroup, gracefulShutdown)
+        handler <- standalone.buildServer[F, B](spoonbillService(cfg), address, channelGroup, gracefulShutdown)
         _       <- logServerStarted(cfg)
         _       <- addShutdownHook(cfg, handler)
         _       <- handler.awaitShutdown()

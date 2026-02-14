@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package korolev.pekko
+package spoonbill.pekko
 
 import scala.concurrent.duration._
 

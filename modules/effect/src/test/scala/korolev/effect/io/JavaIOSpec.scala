@@ -1,4 +1,4 @@
-package korolev.effect.io
+package spoonbill.effect.io
 
 import java.io.ByteArrayInputStream
 import org.scalatest.flatspec.AsyncFlatSpec

@@ -1,5 +1,5 @@
-import korolev.Context
-import levsha.{RenderContext, XmlNs}
+import spoonbill.Context
+import avocet.{RenderContext, XmlNs}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.collection.mutable.ListBuffer

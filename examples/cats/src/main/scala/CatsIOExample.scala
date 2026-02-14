@@ -1,11 +1,11 @@
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 import cats.effect.IO
-import korolev.Context
-import korolev.akka.{akkaHttpService, AkkaHttpServerConfig}
-import korolev.cats._
-import korolev.server.{KorolevServiceConfig, StateLoader}
-import korolev.state.javaSerialization._
+import spoonbill.Context
+import spoonbill.akka.{akkaHttpService, AkkaHttpServerConfig}
+import spoonbill.cats._
+import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 
 object CatsIOExample extends App {
@@ -17,14 +17,14 @@ object CatsIOExample extends App {
   }
 
   import applicationContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   // Handler to input
   private val inputId     = elementId()
   private val editInputId = elementId()
 
-  val config = KorolevServiceConfig[IO, State, Any](
+  val config = SpoonbillServiceConfig[IO, State, Any](
     stateLoader = StateLoader.default(State()),
     document = state => {
       Html(

@@ -1,8 +1,8 @@
 package gp
 
 import akka.http.scaladsl.Http
-import korolev.akka._
-import korolev.state.javaSerialization._
+import spoonbill.akka._
+import spoonbill.state.javaSerialization._
 import org.openqa.selenium.remote.DesiredCapabilities
 import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -61,7 +61,7 @@ object GuineaPigRunner extends App {
 //      println("Starting Blaze server")
 //      val service = blazeService[Future, GuineaPigService.State, Any].from(GuineaPigService.service)
 //      val config = BlazeServerConfig(port = 8000, doNotBlockCurrentThread = true)
-//      val server = korolev.blazeServer.runServer(service, config)
+//      val server = spoonbill.blazeServer.runServer(service, config)
 //      Future {
 //        val result = scenario()
 //        server.close()

@@ -1,21 +1,21 @@
 import ComponentExample.ComponentWithStateLoader
-import korolev.*
-import korolev.akka.*
-import korolev.effect.Scheduler
-import korolev.effect.syntax.*
-import korolev.server.*
-import korolev.state.javaSerialization.*
+import spoonbill.*
+import spoonbill.akka.*
+import spoonbill.effect.Scheduler
+import spoonbill.effect.syntax.*
+import spoonbill.server.*
+import spoonbill.state.javaSerialization.*
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.concurrent.Future
 import scala.concurrent.duration.DurationInt
 import scala.util.Random
 
-object ComponentExample extends SimpleAkkaHttpKorolevApp {
+object ComponentExample extends SimpleAkkaHttpSpoonbillApp {
 
   import State.globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   type Rgb = (Int, Int, Int)
   val Black = (0, 0, 0)
@@ -87,7 +87,7 @@ object ComponentExample extends SimpleAkkaHttpKorolevApp {
   }
 
   val service: AkkaHttpService = akkaHttpService {
-    KorolevServiceConfig[Future, String, Any](
+    SpoonbillServiceConfig[Future, String, Any](
       stateLoader = StateLoader.default("a"),
       document = { state =>
         Html(

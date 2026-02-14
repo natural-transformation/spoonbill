@@ -1,4 +1,4 @@
-package korolev.web
+package spoonbill.web
 
 object MimeTypes {
 

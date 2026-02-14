@@ -19,8 +19,8 @@ object JsUtils {
 
     log.info("Assembling ES6 sources using Google Closure Compiler")
 
-    val sourceOutputFile    = new File(target, "korolev-client.min.js")
-    val sourceMapOutputFile = new File(target, "korolev-client.min.js.map")
+    val sourceOutputFile    = new File(target, "spoonbill-client.min.js")
+    val sourceMapOutputFile = new File(target, "spoonbill-client.min.js.map")
 
     val (sourceOutput, compilationResult) = {
       val compiler = new Compiler()
@@ -41,7 +41,7 @@ object JsUtils {
         options.setLanguageOut(LanguageMode.ECMASCRIPT5_STRICT)
         options.setSourceMapIncludeSourcesContent(true)
         options.setSourceMapLocationMappings(
-          List(new SourceMap.PrefixLocationMapping(source.getAbsolutePath, "korolev-sources")).asJava
+          List(new SourceMap.PrefixLocationMapping(source.getAbsolutePath, "spoonbill-sources")).asJava
         )
         options.setSourceMapOutputPath(sourceMapOutputFile.getName)
         options.setEnvironment(CompilerOptions.Environment.BROWSER)
@@ -62,16 +62,16 @@ object JsUtils {
 
     IO.write(
       sourceOutputFile,
-      s"(function(){$sourceOutput}).call(this);\n//# sourceMappingURL=/static/korolev-client.min.js.map\n"
+      s"(function(){$sourceOutput}).call(this);\n//# sourceMappingURL=/static/spoonbill-client.min.js.map\n"
     )
     IO.write(sourceMapOutputFile, sourceMapOutput)
 //
-//    val korolevSources = new File(target, "korolev-sources")
+//    val spoonbillSources = new File(target, "spoonbill-sources")
 //    val mappingSourceFiles = source
 //      .listFiles()
 //      .filter(_.isFile)
 //      .map { file =>
-//        val targetFile = new File(korolevSources, file.getName)
+//        val targetFile = new File(spoonbillSources, file.getName)
 //        IO.copyFile(file, targetFile)
 //        targetFile
 //      }

@@ -1,17 +1,17 @@
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object EvalJsExample extends SimpleAkkaHttpKorolevApp {
+object EvalJsExample extends SimpleAkkaHttpSpoonbillApp {
 
   val globalContext = Context[Future, String, Any]
 
   import globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   private def onClick(access: Access) =
     for {
@@ -20,7 +20,7 @@ object EvalJsExample extends SimpleAkkaHttpKorolevApp {
     } yield ()
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, String, Any](
+    SpoonbillServiceConfig[Future, String, Any](
       stateLoader = StateLoader.default("nothing"),
       document = { s =>
         optimize {
@@ -30,7 +30,7 @@ object EvalJsExample extends SimpleAkkaHttpKorolevApp {
                 """var x = 0;
                   |setInterval(() => {
                   |  x++;
-                  |  Korolev.invokeCallback('myCallback', x.toString());
+                  |  Spoonbill.invokeCallback('myCallback', x.toString());
                   |}, 1000);
                   |""".stripMargin
               )

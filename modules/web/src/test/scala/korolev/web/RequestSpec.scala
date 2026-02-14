@@ -1,6 +1,6 @@
-package korolev.web
+package spoonbill.web
 
-import korolev.web.Request.Method
+import spoonbill.web.Request.Method
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 

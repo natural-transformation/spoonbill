@@ -1,18 +1,18 @@
-package korolev.http
+package spoonbill.http
 
 import java.net.{InetSocketAddress, URI}
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
 import java.util.concurrent.{Executor, Executors}
 import javax.net.ssl.SSLContext
-import korolev.data.BytesLike
-import korolev.effect.{AsyncResourcePool, Decoder, Effect, Reporter, Scheduler, Stream}
-import korolev.effect.AsyncResourcePool.Borrow
-import korolev.effect.io.{DataSocket, RawDataSocket, SecureDataSocket}
-import korolev.effect.syntax._
-import korolev.http.protocol.{Http11, WebSocketProtocol}
-import korolev.http.protocol.WebSocketProtocol.Frame
-import korolev.web.{Headers, PathAndQuery, Request, Response}
+import spoonbill.data.BytesLike
+import spoonbill.effect.{AsyncResourcePool, Decoder, Effect, Reporter, Scheduler, Stream}
+import spoonbill.effect.AsyncResourcePool.Borrow
+import spoonbill.effect.io.{DataSocket, RawDataSocket, SecureDataSocket}
+import spoonbill.effect.syntax._
+import spoonbill.http.protocol.{Http11, WebSocketProtocol}
+import spoonbill.http.protocol.WebSocketProtocol.Frame
+import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._

@@ -115,7 +115,7 @@ object GuineaPigScenarios {
       }
       if (shouldRun) {
         val text = "I'm cow"
-        val file = File.createTempFile("korolev-upload-test", "cow")
+        val file = File.createTempFile("spoonbill-upload-test", "cow")
         new PrintWriter(file) {
           write(text)
           flush()

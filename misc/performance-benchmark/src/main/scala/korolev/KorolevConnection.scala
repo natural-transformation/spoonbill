@@ -1,4 +1,4 @@
-package korolev
+package spoonbill
 
 import akka.Done
 import akka.actor.ActorSystem
@@ -12,16 +12,16 @@ import akka.http.scaladsl.model.ws._
 import akka.stream.{KillSwitch, KillSwitches, OverflowStrategy}
 import akka.stream.scaladsl.{Keep, Sink, Source, SourceQueue}
 import akka.util.ByteString
-import korolev.data._
-import korolev.server.internal.Cookies
-import korolev.state.{DeviceId, SessionId}
+import spoonbill.data._
+import spoonbill.server.internal.Cookies
+import spoonbill.state.{DeviceId, SessionId}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 import scala.util.matching.Regex
 import ujson._
 
-object KorolevConnection {
+object SpoonbillConnection {
 
   def apply(host: String, port: Int, maybePath: Option[String], ssl: Boolean)(
     receiver: ActorRef[FromServer]

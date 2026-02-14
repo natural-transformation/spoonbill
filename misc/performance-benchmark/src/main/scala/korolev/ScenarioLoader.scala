@@ -1,9 +1,9 @@
-package korolev
+package spoonbill
 
 import java.io.File
-import korolev.data.{Scenario, ScenarioStep}
-import korolev.data.FromServer.Procedure
-import korolev.data.ToServer.Callback
+import spoonbill.data.{Scenario, ScenarioStep}
+import spoonbill.data.FromServer.Procedure
+import spoonbill.data.ToServer.Callback
 import scala.concurrent.{ExecutionContext, Future}
 import ujson._
 

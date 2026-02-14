@@ -1,16 +1,16 @@
-package korolev.http.protocol
+package spoonbill.http.protocol
 
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.{MessageDigest, SecureRandom}
 import java.util.Base64
-import korolev.data.{BytesLike, BytesReader}
-import korolev.data.syntax._
-import korolev.effect.{Decoder, Effect, Stream}
-import korolev.effect.syntax._
-import korolev.web.{Headers, Request, Response}
-import korolev.web.Request.Head
-import korolev.web.Response.Status
+import spoonbill.data.{BytesLike, BytesReader}
+import spoonbill.data.syntax._
+import spoonbill.effect.{Decoder, Effect, Stream}
+import spoonbill.effect.syntax._
+import spoonbill.web.{Headers, Request, Response}
+import spoonbill.web.Request.Head
+import spoonbill.web.Response.Status
 import scala.annotation.{switch, tailrec}
 
 /**

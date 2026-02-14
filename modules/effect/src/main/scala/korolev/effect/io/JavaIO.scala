@@ -1,8 +1,8 @@
-package korolev.effect.io
+package spoonbill.effect.io
 
 import java.io.InputStream
-import korolev.data.BytesLike
-import korolev.effect.{Effect, Stream}
+import spoonbill.data.BytesLike
+import spoonbill.effect.{Effect, Stream}
 import scala.annotation.tailrec
 
 object JavaIO {

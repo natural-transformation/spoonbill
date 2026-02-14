@@ -1,7 +1,7 @@
-package korolev.effect
+package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
-import korolev.effect.syntax._
+import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 import scala.collection.immutable.TreeSet
 import scala.concurrent.duration.FiniteDuration

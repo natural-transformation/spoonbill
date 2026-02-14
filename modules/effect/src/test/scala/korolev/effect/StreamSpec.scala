@@ -1,4 +1,4 @@
-package korolev.effect
+package spoonbill.effect
 
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers

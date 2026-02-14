@@ -1,8 +1,8 @@
-package korolev.pekko.util
+package spoonbill.pekko.util
 
 import java.nio.ByteBuffer
 import java.nio.charset.{Charset, StandardCharsets}
-import korolev.data.BytesLike
+import spoonbill.data.BytesLike
 import org.apache.pekko.util.ByteString
 
 final class PekkoByteStringBytesLike extends BytesLike[ByteString] {

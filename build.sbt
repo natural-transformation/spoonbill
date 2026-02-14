@@ -1,9 +1,8 @@
 import xerial.sbt.Sonatype._
 
-val scala2_13Version = "2.13.18"
-val scala3Version    = "3.3.7"
+val scala3Version = "3.3.7"
 
-val levshaVersion = "1.6.2"
+val avocetVersion = "1.0.0-SNAPSHOT"
 
 val akkaVersion     = "2.6.19"
 val akkaHttpVersion = "10.2.9"
@@ -31,22 +30,13 @@ def isRelease: Boolean     = releaseVersion != ""
 val BaseVersion            = "1.19.0"
 def publishVersion: String = if (isRelease) releaseVersion else s"$BaseVersion-SNAPSHOT"
 
-// Keep build-wide `version` in sync with the version we actually publish.
-//
-// We enable sbt-git `GitVersioning`, which can set `ThisBuild / version` to a git-derived
-// `...-SNAPSHOT` value. At the same time we explicitly publish `publishVersion` for each module.
-// If those ever diverge, sbt keys like `isSnapshot` (and Sonatype bundling directories)
-// can become inconsistent and route release artifacts to the snapshots repository.
-//
-// By pinning `ThisBuild / version` here, we make `ThisBuild / version`, per-project `version`,
-// and publishing agree.
 ThisBuild / version := publishVersion
 
 val unusedRepo = Some(Resolver.file("Unused transient repository", file("target/unusedrepo")))
 
-val crossVersionSettings = Seq(
-  crossScalaVersions := Seq(scala2_13Version, scala3Version)
-)
+// Suppress false-positive lint warnings for keys used by sbt-header and sbt's run task
+Global / excludeLintKeys ++= Set(headerLicense, mainClass)
+
 
 // OSSRH (Nexus 2) is sunset; publishing happens via Sonatype Central.
 //
@@ -65,10 +55,10 @@ val OssrhStagingApiServiceLocal = "https://ossrh-staging-api.central.sonatype.co
 val OssrhStagingApiRealm        = "OSSRH Staging API Service"
 
 // Dependency resolution:
-// If we depend on SNAPSHOT artifacts (eg levsha during local development), we must add the
+// If we depend on SNAPSHOT artifacts (eg avocet during local development), we must add the
 // Central Portal snapshots repository as a resolver. Maven Central does NOT host snapshots.
 ThisBuild / resolvers ++=
-  (if (levshaVersion.endsWith("-SNAPSHOT")) Seq("central-portal-snapshots" at CentralPortalSnapshotsRepo)
+  (if (avocetVersion.endsWith("-SNAPSHOT")) Seq("central-portal-snapshots" at CentralPortalSnapshotsRepo)
    else Nil)
 
 // Publishing credentials (env vars):
@@ -142,7 +132,7 @@ ThisBuild / credentials ++= sonatypeCredentials
 ThisBuild / sonatypeCredentialHost := CentralPortalHost
 ThisBuild / sonatypeRepository     := OssrhStagingApiServiceLocal
 ThisBuild / sonatypeProfileName    := "com.natural-transformation"
-ThisBuild / sonatypeProjectHosting := Some(GitHubHosting("natural-transformation", "korolev", "zli@natural-transformation.com"))
+ThisBuild / sonatypeProjectHosting := Some(GitHubHosting("natural-transformation", "spoonbill", "zli@natural-transformation.com"))
 
 val dontPublishSettings = Seq(
   publish         := {},
@@ -160,9 +150,6 @@ val publishSettings = Seq(
   // For snapshots, publish directly to the Central Portal snapshots repository.
   // For releases, keep using sbt-sonatype's bundle flow (which uses the staging API host below).
   publishTo := {
-    // `isSnapshot` can delegate to `ThisBuild / version` (eg when sbt-git sets it),
-    // which may differ from the per-project `version` used for publishing.
-    // Use the project's `version` directly to avoid publishing a release to the snapshots repo.
     if (version.value.endsWith("-SNAPSHOT")) Some("central-portal-snapshots" at CentralPortalSnapshotsRepo)
     else sonatypePublishToBundle.value
   },
@@ -171,59 +158,29 @@ val publishSettings = Seq(
   sonatypeCredentialHost := CentralPortalHost,
   sonatypeRepository     := OssrhStagingApiServiceLocal,
   sonatypeProfileName    := "com.natural-transformation",
-  sonatypeProjectHosting := Some(GitHubHosting("natural-transformation", "korolev", "zli@natural-transformation.com")),
+  sonatypeProjectHosting := Some(GitHubHosting("natural-transformation", "spoonbill", "zli@natural-transformation.com")),
   headerLicense := Some(HeaderLicense.ALv2("2024", "Natural Transformation BV")),
   licenses      := Seq("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.txt"))
 )
 
 val commonSettings = publishSettings ++ Seq(
-  git.useGitDescribe := true,
-  organization       := "com.natural-transformation",
+  organization := "com.natural-transformation",
   scalaVersion       := scala3Version,
   version            := publishVersion,
   scalafmtOnCompile  := false,
-  // Add Scala 2 compiler plugins
-  libraryDependencies ++= {
-    CrossVersion.partialVersion(scalaVersion.value) match {
-      case Some((2, _)) =>
-        Seq(
-          compilerPlugin("com.olegpy"    %% "better-monadic-for" % "0.3.1"),
-          compilerPlugin("org.typelevel" %% "kind-projector"     % "0.13.4" cross CrossVersion.full)
-        )
-      case _ => Seq()
-    }
-  },
   libraryDependencies ++= Seq(
     "org.scalatest"     %% "scalatest"       % "3.2.9"   % Test,
     "org.scalatestplus" %% "scalacheck-1-15" % "3.2.9.0" % Test
   ),
   //javaOptions in Test += "-XX:-OmitStackTraceInFastThrow",
-  scalacOptions ++= {
-    CrossVersion.partialVersion(scalaVersion.value) match {
-      case Some((2, _)) =>
-        Seq(
-          "-deprecation",
-          "-feature",
-          "-language:postfixOps",
-          "-language:implicitConversions",
-          "-language:higherKinds",
-          "-Xlint",
-          "-Ywarn-numeric-widen",
-          "-Ywarn-value-discard",
-          "-Xsource:3",
-          "-Xmigration" // ZioExample.scala gives error without this option
-        )
-      case _ =>
-        Seq(
-          "-deprecation",
-          "-feature",
-          "-language:postfixOps",
-          "-language:implicitConversions",
-          "-language:higherKinds",
-          "-Ykind-projector"
-        )
-    }
-  }
+  scalacOptions ++= Seq(
+    "-deprecation",
+    "-feature",
+    "-language:postfixOps",
+    "-language:implicitConversions",
+    "-language:higherKinds",
+    "-Ykind-projector"
+  )
 )
 
 val exampleSettings = commonSettings ++ dontPublishSettings ++ Seq(
@@ -237,40 +194,36 @@ val misc     = file("misc")
 
 lazy val bytes = project
   .in(modules / "bytes")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-bytes"
+    normalizedName := "spoonbill-bytes"
   )
 
 lazy val effect = project
   .in(modules / "effect")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-effect"
+    normalizedName := "spoonbill-effect"
   )
   .dependsOn(bytes)
 
 lazy val web = project
   .in(modules / "web")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
     description    := "Collection of data classes for Web Standards support",
-    normalizedName := "korolev-web"
+    normalizedName := "spoonbill-web"
   )
 
 lazy val http = project
   .in(modules / "http")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-http",
+    normalizedName := "spoonbill-http",
     libraryDependencies ++= Seq(
       ("com.typesafe.akka" %% "akka-actor-typed" % akkaVersion     % Test).cross(CrossVersion.for3Use2_13),
       ("com.typesafe.akka" %% "akka-stream"      % akkaVersion     % Test).cross(CrossVersion.for3Use2_13),
@@ -281,25 +234,23 @@ lazy val http = project
 
 lazy val webDsl = project
   .in(modules / "web-dsl")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
     description    := "Convenient DSL for web purposes",
-    normalizedName := "korolev-web-dsl"
+    normalizedName := "spoonbill-web-dsl"
   )
   .dependsOn(effect, web)
 
-lazy val korolev = project
-  .in(modules / "korolev")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+lazy val spoonbill = project
+  .in(modules / "spoonbill")
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev",
+    normalizedName := "spoonbill",
     libraryDependencies ++= Seq(
-      "com.natural-transformation" %% "levsha-core"   % levshaVersion,
-      "com.natural-transformation" %% "levsha-events" % levshaVersion
+      "com.natural-transformation" %% "avocet-core"   % avocetVersion,
+      "com.natural-transformation" %% "avocet-events" % avocetVersion
     ),
     Compile / resourceGenerators += Def.task {
       val source = baseDirectory.value / "src" / "main" / "es6"
@@ -312,49 +263,45 @@ lazy val korolev = project
 
 lazy val standalone = project
   .in(modules / "standalone")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-standalone"
+    normalizedName := "spoonbill-standalone"
   )
-  .dependsOn(korolev, http)
+  .dependsOn(spoonbill, http)
 
 lazy val testkit = project
   .in(modules / "testkit")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                         := "korolev-testkit",
+    normalizedName                         := "spoonbill-testkit",
     libraryDependencies += "org.graalvm.js" % "js" % "20.3.0"
   )
-  .dependsOn(korolev)
+  .dependsOn(spoonbill)
 
 // Interop
 
 lazy val akka = project
   .in(interop / "akka")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-akka",
+    normalizedName := "spoonbill-akka",
     libraryDependencies ++= Seq(
       ("com.typesafe.akka" %% "akka-actor"  % akkaVersion).cross(CrossVersion.for3Use2_13),
       ("com.typesafe.akka" %% "akka-stream" % akkaVersion).cross(CrossVersion.for3Use2_13),
       ("com.typesafe.akka" %% "akka-http"   % akkaHttpVersion).cross(CrossVersion.for3Use2_13)
     )
   )
-  .dependsOn(korolev)
+  .dependsOn(spoonbill)
 
 lazy val pekko = project
   .in(interop / "pekko")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-pekko",
+    normalizedName := "spoonbill-pekko",
     libraryDependencies ++= Seq(
       ("org.apache.pekko" %% "pekko-actor"          % pekkoVersion).cross(CrossVersion.for3Use2_13),
       ("org.apache.pekko" %% "pekko-stream"         % pekkoVersion).cross(CrossVersion.for3Use2_13),
@@ -363,59 +310,54 @@ lazy val pekko = project
       ("org.apache.pekko" %% "pekko-http-testkit"   % pekkoHttpVersion % Test).cross(CrossVersion.for3Use2_13)
     )
   )
-  .dependsOn(korolev)
+  .dependsOn(spoonbill)
 
 lazy val zioHttp = project
   .in(interop / "zio-http")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                   := "korolev-zio-http",
+    normalizedName                   := "spoonbill-zio-http",
     libraryDependencies += "dev.zio" %% "zio-http" % zioHttpVersion
   )
-  .dependsOn(korolev, web, zio2, zio2Streams)
+  .dependsOn(spoonbill, web, zio2, zio2Streams)
 
 lazy val slf4j = project
   .in(interop / "slf4j")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                    := "korolev-slf4j",
+    normalizedName                    := "spoonbill-slf4j",
     libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.25"
   )
   .dependsOn(effect)
 
 lazy val ce2 = project
   .in(interop / "ce2")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                         := "korolev-ce2",
+    normalizedName                         := "spoonbill-ce2",
     libraryDependencies += "org.typelevel" %% "cats-effect" % ce2Version
   )
   .dependsOn(effect)
 
 lazy val ce3 = project
   .in(interop / "ce3")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                         := "korolev-ce3",
+    normalizedName                         := "spoonbill-ce3",
     libraryDependencies += "org.typelevel" %% "cats-effect" % ce3Version
   )
   .dependsOn(effect)
 
 lazy val monix = project
   .in(interop / "monix")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-monix",
+    normalizedName := "spoonbill-monix",
     libraryDependencies ++= List(
       "io.monix" %% "monix-eval"      % monixVersion,
       "io.monix" %% "monix-execution" % monixVersion
@@ -425,22 +367,20 @@ lazy val monix = project
 
 lazy val zio = project
   .in(interop / "zio")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                   := "korolev-zio",
+    normalizedName                   := "spoonbill-zio",
     libraryDependencies += "dev.zio" %% "zio" % zioVersion
   )
   .dependsOn(effect)
 
 lazy val zio2 = project
   .in(interop / "zio2")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName := "korolev-zio2",
+    normalizedName := "spoonbill-zio2",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio"               % zio2Version,
       "dev.zio" %% "zio-test"          % zio2Version % Test,
@@ -453,55 +393,50 @@ lazy val zio2 = project
 
 lazy val zioStreams = project
   .in(interop / "zio-streams")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                   := "korolev-zio-streams",
+    normalizedName                   := "spoonbill-zio-streams",
     libraryDependencies += "dev.zio" %% "zio-streams" % zioVersion
   )
   .dependsOn(effect, zio)
 
 lazy val zio2Streams = project
   .in(interop / "zio2-streams")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                   := "korolev-zio2-streams",
+    normalizedName                   := "spoonbill-zio2-streams",
     libraryDependencies += "dev.zio" %% "zio-streams" % zio2Version
   )
   .dependsOn(effect, zio2)
 
 lazy val fs2ce2 = project
   .in(interop / "fs2-ce2")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                  := "korolev-fs2-ce2",
+    normalizedName                  := "spoonbill-fs2-ce2",
     libraryDependencies += "co.fs2" %% "fs2-core" % fs2ce2Version
   )
   .dependsOn(effect, ce2)
 
 lazy val fs2ce3 = project
   .in(interop / "fs2-ce3")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                  := "korolev-fs2-ce3",
+    normalizedName                  := "spoonbill-fs2-ce3",
     libraryDependencies += "co.fs2" %% "fs2-core" % fs2ce3Version
   )
   .dependsOn(effect, ce3)
 
 lazy val scodec = project
   .in(interop / "scodec")
-  .enablePlugins(GitVersioning)
-  .settings(crossVersionSettings)
+
   .settings(commonSettings: _*)
   .settings(
-    normalizedName                      := "korolev-scodec",
+    normalizedName                      := "spoonbill-scodec",
     libraryDependencies += "org.scodec" %% "scodec-bits" % scodecVersion
   )
   .dependsOn(bytes)
@@ -510,7 +445,6 @@ lazy val scodec = project
 
 lazy val simpleExample = (project in examples / "simple")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("SimpleExample"))
   .dependsOn(akka)
@@ -518,7 +452,6 @@ lazy val simpleExample = (project in examples / "simple")
 lazy val routingExample = project
   .in(examples / "routing")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("RoutingExample"))
   .dependsOn(akka)
@@ -526,7 +459,6 @@ lazy val routingExample = project
 lazy val gameOfLifeExample = project
   .in(examples / "game-of-life")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("GameOfLife"))
   .dependsOn(akka)
@@ -534,7 +466,6 @@ lazy val gameOfLifeExample = project
 lazy val formDataExample = project
   .in(examples / "form-data")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("FormDataExample"))
   .dependsOn(akka)
@@ -542,7 +473,6 @@ lazy val formDataExample = project
 lazy val `file-streaming-example` = project
   .in(examples / "file-streaming")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("FileStreamingExample"))
   .dependsOn(akka, monix)
@@ -550,7 +480,6 @@ lazy val `file-streaming-example` = project
 lazy val delayExample = project
   .in(examples / "delay")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("DelayExample"))
   .dependsOn(akka)
@@ -558,7 +487,6 @@ lazy val delayExample = project
 lazy val focusExample = project
   .in(examples / "focus")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("FocusExample"))
   .dependsOn(akka)
@@ -566,7 +494,6 @@ lazy val focusExample = project
 lazy val webComponentExample = project
   .in(examples / "web-component")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("WebComponentExample"))
   .dependsOn(akka)
@@ -574,7 +501,6 @@ lazy val webComponentExample = project
 lazy val componentExample = project
   .in(examples / "component")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("ComponentExample"))
   .dependsOn(akka)
@@ -582,7 +508,6 @@ lazy val componentExample = project
 lazy val akkaHttpExample = project
   .in(examples / "akka-http")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("AkkaHttpExample"))
   .dependsOn(akka)
@@ -590,7 +515,6 @@ lazy val akkaHttpExample = project
 lazy val pekkoHttpExample = project
   .in(examples / "pekko-http")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("PekkoHttpExample"))
   .dependsOn(pekko)
@@ -598,7 +522,6 @@ lazy val pekkoHttpExample = project
 lazy val zioHttpExample = project
   .in(examples / "zio-http")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("ZioHttpExample"))
   .dependsOn(zio, zioHttp)
@@ -606,7 +529,6 @@ lazy val zioHttpExample = project
 lazy val catsEffectExample = project
   .in(examples / "cats")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("CatsIOExample"))
   .dependsOn(ce3, akka)
@@ -614,7 +536,6 @@ lazy val catsEffectExample = project
 lazy val zioExample = project
   .in(examples / "zio")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("ZioExample"))
   .dependsOn(zio2, standalone, testkit % Test)
@@ -622,7 +543,6 @@ lazy val zioExample = project
 lazy val monixExample = project
   .in(examples / "monix")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("MonixExample"))
   .dependsOn(monix, akka)
@@ -630,7 +550,6 @@ lazy val monixExample = project
 lazy val eventDataExample = project
   .in(examples / "event-data")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("EventDataExample"))
   .dependsOn(akka)
@@ -638,7 +557,6 @@ lazy val eventDataExample = project
 lazy val evalJsExample = project
   .in(examples / "evalJs")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("EvalJsExample"))
   .dependsOn(akka)
@@ -646,7 +564,6 @@ lazy val evalJsExample = project
 lazy val contextScopeExample = project
   .in(examples / "context-scope")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("ContextScopeExample"))
   .dependsOn(akka)
@@ -654,7 +571,6 @@ lazy val contextScopeExample = project
 lazy val extensionExample = project
   .in(examples / "extension")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("ExtensionExample"))
   .dependsOn(akka)
@@ -664,7 +580,6 @@ lazy val extensionExample = project
 lazy val `integration-tests` = project
   .in(misc / "integration-tests")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(commonSettings)
   .settings(dontPublishSettings: _*)
   .settings(
@@ -683,7 +598,6 @@ lazy val `integration-tests` = project
 lazy val `performance-benchmark` = project
   .in(misc / "performance-benchmark")
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(commonSettings)
   .settings(dontPublishSettings: _*)
   .settings(
@@ -696,16 +610,15 @@ lazy val `performance-benchmark` = project
       "com.lihaoyi"        %% "ujson"            % "1.3.15"
     )
   )
-  .dependsOn(korolev)
+  .dependsOn(spoonbill)
 
 lazy val root = project
   .in(file("."))
   .disablePlugins(HeaderPlugin)
-  .settings(crossVersionSettings)
   .settings(dontPublishSettings: _*)
-  .settings(name := "Korolev Project")
+  .settings(name := "Spoonbill Project")
   .aggregate(
-    korolev,
+    spoonbill,
     effect,
     web,
     http,

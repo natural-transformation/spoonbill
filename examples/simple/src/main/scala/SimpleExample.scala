@@ -1,22 +1,22 @@
-import korolev._
-import korolev.akka._
-import korolev.server._
-import korolev.state.javaSerialization._
+import spoonbill._
+import spoonbill.akka._
+import spoonbill.server._
+import spoonbill.state.javaSerialization._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
-object SimpleExample extends SimpleAkkaHttpKorolevApp {
+object SimpleExample extends SimpleAkkaHttpSpoonbillApp {
 
   import State.globalContext._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   // Handler to input
   val inputId     = elementId()
   val editInputId = elementId()
 
   val service = akkaHttpService {
-    KorolevServiceConfig[Future, State, Any](
+    SpoonbillServiceConfig[Future, State, Any](
       stateLoader = StateLoader.default(State()),
       document = state =>
         optimize {

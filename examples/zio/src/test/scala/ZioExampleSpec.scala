@@ -1,5 +1,5 @@
-import korolev.effect.Effect
-import korolev.testkit.*
+import spoonbill.effect.Effect
+import spoonbill.testkit.*
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 import zio.Task
@@ -9,7 +9,7 @@ class ZioExampleSpec extends AsyncFlatSpec with Matchers {
   import ZioExample._
 
   private implicit val taskEffectInstance: Effect[Task] =
-    korolev.zio.taskEffectInstance(zio.Runtime.default)
+    spoonbill.zio.taskEffectInstance(zio.Runtime.default)
 
   private val browser = Browser()
     .value(aInput, "2")

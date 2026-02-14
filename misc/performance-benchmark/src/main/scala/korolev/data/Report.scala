@@ -1,4 +1,4 @@
-package korolev.data
+package spoonbill.data
 
 sealed trait Report
 

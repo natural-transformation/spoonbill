@@ -1,13 +1,13 @@
 import ViewState.{Article, Comment}
-import korolev.Context
+import spoonbill.Context
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 
 final class BlogView(val ctx: Context.Scope[Future, ViewState, ViewState.Tab.Blog, Any]) {
 
   import ctx._
-  import levsha.dsl._
-  import levsha.dsl.html._
+  import avocet.dsl._
+  import avocet.dsl.html._
 
   private val nameInput: ctx.ElementId = elementId()
 

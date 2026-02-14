@@ -1,9 +1,9 @@
-package korolev
+package spoonbill
 
 import _root_.scodec.bits.ByteVector
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
-import korolev.data.BytesLike
+import spoonbill.data.BytesLike
 
 object scodec {
 

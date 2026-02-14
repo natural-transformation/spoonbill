@@ -1,14 +1,14 @@
-package korolev.effect.io
+package spoonbill.effect.io
 
 import java.nio.ByteBuffer
 import java.util.concurrent.Executor
 import javax.net.ssl.{SSLEngine, SSLHandshakeException}
 import javax.net.ssl.SSLEngineResult.{HandshakeStatus, Status}
 import jdk.jshell.spi.ExecutionControl.NotImplementedException
-import korolev.data.BytesLike
-import korolev.effect
-import korolev.effect.Effect
-import korolev.effect.syntax._
+import spoonbill.data.BytesLike
+import spoonbill.effect
+import spoonbill.effect.Effect
+import spoonbill.effect.syntax._
 import scala.collection.mutable
 
 class SecureDataSocket[F[_]: Effect, B: BytesLike] private (engine: SSLEngine, socket: RawDataSocket[F, B])

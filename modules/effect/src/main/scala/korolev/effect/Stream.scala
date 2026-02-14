@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package korolev.effect
+package spoonbill.effect
 
 import java.io.Closeable
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
-import korolev.effect.syntax.*
+import spoonbill.effect.syntax.*
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
@@ -383,7 +383,7 @@ abstract class Stream[F[_]: Effect, A] { self =>
 
 object Stream {
 
-  implicit class KorolevUnchunkExtension[F[_]: Effect, A](stream: Stream[F, Seq[A]]) {
+  implicit class SpoonbillUnchunkExtension[F[_]: Effect, A](stream: Stream[F, Seq[A]]) {
 
     /**
      * Flatten Stream of any collection to single elements

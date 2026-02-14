@@ -1,9 +1,9 @@
-package korolev.akka.util
+package spoonbill.akka.util
 
 import akka.util.ByteString
 import java.nio.ByteBuffer
 import java.nio.charset.{Charset, StandardCharsets}
-import korolev.data.BytesLike
+import spoonbill.data.BytesLike
 
 final class AkkaByteStringBytesLike extends BytesLike[ByteString] {
 

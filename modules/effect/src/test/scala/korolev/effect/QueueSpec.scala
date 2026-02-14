@@ -1,6 +1,6 @@
-package korolev.effect
+package spoonbill.effect
 
-import korolev.effect.syntax._
+import spoonbill.effect.syntax._
 import org.scalatest.Assertion
 import org.scalatest.freespec.AsyncFreeSpec
 import scala.concurrent.{ExecutionContext, Future}

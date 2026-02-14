@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package korolev.web
+package spoonbill.web
 
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
-import korolev.web.FormData.Entry
+import spoonbill.web.FormData.Entry
 
 final case class FormData(content: Seq[Entry]) {
 

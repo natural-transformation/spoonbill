@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package korolev.web
+package spoonbill.web
 
 import java.net.{URLDecoder, URLEncoder}
 import java.nio.charset.StandardCharsets

@@ -1,10 +1,10 @@
-package korolev.testkit
+package spoonbill.testkit
 
-import korolev.Context
-import korolev.Context.{Binding, ComponentEntry, ElementId}
-import levsha.{Id, IdBuilder, RenderContext, XmlNs}
-import levsha.Document.Node
-import levsha.events.EventId
+import spoonbill.Context
+import spoonbill.Context.{Binding, ComponentEntry, ElementId}
+import avocet.{Id, IdBuilder, RenderContext, XmlNs}
+import avocet.Document.Node
+import avocet.events.EventId
 import scala.annotation.tailrec
 
 sealed trait PseudoHtml {
@@ -112,7 +112,7 @@ object PseudoHtml {
     var currentAttrs                            = List.empty[(XmlNs, String, String)]
     var currentStyles                           = List.empty[(String, String)]
 
-    var elements = List.empty[(levsha.Id, ElementId)]
+    var elements = List.empty[(avocet.Id, ElementId)]
     var events   = List.empty[(EventId, Context.Event[F, S, M])]
 
     def openNode(xmlns: XmlNs, name: String): Unit = {
@@ -190,7 +190,7 @@ object PseudoHtml {
 
   case class RenderingResult[F[_], S, M](
     pseudoDom: PseudoHtml,
-    elements: Map[levsha.Id, ElementId],
+    elements: Map[avocet.Id, ElementId],
     events: Map[EventId, Context.Event[F, S, M]]
   )
 
