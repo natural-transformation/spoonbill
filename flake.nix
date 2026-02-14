@@ -1,22 +1,15 @@
-
 {
   description = "Flake for dev shell";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    sbtix.url = "github:natural-transformation/sbtix";
-    gitignore = {
-      url = "github:hercules-ci/gitignore.nix";
-      # Use the same nixpkgs
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
-  outputs = inputs@{ nixpkgs, flake-parts, sbtix, gitignore, ... }:
+  outputs = inputs@{ nixpkgs, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
-      perSystem = { config, self', inputs', pkgs, system, ... }: 
+      perSystem = { config, self', inputs', pkgs, system, ... }:
       let
         jdk21-overlay = self: super: {
           jdk = super.jdk21;
@@ -27,36 +20,15 @@
           inherit system;
           overlays = [ jdk21-overlay ];
         };
-        libPath = nixpkgs.lib.makeLibraryPath [ newPkgs.lmdb ];
-        # Import the sbtix.nix file directly, not the flake's default.nix (which is a stub)
-        sbtixPkg = newPkgs.callPackage "${sbtix}/plugin/nix-exprs/sbtix.nix" {};
-        # Get the sbtix CLI tool from the flake for devShell
-        sbtixCli = inputs'.sbtix.packages.sbtix;
       in {
-        packages.default = import ./default.nix { 
-          pkgs = newPkgs; 
-          gitignore = gitignore.lib;
-          sbtix = sbtixPkg;
-        };
-
         devShells.default = newPkgs.mkShell {
           nativeBuildInputs = with newPkgs; [
             sbt
-            sbtixCli
             jdk
           ];
-          # environment variables go here:
-          # Set NIX_PATH to make sure the nix-build in `build.sh` produce the same results as `nix build`
-          NIX_PATH = "nixpkgs=${inputs.nixpkgs}"; 
           # Give sbt a larger heap to avoid OOM during Scala 3 compilation.
           SBT_OPTS = "-Xms1g -Xmx4g -XX:MaxMetaspaceSize=1g";
         };
-      };
-     
-      flake = {
-        # The usual flake attributes can be defined here, including system-
-        # agnostic ones like nixosModule and system-enumerating ones, although
-        # those are more easily expressed in perSystem.
       };
     };
 }
