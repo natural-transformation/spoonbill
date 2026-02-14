@@ -1,6 +1,8 @@
-# Spoonbill
+<p align="center">
+  <img src="spoonbill.svg" width="260" />
+</p>
 
-<img src="spoonbill.svg" align="right" width="260" />
+# Spoonbill
 
 Spoonbill is a server-side single-page application framework for Scala 3.
 The browser runs a minimal JS bridge (~6kB). The server owns all application state and renders UI updates.
