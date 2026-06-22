@@ -1,5 +1,6 @@
 import spoonbill.Context
 import spoonbill.Context.ElementId
+import spoonbill.Context.EventDataDecoder
 import spoonbill.testkit.{Action, Browser}
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -31,12 +32,58 @@ class BrowserSpec extends AsyncFlatSpec with Matchers {
       }
   }
 
+  it should "decode typed values and event data" in {
+    final case class CustomEvent(value: String)
+    implicit val customEventDecoder: EventDataDecoder[CustomEvent] =
+      EventDataDecoder.instance(value => Right(CustomEvent(value)))
+
+    val duration = new ElementId(Some("duration"))
+    val enabled = new ElementId(Some("enabled"))
+
+    Browser()
+      .value(duration, "42")
+      .property(enabled, "checked", "true")
+      .access[Future, String, Any](
+        "",
+        access =>
+          for {
+            decodedDuration <- access.valueAs[Int](duration)
+            decodedEnabled  <- access.checked(enabled)
+            decodedEvent    <- access.eventDataAs[CustomEvent]
+            _               <- access.publish(s"$decodedDuration/$decodedEnabled/${decodedEvent.value}")
+          } yield (),
+        eventData = "typed-event"
+      )
+      .map { actions =>
+        actions shouldEqual List(Action.Publish("42/true/typed-event"))
+      }
+  }
+
   it should "emulate focus" in {
     val e1 = new ElementId(Some("e1"))
     Browser()
       .access[Future, String, Any]("", _.focus(e1))
       .map { actions =>
         actions shouldEqual List(Action.Focus(e1))
+      }
+  }
+
+  it should "emulate afterRender effects" in {
+    val e1 = new ElementId(Some("e1"))
+    Browser()
+      .access[Future, String, Any](
+        "hello",
+        access =>
+          for {
+            _ <- access.transition(_ + " world")
+            _ <- access.afterRender(_.focus(e1))
+          } yield ()
+      )
+      .map { actions =>
+        actions shouldEqual List(
+          Action.Transition("hello world"),
+          Action.Focus(e1)
+        )
       }
   }
 

@@ -219,6 +219,67 @@ object StateStorage {
       }
   }
 
+  def fromRepository[F[_]: Effect, S: StateSerializer](
+    repositoryExists: String => F[Boolean],
+    loadSnapshot: String => F[Map[Id, Array[Byte]]],
+    createSnapshot: (String, Map[Id, Array[Byte]]) => F[Unit],
+    writeNode: (String, Id, Array[Byte]) => F[Unit],
+    deleteNode: (String, Id) => F[Unit],
+    removeRepository: String => F[Unit],
+    onRemoveError: Throwable => Unit = _.printStackTrace(),
+    key: (DeviceId, SessionId) => String = (deviceId, sessionId) => s"$deviceId-$sessionId"
+  ): StateStorage[F, S] =
+    new StateStorage[F, S] {
+
+      private val cache = TrieMap.empty[String, StateManager[F]]
+
+      def exists(deviceId: DeviceId, sessionId: SessionId): F[Boolean] = {
+        val storageKey = key(deviceId, sessionId)
+        if (cache.contains(storageKey)) Effect[F].pure(true)
+        else repositoryExists(storageKey)
+      }
+
+      def create(deviceId: DeviceId, sessionId: SessionId, topLevelState: S): F[StateManager[F]] = {
+        val storageKey = key(deviceId, sessionId)
+        val topLevelBytes = implicitly[StateSerializer[S]].serialize(topLevelState)
+        val initialSnapshot = Map(Id.TopLevel -> topLevelBytes)
+        Effect[F].flatMap(createSnapshot(storageKey, initialSnapshot)) { _ =>
+          val stateManager = repositoryStateManager(storageKey, initialSnapshot)
+          Effect[F].map(Effect[F].delay(cache.put(storageKey, stateManager)))(_ => stateManager)
+        }
+      }
+
+      def get(deviceId: DeviceId, sessionId: SessionId): F[StateManager[F]] = {
+        val storageKey = key(deviceId, sessionId)
+        cache.get(storageKey) match {
+          case Some(stateManager) =>
+            Effect[F].pure(stateManager)
+          case None =>
+            Effect[F].map(loadSnapshot(storageKey)) { snapshot =>
+              val stateManager = repositoryStateManager(storageKey, snapshot)
+              cache.put(storageKey, stateManager)
+              stateManager
+            }
+        }
+      }
+
+      def remove(deviceId: DeviceId, sessionId: SessionId): Unit = {
+        val storageKey = key(deviceId, sessionId)
+        cache.remove(storageKey)
+        Effect[F].runAsync(removeRepository(storageKey)) {
+          case Left(error) => onRemoveError(error)
+          case Right(_)    => ()
+        }
+      }
+
+      private def repositoryStateManager(storageKey: String, initialSnapshot: Map[Id, Array[Byte]]): StateManager[F] =
+        StateManager.serialized[F](
+          initial = initialSnapshot,
+          onWrite = (nodeId, bytes) => writeNode(storageKey, nodeId, bytes),
+          onDelete = nodeId => deleteNode(storageKey, nodeId)
+        )
+    }
+
   def apply[F[_]: Effect, S: StateSerializer](forDeletionCacheCapacity: Int = 5000): StateStorage[F, S] =
     new DefaultStateStorage[F, S](forDeletionCacheCapacity)
 }

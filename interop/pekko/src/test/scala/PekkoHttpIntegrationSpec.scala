@@ -17,10 +17,11 @@
 package spoonbill.pekko
 
 import spoonbill.Context
-import spoonbill.effect.Reporter
+import spoonbill.data.{Bytes, BytesLike}
+import spoonbill.effect.{Reporter, Stream as SpoonbillStream}
 import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
 import spoonbill.state.javaSerialization.*
-import spoonbill.web.PathAndQuery
+import spoonbill.web.{PathAndQuery, Response}
 import avocet.dsl.*
 import avocet.dsl.html.*
 import org.apache.pekko.actor.ActorSystem
@@ -127,6 +128,72 @@ final class PekkoHttpIntegrationSpec extends AnyFreeSpec with Matchers with Scal
       status shouldBe StatusCodes.OK
       body should include("State: initial")
       extractSessionId(body) should not be empty
+    }
+
+    "should stream request and response bodies" in {
+      val streamConfig = simpleConfig.copy(
+        http = {
+          case request if request.pq == PathAndQuery.fromString("/stream-read") =>
+            for {
+              body <- request.body.fold(Bytes.empty)(_ ++ _)
+              responseBody <- SpoonbillStream(
+                                BytesLike[Bytes].utf8(body.asUtf8String.toUpperCase)
+                              ).mat[Future]()
+            } yield Response(
+              status = Response.Status.Ok,
+              body = responseBody,
+              headers = Seq("content-type" -> "text/plain"),
+              contentLength = None
+            )
+          case request if request.pq == PathAndQuery.fromString("/stream-write") =>
+            SpoonbillStream
+              .emits(
+                List("hello ", "from ", "response")
+                  .map(BytesLike[Bytes].utf8)
+              )
+              .mat[Future]()
+              .map { body =>
+                Response(
+                  status = Response.Status.Ok,
+                  body = body,
+                  headers = Seq("content-type" -> "text/plain"),
+                  contentLength = None
+                )
+              }
+        }
+      )
+      val service = pekkoHttpService(streamConfig)
+      val route: Route = service(pekkoHttpConfig)
+      val bindingFuture = Http().newServerAt("localhost", 0).bind(route)
+
+      val result = for {
+        binding <- bindingFuture
+        port = binding.localAddress.getPort
+        requestEntity = HttpEntity(
+                          ContentTypes.`text/plain(UTF-8)`,
+                          Source(
+                            List("hello ", "from ", "stream").map(org.apache.pekko.util.ByteString(_))
+                          )
+                        )
+        readResponse <- Http().singleRequest(
+                          HttpRequest(
+                            method = HttpMethods.POST,
+                            uri = s"http://localhost:$port/stream-read",
+                            entity = requestEntity
+                          )
+                        )
+        readBody <- readResponse.entity.dataBytes.runFold(Vector.empty[String])(_ :+ _.utf8String)
+        writeResponse <- Http().singleRequest(HttpRequest(uri = s"http://localhost:$port/stream-write"))
+        writeBody     <- writeResponse.entity.dataBytes.runFold(Vector.empty[String])(_ :+ _.utf8String)
+        _             <- binding.unbind()
+      } yield (readResponse.status, readBody, writeResponse.status, writeBody)
+
+      val (readStatus, readBody, writeStatus, writeBody) = result.futureValue
+
+      readStatus shouldBe StatusCodes.OK
+      readBody.mkString shouldBe "HELLO FROM STREAM"
+      writeStatus shouldBe StatusCodes.OK
+      writeBody.mkString shouldBe "hello from response"
     }
 
     "should establish WebSocket connection and receive server frames" in {

@@ -18,6 +18,7 @@ package spoonbill
 
 import spoonbill.data.{Bytes, BytesLike}
 import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream}
+import spoonbill.effect.syntax.*
 import spoonbill.internal.{ComponentInstance, EventRegistry, Frontend}
 import spoonbill.state.{StateDeserializer, StateManager, StateSerializer}
 import spoonbill.util.{JsCode, Lens}
@@ -36,6 +37,56 @@ final class Context[F[_], S, M] extends Context.Scope[F, S, S, M] {
 }
 
 object Context {
+
+  final case class DecodeError(message: String) extends RuntimeException(message)
+
+  trait ValueDecoder[T] {
+    def decode(value: String): Either[String, T]
+  }
+
+  object ValueDecoder {
+    def apply[T: ValueDecoder]: ValueDecoder[T] = implicitly[ValueDecoder[T]]
+
+    def instance[T](f: String => Either[String, T]): ValueDecoder[T] =
+      new ValueDecoder[T] {
+        def decode(value: String): Either[String, T] = f(value)
+      }
+
+    implicit val stringValueDecoder: ValueDecoder[String] =
+      instance(value => Right(value))
+
+    implicit val intValueDecoder: ValueDecoder[Int] =
+      instance(value => value.toIntOption.toRight(s"Expected Int but got '$value'"))
+
+    implicit val longValueDecoder: ValueDecoder[Long] =
+      instance(value => value.toLongOption.toRight(s"Expected Long but got '$value'"))
+
+    implicit val doubleValueDecoder: ValueDecoder[Double] =
+      instance(value => value.toDoubleOption.toRight(s"Expected Double but got '$value'"))
+
+    implicit val booleanValueDecoder: ValueDecoder[Boolean] =
+      instance {
+        case "true"  => Right(true)
+        case "false" => Right(false)
+        case value   => Left(s"Expected Boolean but got '$value'")
+      }
+  }
+
+  trait EventDataDecoder[T] {
+    def decode(value: String): Either[String, T]
+  }
+
+  object EventDataDecoder {
+    def apply[T: EventDataDecoder]: EventDataDecoder[T] = implicitly[EventDataDecoder[T]]
+
+    def instance[T](f: String => Either[String, T]): EventDataDecoder[T] =
+      new EventDataDecoder[T] {
+        def decode(value: String): Either[String, T] = f(value)
+      }
+
+    implicit val stringEventDataDecoder: EventDataDecoder[String] =
+      instance(value => Right(value))
+  }
 
   /**
    * Creates new global context
@@ -173,6 +224,10 @@ object Context {
      */
     final def valueOf(id: ElementId): F[String] = property(id, "value")
 
+    def valueAs[T: ValueDecoder](id: ElementId): F[T]
+
+    def checked(id: ElementId): F[Boolean]
+
     /**
      * Makes focus on the element
      */
@@ -290,6 +345,14 @@ object Context {
 
     def transitionForceAsync[B](lens: Lens[S, B])(f: TransitionAsync[F, B]): F[Unit]
 
+    /**
+     * Runs a client-side effect after pending state transitions have rendered.
+     *
+     * This provides server-render ordering. It does not wait for a browser-side
+     * DOM patch acknowledgement.
+     */
+    def afterRender(f: BaseAccess[F, S, M] => F[Unit]): F[Unit]
+
     @deprecated("Use transitionForce instead", since = "1.5.0")
     def syncTransition(f: Transition[S]): F[Unit] = transitionForce(f)
 
@@ -345,6 +408,8 @@ object Context {
      */
     def eventData: F[String]
 
+    def eventDataAs[T: EventDataDecoder]: F[T]
+
   }
 
   /**
@@ -357,6 +422,30 @@ object Context {
     import spoonbill.effect.syntax._
 
     def imap[S2](lens: Lens[S, S2]): Access[F, S2, M] = new MappedAccess[F, S, S2, M](this, lens)
+
+    def valueAs[T: ValueDecoder](id: ElementId): F[T] =
+      valueOf(id).flatMap { value =>
+        ValueDecoder[T].decode(value) match {
+          case Right(decoded) => Effect[F].pure(decoded)
+          case Left(error)    => Effect[F].fail(DecodeError(error))
+        }
+      }
+
+    def checked(id: ElementId): F[Boolean] =
+      property(id, "checked").flatMap { value =>
+        ValueDecoder[Boolean].decode(value) match {
+          case Right(decoded) => Effect[F].pure(decoded)
+          case Left(error)    => Effect[F].fail(DecodeError(error))
+        }
+      }
+
+    def eventDataAs[T: EventDataDecoder]: F[T] =
+      eventData.flatMap { value =>
+        EventDataDecoder[T].decode(value) match {
+          case Right(decoded) => Effect[F].pure(decoded)
+          case Left(error)    => Effect[F].fail(DecodeError(error))
+        }
+      }
 
     def stateFocus[B](lens: Lens[S, B]): F[B] = state.map(lens.read)
 
@@ -384,7 +473,10 @@ object Context {
     private final val write                                                 = lens.write
     def imap[S2](lens: Lens[SN, S2]): Access[F, S2, E]                      = new MappedAccess[F, SN, S2, E](this, lens)
     def eventData: F[String]                                                = self.eventData
+    def eventDataAs[T: EventDataDecoder]: F[T]                              = self.eventDataAs[T]
     def property(id: Context.ElementId): PropertyHandler[F]                 = self.property(id)
+    def valueAs[T: ValueDecoder](id: Context.ElementId): F[T]                = self.valueAs[T](id)
+    def checked(id: Context.ElementId): F[Boolean]                           = self.checked(id)
     def focus(id: Context.ElementId): F[Unit]                               = self.focus(id)
     def publish(message: E): F[Unit]                                        = self.publish(message)
     def downloadFormData(id: Context.ElementId): F[FormData]                = self.downloadFormData(id)
@@ -408,6 +500,8 @@ object Context {
     def transitionForceAsync(f: TransitionAsync[F, SN]): F[Unit]         = self.transitionForceAsync(this.lens)(f)
     def transitionForceAsync[B](lens: Lens[SN, B])(f: TransitionAsync[F, B]): F[Unit] =
       self.transitionForceAsync(this.lens ++ lens)(f)
+    def afterRender(f: BaseAccess[F, SN, E] => F[Unit]): F[Unit] =
+      self.afterRender(_ => f(this))
     def sessionId: F[Qsid]                                            = self.sessionId
     def evalJs(code: JsCode): F[String]                               = self.evalJs(code)
     def registerCallback(name: String)(f: String => F[Unit]): F[Unit] = self.registerCallback(name)(f)

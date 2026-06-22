@@ -270,6 +270,9 @@ case class Browser(
       def transitionForceAsync(f: TransitionAsync[F, S]): F[Unit] =
         transitionAsync(f)
 
+      def afterRender(f: Context.BaseAccess[F, S, M] => F[Unit]): F[Unit] =
+        f(this)
+
       def sessionId: F[Qsid] = Effect[F].pure(Qsid("test-device", "test-session"))
 
       def eventData: F[String] = Effect[F].pure(ed)

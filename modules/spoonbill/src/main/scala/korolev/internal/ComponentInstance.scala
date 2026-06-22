@@ -160,6 +160,8 @@ final class ComponentInstance[
     def transitionForce(f: Transition[CS]): F[Unit]              = applyTransitionForce(x => Effect[F].pure(f(x)))
     def transitionAsync(f: TransitionAsync[F, CS]): F[Unit]      = applyTransition(f)
     def transitionForceAsync(f: TransitionAsync[F, CS]): F[Unit] = applyTransitionForce(f)
+    def afterRender(f: BaseAccess[F, CS, E] => F[Unit]): F[Unit] =
+      transitionForce((state: CS) => state).flatMap(_ => f(this))
 
     def downloadFormData(element: ElementId): F[FormData] =
       for {
