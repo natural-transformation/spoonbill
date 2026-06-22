@@ -7,7 +7,7 @@ val avocetVersion = "1.0.0"
 val akkaVersion     = "2.6.19"
 val akkaHttpVersion = "10.2.9"
 
-val pekkoVersion     = "1.4.0"
+val pekkoVersion     = "1.6.0"
 val pekkoHttpVersion = "1.3.0"
 
 val circeVersion = "0.14.1"
