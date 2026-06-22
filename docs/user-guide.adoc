@@ -252,7 +252,38 @@ def renderAnonymous = optimize {
 }
 -----------------------------------
 
-Event gives you an access to information from the client side. In this case, it it is values of the input fields. Also you can get data from event object using `access.eventData` function`.
+Event gives you access to information from the client side. In this case, it is
+values of the input fields. You can also get data from the event object using
+`access.eventData`.
+
+For simple field reads, `valueAs` and `checked` decode common DOM properties into
+typed values.
+
+[source,scala]
+-----------------------------------
+for {
+  duration <- access.valueAs[Int](durationInput)
+  enabled <- access.checked(enabledInput)
+  _ <- access.transition(_.copy(duration = duration, enabled = enabled))
+} yield ()
+-----------------------------------
+
+For event data, define a `Context.EventDataDecoder` for the application-specific
+shape and use `eventDataAs`.
+
+[source,scala]
+-----------------------------------
+case class KeyData(raw: String)
+
+implicit val keyDataDecoder: Context.EventDataDecoder[KeyData] =
+  Context.EventDataDecoder.instance(raw => Right(KeyData(raw)))
+
+event("keydown") { access =>
+  access.eventDataAs[KeyData].flatMap { keyData =>
+    access.transition(_.copy(lastKey = keyData.raw))
+  }
+}
+-----------------------------------
 
 Event handlers should return F[Unit] which will be implicitly converted to `EventResult`.
 
@@ -775,6 +806,25 @@ The render function will now be called only 2 milliseconds after the initial tra
 In this case `transitionForce` will wait until delayed render be performed.
 ============
 
+=== Render-safe client effects
+
+Use `afterRender` when an event handler needs to transition state and then run a
+client-side effect against the rendered DOM.
+
+[source,scala]
+------------------------------
+for {
+  _ <- access.transition(_.copy(saved = true))
+  _ <- access.afterRender { rendered =>
+    rendered.focus(nameInput)
+  }
+} yield ()
+------------------------------
+
+`afterRender` waits for pending server-side rendering work before running the
+effect. It is useful for operations such as focusing an element or setting a DOM
+property after the element may have been replaced by a render diff.
+
 == Testing Spoonbill applications
 
 === Testkit
@@ -785,7 +835,7 @@ Add Test Kit dependency to your project. You can use use Test Kit with any suita
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-testkit" % "{version}" % Test
+libraryDependencies += "com.natural-transformation" %% "spoonbill-testkit" % "{version}" % Test
 ------------------------------
 
 Let's imagine that you are creating application which can to add two integer numbers and to show the result. The app has two text fields and a `span` tag to show the result. The view state of the app is `Option[Int]`. When one of the fields changes, the app reads values of inputs, adds them, and shows calculated result.
@@ -970,6 +1020,33 @@ Notice that developer mode does not work with custom `StateStorage`.
 Ensure that everything is stateless except Spoonbill part of the application. For example, if you keep some state outside of Spoonbill state, it won't be saved and will lead to inconsistency.
 ============
 
+=== Custom state storage
+
+Use `StateStorage.fromRepository` when session state should be stored outside the
+default in-memory or developer-mode storage.
+
+[source,scala]
+-------------------------------------------------------------------------------
+val storage = StateStorage.fromRepository[Future, AppState](
+  repositoryExists = key => repo.exists(key),
+  loadSnapshot = key => repo.loadSnapshot(key),
+  createSnapshot = (key, snapshot) => repo.create(key, snapshot),
+  writeNode = (key, nodeId, bytes) => repo.write(key, nodeId, bytes),
+  deleteNode = (key, nodeId) => repo.delete(key, nodeId),
+  removeRepository = key => repo.remove(key)
+)
+
+val config = SpoonbillServiceConfig[Future, AppState, Any](
+  stateLoader = StateLoader.default(AppState.empty),
+  stateStorage = storage,
+  document = render
+)
+-------------------------------------------------------------------------------
+
+`StateManager.cached` and `StateManager.serialized` are also available for
+lower-level custom storage implementations that only need reusable read, write,
+delete, and snapshot mechanics.
+
 === Serve files from resource directory
 
 Everything placed in directory named `static` (in the classpath of the application) will be served from the `/static/`. It may be useful when you want to distribute some small images or CSS with the app.
@@ -989,7 +1066,7 @@ Add the dependency.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-slf4j" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-slf4j" % "{version}"
 ------------------------------
 
 Configure reporter.
@@ -1008,7 +1085,7 @@ Spoonbill provides smooth Akka HTTP integration out of the box. To use it, add a
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-akka" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-akka" % "{version}"
 ------------------------------
 
 [source,scala]
@@ -1045,7 +1122,7 @@ Spoonbill provides smooth Pekko HTTP integration out of the box. To use it, add 
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-pekko" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-pekko" % "{version}"
 ------------------------------
 
 [source,scala]
@@ -1064,10 +1141,10 @@ val config = SpoonbillServiceConfig[Future, String, Any](
   document = state => Html(body(div(s"Hello $state")))
 )
 
-val spoonbillRoute = akkaHttpService(config).apply(PekkoHttpServerConfig())
+val spoonbillRoute = pekkoHttpService(config).apply(PekkoHttpServerConfig())
 ------------------------------
 
-Then embed the route into your Akka HTTP routes structure.
+Then embed the route into your Pekko HTTP routes structure.
 
 {code}examples/pekko-http/src/main/scala/PekkoHttpExample.scala[See full example]
 
@@ -1084,7 +1161,7 @@ To use it, add a dependency:
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-zio-http" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-zio-http" % "{version}"
 ------------------------------
 
 And create Spoonbill service:
@@ -1135,14 +1212,14 @@ Add dependency for ZIO interop.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-zio" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-zio" % "{version}"
 ------------------------------
 
 Or ZIO 2
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-zio2" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-zio2" % "{version}"
 ------------------------------
 
 Initialize your app with ZIO.
@@ -1167,7 +1244,7 @@ Add Monix interop dependency.
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-monix" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-monix" % "{version}"
 ------------------------------
 
 Initialise your app with Monix. Ensure you have implicit `monix.execution.Scheduler` in the scope.
@@ -1188,14 +1265,14 @@ Add Cats dependency. If you use Cats Effect 2
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-ce2" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-ce2" % "{version}"
 ------------------------------
 
 Or is you use Cats Effect 3
 
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-ce3" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-ce3" % "{version}"
 ------------------------------
 
 Initialise your app with IO.
@@ -1267,7 +1344,7 @@ myFlow.to(spoonbillSink)
 To use it, add a dependency:
 [source,scala,subs="attributes"]
 ------------------------------
-libraryDependencies += "org.fomkin" %% "spoonbill-zio-streams" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-zio-streams" % "{version}"
 ------------------------------
 
 Conversion from Spoonbill to ZIO:
@@ -1304,9 +1381,9 @@ To use it, add a dependency.
 [source,scala,subs="attributes"]
 ------------------------------
 // For Fs2-2.* and Cats Effect 2:
-libraryDependencies += "org.fomkin" %% "spoonbill-fs2-ce2" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-fs2-ce2" % "{version}"
 // For Fs2-3.* and Cats Effect 3:
-libraryDependencies += "org.fomkin" %% "spoonbill-fs2-ce3" % "{version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-fs2-ce3" % "{version}"
 ------------------------------
 
 Conversion from Spoonbill to Fs2.

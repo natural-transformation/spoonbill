@@ -10,7 +10,7 @@ on:
       branch:
         description: "The branch to release from"
         required: true
-        default: "master"
+        default: "main"
   release:
     types: [published]
 
@@ -85,5 +85,4 @@ jobs:
           SONATYPE_STAGING_USERNAME: ${{ secrets.SONATYPE_STAGING_USERNAME }}
           SONATYPE_STAGING_PASSWORD: ${{ secrets.SONATYPE_STAGING_PASSWORD }}
         run: nix develop --command sbt sonatypeCentralRelease
-
 

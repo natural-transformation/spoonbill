@@ -109,7 +109,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         _ <- incomingStream.cancel()
         _ <- frontend.outgoingMessages.cancel()
         _ <- app.topLevelComponentInstance.destroy()
-        _ <- ehs.map(_.onDestroy()).sequence
+        _ <- ehs.map { handler =>
+               handler.onDestroy().recover { case error =>
+                 config.reporter.error(s"Unable to destroy extension for $qsid", error)
+                 ()
+               }
+             }.sequence
         _ <- Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId))
         _ <- apps.remove(qsid)
       } yield ()

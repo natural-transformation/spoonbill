@@ -16,8 +16,11 @@
 
 package spoonbill
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 import Extension.Handlers
 import spoonbill.effect.Effect
+import spoonbill.effect.syntax.*
 
 trait Extension[F[_], S, M] {
 
@@ -98,4 +101,44 @@ object Extension {
 
   def pure[F[_]: Effect, S, M](f: Context.BaseAccess[F, S, M] => Handlers[F, S, M]): Extension[F, S, M] =
     new UnnamedExtension(access => Effect[F].pure(f(access)))
+
+  def managed[F[_]: Effect, S, M, R](
+    acquire: Context.BaseAccess[F, S, M] => F[R],
+    release: R => F[Unit]
+  )(f: (R, Context.BaseAccess[F, S, M]) => Handlers[F, S, M]): Extension[F, S, M] =
+    managedF(acquire, release) { (resource, access) =>
+      Effect[F].delay(f(resource, access))
+    }
+
+  def managedF[F[_]: Effect, S, M, R](
+    acquire: Context.BaseAccess[F, S, M] => F[R],
+    release: R => F[Unit]
+  )(f: (R, Context.BaseAccess[F, S, M]) => F[Handlers[F, S, M]]): Extension[F, S, M] =
+    Extension { access =>
+      acquire(access).flatMap { resource =>
+        val released = new AtomicBoolean(false)
+
+        def releaseOnce(): F[Unit] =
+          if (released.compareAndSet(false, true)) release(resource)
+          else Effect[F].unit
+
+        f(resource, access)
+          .map { handlers =>
+            Handlers(
+              onState = state => handlers.onState(state),
+              onMessage = message => handlers.onMessage(message),
+              onDestroy = () =>
+                handlers
+                  .onDestroy()
+                  .recoverF { case error =>
+                    releaseOnce().flatMap(_ => Effect[F].fail(error))
+                  }
+                  .flatMap(_ => releaseOnce())
+            )
+          }
+          .recoverF { case error =>
+            releaseOnce().flatMap(_ => Effect[F].fail(error))
+          }
+      }
+    }
 }
