@@ -7,16 +7,16 @@ val avocetVersion = "1.0.0"
 val akkaVersion     = "2.6.19"
 val akkaHttpVersion = "10.2.9"
 
-val pekkoVersion     = "1.6.0"
-val pekkoHttpVersion = "1.3.0"
+val pekkoVersion     = "1.7.0"
+val pekkoHttpVersion = "1.4.0"
 
 val circeVersion = "0.14.1"
 val ce2Version   = "2.5.5"
 val ce3Version   = "3.3.12"
 
 val zioVersion     = "1.0.18"
-val zio2Version    = "2.1.24"
-val zioHttpVersion = "3.8.0"
+val zio2Version    = "2.1.26"
+val zioHttpVersion = "3.11.4"
 
 val fs2ce2Version = "2.5.11"
 val fs2ce3Version = "3.2.8"
