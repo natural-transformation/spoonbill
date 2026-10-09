@@ -73,7 +73,10 @@ warmup and measurement used different loop bodies. Those records are retained as
 diagnostic evidence, not used to certify steady-state performance. Both fixtures
 now warm the same timed loop, collect JIT/GC counters, and use longer windows. The
 standalone output mapper also caches its callback per connection and keeps the
-normal pull path small. Corrected calibrated comparisons are pending.
+normal pull path small. The corrected calibrated comparisons report no detected
+regression, lower transport allocations, and statistically inconclusive timing
+changes under the strict zero-slowdown gate. See the
+[complete results and raw data](websocket-performance-results.md).
 
 These checks do not prove performance for all host applications, networks, effect
 runtimes, or idle-connection populations. A passing functional test is not
