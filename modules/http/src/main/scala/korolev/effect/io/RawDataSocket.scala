@@ -10,6 +10,7 @@ import spoonbill.effect.{Effect, Stream}
 import spoonbill.effect.io.DataSocket.CloseReason
 import spoonbill.effect.syntax._
 import scala.annotation.tailrec
+import scala.util.control.NonFatal
 
 sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
   channel: AsynchronousSocketChannel,
@@ -28,20 +29,28 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
         Some(bytes)
     }
 
-    def cancel(): F[Unit] = {
-      @tailrec def loop(): Unit = {
-        val ref = state.get()
-        if (ref.closed.isEmpty) {
-          val reason = CloseReason.StreamCanceled
-          if (state.compareAndSet(ref, ref.copy(closed = Some(reason)))) {
-            dispatchClose(reason)
-          } else {
-            loop()
-          }
-        }
+    def cancel(): F[Unit] = Effect[F].delay(markClosed(CloseReason.StreamCanceled))
+  }
+
+  /** Close the channel after a finished WebSocket so pending reads unblock and
+    * the peer observes transport closure. Ordinary stream cancellation does not
+    * do this: an HTTP handler may cancel an unused body and still write a response.
+    */
+  def shutdown(): F[Unit] = Effect[F].delay {
+    markClosed(CloseReason.StreamCanceled)
+    try channel.close()
+    catch { case NonFatal(_) => () }
+  }
+
+  private def markClosed(reason: CloseReason): Unit = {
+    @tailrec def loop(): Unit = {
+      val ref = state.get()
+      if (ref.closed.isEmpty) {
+        if (state.compareAndSet(ref, ref.copy(closed = Some(reason)))) dispatchClose(reason)
+        else loop()
       }
-      Effect[F].delay(loop())
     }
+    loop()
   }
 
   def read(buffer: ByteBuffer): F[Int] = Effect[F].promise[Int] { cb =>
@@ -127,6 +136,17 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
   }
 
   def onClose(): F[CloseReason] = Effect[F].promise[CloseReason] { cb =>
+    registerClose(cb)
+    ()
+  }
+
+  /** Internal upgrade ownership hook. Detaching removes retained callback state.
+    * A callback already taken by close may still run; its owner must gate cleanup.
+    */
+  private[spoonbill] def subscribeClose(callback: CloseReason => Unit): () => Unit =
+    registerClose(result => result.foreach(callback))
+
+  private def registerClose(cb: OnCloseCallback): () => Unit = {
     @tailrec def loop(): Unit = {
       val ref = state.get
       ref.closed match {
@@ -138,12 +158,29 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
       }
     }
     loop()
+    () => {
+      @tailrec def remove(): Unit = {
+        val ref = state.get()
+        if (ref.onCloseCbs.exists(_ eq cb)) {
+          val updated = ref.copy(onCloseCbs = ref.onCloseCbs.filterNot(_ eq cb))
+          if (!state.compareAndSet(ref, updated)) remove()
+        }
+      }
+      remove()
+    }
   }
 
   private def dispatchClose(reason: CloseReason): Unit = {
-    val ref = state.get
-    ref.onCloseCbs.foreach(cb => cb(Right(reason)))
+    @tailrec def take(): List[OnCloseCallback] = {
+      val ref = state.get()
+      if (ref.onCloseCbs.isEmpty) Nil
+      else if (state.compareAndSet(ref, ref.copy(onCloseCbs = Nil))) ref.onCloseCbs
+      else take()
+    }
+    take().foreach(cb => cb(Right(reason)))
   }
+
+  private[io] def closeObserverCount: Int = state.get().onCloseCbs.size
 
   private type OnCloseCallback = Effect.Promise[CloseReason]
   private case class State(

@@ -24,6 +24,7 @@ import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.Frontend
 import spoonbill.server.{HttpResponse, WebSocketResponse}
+import scala.util.control.NonFatal
 import spoonbill.server.DeflateCompressionService
 import spoonbill.web.Request.Head
 import spoonbill.web.Response
@@ -75,10 +76,13 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
   def longPollingSubscribe(qsid: Qsid, rh: Head): F[HttpResponse[F]] =
 
     for {
-      _        <- sessionsService.createAppIfNeeded(qsid, rh, createTopic(qsid))
-      maybeApp <- sessionsService.getApp(qsid)
-      // See webSocketMessaging()
-      maybeMessage <- maybeApp.fold(SomeReloadMessageF)(_.frontend.outgoingMessages.pull())
+      started <- sessionsService.createAppIfNeeded(qsid, rh, createTopic(qsid))
+      // The start result selects reload. A missing registry entry is not a
+      // second, implicit recovery path.
+      maybeMessage <- started match {
+                        case SessionStart.Attached(outgoing, _) => outgoing.pull()
+                        case SessionStart.Reload()              => SomeReloadMessageF
+                      }
       response <- maybeMessage match {
                     case None => Effect[F].pure(commonGoneResponse)
                     case Some(message) =>
@@ -196,21 +200,25 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
         (ProtocolJson, wsJsonDecoder, wsJsonEncoder)
       }
     }
-    sessionsService.createAppIfNeeded(qsid, rh, incomingMessages.mapAsync(decoder)) flatMap { _ =>
-      sessionsService.getApp(qsid) flatMap {
-        case Some(app) =>
-          val httpResponse = Response(Status.Ok, app.frontend.outgoingMessages.mapAsync(encoder), Nil, None)
-          Effect[F].pure(WebSocketResponse(httpResponse, selectedProtocol))
-        case None =>
-          // Respond with reload message because app was not found.
-          // In this case it means that server had ben restarted and
-          // do not have an information about the state which had been
-          // applied to render of the page on a client side.
-          Stream(Frontend.ReloadMessage).mat().map { messages =>
-            val httpResponse = Response(Status.Ok, messages.mapAsync(encoder), Nil, None)
-            WebSocketResponse(httpResponse, selectedProtocol)
-          }
-      }
+    val incoming = incomingMessages.mapAsync(decoder)
+    sessionsService.createAppIfNeeded(qsid, rh, incoming) flatMap {
+      case SessionStart.Attached(outgoing, releaseSession) =>
+        val output = outgoing.mapAsync(encoder)
+        // The session owns its output. mapAsync adds no resource to dispose,
+        // so avoid canceling the same frontend a second time after cleanup.
+        val release = WebSocketResponse.releaseOnce[F](releaseSession)
+        Effect[F].pure(WebSocketResponse.Duplex(output, selectedProtocol, release))
+      case SessionStart.Reload() =>
+        // The view is gone after a restart, or guarded recovery declined it.
+        // The finite reload frame is independent of application input.
+        Stream(Frontend.ReloadMessage).mat().map { messages =>
+          val output = messages.mapAsync(encoder)
+          val release = WebSocketResponse.releaseOnce[F](() =>
+            incoming.cancel().recover { case NonFatal(_) => () } *>
+              output.cancel().recover { case NonFatal(_) => () }
+          )
+          WebSocketResponse.SendThenClose(output, selectedProtocol, release)
+        }
     }
   }
 

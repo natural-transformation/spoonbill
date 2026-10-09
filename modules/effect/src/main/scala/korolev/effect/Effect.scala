@@ -32,6 +32,10 @@ trait Effect[F[_]] {
   def none[A]: F[Option[A]]         = noneVal.asInstanceOf[F[Option[A]]]
   def pure[A](value: A): F[A]
   def delay[A](value: => A): F[A]
+  /** Run resource cleanup to completion before honoring external cancellation.
+    * Preserve the calling effect's environment and local context.
+    */
+  def uncancelable[A](task: => F[A]): F[A]
   def delayAsync[A](value: => F[A]): F[A] = flatMap(delay(value))(identity)
   def fail[A](e: Throwable): F[A]
   def unit: F[Unit]
@@ -74,6 +78,7 @@ object Effect {
   def apply[F[_]: Effect]: Effect[F] = implicitly[Effect[F]]
 
   class FutureEffect extends Effect[Future] {
+    def uncancelable[A](task: => Future[A]): Future[A] = task
     private implicit val immediateEc: ExecutionContext = new ExecutionContext {
       // Run on the same thread
       def execute(runnable: Runnable): Unit     = runnable.run()

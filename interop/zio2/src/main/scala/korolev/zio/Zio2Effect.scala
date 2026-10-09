@@ -32,6 +32,9 @@ class Zio2Effect[R, E](rts: Runtime[R], liftError: Throwable => E, unliftError: 
   def delay[A](value: => A): ZIO[R, E, A] =
     ZIO.attempt(value).mapError(liftError)
 
+  def uncancelable[A](task: => ZIO[R, E, A]): ZIO[R, E, A] =
+    ZIO.suspendSucceed(task).uninterruptible
+
   def fail[A](e: Throwable): ZIO[R, E, A] =
     ZIO.fail(e).mapError(liftError)
 
@@ -106,14 +109,21 @@ class Zio2Effect[R, E](rts: Runtime[R], liftError: Throwable => E, unliftError: 
       rts.unsafe
         .fork(m)
         .unsafe
-        .addObserver(exit => callback(exit.toEither))
+        .addObserver(exit => callback(exitEither(exit)))
     }
 
   def run[A](m: ZIO[R, E, A]): Either[Throwable, A] =
     Unsafe.unsafe { implicit u: Unsafe =>
-      rts.unsafe
-        .run(m)
-        .toEither
+      exitEither(rts.unsafe.run(m))
+    }
+
+  /** `Exit.toEither` preserves the ZIO trace by wrapping the original error in
+    * `FiberFailure`. Spoonbill recovery matches that original error.
+    */
+  private def exitEither[A](exit: zio.Exit[E, A]): Either[Throwable, A] =
+    exit match {
+      case zio.Exit.Success(value) => Right(value)
+      case zio.Exit.Failure(cause) => Left(cause.squashWith(unliftError))
     }
 
   def toFuture[A](m: ZIO[R, E, A]): Future[A] =

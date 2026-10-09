@@ -233,18 +233,16 @@ final class ZioHttpSpoonbillSpec extends AnyFlatSpec with Matchers {
     val fromClientQueue = Queue[AppTask, Bytes]()
     val toClientStream = ZStream.empty
     val send = (_: ChannelEvent[WebSocketFrame]) => ZIO.unit
-    val receiveAll = (handler: PartialFunction[ChannelEvent[WebSocketFrame], AppTask[Unit]]) =>
-      handler.applyOrElse(
-        ChannelEvent.Read(WebSocketFrame.Text("client-msg")),
-        (_: ChannelEvent[WebSocketFrame]) => ZIO.unit
-      )
-
     val program = for {
+      received <- Promise.make[Throwable, Bytes]
+      receiveAll = (handler: PartialFunction[ChannelEvent[WebSocketFrame], AppTask[Unit]]) =>
+        handler(ChannelEvent.Read(WebSocketFrame.Text("client-msg"))) *>
+          fromClientQueue.stream.pull().flatMap {
+            case Some(bytes) => received.succeed(bytes).unit
+            case None => received.fail(new RuntimeException("Expected message from websocket")).unit
+          }
       _ <- spoonbill.runSocket(send, receiveAll, toClientStream, fromClientQueue, silentReporter)
-      message <- fromClientQueue.stream.pull().flatMap {
-                   case Some(bytes) => ZIO.succeed(bytes)
-                   case None        => ZIO.fail(new RuntimeException("Expected message from websocket"))
-                 }.timeoutFail(new RuntimeException("Timed out waiting for message"))(Duration.fromSeconds(1))
+      message <- received.await.timeoutFail(new RuntimeException("Timed out waiting for message"))(Duration.fromSeconds(1))
     } yield message.asUtf8String
 
     val result = Unsafe.unsafe { implicit unsafe =>

@@ -31,6 +31,7 @@ See the [examples](examples/) directory for working projects.
 
 * [Docs](https://natural-transformation.com/open-source/spoonbill/overview)
 * [User guide](docs/user-guide.adoc)
+* [Migrating to 3.0](docs/migration-3.0.md)
 * [Migrating to 2.0](docs/migration-2.0.md)
 * [Changelog](CHANGELOG.md)
 

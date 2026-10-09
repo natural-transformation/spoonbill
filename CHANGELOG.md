@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.0.0
+
+This release makes WebSocket response lifetime explicit. Recompile all integrations
+and follow the [migration guide](docs/migration-3.0.md).
+
+### Changed
+
+- Replace the HTTP-shaped WebSocket result with `Duplex` and `SendThenClose`.
+  Adapters choose connection behavior from the public result and execute its
+  idempotent resource finalizer on termination or abandoned setup.
+- Preserve output disposition and resource ownership through `mapOutput` and
+  `withOutput`.
+- Add bounded WebSocket setup ownership in the HTTP integrations and cancellation
+  masking for effect-safe cleanup.
+
+### Fixed
+
+- Deliver the reload frame for guarded missing local views before transport close.
+- Release pending output and acquired resources on input termination, failed
+  writes, peer Close, and abandoned upgrades.
+- Preserve lazy-effect execution context and complete shared cleanup when its
+  first caller is interrupted.
+
 ## 2.0.0 — 2026-10-09
 
 Spoonbill 2.0 adds typed actions, guarded browser sessions, protected presentation

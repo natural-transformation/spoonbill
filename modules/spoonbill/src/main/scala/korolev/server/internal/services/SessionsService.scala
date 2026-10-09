@@ -126,7 +126,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   def getApp(qsid: Qsid): F[Option[App]] =
     apps.getImmediately(qsid)
 
-  def createAppIfNeeded(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[Unit] =
+  def createAppIfNeeded(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[SessionStart[F]] =
     config.sessionAccessControl match {
       case Some(control) => createGuarded(qsid, rh, incomingStream, control)
       case None => createLegacy(qsid, rh, incomingStream)
@@ -154,7 +154,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
     }
 
-  private def createGuarded(qsid: Qsid, rh: Head, incoming: Stream[F, String], control: SessionAccessControl[F, S]): F[Unit] = {
+  private def createGuarded(qsid: Qsid, rh: Head, incoming: Stream[F, String], control: SessionAccessControl[F, S]): F[SessionStart[F]] = {
     val connectionId = ConnectionId.fromUuid(UUID.randomUUID())
     val live = new AtomicBoolean(true)
     val cleaned = new AtomicBoolean(false)
@@ -225,7 +225,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       } yield ()
     }
 
-    def create(): F[Unit] = for {
+    def create(): F[SessionStart[F]] = for {
       localExists <- stateStorage.exists(qsid.deviceId, qsid.sessionId)
       guard <- required(
         if (localExists) control.open(qsid, rh, connectionId)
@@ -333,21 +333,24 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _ <- ready.put((), ())
       _ <- frontend.readyForUserEvents()
       _ <- touch()
-    } yield ()
+      // cleanup is idempotent. The thunk stays lazy so constructing the result
+      // does not release a session that is about to be attached.
+    } yield SessionStart.Attached(frontend.outgoingMessages, () => cleanup())
 
     Effect[F].delay {
       if (config.sessionIdleTimeout.toMillis <= 0 || guardedAttachments.putIfAbsent(qsid, connectionId).nonEmpty)
         throw new SessionAccessDenied
     }.flatMap { _ =>
-      retryStorageRemoval(qsid).flatMap(_ => create()).recoverF {
-        // Legacy/ephemeral views still require their original local baseline.
-        case MissingLocalView => cleanup()
-        case error => cleanup().flatMap(_ => Effect[F].fail(error))
+      retryStorageRemoval(qsid).flatMap(_ => create()).recoverF[SessionStart[F]] {
+        // A missing baseline can be discovered after the guard is acquired.
+        // Cleanup still closes that guard; the successful recovery result is reload.
+        case MissingLocalView => cleanup().map(_ => SessionStart.Reload(): SessionStart[F])
+        case error            => cleanup() *> Effect[F].fail(error)
       }
     }
   }
 
-  private def createLegacy(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[Unit] = {
+  private def createLegacy(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[SessionStart[F]] = {
     val (incomingConsumed, managedIncomingStream) = incomingStream.handleConsumed
     val incomingHub: Hub[F, String]               = Hub(managedIncomingStream)
 
@@ -475,21 +478,31 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
     }
 
+    // Canceling this connection's input is the legacy close signal. Keep the
+    // thunk lazy: eager effects would otherwise drop the stream at construction.
+    def attached(app: App): SessionStart[F] = {
+      val outgoing = app.frontend.outgoingMessages
+      val release = () => incomingStream.cancel().recover { case _ => () } *>
+        outgoing.cancel().recover { case _ => () }
+      SessionStart.Attached(outgoing, release)
+    }
     stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
       case true =>
         // State exists because it was created on static page
         // rendering phase (see ServerSideRenderingService)
         apps
           .getFill(qsid)(create())
-          .unit
+          .map[SessionStart[F]](attached)
       case false =>
         // State can be missing after a restart; rebuild it from the request.
+        // A failed rebuild is the recognized reload recovery, not an access failure.
         config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
         initAppState(qsid, rh)
-          .flatMap(_ => apps.getFill(qsid)(create()).unit)
+          .flatMap(_ => apps.getFill(qsid)(create()))
+          .map[SessionStart[F]](attached)
           .recover { case error =>
             config.reporter.error(s"Unable to rebuild state for $qsid", error)
-            ()
+            SessionStart.Reload()
           }
     }
   }
