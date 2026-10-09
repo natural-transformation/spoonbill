@@ -15,6 +15,19 @@ zero or a passed allocation gate. Setup latency is recorded separately and is
 not warmed. Teardown is intentionally excluded: baseline physical closure is
 broken, so counting its teardown as equivalent completed work would mislead.
 
+The fixture also records JVM compilation-time totals before/after measurement
+and their delta, plus aggregate GC collection-count/time deltas. These counters
+bracket the measured window; their snapshot allocations stay outside the
+allocation counter interval. Unsupported counters are `null`. Compilation time
+has millisecond resolution: a nonzero delta establishes ongoing compilation,
+whereas zero alone does not establish that every relevant method is fully warmed.
+Use these diagnostics to compare warmup lengths with unchanged product code and
+preserve earlier raw records; do not silently discard blocks that include GC/JIT.
+Warmup and measurement call the same `runBatch` loop, including both clock reads
+and sample-array writes. Earlier records produced with separate untimed warmup
+and timed measurement loops do not establish that the measured loop was warmed;
+retain them separately when evaluating this corrected fixture.
+
 Compile in each checkout using its pinned Nix flake. Add the common source and
 exactly one factory via session-local sbt settings; no build-file edits:
 
@@ -55,7 +68,9 @@ deadlines. Dedicated client workers and the asynchronous channel group close in
 
 `run.mjs` automates independent JVM pairs with seeded, balanced ordering and
 records artifact-content, fixture and flake hashes. Its optional final argument
-`core` selects the guarded-session fixture (2,000 warmup/measured operations).
+`core` selects the guarded-session fixture (10,000 warmup and 5,000 measured
+operations). Transport runs warm 40,000 messages across the configured connections
+and measure 10,000 per connection. Both phases execute the same timed batch loop.
 Use `comparison` and then `calibration` modes with unchanged compiled artifacts.
 `analyze.mjs comparison.jsonl calibration.jsonl report.json` checks provenance
 and completed work and produces conservative paired-block bootstrap intervals.

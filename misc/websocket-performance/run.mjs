@@ -32,6 +32,8 @@ const artifacts = classpaths.map(artifactHash);
 const sourceFile = suite === 'core' ? 'CoreGuardedSessionBenchmark.scala' : 'StandaloneTransportBenchmark.scala';
 writeFileSync(destination, JSON.stringify({kind: 'metadata', mode, suite, blocks, cells, jvmOptions: options,
   artifactSha256: artifacts, fixtureSha256: createHash('sha256').update(readFileSync(new URL(sourceFile, import.meta.url))).digest('hex'),
+  warmup: suite === 'core' ? {perProcess: 10000} : {totalAcrossConnections: 40000},
+  measurement: suite === 'core' ? {perProcess: 5000} : {perConnection: 10000},
   flakeLockSha256: createHash('sha256').update(readFileSync('flake.lock')).digest('hex'),
   runtime: {node: process.version, platform: process.platform, arch: process.arch}}) + '\n');
 for (const [connections, bytes] of cells) {
@@ -49,8 +51,8 @@ for (const [connections, bytes] of cells) {
       const selected = mode === 'calibration' ? 0 : variant;
       const label = variant ? 'candidate' : 'baseline';
       const invocation = suite === 'core'
-        ? ['spoonbill.performance.CoreGuardedSessionBenchmark', label, artifacts[selected], String(block), '2000', '2000']
-        : ['spoonbill.performance.StandaloneTransportBenchmark', label, artifacts[selected], String(block), String(connections), String(bytes), '5000', '1000'];
+        ? ['spoonbill.performance.CoreGuardedSessionBenchmark', label, artifacts[selected], String(block), '10000', '5000']
+        : ['spoonbill.performance.StandaloneTransportBenchmark', label, artifacts[selected], String(block), String(connections), String(bytes), String(Math.ceil(40000 / connections)), '10000'];
       const result = spawnSync('java', [...options, '-cp', classpaths[selected], ...invocation], {encoding: 'utf8', timeout: 180000});
       if (result.error || result.status !== 0) {
         appendFileSync(destination, JSON.stringify({kind: 'failure', block, connections, bytes, label,

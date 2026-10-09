@@ -169,7 +169,22 @@ object standalone {
   ): Stream[F, B] =
     new Stream[F, B] {
       @volatile private var phase = -1
+      private val mapFrame: Option[A] => Option[B] = frame =>
+        closing.get() match {
+          case 2 =>
+            phase = 2
+            None
+          case 0 if frame.nonEmpty => frame.map(convert)
+          case _ =>
+            phase = 1
+            Some(closeFrame)
+        }
+
       def pull(): F[Option[B]] =
+        if (phase == 0) Effect[F].map(frames.pull())(mapFrame)
+        else pullLifecycle()
+
+      private def pullLifecycle(): F[Option[B]] =
         phase match {
           case -1 => attach().flatMap { attached =>
             if (attached) {
@@ -185,18 +200,7 @@ object standalone {
             phase = 2
             close().as(None)
           }
-          case _ =>
-            frames.pull().map { frame =>
-              closing.get() match {
-                case 2 =>
-                  phase = 2
-                  None
-                case 0 if frame.nonEmpty => frame.map(convert)
-                case _ =>
-                  phase = 1
-                  Some(closeFrame)
-              }
-            }
+          case _ => Effect[F].map(frames.pull())(mapFrame)
         }
       def cancel(): F[Unit] = Effect[F].delayAsync {
         phase = 2

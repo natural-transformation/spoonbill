@@ -64,10 +64,16 @@ The first calibrated guarded-session comparison used 30 independent pairs,
 verified guard closure, absent application, and zero active inputs/guards.
 Median latency was essentially unchanged, mean allocation per completed operation
 was about 0.16% lower, and latency/CPU/throughput confidence intervals included
-zero change. Under the plan's strict zero-slowdown criterion the result is
-**inconclusive**, not a performance pass. It does not establish a measured
-regression either. Transport measurements and their exact scope are recorded
-separately when complete.
+zero change. Under the plan's strict zero-slowdown criterion that result was
+**inconclusive**, not a performance pass.
+
+The initial transport comparison reported single-connection regressions.
+Diagnostics subsequently found JIT compilation inside the measurement window:
+warmup and measurement used different loop bodies. Those records are retained as
+diagnostic evidence, not used to certify steady-state performance. Both fixtures
+now warm the same timed loop, collect JIT/GC counters, and use longer windows. The
+standalone output mapper also caches its callback per connection and keeps the
+normal pull path small. Corrected calibrated comparisons are pending.
 
 These checks do not prove performance for all host applications, networks, effect
 runtimes, or idle-connection populations. A passing functional test is not

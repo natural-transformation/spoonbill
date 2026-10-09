@@ -4,6 +4,7 @@ import java.lang.management.ManagementFactory
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
+import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 import spoonbill.Qsid
 import spoonbill.data.Bytes
@@ -132,9 +133,28 @@ object CoreGuardedSessionBenchmark {
       Option(backgroundFailure.get()).foreach(error => throw error)
     }
 
-    var index = 0
-    while (index < warmup) { operation(); index += 1 }
+    def runBatch(count: Int, samples: Array[Long]): Unit = {
+      var index = 0
+      while (index < count) {
+        val operationStarted = System.nanoTime()
+        operation()
+        samples(index) = System.nanoTime() - operationStarted
+        index += 1
+      }
+    }
+
     val cpuBean = ManagementFactory.getOperatingSystemMXBean.asInstanceOf[com.sun.management.OperatingSystemMXBean]
+    val compilationBean = Option(ManagementFactory.getCompilationMXBean).filter(_.isCompilationTimeMonitoringSupported)
+    val gcBeans = ManagementFactory.getGarbageCollectorMXBeans.asScala.toVector
+    def compilationTimeMs(): Long = compilationBean.fold(-1L)(_.getTotalCompilationTime)
+    def gcTotals(): (Long, Long) = {
+      val counts = gcBeans.map(_.getCollectionCount)
+      val times = gcBeans.map(_.getCollectionTime)
+      (if (counts.exists(_ < 0)) -1L else counts.sum, if (times.exists(_ < 0)) -1L else times.sum)
+    }
+    // Initialize diagnostic access outside both the warmup and measurement.
+    compilationTimeMs()
+    gcTotals()
     val allocationBean = ManagementFactory.getThreadMXBean.asInstanceOf[com.sun.management.ThreadMXBean]
     if (allocationBean.isThreadAllocatedMemorySupported && !allocationBean.isThreadAllocatedMemoryEnabled)
       allocationBean.setThreadAllocatedMemoryEnabled(true)
@@ -143,25 +163,27 @@ object CoreGuardedSessionBenchmark {
       val value = method.invoke(allocationBean).asInstanceOf[java.lang.Long].longValue
       Option.when(value >= 0)(value)
     }
+    // Warm the exact timed loop, including nanoTime and the latency store.
+    runBatch(warmup, new Array[Long](warmup))
     val samples = new Array[Long](iterations)
     val bytesBefore = deliveredBytes
+    val compilationBefore = compilationTimeMs()
+    val (gcCountBefore, gcTimeBefore) = gcTotals()
     val allocationsBefore = allocated()
     val cpuBefore = cpuBean.getProcessCpuTime
     val started = System.nanoTime()
-    index = 0
-    while (index < iterations) {
-      val operationStarted = System.nanoTime()
-      operation()
-      samples(index) = System.nanoTime() - operationStarted
-      index += 1
-    }
+    runBatch(iterations, samples)
     val elapsed = System.nanoTime() - started
     val cpu = cpuBean.getProcessCpuTime - cpuBefore
     val allocations = for { before <- allocationsBefore; after <- allocated() } yield after - before
+    val compilationAfter = compilationTimeMs()
+    val (gcCountAfter, gcTimeAfter) = gcTotals()
     require(opened.get() == warmup + iterations && closed.get() == opened.get(), "Guard totals did not balance")
     java.util.Arrays.sort(samples)
     def percentile(p: Double): Long = samples(math.min(samples.length - 1, math.ceil(p * samples.length).toInt - 1))
+    def counter(value: Long): String = if (value < 0) "null" else value.toString
+    def delta(before: Long, after: Long): String = if (before < 0 || after < 0) "null" else (after - before).toString
     def quoted(value: String): String = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-    println(s"""{"schema":"spoonbill-core-guarded-session-v1","variant":${quoted(variant)},"identity":${quoted(identity)},"block":${quoted(block)},"warmupIterations":$warmup,"iterations":$iterations,"completedOperations":$iterations,"elapsedNs":$elapsed,"operationsPerSecond":${iterations.toDouble * 1e9 / elapsed},"operationLatencyNs":{"p50":${percentile(.50)},"p95":${percentile(.95)},"p99":${percentile(.99)}},"processCpuNs":$cpu,"processCpuNsPerOperation":${cpu.toDouble / iterations},"jvmTotalAllocatedBytes":${allocations.fold("null")(_.toString)},"allocatedBytesPerOperation":${allocations.fold("null")(value => (value.toDouble / iterations).toString)},"initialOutputBytes":${deliveredBytes - bytesBefore},"guardsOpened":${opened.get()},"guardsClosed":${closed.get()},"remainingGuards":${activeGuards.get()},"remainingInputs":${activeInputs.get()},"remainingApplications":0,"executionContext":"direct-serial","teardownMeasured":true,"javaVersion":${quoted(System.getProperty("java.version"))}}""")
+    println(s"""{"schema":"spoonbill-core-guarded-session-v1","variant":${quoted(variant)},"identity":${quoted(identity)},"block":${quoted(block)},"warmupIterations":$warmup,"iterations":$iterations,"completedOperations":$iterations,"elapsedNs":$elapsed,"operationsPerSecond":${iterations.toDouble * 1e9 / elapsed},"operationLatencyNs":{"p50":${percentile(.50)},"p95":${percentile(.95)},"p99":${percentile(.99)}},"processCpuNs":$cpu,"processCpuNsPerOperation":${cpu.toDouble / iterations},"jvmTotalAllocatedBytes":${allocations.fold("null")(_.toString)},"allocatedBytesPerOperation":${allocations.fold("null")(value => (value.toDouble / iterations).toString)},"jitCompilationTimeMsBefore":${counter(compilationBefore)},"jitCompilationTimeMsAfter":${counter(compilationAfter)},"jitCompilationTimeMsDelta":${delta(compilationBefore, compilationAfter)},"gcCollectionCountDelta":${delta(gcCountBefore, gcCountAfter)},"gcCollectionTimeMsDelta":${delta(gcTimeBefore, gcTimeAfter)},"initialOutputBytes":${deliveredBytes - bytesBefore},"guardsOpened":${opened.get()},"guardsClosed":${closed.get()},"remainingGuards":${activeGuards.get()},"remainingInputs":${activeInputs.get()},"remainingApplications":0,"executionContext":"direct-serial","teardownMeasured":true,"javaVersion":${quoted(System.getProperty("java.version"))}}""")
   }
 }

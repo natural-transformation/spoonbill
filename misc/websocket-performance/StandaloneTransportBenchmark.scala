@@ -9,6 +9,7 @@ import java.util.Arrays
 import java.util.concurrent.{Callable, CountDownLatch, Executors, TimeUnit}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
+import scala.jdk.CollectionConverters.*
 import spoonbill.effect.Effect
 import spoonbill.server.{HttpRequest, HttpResponse, SpoonbillService, WebSocketRequest, WebSocketResponse, standalone}
 
@@ -49,6 +50,17 @@ object StandaloneTransportBenchmark {
     val setupSamples = new Array[Long](connections)
     val cpuBean = ManagementFactory.getOperatingSystemMXBean.asInstanceOf[com.sun.management.OperatingSystemMXBean]
     val allocationBean = ManagementFactory.getThreadMXBean.asInstanceOf[com.sun.management.ThreadMXBean]
+    val compilationBean = Option(ManagementFactory.getCompilationMXBean).filter(_.isCompilationTimeMonitoringSupported)
+    val gcBeans = ManagementFactory.getGarbageCollectorMXBeans.asScala.toVector
+    def compilationTimeMs(): Long = compilationBean.fold(-1L)(_.getTotalCompilationTime)
+    def gcTotals(): (Long, Long) = {
+      val counts = gcBeans.map(_.getCollectionCount)
+      val times = gcBeans.map(_.getCollectionTime)
+      (if (counts.forall(_ >= 0)) counts.sum else -1L, if (times.forall(_ >= 0)) times.sum else -1L)
+    }
+    // Initialize management counters before warmup, not during the measured block.
+    compilationTimeMs()
+    gcTotals()
     if (allocationBean.isThreadAllocatedMemorySupported && !allocationBean.isThreadAllocatedMemoryEnabled)
       allocationBean.setThreadAllocatedMemoryEnabled(true)
     // Resolve once, outside the hot path. Older JVMs report null instead of
@@ -108,23 +120,29 @@ object StandaloneTransportBenchmark {
                 in.readFully(received)
                 require(Arrays.equals(payload, received), "Echo payload mismatch")
               }
-              var iteration = 0
-              while (iteration < warmup) { exchange(); iteration += 1 }
+              // Warm exactly the measured bytecode, including clocks and sample
+              // writes. A separate untimed loop leaves measured-loop OSR cold.
+              def runBatch(count: Int, timings: Array[Long]): Unit = {
+                var iteration = 0
+                while (iteration < count) {
+                  val started = System.nanoTime()
+                  exchange()
+                  timings(iteration) = System.nanoTime() - started
+                  iteration += 1
+                }
+              }
+              runBatch(warmup, new Array[Long](warmup))
               ready.countDown()
               require(go.await(120, TimeUnit.SECONDS), "Measurement did not start")
-              iteration = 0
-              while (iteration < measured) {
-                val started = System.nanoTime()
-                exchange()
-                samples(index)(iteration) = System.nanoTime() - started
-                iteration += 1
-              }
+              runBatch(measured, samples(index))
             } finally { ready.countDown(); done.countDown() }
           }
         })
       }
       require(ready.await(120, TimeUnit.SECONDS), "Warmup timed out")
       results.filter(_.isDone).foreach(_.get()) // Surface setup/warmup errors.
+      val compilationBefore = compilationTimeMs()
+      val (gcCountBefore, gcTimeBefore) = gcTotals()
       val allocationsBefore = allocated()
       val cpuBefore = cpuBean.getProcessCpuTime
       val started = System.nanoTime()
@@ -133,11 +151,16 @@ object StandaloneTransportBenchmark {
       val elapsed = System.nanoTime() - started
       val cpu = cpuBean.getProcessCpuTime - cpuBefore
       val allocations = for { before <- allocationsBefore; after <- allocated() } yield after - before
+      val compilationAfter = compilationTimeMs()
+      val (gcCountAfter, gcTimeAfter) = gcTotals()
       results.foreach(_.get(1, TimeUnit.SECONDS))
       val sorted = samples.flatten.sorted
       def percentile(p: Double): Long = sorted(math.min(sorted.length - 1, math.ceil(p * sorted.length).toInt - 1))
       def quoted(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-      println(s"""{"schema":"spoonbill-websocket-transport-v1","variant":${quoted(variant)},"identity":${quoted(identity)},"block":${quoted(block)},"connections":$connections,"payloadBytes":$payloadSize,"warmupPerConnection":$warmup,"messages":${sorted.length},"elapsedNs":$elapsed,"messagesPerSecond":${sorted.length.toDouble * 1e9 / elapsed},"roundTripLatencyNs":{"p50":${percentile(.50)},"p95":${percentile(.95)},"p99":${percentile(.99)}},"processCpuNs":$cpu,"jvmTotalAllocatedBytes":${allocations.fold("null")(_.toString)},"setupLatencyNs":${setupSamples.mkString("[", ",", "]")},"teardownMeasured":false,"javaVersion":${quoted(System.getProperty("java.version"))}}""")
+      def counter(value: Long): String = if (value < 0) "null" else value.toString
+      def delta(before: Long, after: Long): String =
+        if (before < 0 || after < before) "null" else (after - before).toString
+      println(s"""{"schema":"spoonbill-websocket-transport-v1","variant":${quoted(variant)},"identity":${quoted(identity)},"block":${quoted(block)},"connections":$connections,"payloadBytes":$payloadSize,"warmupPerConnection":$warmup,"messages":${sorted.length},"elapsedNs":$elapsed,"messagesPerSecond":${sorted.length.toDouble * 1e9 / elapsed},"roundTripLatencyNs":{"p50":${percentile(.50)},"p95":${percentile(.95)},"p99":${percentile(.99)}},"processCpuNs":$cpu,"jvmTotalAllocatedBytes":${allocations.fold("null")(_.toString)},"jitCompilationTimeMsBefore":${counter(compilationBefore)},"jitCompilationTimeMsAfter":${counter(compilationAfter)},"jitCompilationTimeMsDelta":${delta(compilationBefore, compilationAfter)},"gcCollectionCountDelta":${delta(gcCountBefore, gcCountAfter)},"gcCollectionTimeMsDelta":${delta(gcTimeBefore, gcTimeAfter)},"setupLatencyNs":${setupSamples.mkString("[", ",", "]")},"teardownMeasured":false,"javaVersion":${quoted(System.getProperty("java.version"))}}""")
     } finally {
       go.countDown()
       sockets.foreach(socket => try socket.close() catch { case _: Throwable => () })

@@ -11,7 +11,7 @@ function read(file, mode) {
   return {metadata, samples};
 }
 const comparison = read(comparisonFile, 'comparison'), calibration = read(calibrationFile, 'calibration');
-for (const key of ['suite', 'artifactSha256', 'fixtureSha256', 'flakeLockSha256', 'jvmOptions', 'runtime', 'cells'])
+for (const key of ['suite', 'artifactSha256', 'fixtureSha256', 'flakeLockSha256', 'jvmOptions', 'runtime', 'cells', 'warmup', 'measurement'])
   if (JSON.stringify(comparison.metadata[key]) !== JSON.stringify(calibration.metadata[key]))
     throw new Error(`Comparison/calibration provenance differs: ${key}`);
 const count = row => row.messages ?? row.completedOperations;
