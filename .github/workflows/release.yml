@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "The release version"
+        description: "Release version (for example, 2.0.0)"
         required: true
-        default: "1.18."
       branch:
         description: "The branch to release from"
         required: true
@@ -30,20 +29,24 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Determine release version
         id: set_version
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          # If triggered by workflow_dispatch, use the input 'version';
-          # otherwise, derive version from the GitHub release tag, stripping any leading "v".
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$REQUESTED_VERSION"
           else
-            # Remove leading 'v' from tag, e.g., 'v1.18.0' becomes '1.18.0'
-            TAG="${{ github.event.release.tag_name }}"
-            TAG="${TAG#v}"
-            echo "version=$TAG" >> $GITHUB_OUTPUT
+            version="${RELEASE_TAG#v}"
           fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected MAJOR.MINOR.PATCH with an optional prerelease suffix" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Nix (with flake support)
         uses: cachix/install-nix-action@v20
@@ -57,14 +60,6 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.PGP_PASSPHRASE }}
 
-      # Optional: Remove if confident in GPG import
-      - name: Show GPG user IDs
-        run: |
-          echo "fingerprint: ${{ steps.import_gpg.outputs.fingerprint }}"
-          echo "keyid:       ${{ steps.import_gpg.outputs.keyid }}"
-          echo "name:        ${{ steps.import_gpg.outputs.name }}"
-          echo "email:       ${{ steps.import_gpg.outputs.email }}"
-
       - name: Publish Signed Artifacts
         env:
           RELEASE_VERSION: ${{ steps.set_version.outputs.version }}
@@ -74,7 +69,7 @@ jobs:
           SONATYPE_STAGING_USERNAME: ${{ secrets.SONATYPE_STAGING_USERNAME }}
           SONATYPE_STAGING_PASSWORD: ${{ secrets.SONATYPE_STAGING_PASSWORD }}
         # publishes for Scala 3.
-        run: nix develop --command sbt publishSigned
+        run: nix develop --no-write-lock-file --command sbt --batch --supershell=false publishSigned
 
       - name: Sonatype Central Release
         env:
@@ -84,5 +79,4 @@ jobs:
           SONATYPE_CENTRAL_PASSWORD: ${{ secrets.SONATYPE_CENTRAL_PASSWORD }}
           SONATYPE_STAGING_USERNAME: ${{ secrets.SONATYPE_STAGING_USERNAME }}
           SONATYPE_STAGING_PASSWORD: ${{ secrets.SONATYPE_STAGING_PASSWORD }}
-        run: nix develop --command sbt sonatypeCentralRelease
-
+        run: nix develop --no-write-lock-file --command sbt --batch --supershell=false sonatypeCentralRelease
