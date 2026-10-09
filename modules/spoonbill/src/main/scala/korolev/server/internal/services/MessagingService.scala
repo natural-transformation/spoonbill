@@ -38,7 +38,9 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
   commonService: CommonService[F],
   sessionsService: SessionsService[F, _, _],
   compressionSupport: Option[DeflateCompressionService[F]],
-  orphanTopicTimeout: FiniteDuration
+  orphanTopicTimeout: FiniteDuration,
+  webSocketCompressionEnabled: Boolean = false,
+  orphanCleanupTiming: Option[MessagingService.OrphanCleanupTiming[F]] = None
 ) {
 
   import MessagingService._
@@ -50,7 +52,12 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     orphanCleanup: AtomicReference[Option[Scheduler.JobHandler[F, Unit]]]
   )
 
-  private val scheduler = Scheduler[F]
+  private val orphanTiming = orphanCleanupTiming.getOrElse(new OrphanCleanupTiming[F] {
+    private val scheduler = Scheduler[F]
+    def nowMillis(): Long = System.currentTimeMillis()
+    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] =
+      scheduler.scheduleOnce(delay)(job)
+  })
   private def runAsyncForget(effect: F[Unit]): Unit =
     Effect[F].runAsync(effect) {
       case Left(err) => reporter.error("Unhandled error", err)
@@ -178,7 +185,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     val (selectedProtocol, decoder, encoder) = {
       // Support for protocol compression. A client can tell us
       // it can decompress the messages.
-      if (protocols.contains(ProtocolJsonDeflate)) {
+      if (MessagingService.selectedProtocol(protocols, webSocketCompressionEnabled) == ProtocolJsonDeflate) {
         compressionSupport match {
           case Some(DeflateCompressionService(decoder, encoder)) =>
             (ProtocolJsonDeflate, decoder, encoder)
@@ -253,7 +260,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
         val entry = TopicEntry(
           queue = Queue[F, String](),
           subscribed = new AtomicBoolean(false),
-          lastActivityMillis = new AtomicLong(System.currentTimeMillis()),
+          lastActivityMillis = new AtomicLong(orphanTiming.nowMillis()),
           orphanCleanup = new AtomicReference(None)
         )
         longPollingTopics.putIfAbsent(qsid, entry) match {
@@ -288,11 +295,11 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     } else {
       for {
         _   <- cancelOrphanCleanup(entry)
-        _   <- Effect[F].delay(entry.lastActivityMillis.set(System.currentTimeMillis()))
-        job <- scheduler.scheduleOnce(orphanTopicTimeout) {
+        _   <- Effect[F].delay(entry.lastActivityMillis.set(orphanTiming.nowMillis()))
+        job <- orphanTiming.scheduleOnce(orphanTopicTimeout) {
                  Effect[F].delay {
                    if (!entry.subscribed.get()) {
-                     val elapsed = System.currentTimeMillis() - entry.lastActivityMillis.get()
+                     val elapsed = orphanTiming.nowMillis() - entry.lastActivityMillis.get()
                      if (elapsed >= orphanTopicTimeout.toMillis) {
                        reporter.debug(s"Remove orphan long-polling topic for $qsid")
                        longPollingTopics.remove(qsid)
@@ -309,8 +316,19 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
 
 private[spoonbill] object MessagingService {
 
+  /** Internal timing seam. Clock reads and scheduled callbacks must share the
+    * same timeline; tests can advance it without relying on wall-clock sleeps.
+    */
+  trait OrphanCleanupTiming[F[_]] {
+    def nowMillis(): Long
+    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
+  }
+
   private val ProtocolJsonDeflate = "json-deflate"
   private val ProtocolJson        = "json"
+
+  private[services] def selectedProtocol(protocols: Seq[String], compressionEnabled: Boolean): String =
+    if (compressionEnabled && protocols.contains(ProtocolJsonDeflate)) ProtocolJsonDeflate else ProtocolJson
 
   def SomeReloadMessageF[F[_]: Effect]: F[Option[String]] =
     Effect[F].pure(Option(Frontend.ReloadMessage))

@@ -41,15 +41,20 @@ abstract class StateStorage[F[_]: Effect, S] {
   def get(deviceId: DeviceId, sessionId: SessionId): F[StateManager[F]]
 
   /**
-   * Marks session to remove
+   * Marks a session for removal. Implementations must tolerate retries: a
+   * guarded session retries a failed removal before restoring the same view.
+   * Retrying a mark that already took effect must be safe.
    */
   def remove(deviceId: DeviceId, sessionId: SessionId): Unit
 }
 
 object StateStorage {
 
-  private[spoonbill] final class DefaultStateStorage[F[_]: Effect, S: StateSerializer](forDeletionCacheCapacity: Int)
+  private[spoonbill] final class DefaultStateStorage[F[_]: Effect, S: StateSerializer](
+    forDeletionCacheCapacity: Int, allowDevMode: Boolean = true)
       extends StateStorage[F, S] {
+
+    private def usesDevMode: Boolean = allowDevMode && DevMode.isActive
 
     private val cache = TrieMap.empty[String, StateManager[F]]
     private val forDeletionCache = {
@@ -64,7 +69,7 @@ object StateStorage {
 
     def exists(deviceId: DeviceId, sessionId: SessionId): F[Boolean] = {
       val key = mkKey(deviceId, sessionId)
-      if (DevMode.isActive) {
+      if (usesDevMode) {
         val file   = new File(DevMode.sessionsDirectory, key)
         val result = cache.contains(key) || forDeletionCache.containsKey(key) || file.exists()
         Effect[F].delay(result)
@@ -87,7 +92,7 @@ object StateStorage {
                 sm
               }
             case None =>
-              if (DevMode.isActive) {
+              if (usesDevMode) {
                 val directory = new File(DevMode.sessionsDirectory, key)
                 if (directory.exists()) {
                   val sm = new DevModeStateManager[F](directory)
@@ -102,7 +107,7 @@ object StateStorage {
 
     def create(deviceId: DeviceId, sessionId: SessionId, state: S): F[StateManager[F]] = {
       val key = mkKey(deviceId, sessionId)
-      if (DevMode.isActive) {
+      if (usesDevMode) {
         val directory = new File(DevMode.sessionsDirectory, key)
         val sm        = new DevModeStateManager[F](directory)
         cache.put(key, sm)
@@ -282,4 +287,10 @@ object StateStorage {
 
   def apply[F[_]: Effect, S: StateSerializer](forDeletionCacheCapacity: Int = 5000): StateStorage[F, S] =
     new DefaultStateStorage[F, S](forDeletionCacheCapacity)
+
+  /** Transient bootstrap storage, including in development mode. Never reads or
+    * writes the legacy serialized state cache; typed snapshots are independent.
+    */
+  def ephemeral[F[_]: Effect, S: StateSerializer](forDeletionCacheCapacity: Int = 5000): StateStorage[F, S] =
+    new DefaultStateStorage[F, S](forDeletionCacheCapacity, allowDevMode = false)
 }

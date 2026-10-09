@@ -66,7 +66,7 @@ class Issue14Spec extends AnyFlatSpec with Matchers with Eventually {
       reporter = Reporter.PrintReporter,
       scheduler = new Scheduler[Future](),
       createMiscProxy = (rc, k) =>
-        new StatefulRenderContext[Context.Binding[Future, Issue14Spec.S, Any]] { proxy =>
+        new StatefulRenderContext[Context.Binding[Future, Issue14Spec.S, Any]] {
           def currentContainerId: Id                                           = rc.currentContainerId
           def currentId: Id                                                    = rc.currentId
           def subsequentId: Id                                                 = rc.subsequentId

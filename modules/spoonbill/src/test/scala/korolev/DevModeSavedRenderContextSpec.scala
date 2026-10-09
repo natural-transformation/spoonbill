@@ -122,7 +122,7 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
         reporter = Reporter.PrintReporter,
         scheduler = new Scheduler[Future](),
         createMiscProxy = (rc, k) =>
-          new StatefulRenderContext[Context.Binding[Future, DevModeSavedRenderContextSpec.S, Any]] { proxy =>
+          new StatefulRenderContext[Context.Binding[Future, DevModeSavedRenderContextSpec.S, Any]] {
             def currentContainerId: Id                                           = rc.currentContainerId
             def currentId: Id                                                    = rc.currentId
             def subsequentId: Id                                                 = rc.subsequentId
@@ -211,5 +211,4 @@ object DevModeSavedRenderContextSpec {
       )
   }
 }
-
 

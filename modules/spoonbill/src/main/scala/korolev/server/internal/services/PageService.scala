@@ -33,8 +33,10 @@ final class PageService[F[_]: Effect, S, M](config: SpoonbillServiceConfig[F, S,
     val presetIds = if (config.presetIds) ",kid:true" else ""
     val wsFlag = if (config.webSocketEnabled) "" else ",ws:false"
     val wsProtocolsFlag = if (config.webSocketProtocolsEnabled) "" else ",wsp:false"
+    val wsCompressionFlag = if (config.webSocketCompressionEnabled) ",wsc:true" else ""
+    val authFlag = if (config.sessionAccessControl.nonEmpty) ",auth:true" else ""
     val kfg =
-      s"window['kfg']={sid:'${qsid.sessionId}',r:'${(rp / "").mkString}',clw:'$clw',heartbeat:$heartbeat$presetIds$wsFlag$wsProtocolsFlag}"
+      s"window['kfg']={sid:'${qsid.sessionId}',r:'${(rp / "").mkString}',clw:'$clw',heartbeat:$heartbeat$presetIds$wsFlag$wsProtocolsFlag$wsCompressionFlag$authFlag}"
 
     rc.openNode(XmlNs.html, "script")
     rc.addTextNode(kfg)

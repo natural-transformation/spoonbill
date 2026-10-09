@@ -8,7 +8,11 @@ export const CallbackType = {
   HISTORY: 3, // URL
   EVALJS_RESPONSE: 4, // `$descriptor:$status:$value`
   EXTRACT_EVENT_DATA_RESPONSE: 5, // `$descriptor:$dataJson`
-  HEARTBEAT: 6 // `$descriptor`
+  HEARTBEAT: 6, // `$descriptor`
+  VIEW_EVENT: 7, // connection:renderRevision:callback:args
+  SENSITIVE_ACK: 8, // connection:presentation:region:ok|failed (never payload)
+  SENSITIVE_CLEARED: 9, // connection:presentation:region
+  SENSITIVE_DEPARTURE: 10 // attempted departure counter; no URL or payload
 };
 
 /** @enum {number} */
@@ -49,6 +53,8 @@ export class Spoonbill {
     this.callback = callback;
     /** @type {Object<Event>} */
     this.eventData = {};
+    /** @type {boolean} */
+    this._resettingView = false;
 
     this.listenRoot = (name, preventDefault) => {
       var listener = (event) => {
@@ -59,6 +65,13 @@ export class Spoonbill {
           (event.composedPath && event.composedPath()) ||
           event.path ||
           null;
+        // Closed shadow events retarget to their region host. Do not put these
+        // events in the extraction cache or dispatch ancestor application actions.
+        if (path && path.some(node => node && node.nodeType === 1 && node.localName === 'sb-secret')) return;
+        if (!path) {
+          for (let node = event.target; node; node = node.parentNode)
+            if (node.nodeType === 1 && node.localName === 'sb-secret') return;
+        }
         if (path && path.length) {
           for (let i = 0; i < path.length; i++) {
             const node = path[i];
@@ -80,8 +93,31 @@ export class Spoonbill {
         if (target && target.vId) {
           let ecKey = eventCounterKey(target.vId, event.type);
           let ec = this.eventCounters[ecKey] ?? 0;
-          this.eventData[ecKey] = event;
-          this.callback(CallbackType.DOM_EVENT, ec + ':' + target.vId + ':' + event.type);
+          // Named form controls can shadow native methods and getters. Resolve
+          // these through their prototypes so valid field names remain usable.
+          const actionFields = event.type === 'submit'
+            ? Element.prototype.getAttribute.call(target, 'data-spoonbill-action-fields') : null;
+          if (actionFields && target instanceof HTMLFormElement) {
+            // Capture declared values now. Never retain a credential-bearing
+            // submit event for later extraction or automatic reconnect replay.
+            delete this.eventData[ecKey];
+            const fields = JSON.parse(actionFields);
+            const values = [];
+            const controls = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get.call(target);
+            for (let i = 0; i < fields.length; i++) {
+              const field = fields[i];
+              const submitter = event['submitter'];
+              const control = submitter && submitter['name'] === field[0]
+                ? submitter : HTMLFormControlsCollection.prototype.namedItem.call(controls, field[0]);
+              if (!control) continue;
+              const value = field[1] === 'checkbox' ? String(control.checked) : String(control.value);
+              values.push(encodeURIComponent(field[0]) + '=' + encodeURIComponent(value));
+            }
+            this.callback(CallbackType.DOM_EVENT, ec + ':' + target.vId + ':submit:' + values.join('&'));
+          } else {
+            this.eventData[ecKey] = event;
+            this.callback(CallbackType.DOM_EVENT, ec + ':' + target.vId + ':' + event.type);
+          }
         }
       };
       // Attach to document to avoid missing bubbling events on <html>.
@@ -143,6 +179,25 @@ export class Spoonbill {
   resetEventCounters() {
     this.eventData = {};
     this.eventCounters = {};
+  }
+
+  /** Replace the presentation from a freshly authorized, complete render.
+   * Event payloads and the old DOM registry are discarded, never replayed.
+   */
+  resetView(data) {
+    this.resetEventCounters();
+    const root = document.documentElement;
+    while (root.attributes.length > 0) root.removeAttribute(root.attributes[0].name);
+    root.replaceChildren();
+    this.root = root;
+    this.els = { '1': root };
+    root.vId = '1';
+    this._resettingView = true;
+    try {
+      this.modifyDom(data);
+    } finally {
+      this._resettingView = false;
+    }
   }
 
   /** @param {?HTMLElement} rootNode */
@@ -220,7 +275,15 @@ export class Spoonbill {
       newElement;
     if (!parent) return;
     if (xmlNs === 0) {
-      newElement = document.createElement(tag);
+      if (this._resettingView && tag.toLowerCase() === 'script') {
+        // Parsed script nodes are inert. Rebuilding the head must not execute
+        // the bootstrap bundle again or create a second connection/bridge.
+        const template = document.createElement('template');
+        template.innerHTML = '<script></script>';
+        newElement = template.content.firstChild;
+      } else {
+        newElement = document.createElement(tag);
+      }
     } else {
       newElement = document.createElementNS(xmlNs, tag);
     }

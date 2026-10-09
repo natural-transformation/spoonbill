@@ -1,5 +1,6 @@
 const MIN_RECONNECT_TIMEOUT = 200;
 const MAX_RECONNECT_TIMEOUT = 5000;
+const MAX_PENDING_SENDS = 128;
 
 /** @enum {number} */
 export const ConnectionType = {
@@ -26,6 +27,7 @@ export class Connection {
 
     this._hostPort = location.host;
     this._useSSL = location.protocol === "https:";
+    this._location = location;
 
     this._reconnectTimeout = MIN_RECONNECT_TIMEOUT;
     /** @type {?WebSocket} */
@@ -34,6 +36,9 @@ export class Connection {
     this._textEncoder = null;
     const wsEnabled = !(options && options['ws'] === false);
     this._webSocketProtocolsEnabled = !(options && options['wsp'] === false);
+    this._webSocketCompressionEnabled = options && options['wsc'] === true;
+    this._guarded = options && options['auth'] === true;
+    this._committingAuthentication = false;
     this._webSocketsSupported = wsEnabled && window.WebSocket !== undefined;
     this._connectionType = ConnectionType.LONG_POLLING;
     this._wasConnected = false;
@@ -44,10 +49,12 @@ export class Connection {
 
     /** @type {?function(string)} */
     this._send = null;
+    this._clearPendingSends = () => {};
     this._dispatcher = window.document.createDocumentFragment();
   }
 
   get dispatcher() { return this._dispatcher }
+  get authenticationPending() { return this._committingAuthentication }
 
   /**
    * @param {string} type
@@ -71,12 +78,13 @@ export class Connection {
   _connectUsingConnectionType(connectionType) {
     switch (connectionType) {
       case ConnectionType.LONG_POLLING:
-        this._connectUsingLongPolling();
+        if (this._guarded) this._onError();
+        else this._connectUsingLongPolling();
         break;
       case ConnectionType.WEB_SOCKET:
         this._webSocketsSupported
           ? this._connectUsingWebSocket()
-          : this._connectUsingLongPolling();
+          : (this._guarded ? this._onError() : this._connectUsingLongPolling());
         break;
     }
   }
@@ -84,17 +92,36 @@ export class Connection {
   /** @private */
   _connectUsingWebSocket() {
 
+    this._clearPendingSends();
+
     let messages = []; // Message processing queue
     let url = (this._useSSL ? "wss://" : "ws://") + this._hostPort;
     let path = this._serverRootPath + `bridge/web-socket/${this._sessionId}`;
     let uri = url + path;
+    if (this._guarded) {
+      // Keep application routing separate from the transport endpoint. Read the
+      // current location on every reconnect, including history/query changes.
+      // Location.pathname is already URL-encoded. Normalize the configured
+      // mount the same way before comparing/slicing (spaces, Unicode, or an
+      // already-encoded mount), without changing legacy socket URL construction.
+      const normalizeEscapes = value => value.replace(/%[0-9a-f]{2}/gi, escape => escape.toUpperCase());
+      const mount = normalizeEscapes(new URL(this._serverRootPath, url).pathname).replace(/\/$/, '');
+      const pathname = this._location.pathname || '/';
+      const comparablePathname = normalizeEscapes(pathname);
+      if (mount && comparablePathname !== mount && !comparablePathname.startsWith(mount + '/')) {
+        this._onError();
+        return;
+      }
+      const applicationPath = (pathname.slice(mount.length) || '/') + (this._location.search || '');
+      uri += '?__spoonbill_location=' + encodeURIComponent(applicationPath);
+    }
 
     let protocols = null;
 
     // Some servers do not echo Sec-WebSocket-Protocol; allow disabling negotiation.
     if (this._webSocketProtocolsEnabled) {
       protocols = [ 'json' ];
-      if (typeof CompressionStream != 'undefined') {
+      if (this._webSocketCompressionEnabled && typeof CompressionStream != 'undefined') {
         protocols.push('json-deflate');
       }
     }
@@ -106,23 +133,71 @@ export class Connection {
     this._webSocket.binaryType = 'blob';
     // Cache typed reference; protocol is negotiated once per connection.
     const webSocketWithProtocol = /** @type {{protocol: string}} */ (this._webSocket);
-    this._send = async (message) => {
-      let blob = new Blob([this._textEncoder.encode(message)]);
-      if (webSocketWithProtocol.protocol == 'json-deflate') {
-        let stream = /** @type {{stream: function(): *}} */ (blob)
-          .stream()
-          .pipeThrough(new CompressionStream('deflate-raw'))
-        blob = await new Response(stream).blob();
+    const sendingSocket = this._webSocket;
+    // Compression must preserve callback order: an older user action cannot
+    // cross a departure/revalidation request. Each physical socket owns a
+    // bounded, releasable queue; a replacement never waits for its compressor.
+    const pendingSends = [];
+    let sending = false;
+    let sendsClosed = false;
+    const clearPendingSends = () => {
+      sendsClosed = true;
+      for (const item of pendingSends.splice(0)) { item.message = null; item.resolve(); }
+    };
+    this._clearPendingSends = clearPendingSends;
+    const canSend = () => !sendsClosed && !this._committingAuthentication &&
+      sendingSocket === this._webSocket && sendingSocket.readyState === WebSocket.OPEN;
+    const drainSends = async () => {
+      if (sending) return;
+      sending = true;
+      try {
+        while (pendingSends.length && canSend()) {
+          const item = pendingSends.shift();
+          try {
+            let blob = new Blob([this._textEncoder.encode(item.message)]);
+            item.message = null;
+            if (webSocketWithProtocol.protocol == 'json-deflate') {
+              const stream = /** @type {{stream: function(): *}} */ (blob)
+                .stream().pipeThrough(new CompressionStream('deflate-raw'));
+              blob = await new Response(stream).blob();
+            }
+            if (canSend()) sendingSocket.send(blob);
+          } finally { item.message = null; item.resolve(); }
+        }
+        if (!canSend()) clearPendingSends();
+      } catch (_) {
+        clearPendingSends();
+        sendingSocket.close();
+      } finally { sending = false; }
+    };
+    this._send = message => {
+      if (!canSend()) return Promise.resolve();
+      if (pendingSends.length >= MAX_PENDING_SENDS) {
+        clearPendingSends();
+        sendingSocket.close();
+        return Promise.resolve();
       }
-      this._webSocket.send(blob);
-    }
+      return new Promise(resolve => {
+        pendingSends.push({message, resolve});
+        drainSends();
+      });
+    };
     this._connectionType = ConnectionType.WEB_SOCKET;
 
-    this._webSocket.addEventListener('open', (event) => this._onOpen());
-    this._webSocket.addEventListener('close', (event) => this._onClose());
-    this._webSocket.addEventListener('error', (event) => this._onError());
+    this._webSocket.addEventListener('open', (event) => {
+      if (sendingSocket === this._webSocket) this._onOpen();
+    });
+    this._webSocket.addEventListener('close', (event) => {
+      clearPendingSends();
+      if (sendingSocket === this._webSocket) this._onClose();
+    });
+    this._webSocket.addEventListener('error', (event) => {
+      clearPendingSends();
+      if (sendingSocket === this._webSocket) this._onError();
+    });
 
     let processMessage = async (data) => {
+      if (sendingSocket !== this._webSocket) return;
       if (data instanceof Blob) {
         if (webSocketWithProtocol.protocol == 'json-deflate') {
           let stream = /** @type {{stream: function(): *}} */ (data)
@@ -134,12 +209,12 @@ export class Connection {
         // Check is Blob.text supported
         if(data.text) {
           data = await data.text();
-          this._onMessage(data);
+          if (sendingSocket === this._webSocket) this._onMessage(data);
         } else {
           let reader = new FileReader();
           reader.onload = async () => {
             const text = /** @type {string} */ (reader.result);
-            this._onMessage(text);
+            if (sendingSocket === this._webSocket) this._onMessage(text);
           }
           reader.readAsText(data);
         }
@@ -172,7 +247,8 @@ export class Connection {
       tryProcessMessage();
     });
 
-    console.log(`Trying to open connection to ${uri} using WebSocket`);
+    // Application query values need not be suitable for diagnostics.
+    console.log(`Trying to open connection to ${url + path} using WebSocket`);
   }
 
   /** @private */
@@ -256,9 +332,14 @@ export class Connection {
     this._reconnectTimeout = MIN_RECONNECT_TIMEOUT;
     this._selectedConnectionType = this._connectionType;
     this._dispatcher.dispatchEvent(event);
-    if (this._connectionType !== ConnectionType.LONG_POLLING) {
+    if (this._connectionType !== ConnectionType.LONG_POLLING && !this._guarded) {
       this._onReady();
     }
+  }
+
+  /** Guarded application readiness follows its authorized DOM baseline. */
+  applicationReady() {
+    this._onReady();
   }
 
   /** @private */
@@ -310,7 +391,51 @@ export class Connection {
    * @param {string} data
    */
   send(data) {
-    this._send(data);
+    if (!this._committingAuthentication && this._send) this._send(data);
+  }
+
+  /** Deliver only an opaque completion handle over HTTP, then rebind the same view. */
+  async commitAuthentication(completionId) {
+    if (!this._guarded || this._connectionType !== ConnectionType.WEB_SOCKET ||
+        typeof completionId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(completionId)) {
+      throw new Error('Authentication handoff unavailable');
+    }
+    if (this._committingAuthentication) return;
+    this._committingAuthentication = true;
+    this._clearPendingSends();
+    const socket = this._webSocket;
+    try {
+      const origin = (this._useSSL ? 'https://' : 'http://') + this._hostPort;
+      const endpoint = new URL(this._serverRootPath + 'auth/complete', origin);
+      if (endpoint.origin !== origin) throw new Error('Authentication origin mismatch');
+      let delivered = false;
+      for (let attempt = 0; attempt < 3 && !delivered; attempt += 1) {
+        let response;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+          response = await fetch(endpoint.toString(), {
+            method: 'POST', credentials: 'same-origin', mode: 'same-origin',
+            redirect: 'error', cache: 'no-store',
+            headers: { 'Content-Type': 'text/plain' }, body: completionId,
+            signal: controller.signal
+          });
+        } catch (_) {
+          // Retrying this bounded handle never re-runs password or factor checks.
+          if (attempt === 2) throw new Error('Authentication delivery unavailable');
+          continue;
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (response.status !== 204) throw new Error('Authentication delivery rejected');
+        delivered = true;
+      }
+      if (socket !== this._webSocket) throw new Error('Authentication connection changed');
+      await this.disconnect(true);
+    } finally {
+      this._committingAuthentication = false;
+    }
   }
 
   /**
@@ -318,6 +443,7 @@ export class Connection {
    */
   async disconnect(reconnect = true) {
     this._reconnect = reconnect;
+    this._clearPendingSends();
     if (this._webSocket != null) {
         this._webSocket.close();
     } else {
@@ -340,7 +466,7 @@ export class Connection {
       switch (this._connectionType) {
         case ConnectionType.WEB_SOCKET:
           setTimeout(
-            () => this._connectUsingConnectionType(ConnectionType.LONG_POLLING),
+            () => this._connectUsingConnectionType(this._guarded ? ConnectionType.WEB_SOCKET : ConnectionType.LONG_POLLING),
             this._reconnectTimeout
           );
           break;
@@ -357,4 +483,3 @@ export class Connection {
   }
 
 }
-

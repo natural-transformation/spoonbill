@@ -109,8 +109,7 @@ package object akka {
                       }
                       .recover { case ex =>
                         spoonbillServiceConfig.reporter.error(
-                          s"WebSocket exception ${ex.getMessage}, shutdown output stream",
-                          ex
+                          "WebSocket input stream failed; shutting down output stream"
                         )
                         outStream.cancel()
                         None
@@ -122,7 +121,7 @@ package object akka {
 
                     upgrade.handleMessages(
                       if (wsLoggingEnabled) {
-                        Flow.fromSinkAndSourceCoupled(sink, source).log("spoonbill-ws")
+                        Flow.fromSinkAndSourceCoupled(sink, source).log("spoonbill-ws", (_: Message) => "frame")
                       } else {
                         Flow.fromSinkAndSourceCoupled(sink, source)
                       },
@@ -163,12 +162,12 @@ package object akka {
     SpoonbillRequest(
       pq = PathAndQuery.fromString(path).withParams(request.uri.rawQueryString),
       method = SpoonbillRequest.Method.fromString(request.method.value),
-      contentLength = request.headers.find(_.is("content-length")).map(_.value().toLong),
+      contentLength = request.entity.contentLengthOption,
       renderedCookie = request.headers.find(_.is("cookie")).map(_.value()).getOrElse(""),
       headers = {
         val contentType = request.entity.contentType
         val contentTypeHeaders =
-          if (contentType.mediaType.isMultipart) Seq("content-type" -> contentType.toString) else Seq.empty
+          if (contentType != ContentTypes.NoContentType) Seq("content-type" -> contentType.toString) else Seq.empty
         request.headers.map(h => (h.name(), h.value())) ++ contentTypeHeaders
       },
       body = body
