@@ -36,16 +36,20 @@ private[spoonbill] final class ServerSideRenderingService[F[_]: Effect, S, M](
     for {
       qsid  <- sessionsService.initSession(request)
       state <- sessionsService.initAppState(qsid, request)
+      // Check access before constructing or rendering the document.
+      _ <- config.sessionAccessControl.fold(Effect[F].unit)(_.authorizeHttp(request, state))
       rc     = new Html5RenderContext[F, S, M](config.presetIds)
       proxy  = pageService.setupStatelessProxy(rc, qsid)
       _      = rc.builder.append("<!DOCTYPE html>\n")
       _      = config.document(state)(proxy)
+      // Preserve the earlier check and revalidate before releasing rendered output.
+      _ <- config.sessionAccessControl.fold(Effect[F].unit)(_.authorizeHttp(request, state))
       response <- HttpResponse(
                     Status.Ok,
                     rc.mkString,
                     Seq(
                       Headers.ContentTypeHtmlUtf8,
-                      Headers.CacheControlNoCache,
+                      if (config.sessionAccessControl.nonEmpty) "Cache-Control" -> "no-store" else Headers.CacheControlNoCache,
                       Headers.setCookie(
                         Cookies.DeviceId,
                         qsid.deviceId,

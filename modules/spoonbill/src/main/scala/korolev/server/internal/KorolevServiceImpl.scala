@@ -18,6 +18,7 @@ package spoonbill.server.internal
 
 import spoonbill.Qsid
 import spoonbill.effect.Effect
+import spoonbill.effect.syntax.*
 import spoonbill.server._
 import spoonbill.server.internal.services._
 import spoonbill.web.PathAndQuery._
@@ -28,11 +29,23 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
   filesService: FilesService[F],
   messagingService: MessagingService[F],
   postService: PostService[F],
-  ssrService: ServerSideRenderingService[F, _, _]
+  ssrService: ServerSideRenderingService[F, _, _],
+  authenticationService: Option[AuthenticationCompletionService[F]] = None,
+  guardedSessions: Boolean = false
 ) extends SpoonbillService[F] {
 
   def http(request: HttpRequest[F]): F[HttpResponse[F]] =
     (request.cookie(Cookies.DeviceId), request.pq) match {
+
+      case (_, Root / "auth" / "complete") if authenticationService.nonEmpty =>
+        authenticationService.fold(commonService.notFoundResponseF)(_.complete(request))
+      case (_, Root / "auth" / "logout") if authenticationService.nonEmpty =>
+        authenticationService.fold(commonService.notFoundResponseF)(_.logout(request))
+
+      // Legacy attachment and long-polling routes have no per-request session
+      // binding. Fail closed until those transports participate in the guard.
+      case (_, path) if guardedSessions && path.startsWith("bridge") =>
+        request.body.cancel().flatMap(_ => commonService.notFoundResponseF)
 
       // Static files
       case (_, Root / "static") =>
@@ -58,14 +71,19 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
 
       // Server side rendering
       case (_, path) if path == Root || ssrService.canBeRendered(request.pq) =>
-        ssrService.serverSideRenderedPage(request)
+        for {
+          cookies <- authenticationService.fold(Effect[F].pure(Seq.empty[(String, String)]))(_.initialCookies(request))
+          response <- ssrService.serverSideRenderedPage(request)
+        } yield response.copy(headers = response.headers ++ cookies)
 
       // Not found
       case _ => http.applyOrElse(request, (_: HttpRequest[F]) => commonService.notFoundResponseF)
     }
 
   def ws(wsRequest: WebSocketRequest[F]): F[WebSocketResponse[F]] =
-    (wsRequest.httpRequest.cookie(Cookies.DeviceId), wsRequest.httpRequest.pq) match {
+    if (guardedSessions && !authenticationService.exists(_.acceptsOrigin(wsRequest.httpRequest)))
+      Effect[F].fail(BadRequestException("WebSocket origin rejected"))
+    else (wsRequest.httpRequest.cookie(Cookies.DeviceId), wsRequest.httpRequest.pq) match {
       case (Some(deviceId), Root / "bridge" / "web-socket" / sessionId) =>
         messagingService.webSocketMessaging(
           Qsid(deviceId, sessionId),

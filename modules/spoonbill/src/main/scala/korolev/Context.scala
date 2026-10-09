@@ -233,6 +233,10 @@ object Context {
      */
     def focus(id: ElementId): F[Unit]
 
+    def presentSensitive(region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
+      payload: spoonbill.sensitive.SensitivePayload, lifetime: FiniteDuration): F[spoonbill.sensitive.DisclosureOutcome]
+    def clearSensitive(region: spoonbill.sensitive.RegionId): F[Unit]
+
     /**
      * Publish message to environment.
      */
@@ -408,6 +412,12 @@ object Context {
      */
     def eventData: F[String]
 
+    /** Event-time action input; available without a browser property round trip. */
+    private[spoonbill] def submittedFields: F[Vector[(String, String)]]
+    private[spoonbill] def actionBinding: F[spoonbill.action.InvocationBinding]
+    private[spoonbill] def authenticatedActionBinding: F[spoonbill.action.InvocationBinding]
+    private[spoonbill] def completeAuthentication(completionId: java.util.UUID): F[Unit]
+
     def eventDataAs[T: EventDataDecoder]: F[T]
 
   }
@@ -420,6 +430,21 @@ object Context {
   private[spoonbill] abstract class BaseAccessDefault[F[_]: Effect, S, M] extends Access[F, S, M] {
 
     import spoonbill.effect.syntax._
+
+    def presentSensitive(region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
+      payload: spoonbill.sensitive.SensitivePayload, lifetime: FiniteDuration): F[spoonbill.sensitive.DisclosureOutcome] =
+      Effect[F].fail(new IllegalStateException("Sensitive presentation requires a guarded browser runtime"))
+    def clearSensitive(region: spoonbill.sensitive.RegionId): F[Unit] =
+      Effect[F].fail(new IllegalStateException("Sensitive presentation requires a guarded browser runtime"))
+
+    private[spoonbill] def submittedFields: F[Vector[(String, String)]] =
+      Effect[F].fail(new IllegalStateException("No action submission is attached to this event"))
+    private[spoonbill] def actionBinding: F[spoonbill.action.InvocationBinding] =
+      Effect[F].fail(new IllegalStateException("No runtime action binding is available"))
+    private[spoonbill] def authenticatedActionBinding: F[spoonbill.action.InvocationBinding] =
+      Effect[F].fail(new IllegalStateException("Authenticated actions require a guarded runtime"))
+    private[spoonbill] def completeAuthentication(completionId: java.util.UUID): F[Unit] =
+      Effect[F].fail(new IllegalStateException("Authentication completion requires a guarded runtime"))
 
     def imap[S2](lens: Lens[S, S2]): Access[F, S2, M] = new MappedAccess[F, S, S2, M](this, lens)
 
@@ -469,10 +494,18 @@ object Context {
 
   class MappedAccess[F[_]: Effect, S1, SN, E](self: Access[F, S1, E], lens: Lens[S1, SN]) extends Access[F, SN, E] {
     mapped =>
+    def presentSensitive(region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
+      payload: spoonbill.sensitive.SensitivePayload, lifetime: FiniteDuration): F[spoonbill.sensitive.DisclosureOutcome] =
+      self.presentSensitive(region, purpose, payload, lifetime)
+    def clearSensitive(region: spoonbill.sensitive.RegionId): F[Unit] = self.clearSensitive(region)
     private final val read                                                  = lens.read
     private final val write                                                 = lens.write
     def imap[S2](lens: Lens[SN, S2]): Access[F, S2, E]                      = new MappedAccess[F, SN, S2, E](this, lens)
     def eventData: F[String]                                                = self.eventData
+    private[spoonbill] def submittedFields: F[Vector[(String, String)]]       = self.submittedFields
+    private[spoonbill] def actionBinding: F[spoonbill.action.InvocationBinding] = self.actionBinding
+    private[spoonbill] def authenticatedActionBinding: F[spoonbill.action.InvocationBinding] = self.authenticatedActionBinding
+    private[spoonbill] def completeAuthentication(completionId: java.util.UUID): F[Unit] = self.completeAuthentication(completionId)
     def eventDataAs[T: EventDataDecoder]: F[T]                              = self.eventDataAs[T]
     def property(id: Context.ElementId): PropertyHandler[F]                 = self.property(id)
     def valueAs[T: ValueDecoder](id: Context.ElementId): F[T]                = self.valueAs[T](id)

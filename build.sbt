@@ -261,6 +261,18 @@ lazy val spoonbill = project
   )
   .dependsOn(effect, web)
 
+lazy val securityJdbc = project
+  .in(modules / "security-jdbc")
+  .settings(commonSettings: _*)
+  .settings(
+    normalizedName := "spoonbill-security-jdbc",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "performance-support" / "scala",
+    // These integration suites bootstrap shared tables in one disposable database.
+    Test / parallelExecution := false,
+    libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13" % Test
+  )
+  .dependsOn(spoonbill)
+
 lazy val standalone = project
   .in(modules / "standalone")
 
@@ -389,7 +401,7 @@ lazy val zio2 = project
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
   )
-  .dependsOn(effect)
+  .dependsOn(effect, spoonbill)
 
 lazy val zioStreams = project
   .in(interop / "zio-streams")
@@ -619,6 +631,7 @@ lazy val root = project
   .settings(name := "Spoonbill Project")
   .aggregate(
     spoonbill,
+    securityJdbc,
     effect,
     web,
     http,

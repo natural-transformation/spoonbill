@@ -12,10 +12,11 @@ import scala.concurrent.Future
 
 class PageServiceSpec extends AnyFlatSpec with Matchers {
 
-  private def mkConfig(protocolsEnabled: Boolean) =
+  private def mkConfig(protocolsEnabled: Boolean, compressionEnabled: Boolean = false) =
     SpoonbillServiceConfig[Future, Unit, Unit](
       stateLoader = StateLoader.default(()),
-      webSocketProtocolsEnabled = protocolsEnabled
+      webSocketProtocolsEnabled = protocolsEnabled,
+      webSocketCompressionEnabled = compressionEnabled
     )
 
   "appendScripts" should "include wsp flag when protocols are disabled" in {
@@ -36,5 +37,18 @@ class PageServiceSpec extends AnyFlatSpec with Matchers {
     service.appendScripts(rc, Qsid("device", "session"))
 
     rc.mkString should not include "wsp:false"
+  }
+
+  it should "omit WebSocket compression unless it is explicitly enabled" in {
+    implicit val effect: Effect[Future] = Effect.futureEffect
+    val defaultService = new PageService[Future, Unit, Unit](mkConfig(protocolsEnabled = true))
+    val defaultRc = new Html5RenderContext[Future, Unit, Unit](presetId = false)
+    defaultService.appendScripts(defaultRc, Qsid("device", "session"))
+    defaultRc.mkString should not include "wsc:true"
+
+    val enabledService = new PageService[Future, Unit, Unit](mkConfig(protocolsEnabled = true, compressionEnabled = true))
+    val enabledRc = new Html5RenderContext[Future, Unit, Unit](presetId = false)
+    enabledService.appendScripts(enabledRc, Qsid("device", "session"))
+    enabledRc.mkString should include("wsc:true")
   }
 }

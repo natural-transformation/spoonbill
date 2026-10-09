@@ -82,6 +82,17 @@ final case class Request[Body](
 
 object Request {
 
+  /** Route a fresh request using presentation context without retaining an old
+    * request's cookies or headers. Path/query values never establish authority.
+    */
+  private[spoonbill] def withPathAndQuery(current: Head, applicationPath: PathAndQuery): Head = new Head {
+    def method: Method = current.method
+    def pq: PathAndQuery = applicationPath
+    def param(name: String): Option[String] = applicationPath.param(name)
+    def cookie(name: String): Option[String] = current.cookie(name)
+    def header(name: String): Option[String] = current.header(name)
+  }
+
   def unapply[Body](method: Request.Method, req: Request[Body]): Option[(Request.Method, PathAndQuery)] =
     Some((req.method, req.pq))
 

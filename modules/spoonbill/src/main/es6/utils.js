@@ -29,7 +29,9 @@ export class ConnectionLostWidget {
 
   hide() {
     if (this._element !== null) {
-      document.body.removeChild(this._element);
+      // A full view reset may have replaced the body that owned the widget.
+      const parent = this._element.parentNode;
+      if (parent) parent.removeChild(this._element);
       this._element = null;
     }
   }

@@ -17,7 +17,7 @@
 package spoonbill.internal
 
 import spoonbill.*
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import spoonbill.*
 import spoonbill.Context.*
 import spoonbill.effect.{Effect, Hub, Queue, Reporter, Scheduler, Stream}
@@ -32,7 +32,7 @@ import avocet.Document
 import avocet.Id
 import avocet.StatefulRenderContext
 import avocet.XmlNs
-import avocet.events.calculateEventPropagation
+import avocet.events.{calculateEventPropagation, EventId}
 import avocet.impl.DiffRenderContext
 import avocet.impl.DiffRenderContext.ChangesPerformer
 import scala.collection.concurrent.TrieMap
@@ -58,7 +58,9 @@ final class ApplicationInstance[
   scheduler: Scheduler[F],
   reporter: Reporter,
   recovery: PartialFunction[Throwable, S => S],
-  delayedRender: FiniteDuration
+  delayedRender: FiniteDuration,
+  awaitReady: Option[() => F[Unit]] = None,
+  authorizeProduced: Option[S => F[Unit]] = None
 )(implicit ec: ExecutionContext) { application =>
 
   import reporter.Implicit
@@ -68,9 +70,10 @@ final class ApplicationInstance[
   private val stateQueue    = Queue[F, (Id, Any, Option[Effect.Promise[Unit]])]()
   private val stateHub      = Hub(stateQueue.stream)
   private val messagesQueue = Queue[F, M]()
+  private val publishedEventHandlers = new AtomicReference(Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]])
 
   private val renderContext = {
-    DiffRenderContext[Binding[F, S, M]](savedBuffer = devMode.loadRenderContext())
+    DiffRenderContext[Binding[F, S, M]](savedBuffer = if (frontend.guarded) None else devMode.loadRenderContext())
   }
 
   val topLevelComponentInstance: ComponentInstance[F, S, M, S, Any, M] = {
@@ -115,16 +118,20 @@ final class ApplicationInstance[
    * If dev mode is enabled save render context
    */
   private def saveRenderContextIfNecessary(): F[Unit] =
-    if (devMode.isActive) Effect[F].delay(devMode.saveRenderContext(renderContext))
+    if (devMode.isActive && !frontend.guarded) Effect[F].delay(devMode.saveRenderContext(renderContext))
     else Effect[F].unit
 
   private def onState(maybeRenderCallback: Seq[Effect.Promise[Unit]]): F[Unit] =
-    for {
+    (for {
       snapshot <- stateManager.snapshot
+      producedState = snapshot[S](Id.TopLevel).getOrElse(initialState)
       // Set page url if router exists
       _ <- router.fromState
-             .lift(snapshot(Id.TopLevel).getOrElse(initialState))
-             .fold(Effect[F].unit)(uri => frontend.changePageUrl(rootPath ++ uri))
+             .lift(producedState)
+             .fold(Effect[F].unit) { uri => authorizeProduced match {
+               case Some(check) => frontend.changePageUrlAuthorized(rootPath ++ uri, () => check(producedState))
+               case None => frontend.changePageUrl(rootPath ++ uri)
+             }}
       _ <- Effect[F].delay {
              // Prepare render context
              renderContext.swap()
@@ -142,21 +149,35 @@ final class ApplicationInstance[
              renderContext.finalizeDocument()
            }
       // Infer and perform changes
-      _ <- frontend.performDomChanges(renderContext.diff)
+      handlers = if (frontend.recoversView) topLevelComponentInstance.allEventHandlers.toMap
+        else Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]]
+      _ <- authorizeProduced match {
+        case Some(check) =>
+          frontend.performDomChangesAuthorized(renderContext.diff, () => check(producedState),
+            () => publishedEventHandlers.set(handlers))
+        case None => frontend.performDomChanges(renderContext.diff)
+      }
       _ <- saveRenderContextIfNecessary()
       // Make spoonbill ready to next render
       _ <- Effect[F].delay(topLevelComponentInstance.dropObsoleteMisc())
       _  = maybeRenderCallback.foreach(_(Right(())))
-    } yield ()
+    } yield ()).recoverF { case error =>
+      maybeRenderCallback.foreach(_(Left(error)))
+      Effect[F].fail(error)
+    }
 
-  private def onHistory(pq: PathAndQuery): F[Unit] =
-    stateManager
+  private def beforeInteraction: F[Unit] =
+    awaitReady.fold(Effect[F].unit)(ready => Effect[F].delayAsync(ready()))
+      .flatMap(_ => frontend.authorizeInteraction())
+
+  private def onHistory(message: Frontend.BrowserHistoryMessage): F[Unit] =
+    frontend.runUserAction(beforeInteraction.flatMap(_ => stateManager
       .read[S](Id.TopLevel)
       .flatMap { maybeTopLevelState =>
         router.toState
-          .lift(pq)
+          .lift(message.path)
           .fold(Effect[F].delay(Option.empty[S]))(_(maybeTopLevelState.getOrElse(initialState)).map(Some(_)))
-      }
+      })
       .flatMap {
         case Some(newState) =>
           stateManager
@@ -164,7 +185,7 @@ final class ApplicationInstance[
             .after(stateQueue.enqueue(Id.TopLevel, newState, None))
         case None =>
           Effect[F].unit
-      }
+      }.flatMap(_ => message.sensitiveNavigation.fold(Effect[F].unit)(frontend.completeSensitiveNavigation)), message.renderRevision)
 
   private def onEvent(dem: DomEventMessage): F[Unit] = {
     def aux(effects: List[DomEventMessage => F[Boolean]]): F[Unit] =
@@ -177,30 +198,37 @@ final class ApplicationInstance[
           }
       }
     val k = (dem.target, dem.eventType)
-    Effect[F]
+    def process: F[Unit] = beforeInteraction.flatMap(_ => Effect[F]
       .delay(eventCounters.getOrElse(k, 0))
       .flatMap { eventCounter =>
         if (eventCounter == dem.eventCounter) {
-          val propagation = calculateEventPropagation(dem.target, dem.eventType)
-          val allHandlers = topLevelComponentInstance.allEventHandlers
-          val allEffects  = propagation.toList.flatMap(eventId => allHandlers.getOrElse(eventId, Vector.empty))
-          if (allEffects.nonEmpty) {
-            for {
-              _             <- aux(allEffects)
-              newEventConter = dem.eventCounter + 1
-              _             <- Effect[F].delay(eventCounters.put(k, newEventConter))
-              _             <- frontend.setEventCounter(dem.target, dem.eventType, newEventConter)
-            } yield ()
-          } else {
-            Effect[F].unit
+          // Capture bindings for the admitted revision atomically with render
+          // publication. Release the lock before any user effect/browser RPC.
+          frontend.selectFromPublishedView(dem.renderRevision) {
+            val propagation = calculateEventPropagation(dem.target, dem.eventType)
+            if (frontend.recoversView) {
+              val allHandlers = publishedEventHandlers.get()
+              propagation.toList.flatMap(eventId => allHandlers.getOrElse(eventId, Vector.empty))
+            } else {
+              val allHandlers = topLevelComponentInstance.allEventHandlers
+              propagation.toList.flatMap(eventId => allHandlers.getOrElse(eventId, Vector.empty))
+            }
+          }.flatMap { allEffects =>
+            if (allEffects.nonEmpty) {
+              for {
+                _             <- aux(allEffects)
+                newEventConter = dem.eventCounter + 1
+                _             <- Effect[F].delay(eventCounters.put(k, newEventConter))
+                _             <- frontend.setEventCounter(dem.target, dem.eventType, newEventConter)
+              } yield ()
+            } else Effect[F].unit
           }
         } else {
           Effect[F].unit
         }
       }
-      .recover { case error => reporter.error(s"Unable to process event $dem", error) }
-      .start
-      .unit
+      .recover { case error => reporter.error(s"Unable to process event $dem", error) })
+    if (frontend.guarded) frontend.runBrowserAction(process, dem.renderRevision, dem.sensitiveDeparture) else process.start.unit
   }
 
   private final val internalStateStream =
@@ -254,13 +282,29 @@ final class ApplicationInstance[
       for {
         snapshot <- stateManager.snapshot
         _        <- Effect[F].delay {
+                    if (frontend.recoversView) {
+                      // The client resets to this empty root, so no prior DOM,
+                      // patch history or process-local buffer is trusted.
+                      renderContext.openNode(XmlNs.html, "html")
+                      renderContext.closeNode("html")
+                      renderContext.finalizeDocument()
+                      renderContext.swap()
+                      renderContext.reset()
+                    }
                     topLevelComponentInstance.applyRenderContext((), renderContext, snapshot)
                     renderContext.finalizeDocument()
                   }
+        _ <- if (frontend.recoversView) {
+          val produced = snapshot[S](Id.TopLevel).getOrElse(initialState)
+          val handlers = topLevelComponentInstance.allEventHandlers.toMap
+          frontend.resetDomChangesAuthorized(renderContext.diff,
+            () => authorizeProduced.fold(frontend.authorizeInteraction())(check => check(produced)),
+            () => publishedEventHandlers.set(handlers))
+        } else Effect[F].unit
         _        <- saveRenderContextIfNecessary()
       } yield ()
 
-    if (devMode.saved) {
+    def start(): F[Unit] = if (devMode.saved && !frontend.guarded) {
 
       // Initialize with
       // 1. Old page in users browser
@@ -342,5 +386,6 @@ final class ApplicationInstance[
         _ <- topLevelComponentInstance.initialize()
       } yield ()
     }
+    frontend.authorizeInteraction().flatMap(_ => start())
   }
 }

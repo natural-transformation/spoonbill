@@ -86,6 +86,11 @@ package object server {
     config: SpoonbillServiceConfig[F, S, M]
   ): SpoonbillService[F] = {
 
+    require(config.authenticationCompletion.isEmpty || config.sessionAccessControl.nonEmpty,
+      "Authentication completion requires mandatory session access control")
+    require(config.sessionAccessControl.isEmpty || (config.webSocketEnabled && !config.webSocketCompressionEnabled),
+      "Guarded sessions require uncompressed WebSocket transport")
+
     implicit val exeContext: ExecutionContext = config.executionContext
 
     val commonService   = new CommonService[F]()
@@ -98,11 +103,13 @@ package object server {
         commonService,
         sessionsService,
         config.compressionSupport,
-        config.sessionIdleTimeout
+        config.sessionIdleTimeout,
+        config.webSocketCompressionEnabled
       )
     val formDataCodec = new FormDataCodec
     val postService   = new PostService[F](config.reporter, sessionsService, commonService, formDataCodec)
     val ssrService    = new ServerSideRenderingService[F, S, M](sessionsService, pageService, config)
+    val authenticationService = config.authenticationCompletion.map(new AuthenticationCompletionService[F](_))
 
     new SpoonbillServiceImpl[F](
       config.http,
@@ -110,7 +117,9 @@ package object server {
       filesService,
       messagingService,
       postService,
-      ssrService
+      ssrService,
+      authenticationService,
+      config.sessionAccessControl.nonEmpty
     )
   }
 

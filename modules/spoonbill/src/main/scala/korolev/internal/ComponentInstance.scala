@@ -96,7 +96,7 @@ final class ComponentInstance[
 
   @volatile private var eventSubscription = Option.empty[E => _]
 
-  private[spoonbill] case class BrowserAccess(dem: DomEventMessage) extends BaseAccessDefault[F, CS, E] {
+  private[spoonbill] case class BrowserAccess(dem: DomEventMessage, departure: Option[Long]) extends BaseAccessDefault[F, CS, E] {
 
     private def getId(elementId: ElementId): F[Id] = Effect[F].delay {
       unsafeGetId(elementId)
@@ -137,7 +137,7 @@ final class ComponentInstance[
       }
 
     def publish(message: E): F[Unit] =
-      Effect[F].delay(eventSubscription.foreach(f => f(message)))
+      frontend.authorizeInteraction().flatMap(_ => Effect[F].delay(eventSubscription.foreach(f => f(message))))
 
     def state: F[CS] = {
       val state = stateManager.read[CS](nodeId)
@@ -221,11 +221,32 @@ final class ComponentInstance[
 
     def eventData: F[String] = frontend.extractEventData(dem)
 
+    override private[spoonbill] def submittedFields: F[Vector[(String, String)]] =
+      dem.submission match {
+        case Some(Right(submission)) => Effect[F].pure(submission.fields)
+        case Some(Left(error))       => Effect[F].fail(error)
+        case None                    => super.submittedFields
+      }
+
+    override private[spoonbill] def actionBinding: F[spoonbill.action.InvocationBinding] =
+      frontend.newActionBinding(departure)
+
+    override private[spoonbill] def authenticatedActionBinding: F[spoonbill.action.InvocationBinding] =
+      frontend.newAuthenticatedActionBinding(departure)
+
+    override private[spoonbill] def completeAuthentication(completionId: java.util.UUID): F[Unit] =
+      frontend.completeAuthentication(completionId)
+
+    override def presentSensitive(region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
+      payload: spoonbill.sensitive.SensitivePayload, lifetime: scala.concurrent.duration.FiniteDuration): F[spoonbill.sensitive.DisclosureOutcome] =
+      frontend.presentSensitive(region, purpose, payload, lifetime)
+    override def clearSensitive(region: spoonbill.sensitive.RegionId): F[Unit] = frontend.clearSensitive(region)
+
     def registerCallback(name: String)(f: String => F[Unit]): F[Unit] =
       frontend.registerCustomCallback(name)(f)
   }
 
-  private[spoonbill] val browserAccess = BrowserAccess(DomEventMessage(0, Id.TopLevel, "init"))
+  private[spoonbill] val browserAccess = BrowserAccess(DomEventMessage(0, Id.TopLevel, "init"), None)
 
   /**
    * Subscribes to component instance events. Callback will be invoked on call
@@ -284,7 +305,7 @@ final class ComponentInstance[
             if (!delays.contains(id)) {
               val delayInstance = new DelayInstance(delay, scheduler, reporter)
               delays.put(id, delayInstance)
-              delayInstance.start(browserAccess)
+              delayInstance.start(browserAccess, () => frontend.authorizeInteraction())
             }
           case entry: ComponentEntry[F, CS, E, Any, Any, Any] @unchecked =>
             val id = rc.subsequentId
@@ -342,13 +363,10 @@ final class ComponentInstance[
 
   private def applyTransitionForce(transition: TransitionAsync[F, CS]): F[Unit] = Effect[F].promiseF[Unit] { cb =>
     val effect = () =>
-      for {
-        newState <- applyTransitionEffect(transition).recoverF { case e =>
-                      cb(Left(e))
-                      Effect[F].fail[CS](e)
-                    }
+      (for {
+        newState <- applyTransitionEffect(transition)
         _ <- stateQueue.enqueue(nodeId, newState, Some(cb))
-      } yield ()
+      } yield ()).recover { case error => cb(Left(error)) }
     pendingEffects.enqueue(effect)
   }
 
@@ -381,9 +399,13 @@ final class ComponentInstance[
 
   private def mapHandlers(handlers: Vector[Event[F, CS, E]]): EventHandlers =
     handlers.map { handler => (dem: DomEventMessage) =>
-      handler
-        .effect(BrowserAccess(dem))
-        .as(handler.stopPropagation)
+      frontend.authorizeInteraction().flatMap { _ =>
+        frontend.browserAdmission(dem.sensitiveDeparture).invoke[F, Boolean](true) {
+          // Superseded events stop propagation without invoking any application
+          // handler. Synthetic lifecycle access has no browser generation.
+          handler.effect(BrowserAccess(dem, Some(dem.sensitiveDeparture))).as(handler.stopPropagation)
+        }
+      }
     }
 
   def allEventHandlers: AllEventHandlers = {
@@ -450,6 +472,10 @@ final class ComponentInstance[
    */
   def destroy(): F[Unit] =
     for {
+      _ <- Effect[F].delay(miscLock.synchronized {
+             delays.values.foreach(_.cancel())
+             delays.clear()
+           })
       _ <- pendingEffects.close()
       _ <- nestedComponents.values.toList
              .map(_.destroy())
@@ -485,11 +511,11 @@ private object ComponentInstance {
     def cancel(): Unit =
       handler.foreach(_.unsafeCancel())
 
-    def start(access: Access[F, S, M]): Unit =
+    def start(access: Access[F, S, M], authorize: () => F[Unit]): Unit =
       handler = Some {
         scheduler.unsafeScheduleOnce(delay.duration) {
           finished = true
-          delay.effect(access)
+          authorize().flatMap(_ => Effect[F].delayAsync(delay.effect(access)))
         }
       }
   }

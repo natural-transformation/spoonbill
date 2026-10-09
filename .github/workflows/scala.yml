@@ -23,5 +23,33 @@ jobs:
       with:
         extra_nix_config: sandbox = true
 
-    - name: Run tests
-      run: nix develop --command sbt --batch --supershell=false test
+    - name: Compile and test with disposable PostgreSQL
+      # Finish compilation before running network fixtures and limit concurrent
+      # Test-tagged tasks to reduce contention between integration suites.
+      run: |
+        nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+          sbt --batch --supershell=false \
+          'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
+          compile 'Test / compile' test
+
+    - name: Test browser clients and generic performance regression checks
+      run: |
+        nix develop --no-write-lock-file --command node --test \
+          misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+          misc/performance-regression-tests.mjs
+
+  native-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Install Nix (with flake support)
+      uses: cachix/install-nix-action@v20
+      with:
+        extra_nix_config: sandbox = true
+
+    - name: Test native Chromium and WebKit
+      run: nix develop .#browser --no-write-lock-file --command bash scripts/test-native-browsers.sh
