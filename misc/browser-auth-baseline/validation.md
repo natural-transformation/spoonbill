@@ -42,7 +42,8 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false \
 
 nix develop --no-write-lock-file --command node --test \
   misc/browser-auth-baseline/*.test.mjs \
-  misc/browser-auth-baseline/performance/*.test.mjs
+  misc/browser-auth-baseline/performance/*.test.mjs \
+  misc/browser-auth-baseline/performance/jsc-prototype/*.test.mjs
 
 env -u JAVA_HOME SBT_NATIVE_CLIENT=false \
   nix develop --no-write-lock-file --command bash scripts/test-browser-auth-baseline.sh
@@ -71,7 +72,7 @@ nix develop .#profiling --no-write-lock-file --command node \
 | `securityJdbc/testOnly ...JdbcReferenceHostSpec` | Pass, 33 tests against physical disposable PostgreSQL, including durable clock restart, profile TTLs, failure, rollback and pool-disposal laws |
 | `securityJdbc/testOnly ...JdbcBrowserSecuritySpec` | Pass, 40 tests: guarded publication, separate durable view-history capacity, reserved release/maintenance, pre-dispatch bounds, retained outcomes, durable expiry and blocking-executor placement |
 | `browserAuthBaseline/test` | Pass, complete application compiles and four worker-lifecycle tests pass, including ordinary/maintenance settlement after actor dispatcher termination |
-| Baseline `node --test` globs | Pass, 166 tests, including analyzer/signal regressions, all-cell coverage audit, real Java artifact relocation/archive, policy-contract drift, per-phase HTTP algebra and clock-owned process cleanup |
+| Baseline and JSC prototype `node --test` globs | Pass, 175 tests, including analyzer/signal regressions, all-cell coverage audit, real Java artifact relocation/archive, policy-contract drift, per-phase HTTP algebra, clock-owned process cleanup and nine envelope/OOM guard tests |
 | Memory/JDBC native browser wrappers | Pass, eight ordinary password/factor flows, four same-process memory completion-loss recoveries, two JDBC crash/restart recoveries and a stalled startup-peer check; live deliverable completions isolate the foreign-origin check |
 | Native wrappers with `SPOONBILL_AUTH_BASELINE_PROOF=representative` | Pass for both providers/engines, including completion-loss and JDBC process-restart recovery, using the final captured runtime and unchanged startup/work deadlines; initial and restarted servers use the same selected proof profile |
 | Physical PostgreSQL wire sensor | Pass, two engine tests: sequential exchanges and bounded overlapping cycles |
@@ -137,6 +138,9 @@ Its reference source hash matches the final local inventory; compiled runtime
 and graph hashes identify the separately built Linux artifact. The producing job
 verified the capture/tar. The browser download attempt timed out, so independent
 download verification is not claimed. Source review/freeze remains open.
+The later [CI run for `7224b35`](https://github.com/natural-transformation/spoonbill/actions/runs/38091860022)
+also passed both jobs, including the added static envelope/OOM tests. This does
+not run the experimental JSC source build or establish allocation acceptance.
 The final tar was also extracted to an independent temporary directory; its
 loader verified the copied contents and executed the exact compiled policy report
 without referring to the original classpath. The default SBT main class was
@@ -212,8 +216,16 @@ forced exit can still prevent evidence finalization and SIGKILL is unsupported.
    browser replacement is involved. Actual tiny-builder containment and the
    settled 64 MiB OOM/descendant-cleanup proof passed, and the official WebKitGTK
    2.50.4 archive was acquired with its Nix hash verified. Engine attempt one
-   failed on flag quoting and attempt two on CMake generation; the final native
-   outcome is pending under the unchanged 2026-10-10 23:02:43 UTC deadline.
+   failed on flag quoting and attempt two on CMake generation. Attempt three
+   failed at the shared-library link with undefined `Subspace::attributes() const`
+   from instrumented `IsoSubspace`; the native oracle never ran. The final
+   engine unit peaked at 3,669,725,184 charged bytes and its process group was
+   released; shared CI remained active. The highest observed unit peak was
+   approximately 6.587 GB during dependency staging, with the actual 16 GB
+   decimal hard cap unchanged. A minimal inline-header fix is being prepared
+   but remains unbuilt. Under the repository recovery rule, a fourth engine
+   attempt requires user input; time remaining before the original
+   2026-10-10 23:02:43 UTC deadline does not authorize it.
    See the [ledger design](performance/jsc-prototype/design.md),
    [envelope](performance/jsc-prototype/envelope.md),
    [OOM proof](performance/jsc-prototype/oom-proof.md) and

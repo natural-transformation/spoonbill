@@ -204,7 +204,15 @@
  
 --- a/Source/JavaScriptCore/heap/IsoSubspace.cpp
 +++ b/Source/JavaScriptCore/heap/IsoSubspace.cpp
-@@ -96,6 +96,8 @@
+@@ -30,6 +30,7 @@
+ #include "IsoCellSetInlines.h"
+ #include "JSCellInlines.h"
+ #include "MarkedSpaceInlines.h"
++#include "SubspaceInlines.h"
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ namespace JSC {
+@@ -96,6 +97,8 @@
      if (!m_lowerTierPreciseFreeList.isEmpty()) {
          PreciseAllocation* allocation = &*m_lowerTierPreciseFreeList.begin();
          allocation->remove();

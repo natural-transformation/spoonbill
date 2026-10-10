@@ -113,6 +113,17 @@ the quoted flag array, one compilation job, the same resource limits and the
 same counter/oracle patch. No further actual attempt is authorized by this
 re-plan if that final attempt fails.
 
+The third attempt passed configuration and reached the JavaScriptCore shared
+library link, which failed with an undefined reference to
+`JSC::Subspace::attributes() const` from `IsoSubspace::tryAllocateLowerTierPrecise`.
+The new revival hook called that accessor, but `IsoSubspace.cpp` did not include
+`SubspaceInlines.h`, which contains its inline definition. The local patch now
+adds that explicit include and passes an exact-source patch dry-run. This
+linker fix has **not** been compiled or executed. The third attempt never
+produced a runnable shell or ran the allocation oracle, so there is no native
+allocation result and no coverage/acceptance claim. A fourth actual build
+requires new human authorization under the repository recovery policy.
+
 The approved existing NixOS guest envelope is 16,000,000,000 bytes charged to the
 actual build/test process tree, no guest swap, one compilation job, at most two
 CPU equivalents, two hours total and 15 GiB additional disk. The parent owns

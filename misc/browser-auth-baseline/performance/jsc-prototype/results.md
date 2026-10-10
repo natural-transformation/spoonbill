@@ -1,8 +1,9 @@
-# Bounded experiment progress
+# Bounded experiment result
 
-**Pending final build.** Containment and a small OOM/cleanup proof passed; this
-record does not establish a compiled JSC oracle, browser allocation coverage, or
-Phase 0 acceptance. The structured companion is [results.json](results.json).
+**The third/final engine build failed at the JavaScriptCore shared-library link.**
+No oracle executed. Containment and a small OOM/cleanup proof passed; this record
+does not establish browser allocation coverage or Phase 0 acceptance. The
+structured companion is [results.json](results.json).
 
 The official WebKitGTK 2.50.4 archive was acquired through Nix with the pinned
 SHA-256 before the original source deadline. The experiment runs in an existing
@@ -31,20 +32,40 @@ allocation because the transient unit lacked PATH. Both failures were retained.
 | Verified source acquisition | Passed | 1,127,829,504 |
 | Build attempt 1 | Failed: release flags split during CMake configuration | 6,587,342,848 |
 | Build attempt 2 | Failed: Makefiles generated, Ninja invoked | 1,390,190,592 |
-| Final build attempt | Pending controller update | Unavailable |
+| Build attempt 3 | Failed: undefined `JSC::Subspace::attributes() const` at shared-library link | 3,669,725,184 |
 
 These peaks describe the observed stage/unit accounting, not isolated compiler
 or JSC heap measurements. The second build reached successful CMake generation
-and then failed because `build.ninja` did not exist. No native ledger oracle has
-executed at this snapshot. A further failure in the final attempt requires
-reporting it under the repository recovery policy, not another automatic retry
-or larger budget.
+and then failed because `build.ninja` did not exist. The final attempt reached
+reported Ninja step 1660 of 2462 and failed on the `Subspace::attributes()`
+reference from `IsoSubspace::tryAllocateLowerTierPrecise`. The largest observed
+charged peak across experiment units was 6,587,342,848 bytes. The final build's
+process group was released and shared CI remained running. A fourth engine
+build requires human input under the repository recovery policy; no additional
+engine attempt or larger budget is authorized by this result.
 
-The local Nix static suite passed **8/8** envelope and OOM-helper tests. Those
+The local Nix static suite passed **9/9** envelope and OOM-helper tests. Those
 checks validate refusal logic. Controller logs for the actual tiny-builder proof,
 both build failures, and the settled second/final toy attempts were inspected
-locally; their SHA-256 values are retained in the JSON. Source acquisition remains
-labelled controller-reported pending its raw-log transfer. Raw logs remain
+locally; their SHA-256 values are retained in the JSON. The transferred source
+acquisition log, zero exit status and Nix receipt were also inspected: the receipt
+matches the pinned archive hash. Current repository hashes for the derivation,
+patch and oracle are recorded separately. The failed build's patch hash is
+preserved; the current patch adds `SubspaceInlines.h` to address the unresolved
+inline definition, but that change has **not been built**. No successful binary
+or oracle is claimed from this source fix. The full Node suite passed **175/175**;
+these tests do not substitute for compiling or executing the engine. The separate
+current-guard-only guest recheck passed the published preflight, actual tiny Nix
+builder and tightened OOM verifier, then exited successfully. Its charged peak
+recorded before unit exit was 68,993,024 bytes. This recheck did not build the
+engine or compile the source fix.
+
+Final controller cleanup confirmed all experiment process groups and owned loop
+devices released, with shared CI still running. The retained image capacity is
+15,032,385,536 bytes; retained task files occupy 4,548,068 KiB of allocated disk
+blocks. These are retained evidence/cache files, not active mounts or processes.
+The final guard and cleanup log hashes are retained in the JSON.
+Raw logs remain
 private because they contain runtime paths and process identifiers. This public
 summary intentionally contains neither.
 

@@ -104,9 +104,28 @@ and Nix user cleanup could otherwise terminate unrelated CI builders. Version
 strings alone do not prove pool identity. Failure to acquire the shared lock is
 a refusal, never permission to bypass locking or switch to a private pool.
 
-Root copies only the selected existing input/tool closures from the local store
-to `local?root=$JSC_WORK/nix-root`, using the same capped controller process and
-explicit source/target stores. Do not contact a shared builder daemon. Copied
+The primary-source audit pins full commit
+`53ab7375a110825814837005aaf5a256edea6eae`:
+[global state-directory initialization](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/globals.cc#L51),
+[Linux build-user selection](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/build/linux-derivation-builder.cc#L327),
+[userpool directory selection](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/user-lock.cc#L217)
+and [exclusive per-UID lock acquisition](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/user-lock.cc#L96).
+The fallback [builder cleanup](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/build/derivation-builder.cc#L523)
+calls [UID-wide `killUser`](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libutil/unix/processes.cc#L158),
+which explains why sharing the physical lock files is mandatory.
+
+With a single build UID and `use-cgroups=false`, the Linux builder does not
+create its own cgroup: see the [creation condition](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/build/linux-derivation-builder.cc#L333).
+Its [initial clone flags](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/build/linux-derivation-builder.cc#L460)
+omit `CLONE_NEWCGROUP`, and the later [cgroup-namespace unshare](https://github.com/NixOS/nix/blob/53ab7375a110825814837005aaf5a256edea6eae/src/libstore/unix/build/linux-derivation-builder.cc#L777)
+requires that optional cgroup. This supports the controller/builder namespace
+equality check for this configuration; it does not replace the actual proof.
+
+Root copies only the selected existing input/tool closures to
+`local?root=$JSC_WORK/nix-root`, using the same capped controller process and
+explicit source/target stores. The source is the shared daemon's read/export
+interface; it is never asked to build. All target builders remain daemonless
+inside the owned unit. Copied
 bash/coreutils paths must be valid in the private store before this proof:
 
 ```sh

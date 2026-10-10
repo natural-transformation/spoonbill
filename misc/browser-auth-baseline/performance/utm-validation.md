@@ -66,10 +66,19 @@ verified within the owned envelope. Its source identity remains separate from
 the installed Playwright browser's unresolved source/ABI provenance.
 
 The first engine-build attempt failed on compiler-flag quoting; the second
-failed during CMake generation. Their diagnostics are preserved. The final
-attempt and native oracle outcome are pending under the original absolute
-deadline, 2026-10-10 23:02:43 UTC. No engine allocator pass, browser allocation
-metric or accepted performance ceiling follows from these preparatory checks.
+failed during CMake generation. The third failed at the shared-library link:
+undefined `Subspace::attributes() const` from the instrumented `IsoSubspace`.
+The native oracle never ran. All diagnostics are preserved. The final engine
+unit peaked at 3,669,725,184 charged bytes; all its processes were released and
+shared CI remained active. The largest observed unit peak was approximately
+6.587 GB during dependency staging. The 16,000,000,000-byte hard cap was never
+changed; charged-memory peaks are not browser RSS or allocation measurements.
+
+A minimal inline-header fix is being prepared but remains unbuilt. The
+repository recovery rule requires user input before a fourth engine attempt,
+even if time remains before the original 2026-10-10 23:02:43 UTC deadline.
+No engine allocator pass, browser allocation metric or accepted performance
+ceiling follows from the containment checks or failed build.
 See the [ledger design](jsc-prototype/design.md),
 [resource envelope](jsc-prototype/envelope.md),
 [OOM proof](jsc-prototype/oom-proof.md) and

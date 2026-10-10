@@ -186,7 +186,8 @@ needs a pinned build, coverage proof and cost review.
 [GC accounting and reset](https://github.com/WebKit/WebKit/blob/main/Source/JavaScriptCore/heap/Heap.cpp).
 
 The stock Chromium calibration and WebKit counter audit led to the approved,
-bounded standalone JSC experiment below. Its final native outcome is pending. Freeze a
+bounded standalone JSC experiment below. Its third build failed at linking;
+the native oracle never ran. Freeze a
 comparable scope, including specified backing stores and process ownership,
 before promoting either sensor to the required metric. Allocation acceptance
 stays unsupported/null, and Phase 0 remains blocked; retained heap, RSS, malloc
@@ -235,9 +236,20 @@ The official archive has now been acquired and its Nix hash verified inside the
 owned envelope. This is a separate experimental pin, not proof of installed
 Playwright WebKit 2215 source or ABI compatibility. The dedicated Nix derivation
 provides the build tools. Its first build attempt failed on compiler-flag
-quoting; the second failed during CMake generation. Both failures are retained.
-The final attempt is pending under the unchanged absolute deadline of
-2026-10-10 23:02:43 UTC; no native allocator result is claimed yet.
+quoting; the second failed during CMake generation. The third failed at the
+shared-library link with undefined `Subspace::attributes() const` from the
+instrumented `IsoSubspace`. All failures are retained; the native oracle never
+ran. The final engine unit peaked at 3,669,725,184 charged bytes and its entire
+process group was released; shared CI remained active. The highest observed
+unit peak was approximately 6.587 GB during dependency staging. The actual
+16,000,000,000-byte hard cap was never changed. These are charged-memory
+observations, not browser RSS or allocation measurements.
+
+A minimal inline-header fix is being prepared but remains unbuilt. After three
+failed attempts, the repository recovery rule requires user input before any
+fourth engine-build attempt. The original deadline was 2026-10-10 23:02:43 UTC;
+remaining time does not authorize another build. No native allocator pass is
+claimed.
 See the [ledger design](jsc-prototype/design.md),
 [resource envelope](jsc-prototype/envelope.md),
 [OOM proof](jsc-prototype/oom-proof.md) and
