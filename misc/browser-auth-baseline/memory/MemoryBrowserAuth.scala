@@ -74,14 +74,19 @@ final class MemoryBrowserAuth[F[_]](
   token: () => String = () => MemoryBrowserAuth.secureToken(),
   id: () => UUID = () => UUID.randomUUID(),
   capacity: Int = 1024,
-  maxCeremoniesPerBinding: Int = 16
+  maxCeremoniesPerBinding: Int = 16,
+  referencePolicy: Option[ReferencePolicy] = None
 )(using F: Effect[F]) {
   import MemoryBrowserAuth.*
   require(capacity > 0)
   require(maxCeremoniesPerBinding > 0)
-  private val monitor      = new Object
-  private var closed       = false
-  private val observedTime = new AtomicReference(Instant.MIN)
+  private val retainedCapacity = referencePolicy.fold(capacity)(_.retainedEntries)
+  private val auditCapacity    = referencePolicy.fold(capacity)(_.auditRecords)
+  private val ceremonySeconds  = referencePolicy.fold(120L)(_.ceremonySeconds)
+  private val sessionSeconds   = referencePolicy.fold(3600L)(_.sessionSeconds)
+  private val monitor          = new Object
+  private var closed           = false
+  private val observedTime     = new AtomicReference(Instant.MIN)
   private val inTransaction = new ThreadLocal[Boolean] {
     override def initialValue(): Boolean = false
   }
@@ -97,6 +102,7 @@ final class MemoryBrowserAuth[F[_]](
     expires: Instant,
     subject: Option[(String, Long)] = None,
     challenge: Option[UUID] = None,
+    challengeExpires: Option[Instant] = None,
     claimed: Boolean = false,
     result: Option[Recovery] = None
   )
@@ -117,6 +123,7 @@ final class MemoryBrowserAuth[F[_]](
     completions: Map[UUID, Completion] = Map.empty,
     operations: Map[InvocationId, StoredOperation] = Map.empty,
     attempts: Map[Vector[Byte], (Instant, Int)] = Map.empty,
+    subjectAttempts: Map[(Vector[Byte], String), (Instant, Int)] = Map.empty,
     audits: Vector[String] = Vector.empty,
     subjectCounters: Map[String, Int] = Map.empty,
     mutations: Int = 0
@@ -239,15 +246,20 @@ final class MemoryBrowserAuth[F[_]](
       OperationError.InvalidRegistration
     )
     def recordOutcome(tx: Tx, operation: PreparedOperation, status: InvocationStatus): Unit = {
-      if (!tx.staged.operations.contains(operation.invocation.invocationId) && tx.staged.operations.size >= capacity)
+      if (
+        !tx.staged.operations.contains(
+          operation.invocation.invocationId
+        ) && tx.staged.operations.size >= retainedCapacity
+      )
         throw new OperationProtocolException(OperationError.CapacityExceeded)
       tx.staged = tx.staged.copy(operations =
         tx.staged.operations.updated(operation.invocation.invocationId, StoredOperation(operation, status))
       )
     }
   }
-  private val issuer = new OneUseAuthorityScope(() => now(), maxOutstanding = capacity)
-  val operations     = new OneUseOperationProtocol(executor, operationStore, issuer, () => now())
+  private val issuer =
+    new OneUseAuthorityScope(() => now(), maxOutstanding = referencePolicy.fold(capacity)(_.pendingJobs))
+  val operations = new OneUseOperationProtocol(executor, operationStore, issuer, () => now())
 
   private[browserauthbaseline] def atomically[A](body: => A): F[A] = read(body)
   private[browserauthbaseline] def atomicallyNow[A](body: => A): A = monitor.synchronized(body)
@@ -262,7 +274,7 @@ final class MemoryBrowserAuth[F[_]](
   }
   private def ensureSlot(key: Vector[Byte]): BrowserSessionSlot = state.slots.getOrElse(
     key, {
-      if (state.slots.size >= capacity) deny(Failure.Capacity)
+      if (state.slots.size >= retainedCapacity) deny(Failure.Capacity)
       val slot = BrowserSessionSlot.empty(
         SlotBinding(BrowserSessionSlotId.fromUuid(id()), BrowserBindingId.fromUuid(id()), realm, namespace)
       )
@@ -300,8 +312,13 @@ final class MemoryBrowserAuth[F[_]](
   private def admitCeremony(binding: Vector[Byte]): Unit = {
     requireMonitor()
     if (
-      state.ceremonies.size >= capacity ||
-      state.ceremonies.valuesIterator.count(_.binding == binding) >= maxCeremoniesPerBinding
+      state.ceremonies.size >= retainedCapacity ||
+      state.ceremonies.valuesIterator
+        .count(_.binding == binding) >= referencePolicy.fold(maxCeremoniesPerBinding)(_.ceremoniesPerBinding) ||
+      referencePolicy.exists(policy =>
+        state.ceremonies.valuesIterator
+          .count(c => c.result.isEmpty && now().isBefore(c.expires)) >= policy.liveCeremonies
+      )
     )
       deny(Failure.Capacity)
   }
@@ -314,7 +331,7 @@ final class MemoryBrowserAuth[F[_]](
       if (state.ceremonies.contains(ceremony)) deny()
       state = state.copy(ceremonies =
         state.ceremonies
-          .updated(ceremony, Ceremony(observation.binding, observation.generation, now().plusSeconds(120)))
+          .updated(ceremony, Ceremony(observation.binding, observation.generation, now().plusSeconds(ceremonySeconds)))
       )
       ceremony
     }
@@ -325,7 +342,7 @@ final class MemoryBrowserAuth[F[_]](
     attempt {
       val key = digest(binding)
       admitCeremony(key)
-      if (!state.slots.contains(key) && state.slots.size >= capacity)
+      if (!state.slots.contains(key) && state.slots.size >= retainedCapacity)
         deny(Failure.Capacity)
       val slot = state.slots.getOrElse(
         key,
@@ -337,7 +354,8 @@ final class MemoryBrowserAuth[F[_]](
       if (state.ceremonies.contains(ceremony)) deny()
       state = state.copy(
         slots = state.slots.updated(key, slot),
-        ceremonies = state.ceremonies.updated(ceremony, Ceremony(key, slot.generation, now().plusSeconds(120)))
+        ceremonies =
+          state.ceremonies.updated(ceremony, Ceremony(key, slot.generation, now().plusSeconds(ceremonySeconds)))
       )
       ceremony
     }
@@ -346,6 +364,8 @@ final class MemoryBrowserAuth[F[_]](
     val ceremony = s.ceremonies.getOrElse(ceremonyId, deny(Failure.Missing))
     if (ceremony.binding != digest(binding)) deny()
     if (!now().isBefore(ceremony.expires)) deny(Failure.Expired)
+    if (ceremony.result.isEmpty && ceremony.challengeExpires.exists(deadline => !now().isBefore(deadline)))
+      deny(Failure.Expired)
     if (s.slots(ceremony.binding).generation != ceremony.generation) deny()
     if (ceremony.claimed && !allowClaimed) deny(Failure.Used)
     ceremony
@@ -356,13 +376,35 @@ final class MemoryBrowserAuth[F[_]](
     if (!account.enabled || account.version != version) deny()
     account
   }
-  private def admitProof(binding: Vector[Byte]): Unit = {
+  private def admitProof(binding: Vector[Byte], subject: String): Unit = {
     val sampledTime = now()
-    val previous    = state.attempts.get(binding).filter(p => sampledTime.isBefore(p._1.plusSeconds(60)))
-    val count       = previous.map(_._2).getOrElse(0)
-    if (count >= 8) deny(Failure.Throttled)
+    referencePolicy.foreach { p =>
+      state = state.copy(
+        attempts = state.attempts.filter { case (_, (time, _)) =>
+          sampledTime.isBefore(time.plusSeconds(p.proofWindowSeconds))
+        },
+        subjectAttempts = state.subjectAttempts.filter { case (_, (time, _)) =>
+          sampledTime.isBefore(time.plusSeconds(p.proofWindowSeconds))
+        }
+      )
+    }
+    val previous = state.attempts
+      .get(binding)
+      .filter(p => sampledTime.isBefore(p._1.plusSeconds(referencePolicy.fold(60L)(_.proofWindowSeconds))))
+    val count = previous.map(_._2).getOrElse(0)
+    if (count >= referencePolicy.fold(8)(_.proofAttempts)) deny(Failure.Throttled)
+    if (
+      !state.attempts.contains(binding) && state.attempts.size >= referencePolicy.fold(retainedCapacity)(_.rateScopes)
+    ) deny(Failure.Capacity)
     state =
       state.copy(attempts = state.attempts.updated(binding, (previous.map(_._1).getOrElse(sampledTime), count + 1)))
+    referencePolicy.foreach { p =>
+      val key                   = binding -> subject
+      val (start, subjectCount) = state.subjectAttempts.getOrElse(key, sampledTime -> 0)
+      if (subjectCount >= p.proofAttempts) deny(Failure.Throttled)
+      if (!state.subjectAttempts.contains(key) && state.subjectAttempts.size >= p.rateScopes) deny(Failure.Capacity)
+      state = state.copy(subjectAttempts = state.subjectAttempts.updated(key, start -> (subjectCount + 1)))
+    }
   }
   private def checkFactor(ceremony: Ceremony, account: Account, factor: Option[(UUID, String)]): Unit = {
     if (
@@ -389,14 +431,19 @@ final class MemoryBrowserAuth[F[_]](
         checkConnection()
         val ceremony = current(state, ceremonyId, binding)
         if (ceremony.subject.nonEmpty) deny(Failure.Used)
-        admitProof(ceremony.binding)
+        admitProof(ceremony.binding, name)
         state.accounts.getOrElse(name, deny())
       }
     }
     F.flatMap(captured) {
       case Left(error) => F.pure(Left(error))
       case Right(account) =>
-        F.flatMap(F.delay { computations.incrementAndGet(); digest(password) == account.passwordDigest }) { valid =>
+        F.flatMap(F.delay {
+          computations.incrementAndGet()
+          referencePolicy.fold(digest(password) == account.passwordDigest)(
+            _.verifyPassword(password, account.passwordDigest.toArray)
+          )
+        }) { valid =>
           F.flatMap(read {
             attempt {
               checkConnection()
@@ -406,7 +453,15 @@ final class MemoryBrowserAuth[F[_]](
               val challenge = account.factor.map(_ => id())
               state = state.copy(ceremonies =
                 state.ceremonies
-                  .updated(ceremonyId, ceremony.copy(subject = Some(name -> account.version), challenge = challenge))
+                  .updated(
+                    ceremonyId,
+                    ceremony.copy(
+                      subject = Some(name -> account.version),
+                      challenge = challenge,
+                      challengeExpires =
+                        challenge.flatMap(_ => referencePolicy.map(p => now().plusSeconds(p.challengeSeconds)))
+                    )
+                  )
               )
               challenge
             }
@@ -437,7 +492,7 @@ final class MemoryBrowserAuth[F[_]](
       attempt {
         checkConnection()
         val ceremony = current(state, ceremonyId, binding)
-        if (factor.nonEmpty) admitProof(ceremony.binding)
+        if (factor.nonEmpty) admitProof(ceremony.binding, ceremony.subject.getOrElse(deny())._1)
         checkFactor(ceremony, policy(state, ceremony), factor)
         // Admission survives rollback. No same-attempt proof-consuming callback can be replayed.
         state = state.copy(ceremonies = state.ceremonies.updated(ceremonyId, ceremony.copy(claimed = true)))
@@ -452,7 +507,11 @@ final class MemoryBrowserAuth[F[_]](
           val account = policy(tx.staged, ceremony)
           checkFactor(ceremony, account, factor)
           if (
-            tx.staged.sessions.size >= capacity || tx.staged.completions.size >= capacity || tx.staged.audits.size >= capacity
+            tx.staged.sessions.size >= retainedCapacity || tx.staged.completions.size >= retainedCapacity || tx.staged.audits.size >= auditCapacity
+          ) deny(Failure.Capacity)
+          if (
+            referencePolicy
+              .exists(p => tx.staged.completions.valuesIterator.count(_.material.nonEmpty) >= p.deliveryMaterials)
           ) deny(Failure.Capacity)
           val completionId = ceremonyId // Original attempt identity survives response loss.
           val sessionId    = AuthSessionId.fromUuid(id())
@@ -461,7 +520,7 @@ final class MemoryBrowserAuth[F[_]](
           val session = Session(
             Principal(account.name, sessionId, next, account.version),
             ceremony.binding,
-            now().plusSeconds(3600)
+            now().plusSeconds(sessionSeconds)
           )
           val material = token()
           BrowserSessionToken.fromString(material).fold(_ => deny(), _ => ())
@@ -471,10 +530,17 @@ final class MemoryBrowserAuth[F[_]](
             ceremony.generation,
             CompletionId.fromUuid(completionId),
             sessionId,
-            ceremony.expires
+            referencePolicy.fold(ceremony.expires) { p =>
+              val deadline = now().plusSeconds(p.deliverySeconds)
+              if (deadline.isBefore(ceremony.expires)) deadline else ceremony.expires
+            }
           )
-          val completion = Completion(ceremonyId, pending, session, digest(material), Some(material))
-          if (!now().isBefore(ceremony.expires)) deny(Failure.Expired)
+          val completion      = Completion(ceremonyId, pending, session, digest(material), Some(material))
+          val publicationTime = now()
+          if (
+            !publicationTime.isBefore(ceremony.expires) ||
+            ceremony.challengeExpires.exists(deadline => !publicationTime.isBefore(deadline))
+          ) deny(Failure.Expired)
           tx.staged = tx.staged.copy(
             sessions = tx.staged.sessions.updated(sessionId, session),
             completions = tx.staged.completions.updated(completionId, completion),
@@ -582,7 +648,14 @@ final class MemoryBrowserAuth[F[_]](
       )
       val request = RequestDigest.fromBytes(digest("increment").toArray).toOption.getOrElse(deny())
       val evidence =
-        issuer.conditional(operationBinding, request, now().plusSeconds(60)).toOption.getOrElse(deny(Failure.Capacity))
+        issuer
+          .conditional(
+            operationBinding,
+            request,
+            now().plusSeconds(referencePolicy.fold(60L)(_.operationAuthoritySeconds))
+          )
+          .toOption
+          .getOrElse(deny(Failure.Capacity))
       issuer.issue(evidence).toOption.getOrElse(deny())
     }
   }
@@ -597,7 +670,7 @@ final class MemoryBrowserAuth[F[_]](
       validate(tx.staged, principal)
       val binding = authority.reference.operation.invocation.binding
       if (binding.sessionId != principal.session) deny()
-      if (tx.staged.audits.size >= capacity) deny(Failure.Capacity)
+      if (tx.staged.audits.size >= auditCapacity) deny(Failure.Capacity)
       // validate above limits keys to registered accounts. Keep the domain
       // counter per subject and the aggregate instrumentation count separate.
       val previous = tx.staged.subjectCounters.getOrElse(principal.name, 0)
@@ -628,7 +701,7 @@ final class MemoryBrowserAuth[F[_]](
     "baseline_session",
     Set("http://localhost:8080"),
     false,
-    3600,
+    sessionSeconds,
     deliver,
     (binding, _) => F.map(logout(binding))(_.fold(_ => throw new spoonbill.server.SessionAccessDenied, identity))
   )
@@ -656,6 +729,26 @@ final class MemoryBrowserAuth[F[_]](
       state.sessions.size,
       state.completions.size,
       state.completions.values.count(_.material.nonEmpty)
+    )
+  }
+
+  /**
+   * Diagnostic snapshot of every retained host collection; no handles or
+   * secrets.
+   */
+  def retainedCounts: F[Map[String, Long]] = read {
+    Map(
+      "accounts"           -> state.accounts.size.toLong,
+      "bindings"           -> state.slots.size.toLong,
+      "ceremonies"         -> state.ceremonies.size.toLong,
+      "sessions"           -> state.sessions.size.toLong,
+      "completions"        -> state.completions.size.toLong,
+      "outcomes"           -> state.operations.size.toLong,
+      "browserRateWindows" -> state.attempts.size.toLong,
+      "tupleRateWindows"   -> state.subjectAttempts.size.toLong,
+      "audits"             -> state.audits.size.toLong,
+      "domainCounters"     -> state.subjectCounters.size.toLong,
+      "deliveryMaterials"  -> state.completions.valuesIterator.count(_.material.nonEmpty).toLong
     )
   }
   def close(): Unit = monitor.synchronized {

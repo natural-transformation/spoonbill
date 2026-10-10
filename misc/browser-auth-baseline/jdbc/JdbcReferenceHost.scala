@@ -11,6 +11,7 @@ import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
 import javax.sql.DataSource
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Using
+import spoonbill.browserauthbaseline.ReferencePolicy
 import spoonbill.effect.Effect
 import spoonbill.security.jdbc.*
 import spoonbill.security.transaction.*
@@ -47,7 +48,9 @@ final class JdbcReferenceHost(
   existingRunner: Option[TransactionExecutor[Future, Direct, Connection]] = None,
   maxAudits: Int = 1024,
   maxCeremoniesPerBinding: Int = 16,
-  sharedClock: Option[JdbcReferenceClock] = None
+  sharedClock: Option[JdbcReferenceClock] = None,
+  referencePolicy: Option[ReferencePolicy] = None,
+  admitSubject: (Digest256, UUID) => Boolean = (_, _) => true
 )(using effect: Effect[Future]) {
   import JdbcReferenceHost.*
   require(maxCeremonies > 0, "Ceremony capacity must be positive")
@@ -58,9 +61,11 @@ final class JdbcReferenceHost(
   // asserted by an action handler. The selected runner owns this transaction;
   // browser preparation only uses its connection and never starts another one.
   // Existing runners without joined execution/settlement are unsupported.
-  private val runner         = existingRunner.getOrElse(new JdbcTransactionExecutor[Future](source, blockingContext))
-  private val durableClock   = sharedClock.getOrElse(new JdbcReferenceClock(source, realm, namespace, clock))
-  private def now(): Instant = durableClock.now()
+  private val runner          = existingRunner.getOrElse(new JdbcTransactionExecutor[Future](source, blockingContext))
+  private val durableClock    = sharedClock.getOrElse(new JdbcReferenceClock(source, realm, namespace, clock))
+  private def now(): Instant  = durableClock.now()
+  private val ceremonySeconds = referencePolicy.fold(60L)(_.ceremonySeconds)
+  private val sessionSeconds  = referencePolicy.fold(600L)(_.sessionSeconds)
 
   private def reject(error: OperationError = OperationError.HostDenied): Nothing =
     throw new OperationProtocolException(error)
@@ -131,12 +136,13 @@ final class JdbcReferenceHost(
     subject: Option[UUID],
     version: Long,
     challenge: Option[UUID],
-    state: String
+    state: String,
+    challengeExpires: Option[Instant]
   )
   private def readCeremony(connection: Connection, id: UUID, binding: Digest256): Ceremony =
     statement(
       connection,
-      "SELECT attempt, binding, generation, expires_at, subject, version, challenge, state FROM baseline_ceremony WHERE id=? FOR UPDATE"
+      "SELECT attempt, binding, generation, expires_at, subject, version, challenge, state, challenge_expires_at FROM baseline_ceremony WHERE id=? FOR UPDATE"
     ) { query =>
       query.setObject(1, id)
       Using.resource(query.executeQuery()) { rows =>
@@ -152,12 +158,16 @@ final class JdbcReferenceHost(
           Option(rows.getObject(5, classOf[UUID])),
           rows.getLong(6),
           Option(rows.getObject(7, classOf[UUID])),
-          rows.getString(8)
+          rows.getString(8),
+          Option(rows.getTimestamp(9)).map(_.toInstant)
         )
       }
     }
-  private def fresh(ceremony: Ceremony): Unit =
-    if (!now().isBefore(ceremony.expires)) reject(OperationError.Expired)
+  private def fresh(ceremony: Ceremony): Unit = {
+    val time = now()
+    if (!time.isBefore(ceremony.expires) || ceremony.challengeExpires.exists(deadline => !time.isBefore(deadline)))
+      reject(OperationError.Expired)
+  }
   private def state(connection: Connection, ceremony: UUID, value: String): Unit =
     statement(connection, "UPDATE baseline_ceremony SET state=? WHERE id=?") { query =>
       query.setString(1, value); query.setObject(2, ceremony); query.executeUpdate(); ()
@@ -188,21 +198,30 @@ final class JdbcReferenceHost(
     }
     // One fresh aggregate under the existing locks preserves both retained
     // bounds without another frontend execution. Challenges share their row.
-    val (count, bindingCount) =
-      statement(connection, "SELECT count(*),count(*) FILTER (WHERE binding=?) FROM baseline_ceremony") { query =>
+    val (count, bindingCount, liveCount) =
+      statement(
+        connection,
+        "SELECT count(*),count(*) FILTER (WHERE binding=?),count(*) FILTER (WHERE state IN ('begun','challenged','admitted') AND expires_at>?) FROM baseline_ceremony"
+      ) { query =>
         query.setBytes(1, binding.bytes)
+        query.setTimestamp(2, Timestamp.from(now()))
         Using.resource(query.executeQuery()) { rows =>
-          rows.next(); rows.getLong(1) -> rows.getLong(2)
+          rows.next(); (rows.getLong(1), rows.getLong(2), rows.getLong(3))
         }
       }
-    if (count >= maxCeremonies || bindingCount >= maxCeremoniesPerBinding) reject(OperationError.CapacityExceeded)
+    if (
+      count >= referencePolicy.fold(maxCeremonies)(_.retainedEntries) ||
+      bindingCount >= referencePolicy.fold(maxCeremoniesPerBinding)(_.ceremoniesPerBinding) ||
+      referencePolicy.exists(p => liveCount >= p.liveCeremonies)
+    ) reject(OperationError.CapacityExceeded)
     val id = newId()
     statement(
       connection,
       "INSERT INTO baseline_ceremony(id,attempt,binding,generation,expires_at,state) VALUES (?,?,?,?,?,'begun')"
     ) { query =>
       query.setObject(1, id); query.setObject(2, newId()); query.setBytes(3, binding.bytes)
-      query.setLong(4, generation); query.setTimestamp(5, Timestamp.from(now().plusSeconds(60))); query.executeUpdate()
+      query.setLong(4, generation); query.setTimestamp(5, Timestamp.from(now().plusSeconds(ceremonySeconds)));
+      query.executeUpdate()
     }
     id
   }
@@ -227,7 +246,8 @@ final class JdbcReferenceHost(
     password: String,
     checkConnection: Connection => Unit = _ => ()
   ): Future[Either[TransactionFailure, PasswordResult]] =
-    if (!admitProof()) Future.successful(Left(TransactionFailure.Rejected(OperationError.CapacityExceeded)))
+    if (!admitProof() || !admitSubject(binding, subject))
+      Future.successful(Left(TransactionFailure.Rejected(OperationError.CapacityExceeded)))
     else
       runner.transact { connection =>
         checkConnection(connection)
@@ -236,7 +256,9 @@ final class JdbcReferenceHost(
         case Left(error)     => Future.successful(Left(error))
         case Right(observed) =>
           // Hashing finishes outside the authoritative transaction, on the worker.
-          val verified = verifyPassword(password, observed.password)
+          val verified = referencePolicy.fold(verifyPassword(password, observed.password))(
+            _.verifyPassword(password, observed.password)
+          )
           runner.transact { connection =>
             val ceremony = readCeremony(connection, ceremonyId, binding)
             fresh(ceremony)
@@ -246,11 +268,19 @@ final class JdbcReferenceHost(
             fresh(ceremony)
             if (!current.enabled || current.version != observed.version) reject()
             val challenge = current.factor.map(_ => newId())
-            statement(connection, "UPDATE baseline_ceremony SET subject=?,version=?,challenge=?,state=? WHERE id=?") {
-              query =>
-                query.setObject(1, subject); query.setLong(2, current.version); query.setObject(3, challenge.orNull)
-                query.setString(4, if (challenge.isDefined) "challenged" else "admitted")
-                query.setObject(5, ceremonyId); query.executeUpdate()
+            statement(
+              connection,
+              "UPDATE baseline_ceremony SET subject=?,version=?,challenge=?,state=?,challenge_expires_at=? WHERE id=?"
+            ) { query =>
+              query.setObject(1, subject); query.setLong(2, current.version); query.setObject(3, challenge.orNull)
+              query.setString(4, if (challenge.isDefined) "challenged" else "admitted")
+              query.setTimestamp(
+                5,
+                challenge
+                  .flatMap(_ => referencePolicy.map(p => Timestamp.from(now().plusSeconds(p.challengeSeconds))))
+                  .orNull
+              )
+              query.setObject(6, ceremonyId); query.executeUpdate()
             }
             challenge.fold[PasswordResult](PasswordResult.Ready(new Proof(ceremonyId, binding))) { id =>
               PasswordResult.Challenge(ceremonyId, id, subject)
@@ -295,6 +325,7 @@ final class JdbcReferenceHost(
         val ceremony = readCeremony(connection, ceremonyId, binding)
         fresh(ceremony)
         val subject = ceremony.subject.getOrElse(reject())
+        if (!admitSubject(binding, subject)) reject(OperationError.CapacityExceeded)
         if (
           ceremony.state != "challenged" || expectedSubject
             .exists(_ != subject) || !ceremony.challenge.contains(challenge)
@@ -328,7 +359,15 @@ final class JdbcReferenceHost(
         val ceremony = readCeremony(connection, proof.ceremony, proof.binding)
         fresh(ceremony)
         if (ceremony.state != "admitted") reject(OperationError.NotPrepared)
-        admitAudit(connection, maxAudits)
+        admitAudit(connection, referencePolicy.fold(maxAudits)(_.auditRecords))
+        referencePolicy.foreach { policy =>
+          val retained = statement(connection, "SELECT count(*) FROM baseline_material") { query =>
+            Using.resource(query.executeQuery()) { rows =>
+              rows.next(); rows.getLong(1)
+            }
+          }
+          if (retained >= policy.deliveryMaterials) reject(OperationError.CapacityExceeded)
+        }
         val subject = ceremony.subject.getOrElse(reject())
         val account = readAccount(connection, subject, lock = true)
         checkConnection(connection)
@@ -347,8 +386,11 @@ final class JdbcReferenceHost(
             ceremony.binding,
             digest(Base64.getUrlEncoder.withoutPadding().encode(credential)),
             ceremony.generation,
-            now().plusSeconds(600),
-            ceremony.expires
+            now().plusSeconds(sessionSeconds),
+            referencePolicy.fold(ceremony.expires) { p =>
+              val deadline = now().plusSeconds(p.deliverySeconds)
+              if (deadline.isBefore(ceremony.expires)) deadline else ceremony.expires
+            }
           )
           statement(
             connection,
@@ -389,9 +431,10 @@ final class JdbcReferenceHost(
   private[baseline] def retireExpiredMaterial(connection: Connection): Int =
     statement(
       connection,
-      "DELETE FROM baseline_material m USING baseline_ceremony c WHERE m.attempt=c.attempt AND c.expires_at<=?"
+      "DELETE FROM baseline_material m USING spoonbill_browser_completion c WHERE m.attempt=c.completion_id AND c.realm=? AND c.cookie_namespace=? AND c.expires_at<=?"
     ) { query =>
-      query.setTimestamp(1, Timestamp.from(now())); query.executeUpdate()
+      query.setString(1, realm); query.setString(2, namespace); query.setTimestamp(3, Timestamp.from(now()));
+      query.executeUpdate()
     }
 
   /**
@@ -432,17 +475,31 @@ final class JdbcReferenceHost(
   ): Option[RecoveryMetadata] = {
     val candidate = statement(
       connection,
-      """SELECT id FROM baseline_ceremony
+      """SELECT id, CASE WHEN state='committed' THEN
+        (SELECT LEAST(b.expires_at,baseline_ceremony.expires_at) FROM spoonbill_browser_completion b
+         WHERE b.realm=? AND b.cookie_namespace=? AND b.completion_id=baseline_ceremony.attempt)
+        ELSE LEAST(expires_at,COALESCE(challenge_expires_at,expires_at)) END FROM baseline_ceremony
       WHERE binding=? AND generation=? AND expires_at>? AND state IN ('challenged','admitted','committed')
+      AND (state='committed' OR challenge_expires_at IS NULL OR challenge_expires_at>?)
+      AND (state<>'committed' OR EXISTS (SELECT 1 FROM spoonbill_browser_completion b
+        WHERE b.realm=? AND b.cookie_namespace=? AND b.completion_id=baseline_ceremony.attempt AND b.expires_at>?))
       ORDER BY expires_at DESC,id DESC LIMIT 1"""
     ) { query =>
-      query.setBytes(1, binding.bytes); query.setLong(2, generation); query.setTimestamp(3, Timestamp.from(now()))
-      Using.resource(query.executeQuery())(rows => if (rows.next()) Some(rows.getObject(1, classOf[UUID])) else None)
+      val time = Timestamp.from(now())
+      query.setString(1, realm); query.setString(2, namespace)
+      query.setBytes(3, binding.bytes); query.setLong(4, generation); query.setTimestamp(5, time)
+      query.setTimestamp(6, time); query.setString(7, realm); query.setString(8, namespace); query.setTimestamp(9, time)
+      Using.resource(query.executeQuery())(rows =>
+        if (rows.next()) Some(rows.getObject(1, classOf[UUID]) -> rows.getTimestamp(2).toInstant) else None
+      )
     }
-    candidate.flatMap { id =>
+    candidate.flatMap { case (id, metadataExpiry) =>
       val ceremony = readCeremony(connection, id, binding)
-      if (!now().isBefore(ceremony.expires) || !Set("challenged", "admitted", "committed").contains(ceremony.state))
-        None
+      if (
+        !now().isBefore(ceremony.expires) ||
+        (ceremony.state != "committed" && ceremony.challengeExpires.exists(deadline => !now().isBefore(deadline))) ||
+        !Set("challenged", "admitted", "committed").contains(ceremony.state)
+      ) None
       else {
         val subject = ceremony.subject.getOrElse(reject())
         val account = readAccount(connection, subject, lock = true)
@@ -458,7 +515,7 @@ final class JdbcReferenceHost(
         if (!account.enabled || account.version != ceremony.version || !sessionCurrent) None
         else {
           validateGeneration(ceremony.generation)
-          if (!now().isBefore(ceremony.expires)) None
+          if (!now().isBefore(metadataExpiry)) None
           else Some(RecoveryMetadata(ceremony.id, subject, ceremony.challenge, ceremony.state != "challenged"))
         }
       }
@@ -554,7 +611,8 @@ object JdbcReferenceHost {
       enabled BOOLEAN NOT NULL, password_hash BYTEA NOT NULL, factor_hash BYTEA)""",
     """CREATE TABLE baseline_ceremony(id UUID PRIMARY KEY, attempt UUID UNIQUE NOT NULL,
       binding BYTEA NOT NULL, generation BIGINT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
-      subject UUID REFERENCES baseline_account(id), version BIGINT, challenge UUID, state VARCHAR(24) NOT NULL)""",
+      subject UUID REFERENCES baseline_account(id), version BIGINT, challenge UUID, state VARCHAR(24) NOT NULL,
+      challenge_expires_at TIMESTAMPTZ)""",
     """CREATE TABLE baseline_session(id UUID PRIMARY KEY, attempt UUID UNIQUE NOT NULL,
       subject UUID NOT NULL REFERENCES baseline_account(id), version BIGINT NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL, valid BOOLEAN NOT NULL, acknowledged BOOLEAN NOT NULL DEFAULT FALSE)""",

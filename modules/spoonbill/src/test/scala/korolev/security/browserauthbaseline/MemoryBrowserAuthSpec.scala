@@ -24,17 +24,24 @@ class MemoryBrowserAuthSpec extends AnyFlatSpec with Matchers {
   private class Fixture(
     capacity: Int = 64,
     credentialFactory: () => String = () => credential,
-    maxCeremoniesPerBinding: Int = 16
+    maxCeremoniesPerBinding: Int = 16,
+    referencePolicy: Option[ReferencePolicy] = None
   ) {
     val now = new AtomicReference(start)
     val ids = new AtomicLong(10)
     val host = new MemoryBrowserAuth[Future](
-      Vector(syntheticAccount("alice", "password"), syntheticAccount("bob", "password", Some("123456"))),
+      referencePolicy.fold(
+        Vector(syntheticAccount("alice", "password"), syntheticAccount("bob", "password", Some("123456")))
+      ) { p =>
+        val hash = p.proof.hash("password").toVector
+        p.accounts.map(a => Account(a.name, hash, a.factor, version = 1L))
+      },
       () => now.get(),
       credentialFactory,
       () => new UUID(0, ids.incrementAndGet()),
       capacity,
-      maxCeremoniesPerBinding
+      maxCeremoniesPerBinding,
+      referencePolicy
     )
     def begin(): UUID = accepted(result(host.begin(binding)))
     def login(): (UUID, Principal) = {
@@ -68,6 +75,68 @@ class MemoryBrowserAuthSpec extends AnyFlatSpec with Matchers {
     result(f.host.protectedPage(binding, credential)) shouldBe Right(principal)
     result(f.host.activate(binding, credential)) shouldBe Right(principal)
     result(f.host.deliver(ceremony, binding)) shouldBe None
+  }
+
+  it should "apply the executable shared proof population and distinct challenge delivery and session deadlines" in {
+    val p                     = ReferencePolicy.Default
+    val challenged            = new Fixture(referencePolicy = Some(p))
+    val (ceremony, challenge) = challenged.challenge()
+    challenged.now.set(start.plusSeconds(p.challengeSeconds))
+    result(challenged.host.factor(ceremony, binding, challenge, "123456")) shouldBe Left(Failure.Expired)
+    val pending = new Fixture(referencePolicy = Some(p))
+    val id      = pending.begin()
+    result(pending.host.password(id, binding, "account-1000", "password")) match {
+      case Right(Reply.Challenge(_, factor)) =>
+        result(pending.host.factor(id, binding, factor, "123456")) shouldBe Right(Reply.Prepared(id))
+      case other => fail(s"Expected seeded account challenge: $other")
+    }
+    pending.now.set(start.plusSeconds(p.deliverySeconds))
+    result(pending.host.deliver(id, binding)) shouldBe None
+    val active         = new Fixture(referencePolicy = Some(p))
+    val (_, principal) = active.login()
+    val authority      = accepted(result(active.host.actionAuthority(principal)))
+    active.now.set(start.plusSeconds(p.operationAuthoritySeconds))
+    result(active.host.protectedAction(principal, authority)) shouldBe Left(
+      TransactionFailure.Rejected(OperationError.Expired)
+    )
+    active.now.set(start.plusSeconds(p.sessionSeconds - 1))
+    result(active.host.protectedPage(binding, credential)).isRight shouldBe true
+    active.now.set(start.plusSeconds(p.sessionSeconds))
+    result(active.host.protectedPage(binding, credential)).isLeft shouldBe true
+  }
+
+  it should "roll back preparation when a token callback crosses the profile challenge deadline" in {
+    val p = ReferencePolicy.Default
+    lazy val f: Fixture = new Fixture(
+      referencePolicy = Some(p),
+      credentialFactory = () => {
+        f.now.set(start.plusSeconds(p.challengeSeconds))
+        credential
+      }
+    )
+    val (ceremony, challenge) = f.challenge()
+    result(f.host.factor(ceremony, binding, challenge, "123456")) shouldBe
+      Left(Failure.Settlement(TransactionFailure.Rejected(OperationError.HostDenied)))
+    val counts = result(f.host.counts)
+    counts.sessions shouldBe 0
+    counts.completions shouldBe 0
+    counts.retainedDeliveryMaterials shouldBe 0
+    counts.audits shouldBe 0
+    counts.rollbacks shouldBe 1L
+  }
+
+  it should "bound shared browser and account-tuple proof windows while allowing fresh browser scopes" in {
+    val p        = ReferencePolicy.Default
+    val f        = new Fixture(referencePolicy = Some(p))
+    val ceremony = f.begin()
+    (1 to p.proofAttempts).foreach { i =>
+      result(f.host.password(ceremony, binding, if (i % 2 == 0) "alice" else "bob", "wrong")) shouldBe Left(
+        Failure.Denied
+      )
+    }
+    result(f.host.password(ceremony, binding, "alice", "password")) shouldBe Left(Failure.Throttled)
+    val fresh = accepted(result(f.host.begin("fresh-browser")))
+    result(f.host.password(fresh, "fresh-browser", "alice", "password")) shouldBe Right(Reply.Prepared(fresh))
   }
 
   it should "bind an immutable factor challenge to its subject and original ceremony" in {

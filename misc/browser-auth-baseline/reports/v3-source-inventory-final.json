@@ -1,0 +1,111 @@
+{
+  "schema": "spoonbill-browser-auth-inventory-v1",
+  "baselineRevision": "ab95a4fe65399814931c6ddd7f29dd68f33bbc5c",
+  "method": "All nonblank physical lines, including comments, in all declared production integration roots",
+  "sourceSha256": "47ac5bcaae1835fef46604241911a3c32cf35c690ea6f075ca920cc1be5f3374",
+  "files": [
+    {
+      "category": "application",
+      "file": "JdbcReferenceApplication.scala",
+      "sha256": "416962962505bb649f1a751f1fab844886d38075e90f4a5146a0fbcb2d507081",
+      "bytes": 8511,
+      "nonblankLines": 182
+    },
+    {
+      "category": "application",
+      "file": "JdbcReferenceServer.scala",
+      "sha256": "76396c070f6806127e783e6cd346018fe548d0bbc58f2caf47e7073ea905a941",
+      "bytes": 8409,
+      "nonblankLines": 167
+    },
+    {
+      "category": "application",
+      "file": "MemoryReferenceApplication.scala",
+      "sha256": "a016d07f16bd4188cdf8039a13fcfeb0ddad45f9943e8e328f811dc90199dfe0",
+      "bytes": 4568,
+      "nonblankLines": 85
+    },
+    {
+      "category": "application",
+      "file": "MemoryReferenceServer.scala",
+      "sha256": "907d6ffce275f9b0f220da7e89519f932ce6b9c680fe9204968ac6611c71d294",
+      "bytes": 9627,
+      "nonblankLines": 184
+    },
+    {
+      "category": "application",
+      "file": "ReferenceApplication.scala",
+      "sha256": "4b9a5e56f3c59412ced366079461686db1b396833cf2907f693fee3ae26fc7e0",
+      "bytes": 12661,
+      "nonblankLines": 286
+    },
+    {
+      "category": "application",
+      "file": "ReferenceBackend.scala",
+      "sha256": "166e01028b28b67e2e4058be9602d4f17d842586a19a71303943f487c691d947",
+      "bytes": 1927,
+      "nonblankLines": 38
+    },
+    {
+      "category": "application",
+      "file": "ReferencePolicyReport.scala",
+      "sha256": "c0755fefc3337d7a06e3708b83def86eeb5badbcc65ce1fcdeda0dd966e10704",
+      "bytes": 503,
+      "nonblankLines": 12
+    },
+    {
+      "category": "common",
+      "file": "ReferenceAdmission.scala",
+      "sha256": "34ebf2851e2a70d94a94b7e642c6a99d142cf0c5314b9b34a3b0eaad5458751d",
+      "bytes": 2465,
+      "nonblankLines": 67
+    },
+    {
+      "category": "common",
+      "file": "ReferencePolicy.scala",
+      "sha256": "684debe3e464a7f8b10fb9f06c5c0175e1030d0c3bcfb46a1530ad67bb4e1fa3",
+      "bytes": 3827,
+      "nonblankLines": 112
+    },
+    {
+      "category": "jdbc",
+      "file": "JdbcBrowserSecurity.scala",
+      "sha256": "7268663d048a8c8066ee8bd9305655211acb2758a39704842ba1b88382a6017a",
+      "bytes": 51682,
+      "nonblankLines": 1174
+    },
+    {
+      "category": "jdbc",
+      "file": "JdbcReferenceClock.scala",
+      "sha256": "c6b9256a66b28168d3d28a7ecc65afff6a45b9d8fd4c9f5a8866dc940dad5dd2",
+      "bytes": 3393,
+      "nonblankLines": 64
+    },
+    {
+      "category": "jdbc",
+      "file": "JdbcReferenceHost.scala",
+      "sha256": "cbde9b3d79e2abe6b307f029deffbf465865525c94d720dd5c09522669e1a00d",
+      "bytes": 29257,
+      "nonblankLines": 600
+    },
+    {
+      "category": "memory",
+      "file": "MemoryBrowserAuth.scala",
+      "sha256": "94739ab4a6b8f9821380bc0185c802f9832207130e11dab42f480018c74175ee",
+      "bytes": 33580,
+      "nonblankLines": 745
+    },
+    {
+      "category": "memory",
+      "file": "MemoryBrowserSecurity.scala",
+      "sha256": "f8b898c6f1ace0a3ebc6304bfbf742bd3dd231edaba64d3121ad17ea2f7c4976",
+      "bytes": 13872,
+      "nonblankLines": 302
+    }
+  ],
+  "totals": {
+    "files": 14,
+    "bytes": 184282,
+    "nonblankLines": 4018
+  }
+}

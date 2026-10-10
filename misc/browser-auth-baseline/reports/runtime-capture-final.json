@@ -1,0 +1,25 @@
+{
+  "schema": "spoonbill-local-reference-capture-v1",
+  "acceptanceEvidence": false,
+  "scope": "Nix-compiled local reference with final profile and view-history bounds; source/artifact freeze and comparable performance evidence remain pending.",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "referenceIntegrationSha256": "47ac5bcaae1835fef46604241911a3c32cf35c690ea6f075ca920cc1be5f3374",
+  "artifactSha256": "3fb9713201347617d7c3d43610903dbaa671ce24c29b8e7380bb05626be79a5d",
+  "dependencyGraphSha256": "fadc28e178f1fbb0b375ded380abe1221ffe4062879f8f29da0668ac206aba8f",
+  "sourceInventorySha256": "fce788720b449634230d991dd0dc8831c3c72154fe49f030d897d68e51f86a48",
+  "referencePolicySha256": "6426867c14a8dfc3e48523248cea0c0c9ff84a6d11a88cebe1ce2ffb1bf39529",
+  "clientInventorySha256": "8bd19cb051e0ca82d4e90f6fdfe92c544988d36c6a36e9174f629c499d60de9d",
+  "source": {
+    "files": 14,
+    "bytes": 184282,
+    "nonblankLines": 4018
+  },
+  "classpathEntries": 25,
+  "files": 1405,
+  "bytes": 35894662,
+  "archive": {
+    "tarSha256": "6ad5d6488cdd3ef2d33f68af06e971a177bfffa1f7d70db453db85bfecf977e9",
+    "tarBytes": 37263360
+  }
+}

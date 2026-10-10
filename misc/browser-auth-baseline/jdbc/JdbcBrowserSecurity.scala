@@ -12,6 +12,7 @@ import scala.util.{Failure, Success, Try, Using}
 import scala.util.control.NonFatal
 import spoonbill.Qsid
 import spoonbill.action.{AccessDecision, AccessDenied, InvocationBinding, SessionAuthority}
+import spoonbill.browserauthbaseline.{ReferenceAdmission, ReferencePolicy}
 import spoonbill.effect.Effect
 import spoonbill.security.*
 import spoonbill.security.Identifiers.*
@@ -113,6 +114,21 @@ private[jdbc] final class JdbcReferenceGate(capacity: Int, cleanupCapacity: Int 
 }
 
 object JdbcBrowserSecurity {
+  def limitsFor(policy: ReferencePolicy): Limits = Limits(
+    active = policy.activeViews,
+    activePerBinding = policy.viewsPerBinding,
+    disconnected = policy.disconnectedViews,
+    bootstrap = policy.bootstrapEntries,
+    nodesPerView = policy.nodesPerView,
+    retainedViews = policy.retainedViews,
+    retainedBindings = policy.retainedEntries,
+    auditRecords = policy.auditRecords,
+    queued = policy.pendingJobs,
+    bootstrapSeconds = policy.bootstrapSeconds,
+    reconnectSeconds = policy.reconnectSeconds,
+    proofAttemptsPerMinute = policy.proofAttempts,
+    proofBindings = policy.rateScopes
+  )
   final case class Limits(
     active: Int = 64,
     activePerBinding: Int = 16,
@@ -161,7 +177,9 @@ object JdbcBrowserSecurity {
     bootstrap: Int,
     nodes: Int,
     queued: Int,
-    proofBindings: Int
+    proofBindings: Int,
+    pendingCallbacks: Int = 0,
+    peakCallbacks: Int = 0
   )
 }
 
@@ -194,13 +212,16 @@ final class JdbcBrowserSecurity[S, P](
   singleNodeExclusiveWriters: Boolean,
   origin: String = "http://localhost:8080",
   limits: JdbcBrowserSecurity.Limits = JdbcBrowserSecurity.Limits(),
-  afterPreparedCommit: UUID => Unit = _ => ()
+  afterPreparedCommit: UUID => Unit = _ => (),
+  referencePolicy: Option[ReferencePolicy] = None
 )(using F: Effect[Future])
     extends SessionAccessControl[Future, S] {
   import JdbcBrowserSecurity.*
   require(singleNodeExclusiveWriters, "The baseline requires one instance owning every authority writer")
   private given ExecutionContext = blockingContext
   private val gate               = new JdbcReferenceGate(limits.queued, limits.active)
+  private val callbacks          = new ReferenceAdmission(limits.queued)
+  def callbackCounts: (Int, Int) = callbacks.counts
   private val outer              = new JdbcTransactionExecutor[Future](source, blockingContext)
   private val maintenanceResult  = new AtomicReference[Promise[Either[TransactionFailure, Int]]]()
   private val durableClock       = new JdbcReferenceClock(source, realm, namespace, clock)
@@ -226,7 +247,9 @@ final class JdbcBrowserSecurity[S, P](
     cipher,
     existingRunner = Some(joined),
     maxAudits = limits.auditRecords,
-    sharedClock = Some(durableClock)
+    sharedClock = Some(durableClock),
+    referencePolicy = referencePolicy,
+    admitSubject = (binding, subject) => referencePolicy.forall(_ => admitTuple(binding, subject))
   )
   private val outcomes = new JdbcOperationOutcomes()
   private val issuer   = new OneUseAuthorityScope(() => now(), limits.queued)
@@ -263,10 +286,30 @@ final class JdbcBrowserSecurity[S, P](
   private var owners       = Map.empty[ConnectionId, Qsid]
   private var closed       = false
   private var proofWindows = Map.empty[Digest256, (Instant, Int)]
+  private var tupleWindows = Map.empty[(Digest256, UUID), (Instant, Int)]
+  private def admitTuple(binding: Digest256, subject: UUID): Boolean = {
+    val time = now()
+    registry.synchronized {
+      val policy = referencePolicy.get
+      tupleWindows = tupleWindows.filter { case (_, (start, _)) =>
+        time.isBefore(start.plusSeconds(policy.proofWindowSeconds))
+      }
+      val key            = binding -> subject
+      val (start, count) = tupleWindows.getOrElse(key, time -> 0)
+      if (
+        closed || count >= policy.proofAttempts || (!tupleWindows.contains(
+          key
+        ) && tupleWindows.size >= policy.rateScopes)
+      ) false
+      else { tupleWindows += key -> (start -> (count + 1)); true }
+    }
+  }
   private def admitProof(binding: Digest256): Boolean = {
     val time = now()
     registry.synchronized {
-      proofWindows = proofWindows.filter { case (_, (start, _)) => time.isBefore(start.plusSeconds(60)) }
+      proofWindows = proofWindows.filter { case (_, (start, _)) =>
+        time.isBefore(start.plusSeconds(referencePolicy.fold(60L)(_.proofWindowSeconds)))
+      }
       val (start, count) = proofWindows.getOrElse(binding, time -> 0)
       if (
         closed || count >= limits.proofAttemptsPerMinute || (!proofWindows.contains(
@@ -826,11 +869,15 @@ final class JdbcBrowserSecurity[S, P](
 
   val authority: SessionAuthority[Future, Principal] = new SessionAuthority[Future, Principal] {
     def resolve(binding: InvocationBinding): Future[Either[AccessDenied, Principal]] =
-      F.blocking(byOwner(binding.connectionId))(blockingContext)
-        .flatMap { case (qsid, entry) =>
-          withEntry(qsid, entry.lease)((_, _, actual) => actual.principal.toRight(AccessDenied.Unauthenticated) -> None)
-        }
-        .recover { case _: SessionAccessDenied => Left(AccessDenied.StaleAuthority) }
+      callbacks.submit(
+        F.blocking(byOwner(binding.connectionId))(blockingContext)
+          .flatMap { case (qsid, entry) =>
+            withEntry(qsid, entry.lease)((_, _, actual) =>
+              actual.principal.toRight(AccessDenied.Unauthenticated) -> None
+            )
+          }
+          .recover { case _: SessionAccessDenied => Left(AccessDenied.StaleAuthority) }
+      )
     def revalidate(binding: InvocationBinding, principal: Principal): Future[AccessDecision] = resolve(binding).map {
       case Right(current) if current == principal => AccessDecision.Allowed
       case _                                      => AccessDecision.Denied(AccessDenied.StaleAuthority)
@@ -845,10 +892,10 @@ final class JdbcBrowserSecurity[S, P](
     Reply.Prepared(attempt)
   }
   private def captured[A](owner: ConnectionId)(body: (Identity, Connection => Unit) => Future[A]): Future[A] =
-    F.blocking(byOwner(owner))(blockingContext).flatMap { case (qsid, entry) =>
+    callbacks.submit(F.blocking(byOwner(owner))(blockingContext).flatMap { case (qsid, entry) =>
       val authority = entry.copy(nodes = Map.empty, projection = None)
       body(authority.identity.get, connection => { check(connection, qsid, authority); () })
-    }
+    })
   def begin(owner: ConnectionId): Future[Either[TransactionFailure, UUID]] =
     captured(owner)((id, validate) => host.begin(id.binding, validate))
   def password(
@@ -934,7 +981,7 @@ final class JdbcBrowserSecurity[S, P](
     "baseline_session",
     Set(origin),
     origin.startsWith("https://"),
-    3600,
+    referencePolicy.fold(3600L)(_.sessionSeconds),
     deliverBound,
     (binding, _) => logoutBinding(binding).map(_.fold(_ => throw new SessionAccessDenied, _ => ()))
   )
@@ -1023,15 +1070,21 @@ final class JdbcBrowserSecurity[S, P](
     operationScope
   )
   def actionAuthority(owner: ConnectionId, principal: Principal): Future[Either[OperationError, ExecutionAuthority]] =
-    F.blocking(byOwner(owner))(blockingContext).flatMap { case (qsid, entry) =>
+    callbacks.submit(F.blocking(byOwner(owner))(blockingContext).flatMap { case (qsid, entry) =>
       withEntry(qsid, entry.lease) { (_, _, actual) =>
         if (!actual.principal.contains(principal)) reject()
         () -> None
       }.map { _ =>
         val digest = RequestDigest.fromBytes(JdbcReferenceHost.syntheticHash("increment-preference")).toOption.get
-        issuer.verified(operationBinding(principal), digest, now().plusSeconds(30)).flatMap(issuer.issue)
+        issuer
+          .verified(
+            operationBinding(principal),
+            digest,
+            now().plusSeconds(referencePolicy.fold(30L)(_.operationAuthoritySeconds))
+          )
+          .flatMap(issuer.issue)
       }
-    }
+    })
   def protectedAction(
     owner: ConnectionId,
     principal: Principal,
@@ -1040,8 +1093,16 @@ final class JdbcBrowserSecurity[S, P](
     if (permit.reference.operation.invocation.binding != operationBinding(principal))
       Future.successful(Left(TransactionFailure.Rejected(OperationError.HostDenied)))
     else
-      F.fork(operations.executeIssued(permit) { (scope, _) =>
+      callbacks.submit(F.fork(operations.executeIssued(permit) { (scope, _) =>
         JdbcReferenceHost.admitAudit(scope.transaction, limits.auditRecords)
+        referencePolicy.foreach { policy =>
+          val retained = sql(scope.transaction, "SELECT count(*) FROM spoonbill_operation_outcome") { query =>
+            Using.resource(query.executeQuery()) { rows =>
+              rows.next(); rows.getLong(1)
+            }
+          }
+          if (retained >= policy.retainedEntries) throw new OperationProtocolException(OperationError.CapacityExceeded)
+        }
         val (qsid, entry) = byOwner(owner)
         val actual        = check(scope.transaction, qsid, entry)
         if (!actual.principal.contains(principal)) reject()
@@ -1059,25 +1120,73 @@ final class JdbcBrowserSecurity[S, P](
           query.setObject(2, principal.subject); query.executeUpdate()
         }
         changed
-      })(blockingContext)
-  def resources: Future[Resources] = Future {
-    val queued = gate.queued
-    val time   = now()
-    registry.synchronized {
-      sweep(time)
-      Resources(
-        entries.values.count(_.owner.nonEmpty),
-        entries.values.count(e => !e.bootstrap && e.owner.isEmpty),
-        entries.values.count(_.bootstrap),
-        entries.values.map(_.nodes.size).sum,
-        queued,
-        proofWindows.size
+      })(blockingContext))
+  def resources: Future[Resources] = if (callbacks.isClosed) Future.successful(registry.synchronized {
+    Resources(
+      entries.values.count(_.owner.nonEmpty),
+      entries.values.count(e => !e.bootstrap && e.owner.isEmpty),
+      entries.values.count(_.bootstrap),
+      entries.values.map(_.nodes.size).sum,
+      gate.queued,
+      proofWindows.size + tupleWindows.size,
+      callbacks.counts._1,
+      callbacks.counts._2
+    )
+  })
+  else
+    callbacks.submit(Future {
+      val queued = gate.queued
+      val time   = now()
+      registry.synchronized {
+        sweep(time)
+        Resources(
+          entries.values.count(_.owner.nonEmpty),
+          entries.values.count(e => !e.bootstrap && e.owner.isEmpty),
+          entries.values.count(_.bootstrap),
+          entries.values.map(_.nodes.size).sum,
+          queued,
+          proofWindows.size + tupleWindows.size,
+          callbacks.counts._1 - 1,
+          callbacks.counts._2
+        )
+      }
+    })
+
+  /** One explicit diagnostic SQL execution, outside measured domain work. */
+  def retainedCounts: Future[Either[TransactionFailure, Map[String, Long]]] = gate.submit {
+    outer.transact { connection =>
+      val tables = Vector(
+        "accounts"          -> "baseline_account",
+        "bindings"          -> "spoonbill_browser_slot",
+        "ceremonies"        -> "baseline_ceremony",
+        "hostSessions"      -> "baseline_session",
+        "browserSessions"   -> "spoonbill_browser_session",
+        "completions"       -> "spoonbill_browser_completion",
+        "deliveryMaterials" -> "baseline_material",
+        "audits"            -> "baseline_audit",
+        "outcomes"          -> "spoonbill_operation_outcome",
+        "views"             -> "spoonbill_browser_view",
+        "clock"             -> "baseline_clock",
+        "domainCounters"    -> "baseline_preference"
       )
+      val queryText =
+        tables.map { case (name, table) => s"SELECT '$name',count(*) FROM $table" }.mkString(" UNION ALL ")
+      sql(connection, queryText) { query =>
+        Using.resource(query.executeQuery()) { rows =>
+          val values = Map.newBuilder[String, Long]
+          while (rows.next()) values += rows.getString(1) -> rows.getLong(2)
+          values.result()
+        }
+      }
     }
   }
-  def close(): Future[Unit] = gate.close().map { _ =>
-    registry.synchronized {
-      closed = true; entries = Map.empty; owners = Map.empty; proofWindows = Map.empty; issuer.close()
+  def close(): Future[Unit] = {
+    val callbacksDrained = callbacks.close()
+    gate.close().flatMap(_ => callbacksDrained).map { _ =>
+      registry.synchronized {
+        closed = true; entries = Map.empty; owners = Map.empty; proofWindows = Map.empty; tupleWindows = Map.empty;
+        issuer.close()
+      }
     }
   }
 }

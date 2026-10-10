@@ -3,7 +3,7 @@
 Date: 2026-10-10. Addresses the six findings in the locally supplied
 `docs/browser-auth-phase-0-review.md`, which is preserved outside this change.
 The original review and its staged-diff identity are preserved. These fixes
-remain on `codex/browser-auth-integration`; no commit or publication is claimed.
+remain on `codex/browser-auth-integration` and are included in PR #7.
 Phase 0 stays open for the acknowledged workload/measurement gaps.
 
 | Finding | Change | Verification |
@@ -113,3 +113,14 @@ Both passed: 18 focused harness tests and 72 complete Node tests. Scala/native
 browser suites were not rerun for this harness-only change; their earlier passing
 results above are retained as history. No acceptance manifest or performance
 threshold changed.
+
+## Phase 0 continuation
+
+The subsequent [validation report](validation.md) records the current shared
+executable policy, separate host/view history bounds, pre-dispatch callback
+admission, actor-dispatcher-independent worker settlement, real driver protocol
+cycle probes, browser notification scope, and relocatable runtime artifacts.
+Its final inventories preserve the earlier review-fix reports as history. All
+six review findings are addressed; full workload runners, measured ceilings,
+baseline-only calibration and unsupported memory quantities still prevent Phase 0
+closure. Correctness and sensor checks do not establish a performance pass.

@@ -18,6 +18,7 @@ import scala.concurrent.duration.*
 import scala.util.Using
 import spoonbill.Qsid
 import spoonbill.action.{AccessDecision, InvocationBinding}
+import spoonbill.browserauthbaseline.ReferencePolicy
 import spoonbill.effect.Effect
 import spoonbill.performance.PerformanceProbe
 import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
@@ -52,7 +53,8 @@ class JdbcBrowserSecuritySpec extends AnyFlatSpec with Matchers {
 
   private class Fixture(
     limits: JdbcBrowserSecurity.Limits = JdbcBrowserSecurity.Limits(),
-    factorRequired: Boolean = false
+    factorRequired: Boolean = false,
+    referencePolicy: Option[ReferencePolicy] = None
   ) extends AutoCloseable {
     private val url = sys.env.getOrElse("SPOONBILL_JDBC_TEST_URL", fail("Run with scripts/with-test-postgres.sh"))
     require(
@@ -148,8 +150,9 @@ class JdbcBrowserSecuritySpec extends AnyFlatSpec with Matchers {
         _.count,
         (page, count) => page.copy(count = count),
         singleNodeExclusiveWriters = true,
-        limits = limits,
-        afterPreparedCommit = afterCommit
+        limits = referencePolicy.fold(limits)(JdbcBrowserSecurity.limitsFor),
+        afterPreparedCommit = afterCommit,
+        referencePolicy = referencePolicy
       )
       instances :+= instance
       instance
@@ -158,7 +161,8 @@ class JdbcBrowserSecuritySpec extends AnyFlatSpec with Matchers {
     Using.resource(source.getConnection) { connection =>
       security.initialize(connection)
       Using.resource(connection.prepareStatement("INSERT INTO baseline_account VALUES (?,1,TRUE,?,?)")) { query =>
-        query.setObject(1, subject); query.setBytes(2, JdbcReferenceHost.syntheticHash("password"))
+        query.setObject(1, subject);
+        query.setBytes(2, referencePolicy.fold(JdbcReferenceHost.syntheticHash("password"))(_.proof.hash("password")))
         if (factorRequired) query.setBytes(3, JdbcReferenceHost.syntheticHash("123456"))
         else query.setNull(3, java.sql.Types.BINARY)
         query.executeUpdate()
@@ -338,6 +342,77 @@ class JdbcBrowserSecuritySpec extends AnyFlatSpec with Matchers {
     } finally release.countDown()
   }
 
+  it should "bound callbacks before dispatch while preserving reserved release maintenance and shutdown" in Using
+    .resource(new Fixture(JdbcBrowserSecurity.Limits(queued = 1))) { db =>
+      db.create(); val guard = db.open(1)
+      val arrived            = new CountDownLatch(1)
+      val release            = new CountDownLatch(1)
+      db.commitBarrier.set(Some(arrived -> release))
+      val running = guard.authorize(Page())
+      try {
+        arrived.await(10, TimeUnit.SECONDS) shouldBe true
+        val pending = db.security.begin(owner(1))
+        db.security.callbackCounts._1 shouldBe 1
+        val (_, rejected) = db.probe.measure {
+          intercept[SessionAccessDenied](result(db.security.begin(owner(1))))
+        }
+        rejected.counts.connections shouldBe 0L
+        val cleanup     = guard.close()
+        val maintenance = db.security.retireExpiredMaterial()
+        val closing     = db.security.close()
+        closing.isCompleted shouldBe false
+        release.countDown()
+        result(running)
+        intercept[SessionAccessDenied](result(pending))
+        result(cleanup); result(maintenance); result(closing)
+        db.security.callbackCounts shouldBe (0 -> 1)
+        result(db.security.resources).pendingCallbacks shouldBe 0
+      } finally release.countDown()
+    }
+
+  it should "bound retained operation outcomes independently of the larger audit capacity" in Using.resource(
+    new Fixture(
+      referencePolicy = Some(
+        ReferencePolicy.Default.copy(retainedEntries = 2, auditRecords = 4, liveCeremonies = 1, accountCount = 2)
+      )
+    )
+  ) { db =>
+    val (cookie, _) = db.authenticated()
+    val principal   = accepted(result(db.security.protectedPrincipal(request(Some(cookie)))))
+    (1 to 2).foreach { expected =>
+      val authority = accepted(result(db.security.actionAuthority(owner(2), principal)))
+      result(db.security.protectedAction(owner(2), principal, authority)) shouldBe Right(expected)
+    }
+    val denied = accepted(result(db.security.actionAuthority(owner(2), principal)))
+    result(db.security.protectedAction(owner(2), principal, denied)) shouldBe
+      Left(TransactionFailure.Rejected(OperationError.CapacityExceeded))
+    db.scalar("SELECT count(*) FROM spoonbill_operation_outcome") shouldBe 2L
+    db.scalar("SELECT count(*) FROM baseline_audit") shouldBe 3L
+    db.scalar("SELECT changes FROM baseline_preference") shouldBe 2L
+    val expiring = accepted(result(db.security.actionAuthority(owner(2), principal)))
+    db.clock.set(start.plusSeconds(ReferencePolicy.Default.operationAuthoritySeconds))
+    result(db.security.protectedAction(owner(2), principal, expiring)) shouldBe
+      Left(TransactionFailure.Rejected(OperationError.Expired))
+  }
+
+  it should "apply the shared browser and tuple rate policy before expensive proof work" in Using.resource(
+    new Fixture(referencePolicy = Some(ReferencePolicy.Default))
+  ) { db =>
+    db.create(); db.open(1)
+    val ceremony = accepted(result(db.security.begin(owner(1))))
+    (1 to ReferencePolicy.Default.proofAttempts).foreach { _ =>
+      result(db.security.password(owner(1), ceremony, db.subject, "wrong")).isLeft shouldBe true
+    }
+    result(db.security.password(owner(1), ceremony, db.subject, "password")) shouldBe
+      Left(TransactionFailure.Rejected(OperationError.CapacityExceeded))
+    val second = Qsid("other-device", "other-view")
+    db.create(second)
+    accepted(result(db.security.bootstrapBinding("fresh-browser")))
+    result(db.security.open(second, request().withCookie("baseline_binding", "fresh-browser"), owner(3)))
+    val fresh = accepted(result(db.security.begin(owner(3))))
+    result(db.security.password(owner(3), fresh, db.subject, "password")).isRight shouldBe true
+  }
+
   it should "dispatch asynchronous clock checkpoints to workers and leave removal to the owning guard" in Using
     .resource(new Fixture) { db =>
       val (_, guard) = db.authenticated()
@@ -511,6 +586,36 @@ class JdbcBrowserSecuritySpec extends AnyFlatSpec with Matchers {
     }) shouldBe ()
     result(gate.close()) shouldBe ()
   }
+
+  it should "bound retained view epochs independently of host history and preserve rows after release" in Using
+    .resource(
+      new Fixture(
+        referencePolicy = Some(
+          ReferencePolicy.Default.copy(
+            retainedViews = 2,
+            retainedEntries = 4,
+            auditRecords = 4,
+            liveCeremonies = 1,
+            accountCount = 2
+          )
+        )
+      )
+    ) { db =>
+      db.create(); result(db.open(1).close())
+      val second = Qsid("device", "second-retained-view")
+      db.create(second); result(db.open(2, id = second).close())
+      db.scalar("SELECT count(*) FROM spoonbill_browser_view") shouldBe 2L
+      db.scalar("SELECT sum(epoch) FROM spoonbill_browser_view") shouldBe 4L
+      val third = Qsid("device", "third-retained-view")
+      db.create(third)
+      intercept[SessionAccessDenied](db.open(3, id = third))
+      db.scalar("SELECT count(*) FROM spoonbill_browser_view") shouldBe 2L
+      db.scalar("SELECT sum(epoch) FROM spoonbill_browser_view") shouldBe 4L
+      db.scalar("SELECT count(*) FROM spoonbill_browser_view WHERE owner_id IS NOT NULL") shouldBe 0L
+      db.scalar("SELECT generation FROM spoonbill_browser_slot") shouldBe 0L
+      db.scalar("SELECT count(*) FROM baseline_audit") shouldBe 0L
+      result(db.security.resources).bootstrap shouldBe 0
+    }
 
   it should "bound retained browser lineages without resetting their generations" in Using.resource(
     new Fixture(JdbcBrowserSecurity.Limits(retainedBindings = 1))

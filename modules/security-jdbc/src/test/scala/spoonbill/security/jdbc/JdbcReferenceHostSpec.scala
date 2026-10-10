@@ -15,6 +15,7 @@ import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.Using
+import spoonbill.browserauthbaseline.ReferencePolicy
 import spoonbill.effect.Effect
 import spoonbill.performance.PerformanceProbe
 import spoonbill.security.jdbc.baseline.{JdbcReferenceClock, JdbcReferenceHost}
@@ -51,7 +52,7 @@ class JdbcReferenceHostSpec extends AnyFlatSpec with Matchers {
     def unwrap[T](kind: Class[T]): T                              = throw new SQLFeatureNotSupportedException()
   }
 
-  private class Fixture extends AutoCloseable {
+  private class Fixture(referencePolicy: Option[ReferencePolicy] = None) extends AutoCloseable {
     private val url = sys.env.getOrElse("SPOONBILL_JDBC_TEST_URL", fail("Run with scripts/with-test-postgres.sh"))
     require(
       url.startsWith("jdbc:postgresql://") &&
@@ -145,14 +146,17 @@ class JdbcReferenceHostSpec extends AnyFlatSpec with Matchers {
         admission,
         capacity,
         existingRunner,
-        maxCeremoniesPerBinding = maxCeremoniesPerBinding
+        maxCeremoniesPerBinding = maxCeremoniesPerBinding,
+        referencePolicy = referencePolicy
       )
     val app = host()
     Using.resource(source.getConnection)(app.initialize)
     Using.resource(source.getConnection) { connection =>
       Vector(subject, other).foreach { account =>
         Using.resource(connection.prepareStatement("INSERT INTO baseline_account VALUES (?,1,TRUE,?,NULL)")) { query =>
-          query.setObject(1, account); query.setBytes(2, syntheticHash("password")); query.executeUpdate()
+          query.setObject(1, account);
+          query.setBytes(2, referencePolicy.fold(syntheticHash("password"))(_.proof.hash("password")));
+          query.executeUpdate()
         }
       }
     }
@@ -286,6 +290,36 @@ class JdbcReferenceHostSpec extends AnyFlatSpec with Matchers {
       accepted(db.app.browser.logout(db.binding)) should be > active.generation
       db.app.browser.validate(cookie.hash, db.binding) shouldBe Left(JdbcAuthError.StaleGeneration)
     }
+
+  it should "apply the shared PBKDF2 policy and expire a challenge before the ceremony deadline" in Using.resource(
+    new Fixture(Some(ReferencePolicy.Default))
+  ) { db =>
+    db.factorRequired()
+    val ceremony  = db.ceremony()
+    val challenge = db.challenge(ceremony)
+    db.clock.set(initial.plusSeconds(ReferencePolicy.Default.challengeSeconds))
+    result(db.app.factor(ceremony, db.binding, db.subject, challenge, "654321")) shouldBe
+      Left(TransactionFailure.Rejected(OperationError.Expired))
+  }
+
+  it should "apply independent delivery and active-session TTLs from the same executable profile" in Using.resource(
+    new Fixture(Some(ReferencePolicy.Default))
+  ) { db =>
+    val attempt = db.committed()
+    db.clock.set(initial.plusSeconds(ReferencePolicy.Default.deliverySeconds))
+    db.app.deliver(attempt, db.binding).isLeft shouldBe true
+    result(db.app.retireExpiredMaterial()) shouldBe Right(1)
+    val ceremony = db.ceremony()
+    val next     = accepted(result(db.app.complete(db.proof(ceremony))))
+    val cookie   = accepted(db.app.deliver(next, db.binding))
+    accepted(db.app.browser.activate(cookie.hash, db.binding))
+    db.clock.set(
+      initial.plusSeconds(ReferencePolicy.Default.deliverySeconds + ReferencePolicy.Default.sessionSeconds - 1)
+    )
+    db.app.browser.validate(cookie.hash, db.binding).isRight shouldBe true
+    db.clock.set(initial.plusSeconds(ReferencePolicy.Default.deliverySeconds + ReferencePolicy.Default.sessionSeconds))
+    db.app.browser.validate(cookie.hash, db.binding).isLeft shouldBe true
+  }
 
   it should "bind a resumed challenge to its original ceremony and subject, and consume it once" in Using.resource(
     new Fixture

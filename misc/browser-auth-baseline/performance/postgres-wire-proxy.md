@@ -9,9 +9,10 @@ network transmissions, or database lock acquisitions. A simple-query message
 can contain several statements; one extended Parse/Bind/Describe/Execute/Sync
 cycle can produce several server messages while contributing one exchange.
 
-Only sequential, non-pipelined v3 connections are supported. The tracker permits
-one outstanding startup/query/sync exchange. Starting another cycle before its
-ReadyForQuery fails closed. Flush, COPY, SSL/GSS negotiation, cancellation
+The default `mode: "strict-sequential"` permits one outstanding startup/query/sync
+exchange. Starting another cycle before its ReadyForQuery fails closed, as before.
+The explicitly opted-in `mode: "pipelined-cycles"` observes bounded FIFO cycles;
+it does not interpret them as round trips. Flush, COPY, SSL/GSS negotiation, cancellation
 connections, unsupported protocol versions, malformed/oversized messages,
 truncated input, missing ReadyForQuery and socket errors produce closed diagnostic
 codes. Once unsupported, the connection and aggregate exchange metrics become
@@ -41,13 +42,57 @@ try {
 
 Snapshots contain byte/message counts, requested/completed synchronization cycles,
 startup/query exchange counts, pending exchanges, opened/closed/active connections,
-fixed parser storage and diagnostics. They expose no mutable maps or arrays.
+header/queue storage counts and diagnostics. They expose no mutable maps or arrays.
 The streaming parser copies only eight frontend header bytes and five backend
 header bytes per live connection. It skips SQL, parameters, authentication data
 and result payloads without copying or retaining them. Payloads are forwarded
 through ordinary socket backpressure; the proxy emits no logs and exposes no raw
 wire capture. The `retainedPayloadBytes: 0` invariant concerns parser retention,
 not Node/native socket buffers or whole-process heap usage.
+
+`headerStorageBytes` reports the thirteen allocated header-buffer bytes per live
+connection. `allocatedParserBytes` is retained as a legacy alias for that quantity
+only; neither field measures all parser memory or JavaScript heap. The pending
+queue is a fixed `Uint8Array` with anonymous startup/sync tokens.
+`cycleStorageBytes` reports its byte capacity, `pendingCycleSlots` its live pending
+occupancy, and `peakPendingCycleSlots` its observed high-water mark. The proxy also
+reports the maximum per-connection high-water mark as
+`peakConnectionPendingCycleSlots`. JavaScript objects/counters and socket buffers
+are additional memory, not implicitly included in these byte counts.
+
+## Opt-in bounded pipeline observation
+
+```js
+const proxy = await createPostgresWireProxy({
+  targetPort: disposablePostgresPort,
+  mode: 'pipelined-cycles',
+  maxPendingCycles: 32,
+});
+```
+
+The queue bound is explicit (1–1024 cycles per connection; the opt-in default is
+32). Strict mode requires a bound of one. A completed frontend Query or Sync
+enqueues one anonymous token; each ReadyForQuery removes exactly one FIFO token.
+Backend ErrorResponse does not itself settle a cycle. No SQL, parameter, result
+or error payload enters the queue. Startup remains exclusive: query work cannot
+overlap authentication, and frontend password messages require pending startup.
+Overflow, missing Sync/Ready, truncation and the other unsupported protocol cases
+still make all accepted cycle metrics null and close the owned socket pair.
+
+`completedProtocolSyncCycles` is the accepted completed-cycle count.
+`overlapObserved` is latched for the connection and aggregate, including after a
+connection closes. Any overlapping frontend work permanently makes the legacy
+`syncExchanges` metric null for that observation. `physicalRoundTrips` is always
+null: this parser does not observe physical network transmissions. A pipelined
+snapshot can have status `complete` for protocol observation with both round-trip
+metrics null; this is not performance acceptance. Raw
+`completedSyncExchanges` remains a legacy partial-event counter and must not be
+substituted for a missing accepted metric.
+
+Queue admission is checked while parsing headers; a partial next message can
+latch overlap before its completed boundary occupies a slot. Peak occupancy
+therefore measures queued, fully framed requests, not every partially received
+command. Storage never grows with payload size or completed connection history.
 
 Defaults are 16 MiB maximum protocol message size, 32 simultaneous connections,
 and a 10-second socket inactivity timeout. All are explicit constructor inputs
@@ -78,8 +123,13 @@ nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   node --test misc/browser-auth-baseline/performance/postgres-wire-proxy.pg-tests.mjs
 ```
 
-That test starts a plain v3 trust-authenticated connection to the disposable
-engine through the proxy, executes synthetic `SELECT 1`, and proves one startup
+The tests start plain v3 trust-authenticated connections to the disposable
+engine through the proxy, execute synthetic `SELECT 1`, and prove one startup
 exchange, one query exchange and zero active proxy connections after shutdown.
-It validates actual engine framing. It does **not** establish JDBC driver,
-browser-authentication workload, TLS, pipelining or performance acceptance.
+An additional real-engine test sends a coalesced `BEGIN` Query followed by an
+extended Parse/Bind/Describe/Execute/Sync, checks the successful result row and two
+ordered Ready messages, and verifies the overlap latch survives final shutdown.
+These validate actual engine framing, not browser-authentication workloads, TLS,
+physical round trips or performance acceptance. The separate
+[JDBC conformance probe](reference-wire-probe.md) tests the real driver's protocol
+using the same explicit opt-in mode.

@@ -212,10 +212,103 @@ native allocation. These are useful diagnostics with different coverage.
 [Web Inspector timelines](https://webkit.org/web-inspector/timelines-tab/),
 [Apple memory tools](https://developer.apple.com/documentation/xcode/gathering-information-about-memory-use).
 
-The Mac-only exact-source audit attempted one bounded Nix builtin prefetch of
-the official pinned WebKit archive. It returned HTTP 422, `Content creation is
-blocked`, without downloading/unpacking source. No retry, engine build, VM clone
-or host installation followed. Exact allocator coverage, Darwin dependencies,
-build time and archive size remain unverified. The installed binary alone cannot
-establish those source contracts. A reachable matching source checkout/archive is
-needed before a prototype or its resource estimate can be made concrete.
+The GitHub archive and, on a later authorized attempt, official codeload archive
+both returned HTTP 422, `Content creation is blocked`. A bounded Nix prefetch of
+individual raw files succeeded: **15 exact-base allocator/build files, 314,895
+bytes**, plus the Playwright patch-list metadata and its 980,815-byte patch. Their immutable URLs, SHA-256
+and Nix hashes, local cache paths and findings are recorded in
+[the reproducible source audit](webkit-source-audit.json). No full source tree,
+engine build, VM clone or host installation was produced. Archive/build disk
+size and build duration have not been measured.
+
+The exact base source confirms these specific coverage gaps:
+
+| Path | Why an existing counter is insufficient |
+| --- | --- |
+| `LocalAllocator::allocateSlowCase` / `stopAllocating` | Exhaustion charges original free-list bytes; partially consumed lists can be cleared without that charge. |
+| `Heap::didAllocate` / `updateAllocationLimits` | GC-cycle counters reset; they are not lifetime totals. |
+| `Heap::reportExtraMemoryAllocated` | Reports of 256 bytes or less are suppressed; ArrayBuffer accounting uses `gcSizeEstimateInBytes`. |
+| `IsoSubspace::tryAllocateLowerTierPrecise` | Reused cells register with `isNewAllocation=false`, bypassing existing capacity/allocation accounting. |
+| `CompleteSubspace` precise reallocation | It charges only growth, not total successful allocation-request size under the proposed counter definition. |
+
+The installed binary was also checked through the profiling shell: bounded
+`jsc --options` and `jsc --logGC=2 -e ...` commands succeeded, and Nix `nm` found
+`Heap::didAllocate`, `Heap::size`, `Heap::capacity` and
+`JSGetMemoryUsageStatistics`. The synthetic GC probe created 100,000 objects and
+collected them; logs reported capacity/collection diagnostics, not a lossless
+cumulative counter. Its installed `JSBasePrivate.h` documents the statistics API
+as current heap size/capacity/object counts. No such output fills allocation.
+
+**Installed-source parity is still unresolved.** Comparing `Heap.h` from the
+pinned upstream base with the installed framework header finds substantive
+differences, including `JSCellButterfly`, `JSPromiseAllContext` and removal of
+`variableSizedCellSpace`, beyond normal framework include rewriting. The official
+Playwright 1.56.1 patch listing contains `bootstrap.diff` (980,815 bytes).
+A bounded Nix fetch verified its content hash and all 351 modified paths:
+it changes no `JavaScriptCore/heap` file and therefore does not explain these
+header differences. Build/source provenance still needs reconciliation before
+treating the base files as the complete source of the installed artifact. Do not replace the
+framework using the unpatched base or claim an ABI match.
+
+A bounded follow-up found a byte-identical upstream header at
+[`3f6cca87328330b98da57498acee34179c1cc3b0`](https://raw.githubusercontent.com/WebKit/WebKit/3f6cca87328330b98da57498acee34179c1cc3b0/Source/JavaScriptCore/heap/Heap.h),
+dated **2025-09-23 16:11:53 UTC**: 53,354 bytes, SHA-256
+`9abb32b979cbd49b984c12ebfff378d7c8224c6e1402129d53d6ee77699e9c1c`.
+No normalization was applied; even the include-style changes occur upstream.
+The configured base is dated July 7, and the matching header contains later
+upstream changes. Four small official source/metadata downloads totaled 186,860
+bytes; two nonexistent metadata paths returned 404 and were not retried. The
+original mismatch and failed full-archive attempts remain in the audit.
+
+**A byte-identical header at one revision does not identify the whole binary's
+revision or prove ABI compatibility.** Multiple commits share those header
+bytes; the next recorded header change is September 29. Installed framework
+metadata reports `623.1.10+`, SDK `macosx14.5` and Xcode build `15F31d`, without
+identifying the complete upstream commit. The earlier allocator findings apply
+to the audited July source subset, not automatically to this installed binary.
+
+The smallest useful next step is the platform-specific WebKit 2215 build/source
+manifest, reconciled against this header fingerprint, followed by matching
+complete source and a separately approved **JSCOnly** prototype. Exact audited
+configuration uses CMake >=3.20, C++23, Perl >=5.10 with JSON::PP, Python, Ruby
+>=2.5, ICU >=70.1, and Darwin SDK/MIG support. Generic event-loop mode excludes
+GLib, WebCore, WebKit, WebInspectorUI and the browser UI. Darwin ICU symbol
+renaming must be resolved explicitly; it cannot be assumed equivalent between
+the Nix ICU and Apple's SDK library. No flake changes or configure/build commands
+have been run for this proposal.
+
+The counter patch must cover consumed partial free lists, precise allocations
+and reuse, and the explicitly selected realloc/backing-store semantics; exposing
+`didAllocate` alone is inadequate. Validate the engine counter before attempting
+the matching browser integration. An engine-only success would not yet cover
+WebCore/DOM/native stores or prove the full browser metric. Missing full source
+and patched-source identity are concrete prerequisites; no unmeasured multi-hour
+build budget is presumed approved.
+
+Cached audit identities can be checked without another download:
+
+```sh
+nix develop .#profiling --no-write-lock-file --command node --input-type=module <<'NODE'
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+const audit = JSON.parse(readFileSync('misc/browser-auth-baseline/performance/webkit-source-audit.json'));
+for (const file of [...audit.sources, audit.playwrightPatchList.patch, audit.installedHeaderFollowup.source]) {
+  const bytes = readFileSync(file.nixStorePath);
+  if (bytes.length !== file.bytes || createHash('sha256').update(bytes).digest('hex') !== file.sha256)
+    throw new Error(`Source audit mismatch: ${file.path}`);
+}
+if (!readFileSync(audit.installedHeapHeader.path).equals(readFileSync(audit.installedHeaderFollowup.source.nixStorePath)))
+  throw new Error('Installed header no longer matches the audited later upstream file');
+console.log(`Verified ${audit.sources.length} original source files and the matching later header; acceptance remains unsupported.`);
+NODE
+```
+
+For native process memory, Mac `proc_pid_rusage` distinguishes current RSS from
+lifetime peak physical footprint; the coalition API aggregates current physical
+footprint. Neither is the frozen whole-browser simultaneous peak RSS. No new RSS
+collector is claimed. A future protocol could carry conservative lower/upper
+bounds instead of a scalar peak, but that would require explicit protocol review
+and physical validation. A sum of per-process maxima is only a possible upper
+bound, never an implementation of aggregate peak RSS.
+[Apple resource counters](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/resource.h),
+[coalition accounting](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/coalition.c).

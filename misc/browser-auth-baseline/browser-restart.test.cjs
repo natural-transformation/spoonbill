@@ -5,6 +5,9 @@ const {randomUUID} = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const {setTimeout: pause} = require('node:timers/promises');
+const proofProfile = process.env.SPOONBILL_AUTH_BASELINE_PROOF ?? 'short';
+assert.ok(['short', 'representative'].includes(proofProfile),
+  'SPOONBILL_AUTH_BASELINE_PROOF must be short or representative');
 
 for (const name of ['PLAYWRIGHT_DRIVER_PATH', 'SPOONBILL_AUTH_BASELINE_CLASSPATH',
   'SPOONBILL_AUTH_BASELINE_JAVA', 'SPOONBILL_AUTH_BASELINE_PSQL', 'SPOONBILL_JDBC_TEST_URL'])
@@ -29,7 +32,7 @@ async function freePort() {
 
 function launchServer(port, schema, first, databaseUrl = process.env.SPOONBILL_JDBC_TEST_URL) {
   const child = spawn(java, ['-Xms128m', '-Xmx512m', '-cp', process.env.SPOONBILL_AUTH_BASELINE_CLASSPATH,
-    'spoonbill.browserauthbaseline.JdbcReferenceServer', String(port),
+    'spoonbill.browserauthbaseline.JdbcReferenceServer', String(port), `--proof=${proofProfile}`,
     ...(first ? ['--initialize', '--pause-after-preparation'] : [])], {
     detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: {...process.env, SPOONBILL_JDBC_TEST_URL: databaseUrl,

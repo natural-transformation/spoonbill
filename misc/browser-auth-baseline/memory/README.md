@@ -15,6 +15,14 @@ counted integration code. They introduce no JavaScript. The sibling application
 owns rendered UI/official transport wiring and native browser evidence; backend
 tests alone do not close the complete Phase 0 gate.
 
+The executable application supplies the shared
+[`ReferencePolicy`](../common/README.md), selects `--proof=short` or
+`--proof=representative`, and seeds 1,000 synthetic accounts. Its password work is
+PBKDF2-HMAC-SHA256 with 1 or 100,000 iterations, sixteen salt bytes and 256-bit
+output. It uses the same policy and account population as JDBC. The older small
+constructor defaults remain available to direct regression tests and are not the
+measurement profile. `ReferencePolicy.json` reports the actual profile values.
+
 ## Atomic domain and effects
 
 One process monitor serializes authoritative operations. The existing host
@@ -45,12 +53,15 @@ transaction conformance and a full lazy-effect application remain separate
 validation targets. Production integration never blocks on `Await`; the bounded
 wait helper exists only in tests.
 
-Password hashing uses a fixed SHA-256 synthetic workload outside the transaction.
-It is intentionally unsuitable as a real password-storage algorithm. Account
+Direct regression constructors use fixed synthetic SHA-256 password work; the
+executable profile uses the PBKDF2 workload above, outside the transaction on its
+owned proof executor. Account
 version/enabled policy is rechecked inside preparation. The challenge captures
 subject, version, challenge identity and original expiry; another subject or
-ceremony cannot transplant it. Password and factor submissions share eight
-attempts per binding per 60-second window, checked before proof computation.
+ceremony cannot transplant it. Executable password and factor submissions share
+five attempts per browser and per `(browser, account)` tuple in a sixty-second
+window, checked before proof computation. The legacy direct fixture uses eight
+attempts per binding.
 Invalid factors/challenges do not claim the ceremony and can retry within that
 bound. Successful factor verification admits one preparation attempt; its claim
 survives final transaction rollback, and duplicate correct submissions are denied.
@@ -60,14 +71,20 @@ is the constant synthetic factor workload, checked before admission and rechecke
 inside the transaction against current account policy and the captured challenge.
 
 All registries and retained negative fences fail closed at the supplied capacity;
-retained ceremonies also have a configurable per-binding limit, default 16.
+The executable profile retains at most 32,768 entries of each bounded history kind
+and 65,536 audit rows, with at most 1,024 live ceremonies and four retained
+ceremonies per binding. Direct regression defaults retain the supplied smaller
+capacity and sixteen ceremonies per binding.
 Challenge, completion and expiry do not reset this quota or remove replay fences.
-there is no eviction of security history. Delivery is limited to three attempts,
-expires with the original 120-second ceremony, and is erased upon activation,
+There is no eviction of security history. Delivery is limited to three attempts,
+expires within sixty seconds of preparation and no later than the original
+120-second ceremony, and is erased upon activation,
 logout, expiry, policy/generation revocation or exhausted redelivery. Host reads
 and committed transitions retire unusable plaintext; the application also owns
 one nonoverlapping periodic maintenance operation. Its bounded scan preserves
-all security-history records. Sessions expire after 3,600 seconds.
+all security-history records. The executable challenge/session/operation-authority
+TTLs are 90/900/30 seconds. The legacy direct fixture retains its original
+ceremony-based delivery deadline and 3,600-second session TTL.
 Counts expose transactions, commits, rollbacks, proof computations, host
 mutations, audits, sessions, completions and retained delivery materials; these are logical in-process counts,
 not SQL statements or wire round trips.
@@ -102,13 +119,24 @@ Same-identity reconnect preserves its original DOM baseline and retained nodes.
 An old guard's close and the ownerless v3 `StateStorage.remove` callback cannot
 delete a successor. Unknown views return the existing missing-view reload path.
 
-Defaults allow 64 active views, at most 16 per binding, 128 disconnected views, 128 bootstraps and 256
-nodes per view. Bootstrap TTL is 30 seconds; reconnect TTL is 120 seconds. Access
+The executable profile allows 1,024 active views, at most sixteen per binding,
+1,024 disconnected views, 1,024 bootstraps and 10,000 stored nodes per view.
+Bootstrap TTL is fifteen seconds; reconnect TTL is thirty seconds. The direct
+regression defaults remain 64/128/128 views and 256 nodes, with 30/120-second
+bootstrap/reconnect TTLs. Access
 and authority-change sweeps remove expired disposable entries. Active exhaustion
 denies acquisition; disconnected exhaustion discards the view being released.
 Acquisition performs no asynchronous resource allocation before its final atomic
 publication, and allocates no pending lease/waiter registry. Transport setup
 limits still apply to requests awaiting service acquisition.
+
+The application admits at most 256 ordinary proof/action/HTTP completion callbacks
+before worker submission, exposes current/peak counts, and drains admitted work
+before releasing its host. Periodic retirement has one separate coalesced slot
+which is included in those counts and drained on shutdown. The ownerless storage
+callback cannot consume or replace a guard's release. `retainedCounts` enumerates
+all host collections, including both rate-window maps. These ownership counts do
+not replace full runtime allocation, heap or process measurements.
 
 State-loader/bootstrap values and node values must be immutable, non-sensitive
 presentation. The generic v3 `StateStorage.create` signature contains no request

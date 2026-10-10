@@ -60,6 +60,7 @@
       "deliveryTtlSeconds": 60,
       "reconnectTtlSeconds": 30,
       "bootstrapTtlSeconds": 15,
+      "operationAuthorityTtlSeconds": 30,
       "maxCeremonies": 1024,
       "maxCeremoniesPerBrowser": 4,
       "maxActiveViews": 1024,
@@ -69,6 +70,11 @@
       "maxPendingAcquisitions": 256,
       "maxRecoveryObservations": 1024,
       "maxDeliveryMaterials": 1024,
+      "maxRetainedEntriesPerKind": 32768,
+      "maxRetainedViewEpochs": 131072,
+      "maxAuditRecords": 65536,
+      "maxRateScopes": 32768,
+      "maxStoredNodesPerView": 10000,
       "accountCount": 1000,
       "sessionsPerAccount": 2,
       "challengeDigits": 6,
@@ -87,7 +93,7 @@
       "rateLimit": {
         "attempts": 5,
         "windowSeconds": 60,
-        "scope": "synthetic browser and account; each measured login uses a fresh eligible scope"
+        "scope": "binding-wide window shared across accounts, plus (binding, account) window; each measured login uses a fresh eligible binding"
       },
       "expensivePolicy": {
         "deterministicRounds": 1000,

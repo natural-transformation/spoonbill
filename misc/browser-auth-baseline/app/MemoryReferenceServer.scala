@@ -1,5 +1,7 @@
 package spoonbill.browserauthbaseline
 
+import com.typesafe.config.ConfigFactory
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import org.apache.pekko.Done
 import org.apache.pekko.actor.{ActorSystem, CoordinatedShutdown}
@@ -21,6 +23,17 @@ import spoonbill.state.javaSerialization.*
  * adapter. Proofs, actions, completion delivery and socket ownership use v3.
  */
 object MemoryReferenceServer {
+
+  private[browserauthbaseline] def workloadPolicy(args: Array[String]): ReferencePolicy = {
+    val selected = args.filter(_.startsWith("--proof="))
+    require(selected.length <= 1, "Specify at most one proof profile")
+    val proof = selected.headOption.getOrElse("--proof=short") match {
+      case "--proof=short"          => ReferencePolicy.Proof.Short
+      case "--proof=representative" => ReferencePolicy.Proof.Representative
+      case _                        => throw new IllegalArgumentException("Use --proof=short or --proof=representative")
+    }
+    ReferencePolicy.Default.copy(proof = proof)
+  }
 
   /**
    * One owned timer and at most one maintenance operation, even under load.
@@ -142,16 +155,24 @@ object MemoryReferenceServer {
   }
 
   def main(args: Array[String]): Unit = {
-    val port = args.headOption.fold(8080)(_.toInt)
+    val policy     = workloadPolicy(args)
+    val positional = args.filterNot(_.startsWith("--proof="))
+    require(positional.length <= 1, "Use [port] [--proof=short|representative]")
+    val port = positional.headOption.fold(8080)(_.toInt)
     require(port > 0 && port <= 65535, "Port must be between 1 and 65535")
-    given ActorSystem      = ActorSystem("spoonbill-browser-auth-reference")
+    val shutdownConfig = ConfigFactory
+      .parseString("pekko.coordinated-shutdown.phases.before-actor-system-terminate.timeout = 10 minutes")
+      .withFallback(ConfigFactory.load())
+    given ActorSystem      = ActorSystem("spoonbill-browser-auth-reference", shutdownConfig)
     given ExecutionContext = summon[ActorSystem].dispatcher
     given Materializer     = Materializer(summon[ActorSystem])
-    val app                = new MemoryReferenceApplication(s"http://localhost:$port")
+    val workers            = Executors.newFixedThreadPool(4)
+    val proofContext       = ExecutionContext.fromExecutor(workers)
+    val app                = new MemoryReferenceApplication(proofContext, s"http://localhost:$port", policy)
     val shutdown           = CoordinatedShutdown(summon[ActorSystem])
     maintain(app)
     shutdown.addTask(CoordinatedShutdown.PhaseBeforeActorSystemTerminate, "release-browser-auth-reference") { () =>
-      app.close().map(_ => Done)
+      JdbcReferenceServer.releaseWorkersAfter(app.close(), workers)
     }
     Http().newServerAt("127.0.0.1", port).bindFlow(route(app)).onComplete {
       case scala.util.Success(binding) =>

@@ -60,8 +60,14 @@ object JdbcReferenceServer {
   }
 
   def main(args: Array[String]): Unit = {
-    val positional = args.filterNot(Set("--initialize", "--pause-after-preparation").contains)
-    require(positional.length <= 1, "Use [port] [--initialize] [--pause-after-preparation]")
+    val policy = MemoryReferenceServer.workloadPolicy(args)
+    val positional = args.filterNot(value =>
+      Set("--initialize", "--pause-after-preparation").contains(value) || value.startsWith("--proof=")
+    )
+    require(
+      positional.length <= 1,
+      "Use [port] [--initialize] [--pause-after-preparation] [--proof=short|representative]"
+    )
     val port = positional.headOption.fold(8080)(_.toInt)
     require(port > 0 && port <= 65535, "Port must be between 1 and 65535")
     val url = sys.env.getOrElse(
@@ -117,7 +123,8 @@ object JdbcReferenceServer {
           println(s"SYNTHETIC_PREPARATION_COMMITTED:$attempt")
           System.out.flush()
           new Semaphore(0).acquire()
-        }
+        },
+      policy = policy
     )
     val app      = new JdbcReferenceApplication(backend, origin)
     val shutdown = CoordinatedShutdown(summon[ActorSystem])

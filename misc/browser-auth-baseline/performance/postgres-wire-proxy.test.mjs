@@ -208,3 +208,84 @@ test('connection churn retires parser metadata without retaining a connection re
   assert.equal(final.activeConnections, 0); assert.equal(final.allocatedParserBytes, 0);
   assert.equal(final.retainedPayloadBytes, 0); assert.deepEqual(final.diagnostics, {});
 });
+
+const pipelined = (maxPendingCycles = 2) => started({mode: 'pipelined-cycles', maxPendingCycles});
+
+test('opt-in fragmented BEGIN Query plus extended Sync counts two ordered cycles but no round-trip metric', () => {
+  const counter = pipelined();
+  const frames = Buffer.concat([message('Q', Buffer.from('BEGIN\0')),
+    ...['P', 'B', 'D', 'E'].map(type => message(type, Buffer.from('unretained-payload'))), message('S')]);
+  for (const byte of frames) counter.frontend(Buffer.from([byte]));
+  const before = counter.snapshot();
+  assert.equal(before.pendingCycleSlots, 2); assert.equal(before.peakPendingCycleSlots, 2);
+  assert.equal(before.overlapObserved, true); assert.equal(before.syncExchanges, null);
+  assert.equal(before.physicalRoundTrips, null); assert.equal(before.completedProtocolSyncCycles, 0);
+  assert.equal(before.headerStorageBytes, 13); assert.equal(before.cycleStorageBytes, 2);
+  counter.backend(Buffer.concat([message('C'), ready]));
+  assert.equal(counter.snapshot().pendingCycleSlots, 1);
+  assert.equal(counter.snapshot().completedProtocolSyncCycles, 1);
+  const remaining = Buffer.concat([message('1'), message('2'), message('T'), message('D'), message('C'), ready]);
+  for (const byte of remaining) counter.backend(Buffer.from([byte]));
+  const final = counter.finish();
+  assert.equal(final.status, 'complete'); assert.equal(final.completedProtocolSyncCycles, 2);
+  assert.equal(final.startupExchanges, 1); assert.equal(final.pendingCycleSlots, 0);
+  assert.equal(final.syncExchanges, null); assert.equal(final.physicalRoundTrips, null);
+  assert.equal(before.pendingCycleSlots, 2, 'earlier snapshot is detached');
+  assert.equal(final.retainedPayloadBytes, 0); assert.ok(!JSON.stringify(final).includes('unretained-payload'));
+});
+
+test('simple Query pairs wrap fixed FIFO storage, preserving overlap after later sequential work', () => {
+  const counter = pipelined();
+  for (let iteration = 0; iteration < 30; iteration++) {
+    counter.frontend(Buffer.concat([query(), query()]));
+    counter.backend(Buffer.concat([ready, ready]));
+    assert.equal(counter.snapshot().cycleStorageBytes, 2);
+  }
+  counter.frontend(query()); counter.backend(ready);
+  const final = counter.finish();
+  assert.equal(final.completedProtocolSyncCycles, 61); assert.equal(final.peakPendingCycleSlots, 2);
+  assert.equal(final.pendingCycleSlots, 0); assert.equal(final.syncExchanges, null);
+  assert.equal(final.physicalRoundTrips, null); assert.ok(Object.isFrozen(final.diagnostics));
+});
+
+test('ErrorResponse does not complete a cycle; each ordered Ready still completes exactly one', () => {
+  const counter = pipelined(); counter.frontend(Buffer.concat([query(), query()]));
+  counter.backend(message('E', Buffer.from('unretained-error')));
+  assert.equal(counter.snapshot().completedProtocolSyncCycles, 0);
+  counter.backend(Buffer.concat([ready, message('E'), ready]));
+  assert.equal(counter.finish().completedProtocolSyncCycles, 2);
+  const unsolicited = pipelined();
+  assert.throws(() => unsolicited.backend(ready), {code: 'UNEXPECTED_READY_FOR_QUERY'});
+});
+
+test('pipelined startup/authentication/Terminate remain fenced and unsupported messages still fail closed', () => {
+  for (const packet of [query(), message('P'), message('S')]) {
+    const counter = new ProtocolCounter({mode: 'pipelined-cycles'}); counter.frontend(startup);
+    assert.throws(() => counter.frontend(packet), {code: 'OVERLAPPING_EXCHANGE'});
+  }
+  const auth = pipelined(); assert.throws(() => auth.frontend(message('p')), {code: 'AUTHENTICATION_OUTSIDE_STARTUP'});
+  const terminated = pipelined(); terminated.frontend(message('X'));
+  assert.throws(() => terminated.frontend(query()), {code: 'MESSAGE_AFTER_TERMINATE'});
+  const pending = pipelined(); pending.frontend(Buffer.concat([query(), message('X')]));
+  assert.equal(pending.finish().diagnostics.MISSING_READY_FOR_QUERY, 1);
+  for (const [side, type, code] of [['frontend', 'H', 'FLUSH_UNSUPPORTED'], ['frontend', 'd', 'COPY_UNSUPPORTED'], ['backend', 'G', 'COPY_UNSUPPORTED']]) {
+    const counter = pipelined(); assert.throws(() => counter[side](message(type)), {code});
+    assert.equal(counter.finish().completedProtocolSyncCycles, null);
+  }
+});
+
+test('finite anonymous cycle queue rejects overflow, missing Ready and partial messages without growing storage', () => {
+  for (const options of [{mode: 'unknown'}, {maxPendingCycles: 2}, {mode: 'pipelined-cycles', maxPendingCycles: 0},
+    {mode: 'pipelined-cycles', maxPendingCycles: 1025}, {mode: 'pipelined-cycles', maxPendingCycles: Infinity}])
+    assert.throws(() => new ProtocolCounter(options));
+  const overflow = pipelined(); overflow.frontend(Buffer.concat([query(), query()]));
+  assert.throws(() => overflow.frontend(query()), {code: 'PENDING_CYCLE_CAPACITY'});
+  assert.equal(overflow.snapshot().pendingCycleSlots, 2); assert.equal(overflow.snapshot().cycleStorageBytes, 2);
+  assert.equal(overflow.snapshot().completedProtocolSyncCycles, null);
+  const missing = pipelined(); missing.frontend(Buffer.concat([query(), query()])); missing.backend(ready);
+  assert.equal(missing.finish().diagnostics.MISSING_READY_FOR_QUERY, 1);
+  assert.equal(missing.finish().completedProtocolSyncCycles, null);
+  const partial = pipelined(); partial.frontend(Buffer.concat([query(), query().subarray(0, 7)]));
+  assert.equal(partial.finish().diagnostics.TRUNCATED_MESSAGE, 1);
+  assert.equal(partial.snapshot().retainedPayloadBytes, 0);
+});

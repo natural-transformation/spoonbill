@@ -36,7 +36,7 @@ export function inventory(sourceRoots) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [destination] = process.argv.slice(2);
-  const report = inventory({memory: path.join(root, 'memory'), jdbc: path.join(root, 'jdbc'),
+  const report = inventory({common: path.join(root, 'common'), memory: path.join(root, 'memory'), jdbc: path.join(root, 'jdbc'),
     application: path.join(root, 'app')});
   if (!report.files.some(file => file.category === 'memory') || !report.files.some(file => file.category === 'jdbc'))
     throw new Error('Both complete reference integration source roots are required');

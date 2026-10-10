@@ -7,6 +7,12 @@ if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   printf '%s\n' 'Run: env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/test-browser-auth-baseline.sh' >&2
   exit 1
 fi
+proof_profile="${SPOONBILL_AUTH_BASELINE_PROOF-short}"
+case "$proof_profile" in
+  short|representative) ;;
+  *) printf '%s\n' 'Unknown SPOONBILL_AUTH_BASELINE_PROOF; expected short or representative.' >&2; exit 1 ;;
+esac
+export SPOONBILL_AUTH_BASELINE_PROOF="$proof_profile"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/spoonbill-browser-auth.XXXXXX")"
@@ -68,7 +74,8 @@ case "${SPOONBILL_AUTH_BASELINE_PROVIDER:-memory}" in
     ;;
   *) printf '%s\n' 'Unknown SPOONBILL_AUTH_BASELINE_PROVIDER; expected memory or jdbc.' >&2; exit 1 ;;
 esac
-java -Xms128m -Xmx512m -cp "$classpath" "$server_main" "$port" > "$test_root/server.log" 2>&1 &
+printf 'Synthetic proof profile: %s\n' "$proof_profile"
+java -Xms128m -Xmx512m -cp "$classpath" "$server_main" "$port" "--proof=$proof_profile" > "$test_root/server.log" 2>&1 &
 server_pid=$!
 node <<'NODE'
 const {setTimeout: pause} = require('node:timers/promises');

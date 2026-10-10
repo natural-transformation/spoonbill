@@ -2,6 +2,7 @@
 // Start MemoryReferenceServer separately, then run through nix develop .#browser.
 const assert = require('node:assert/strict');
 const {inflateRawSync} = require('node:zlib');
+const {BrowserExchangeObserver, createExchangeOutput, artifactHash} = require('./browser-exchanges.cjs');
 
 assert.ok(process.env.PLAYWRIGHT_DRIVER_PATH, 'Use the repository Nix browser environment');
 assert.ok(process.env.SPOONBILL_AUTH_BASELINE_ORIGIN, 'Supply the running reference server origin');
@@ -9,6 +10,9 @@ const {chromium, webkit} = require(process.env.PLAYWRIGHT_DRIVER_PATH);
 const origin = new URL(process.env.SPOONBILL_AUTH_BASELINE_ORIGIN).origin;
 const provider = process.env.SPOONBILL_AUTH_BASELINE_PROVIDER ?? 'memory';
 assert.ok(/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin), 'Synthetic loopback server required');
+const exchangeArtifact = artifactHash(process.env.SPOONBILL_AUTH_EXCHANGE_ARTIFACT_SHA256);
+const exchangeOutput = process.env.SPOONBILL_AUTH_EXCHANGE_OUTPUT
+  ? createExchangeOutput(process.env.SPOONBILL_AUTH_EXCHANGE_OUTPUT, {provider, artifactSha256: exchangeArtifact}) : null;
 
 function frameCode(event) {
   try { return JSON.parse(Buffer.isBuffer(event.payload) ? event.payload.toString('utf8') : event.payload)[0]; }
@@ -26,8 +30,13 @@ function decodedFrame(message) {
 
 async function exercise(browser, engine, username, factor) {
   const context = await browser.newContext();
+  let exchanges, completed = false;
   try {
     const page = await context.newPage();
+    if (exchangeOutput) exchanges = new BrowserExchangeObserver(page,
+      {provider, engine, flow: factor ? 'challenged' : 'password-only', artifactSha256: exchangeArtifact});
+    if (exchanges && engine === 'chromium') await exchanges.attachChromium(context, page);
+    if (exchanges && engine === 'webkit') await exchanges.attachWebKit(page);
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(30000);
     const errors = [], sockets = [];
@@ -80,6 +89,7 @@ async function exercise(browser, engine, username, factor) {
     const permittedCompletion = page.waitForResponse(response =>
       response.request().method() === 'POST' && new URL(response.url()).pathname === '/auth/complete');
 
+    exchanges?.phase('begin');
     await page.getByRole('button', {name: 'Begin sign-in', exact: true}).click();
     await page.locator('input[name="username"]').waitFor({state: 'visible'});
     const passwordForm = page.locator('form').filter({has: page.locator('input[name="password"]')});
@@ -87,6 +97,7 @@ async function exercise(browser, engine, username, factor) {
     assert.equal(await passwordForm.getAttribute('action'), '/reference-submit-unavailable');
     const ceremony = await passwordForm.locator('input[name="ceremony"]').inputValue();
     assert.match(ceremony, /^[0-9a-f-]{36}$/);
+    exchanges?.phase(factor ? 'password' : 'password-and-completion');
     await page.locator('input[name="username"]').fill(username);
     await page.locator('input[name="password"]').fill('password');
     await page.getByRole('button', {name: 'Sign in', exact: true}).click();
@@ -98,6 +109,7 @@ async function exercise(browser, engine, username, factor) {
       assert.equal(await factorForm.locator('input[name="ceremony"]').inputValue(), ceremony,
         `${engine}: challenge must retain the original ceremony`);
       assert.match(await page.locator('input[name="challenge"]').inputValue(), /^[0-9a-f-]{36}$/);
+      exchanges?.phase('factor-and-completion');
       await page.locator('input[name="factor"]').fill(factor);
       await page.getByRole('button', {name: 'Verify factor', exact: true}).click();
     }
@@ -114,6 +126,7 @@ async function exercise(browser, engine, username, factor) {
     assert.match(session.value, /^[A-Za-z0-9_-]{43}$/);
     assert.ok(!(await page.content()).includes(session.value), 'Credential leaked into presentation');
 
+    exchanges?.phase('protected-action');
     await page.getByRole('button', {name: 'Protected increment', exact: true}).click();
     await page.getByText('Protected increment committed.', {exact: true}).waitFor({state: 'visible'});
     const counter = await page.getByText(/This view's last confirmed increment: \d+/).textContent();
@@ -126,6 +139,7 @@ async function exercise(browser, engine, username, factor) {
     assert.equal(fallback.status(), 404, `${engine}: credential form fallback must have no HTTP authentication handler`);
     assert.equal((await context.cookies()).find(cookie => cookie.name === 'baseline_session').value, session.value);
 
+    exchanges?.phase('protected-navigation');
     const protectedSocket = nextSocket();
     const protectedResponse = await page.goto(origin + '/protected');
     assert.equal(protectedResponse.status(), 200);
@@ -133,6 +147,7 @@ async function exercise(browser, engine, username, factor) {
     await page.getByRole('heading', {name: 'Protected page', exact: true}).waitFor({state: 'visible'});
     await page.getByText(`Authenticated account: ${username}`, {exact: true}).waitFor({state: 'visible'});
 
+    exchanges?.phase('logout');
     await page.getByRole('link', {name: 'Sign out', exact: true}).click();
     await page.waitForURL(origin + '/sign-out');
     const signOutResponse = page.waitForResponse(response =>
@@ -148,16 +163,30 @@ async function exercise(browser, engine, username, factor) {
 
     // Restore only the old credential, retaining this browser's fenced binding.
     // The real HTTP authority must reject it; no page script can grant authority.
+    exchanges?.phase('stale-cookie-denial');
     await context.addCookies([session]);
     const stale = await page.goto(origin + '/protected');
     assert.equal(stale.status(), 403, `${engine}: stale cookie passed protected rendering`);
     await page.getByRole('heading', {name: 'Authentication required', exact: true}).waitFor({state: 'visible'});
     assert.equal(await page.getByText(`Authenticated account: ${username}`, {exact: true}).count(), 0);
     assert.deepEqual(errors, [], `${engine}: browser runtime errors`);
+    completed = true;
     console.log(JSON.stringify({provider, engine, flow: factor ? 'challenged' : 'password-only',
       realCookieDelivery: true, sameViewReconnect: true, protectedAction: true,
       protectedHttp: true, logout: true, staleCookieDenied: true, foreignOriginDenied: true}));
-  } finally { await context.close(); }
+  } finally {
+    exchanges?.phase('teardown');
+    await exchanges?.stopRawSessions();
+    try { await context.close(); }
+    finally {
+      if (exchanges) {
+        const observation = exchanges.finish({completed});
+        exchangeOutput.record(observation);
+        // Correctness continues across unsupported observer capabilities. The
+        // raw record stays inconclusive with null usable counts, never a budget.
+      }
+    }
+  }
 }
 
 async function lostCompletion(browser, engine, username, factor) {
@@ -281,6 +310,8 @@ async function lostCompletion(browser, engine, username, factor) {
 }
 
 (async () => {
+  let completed = false;
+  try {
   for (const [engine, type] of Object.entries({chromium, webkit})) {
     const env = {...process.env};
     if (engine === 'webkit' && process.platform === 'linux') {
@@ -308,4 +339,6 @@ async function lostCompletion(browser, engine, username, factor) {
     }
   }
   console.log(`PASS: real ${provider}-reference password/factor authentication in Chromium and WebKit`);
+  completed = true;
+  } finally { exchangeOutput?.close({completed}); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

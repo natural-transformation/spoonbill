@@ -10,7 +10,9 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The cold full-repository build hit the previous 30-minute job cap.
+    # Keep a finite bound while also capturing the validated reference artifact.
+    timeout-minutes: 45
 
     steps:
     - name: Check out repository
@@ -27,8 +29,8 @@ jobs:
       # Finish compilation before running network fixtures and limit concurrent
       # Test-tagged tasks to reduce contention between integration suites.
       run: |
-        nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
-          sbt --batch --supershell=false \
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+          sbt --batch --supershell=false -Dsbt.server.autostart=false \
           'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
           compile 'Test / compile' test
 
@@ -44,6 +46,45 @@ jobs:
       run: |
         nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
           node --test misc/browser-auth-baseline/performance/postgres-wire-proxy.pg-tests.mjs
+
+    - name: Capture the validated browser authentication runtime
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash scripts/capture-browser-auth-artifact.sh "$RUNNER_TEMP/spoonbill-auth-runtime"
+        nix develop --no-write-lock-file --command node \
+          misc/browser-auth-baseline/performance/artifact.mjs archive \
+          "$RUNNER_TEMP/spoonbill-auth-runtime" "$RUNNER_TEMP/spoonbill-auth-runtime.tar" \
+          > "$RUNNER_TEMP/spoonbill-auth-runtime.tar.json"
+
+    - name: Retain the immutable reference runtime
+      id: reference-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: browser-auth-reference-${{ github.sha }}
+        # Preserve empty directories and case-distinct paths inside one file.
+        path: ${{ runner.temp }}/spoonbill-auth-runtime.tar
+        if-no-files-found: error
+        retention-days: 90
+
+    - name: Link the artifact and its content identities
+      env:
+        REFERENCE_ARTIFACT_URL: ${{ steps.reference-artifact.outputs.artifact-url }}
+        REFERENCE_ARCHIVE_SHA256: ${{ steps.reference-artifact.outputs.artifact-digest }}
+      run: |
+        nix develop --no-write-lock-file --command node --input-type=module <<'NODE'
+        import {readFileSync, appendFileSync} from 'node:fs';
+        const artifact = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/spoonbill-auth-runtime/artifact.json'));
+        const archive = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/spoonbill-auth-runtime.tar.json'));
+        if (archive.artifactSha256 !== artifact.artifactSha256) throw new Error('Archive/runtime identity mismatch');
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+          `[Reference runtime](${process.env.REFERENCE_ARTIFACT_URL}) (90-day retention)\n\n` +
+          `Build revision: ${process.env.GITHUB_SHA}\n\n` +
+          `Runtime content SHA-256: ${artifact.artifactSha256}\n\n` +
+          `Reference source SHA-256: ${artifact.referenceIntegrationSha256}\n\n` +
+          `Ordered runtime graph SHA-256: ${artifact.dependencyGraphSha256}\n\n` +
+          `Runtime tar SHA-256: ${archive.tarSha256}\n\n` +
+          `Uploaded archive SHA-256: ${process.env.REFERENCE_ARCHIVE_SHA256}\n`);
+        NODE
 
   native-browser:
     runs-on: ubuntu-latest
@@ -66,7 +107,10 @@ jobs:
         nix develop .#profiling --no-write-lock-file --command node --test \
           misc/browser-auth-baseline/performance/native-memory.linux-tests.mjs \
           misc/browser-auth-baseline/performance/browser-heap.native-tests.mjs \
-          misc/browser-auth-baseline/performance/chromium-allocation.native-tests.mjs
+          misc/browser-auth-baseline/performance/chromium-allocation.native-tests.mjs \
+          misc/browser-auth-baseline/performance/websocket-events.native-tests.mjs \
+          misc/browser-auth-baseline/performance/webkit-network-probe.native-tests.mjs \
+          misc/browser-auth-baseline/performance/webkit-network-observer.native-tests.mjs
 
     - name: Test the Scala browser authentication reference
       run: |

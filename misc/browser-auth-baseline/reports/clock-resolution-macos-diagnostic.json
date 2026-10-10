@@ -1,0 +1,104 @@
+{
+  "schema": "spoonbill-clock-diagnostic-summary-v1",
+  "acceptanceEvidence": false,
+  "complete": true,
+  "generatedAt": "2026-10-10T19:10:28.494Z",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "configuration": {
+    "samples": 20000,
+    "warmup": 2000,
+    "samplingBudgetMs": 2000
+  },
+  "instrumentSourceSha256": {
+    "clock-resolution.mjs": "ca0659a0b2b55a48381ff4f1ee5e0cc8f88a0a21c3800616b8a34e704f1d5d09",
+    "clock-resolution.java": "b96c77382d808741d549a89ba4ad1dc41241bb19e47e3c79f564103fc489ff6d"
+  },
+  "rawEvidence": {
+    "sha256": "4b8d1d24c77e2ca2c68d33dbe5622277381d1aab6b766c48d0db9dd393f9c64b",
+    "bytes": 198299,
+    "recordCount": 10,
+    "rawDeltaCount": 80000,
+    "retention": "raw observations retained locally; summary omits raw delta arrays and host paths"
+  },
+  "observations": [
+    {
+      "target": "node",
+      "clock": "process.hrtime.bigint",
+      "runtimeVersion": "24.12.0",
+      "crossOriginIsolated": null,
+      "status": "observed",
+      "unit": "nanoseconds",
+      "deltaSamples": 20000,
+      "positiveDeltas": 20000,
+      "zeroDeltas": 0,
+      "negativeDeltas": 0,
+      "missingDeltas": 0,
+      "minimumPositiveDelta": 41,
+      "maximumPositiveDelta": 257750,
+      "issues": [],
+      "hardwareResolution": null,
+      "acceptanceEvidence": false
+    },
+    {
+      "target": "jvm",
+      "clock": "System.nanoTime",
+      "runtimeVersion": "21.0.8",
+      "crossOriginIsolated": null,
+      "status": "observed",
+      "unit": "nanoseconds",
+      "deltaSamples": 20000,
+      "positiveDeltas": 11550,
+      "zeroDeltas": 8450,
+      "negativeDeltas": 0,
+      "missingDeltas": 0,
+      "minimumPositiveDelta": 41,
+      "maximumPositiveDelta": 334,
+      "issues": [],
+      "hardwareResolution": null,
+      "acceptanceEvidence": false
+    },
+    {
+      "target": "chromium",
+      "clock": "performance.now",
+      "runtimeVersion": "141.0.7390.37",
+      "crossOriginIsolated": false,
+      "status": "observed",
+      "unit": "milliseconds",
+      "deltaSamples": 20000,
+      "positiveDeltas": 22,
+      "zeroDeltas": 19978,
+      "negativeDeltas": 0,
+      "missingDeltas": 0,
+      "minimumPositiveDelta": 0.09999990463256836,
+      "maximumPositiveDelta": 0.19999992847442627,
+      "issues": [],
+      "hardwareResolution": null,
+      "acceptanceEvidence": false
+    },
+    {
+      "target": "webkit",
+      "clock": "performance.now",
+      "runtimeVersion": "26.0",
+      "crossOriginIsolated": false,
+      "status": "observed",
+      "unit": "milliseconds",
+      "deltaSamples": 20000,
+      "positiveDeltas": 2,
+      "zeroDeltas": 19998,
+      "negativeDeltas": 0,
+      "missingDeltas": 0,
+      "minimumPositiveDelta": 1,
+      "maximumPositiveDelta": 1,
+      "issues": [],
+      "hardwareResolution": null,
+      "acceptanceEvidence": false
+    }
+  ],
+  "limitations": [
+    "Minimum positive difference is an observed step, not measured hardware resolution or an acceptance limit.",
+    "Consecutive reads include call/loop overhead; JIT, scheduling, timer coarsening, floating-point subtraction and privacy jitter can change the distribution.",
+    "No inference about elapsed-time accuracy, independent measurements, cross-process clocks or clocks on another host is made.",
+    "Browser readings come from a fresh headless about:blank page, not the application workload or a cross-origin-isolated deployment."
+  ]
+}

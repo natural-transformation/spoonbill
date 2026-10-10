@@ -248,7 +248,9 @@ lazy val spoonbill = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill",
-    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / "memory",
+    Test / unmanagedSourceDirectories ++= Seq("common", "memory").map(
+      (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
+    ),
     libraryDependencies ++= Seq(
       "com.natural-transformation" %% "avocet-core"   % avocetVersion,
       "com.natural-transformation" %% "avocet-events" % avocetVersion
@@ -268,7 +270,9 @@ lazy val securityJdbc = project
   .settings(
     normalizedName := "spoonbill-security-jdbc",
     Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "performance-support" / "scala",
-    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / "jdbc",
+    Test / unmanagedSourceDirectories ++= Seq("common", "jdbc").map(
+      (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
+    ),
     // These integration suites bootstrap shared tables in one disposable database.
     Test / parallelExecution := false,
     libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13" % Test
@@ -598,9 +602,9 @@ lazy val browserAuthBaseline = project
   .disablePlugins(HeaderPlugin)
   .settings(exampleSettings: _*)
   .settings(
-    Compile / unmanagedSourceDirectories ++= Seq("app", "memory", "jdbc").map(baseDirectory.value / _),
+    Compile / unmanagedSourceDirectories ++= Seq("common", "app", "memory", "jdbc").map(baseDirectory.value / _),
     libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13",
-    mainClass                              := Some("spoonbill.browserauthbaseline.MemoryReferenceServer")
+    mainClass                              := Some("spoonbill.browserauthbaseline.JdbcReferenceServer")
   )
   .dependsOn(pekko, securityJdbc)
 

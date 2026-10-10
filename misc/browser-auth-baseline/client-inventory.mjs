@@ -43,7 +43,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (!bundle) throw new Error('Usage: node client-inventory.mjs BUILT_CLIENT [NEW_REPORT.json]');
   const root = path.dirname(fileURLToPath(import.meta.url));
   const report = clientInventory(path.resolve(root, '../../modules/spoonbill/src/main/es6'), bundle,
-    {memory: path.join(root, 'memory'), jdbc: path.join(root, 'jdbc'), application: path.join(root, 'app')});
+    {common: path.join(root, 'common'), memory: path.join(root, 'memory'), jdbc: path.join(root, 'jdbc'), application: path.join(root, 'app')});
   const result = JSON.stringify(report, null, 2) + '\n';
   if (destination) writeFileSync(destination, result, {flag: 'wx'});
   else process.stdout.write(result);

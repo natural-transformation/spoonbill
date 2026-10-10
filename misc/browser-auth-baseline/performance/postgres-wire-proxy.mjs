@@ -56,20 +56,31 @@ class HeaderParser {
   get incomplete() { return this.used !== 0 || this.remaining !== 0; }
 }
 
-/** One sequential PostgreSQL v3 connection. Q and S each end in exactly one Z;
- * authentication/startup Z is counted separately. Extended P/B/D/E/C work may
- * precede S, but a second cycle must not start until the previous Z completes.
+/** Q and S each end in one Z; startup Z is separate. Strict sequential mode is
+ * the default. The opt-in observer permits bounded anonymous FIFO cycles, never
+ * treating overlapping cycles as measured physical round trips.
  */
 export class ProtocolCounter {
-  constructor({maxMessageBytes = 16 * 1024 * 1024} = {}) {
+  #cycles;
+  #head = 0;
+  #size = 0;
+  constructor({maxMessageBytes = 16 * 1024 * 1024, mode = 'strict-sequential',
+    maxPendingCycles = mode === 'strict-sequential' ? 1 : 32} = {}) {
     if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes < 8 || maxMessageBytes > 128 * 1024 * 1024)
       throw new Error('maxMessageBytes must be between 8 and 134217728');
-    this.counts = counts(); this.failures = {}; this.pending = null;
+    if (!['strict-sequential', 'pipelined-cycles'].includes(mode) ||
+        !Number.isInteger(maxPendingCycles) || maxPendingCycles < 1 || maxPendingCycles > 1024 ||
+        (mode === 'strict-sequential' && maxPendingCycles !== 1))
+      throw new Error('Explicit supported mode and bounded maxPendingCycles required');
+    this.mode = mode; this.maxPendingCycles = maxPendingCycles;
+    this.#cycles = new Uint8Array(maxPendingCycles);
+    this.peakPendingCycles = 0; this.overlapObserved = false;
+    this.counts = counts(); this.failures = {};
     this.extended = false; this.finished = false; this.terminated = false;
     this.front = new HeaderParser(true, maxMessageBytes, (type, length) => this.frontHeader(type, length), type => {
       this.counts.frontendMessages++;
-      if (type === 'startup') { this.pending = 'startup'; this.counts.startupRequests++; }
-      else if (type === 'Q' || type === 'S') { this.pending = 'sync'; this.extended = false; this.counts.syncRequests++; }
+      if (type === 'startup') { this.enqueue(1); this.counts.startupRequests++; }
+      else if (type === 'Q' || type === 'S') { this.enqueue(2); this.extended = false; this.counts.syncRequests++; }
       else if ('PBDEC'.includes(type)) this.extended = true;
       else if (type === 'X') this.terminated = true;
     });
@@ -83,9 +94,18 @@ export class ProtocolCounter {
         if (!this.pending) diagnostic('UNEXPECTED_READY_FOR_QUERY');
         if (this.pending === 'startup') this.counts.completedStartupExchanges++;
         else this.counts.completedSyncExchanges++;
-        this.pending = null;
+        this.#cycles[this.#head] = 0;
+        this.#head = (this.#head + 1) % this.maxPendingCycles;
+        this.#size--;
       }
     });
+  }
+  get pending() { return this.#size ? (this.#cycles[this.#head] === 1 ? 'startup' : 'sync') : null; }
+  enqueue(token) {
+    if (this.#size >= this.maxPendingCycles) diagnostic('PENDING_CYCLE_CAPACITY');
+    this.#cycles[(this.#head + this.#size) % this.maxPendingCycles] = token;
+    this.#size++;
+    this.peakPendingCycles = Math.max(this.peakPendingCycles, this.#size);
   }
   frontHeader(type, length) {
     if (this.terminated) diagnostic('MESSAGE_AFTER_TERMINATE');
@@ -99,7 +119,11 @@ export class ProtocolCounter {
       return;
     }
     if (type === 'X') return;
-    if (this.pending) diagnostic('OVERLAPPING_EXCHANGE');
+    if (this.pending) {
+      if (this.mode === 'strict-sequential' || this.pending === 'startup') diagnostic('OVERLAPPING_EXCHANGE');
+      this.overlapObserved = true;
+      if (this.#size >= this.maxPendingCycles) diagnostic('PENDING_CYCLE_CAPACITY');
+    }
     if (type === 'Q' && this.extended) diagnostic('EXTENDED_CYCLE_WITHOUT_SYNC');
   }
   recordFailure(code) { this.failures[code] = (this.failures[code] ?? 0) + 1; }
@@ -129,32 +153,50 @@ export class ProtocolCounter {
     const supported = Object.keys(this.failures).length === 0;
     return Object.freeze({...this.counts, status: supported ? (this.finished ? 'complete' : 'measuring') : 'inconclusive',
       startupExchanges: supported ? this.counts.completedStartupExchanges : null,
-      syncExchanges: supported ? this.counts.completedSyncExchanges : null,
-      pendingExchanges: this.pending ? 1 : 0,
+      syncExchanges: supported && !this.overlapObserved ? this.counts.completedSyncExchanges : null,
+      completedProtocolSyncCycles: supported ? this.counts.completedSyncExchanges : null,
+      physicalRoundTrips: null, overlapObserved: this.overlapObserved,
+      mode: this.mode, maxPendingCycles: this.maxPendingCycles,
+      pendingExchanges: this.#size, pendingCycleSlots: this.#size, peakPendingCycleSlots: this.peakPendingCycles,
       bufferedHeaderBytes: this.front.used + this.back.used,
-      retainedPayloadBytes: 0, allocatedParserBytes: 13,
+      retainedPayloadBytes: 0, headerStorageBytes: 13, cycleStorageBytes: this.#cycles.byteLength,
+      // Legacy alias counts fixed header buffers ONLY, not object/queue/heap.
+      allocatedParserBytes: 13,
       diagnostics: Object.freeze({...this.failures})});
   }
 }
 
 /** Disposable local test infrastructure only. TLS, remote target selection,
- * COPY, Flush, cancellation connections and pipelining are intentionally absent.
+ * COPY, Flush and cancellation connections are intentionally absent. Pipelined
+ * cycle observation requires an explicit mode; strict defaults remain unchanged.
  * Forwarding observes Node socket backpressure; no message payload is collected.
  */
 export async function createPostgresWireProxy({targetPort, listenPort = 0, maxMessageBytes = 16 * 1024 * 1024,
-  maxConnections = 32, socketTimeoutMs = 10000} = {}) {
+  maxConnections = 32, socketTimeoutMs = 10000, mode = 'strict-sequential',
+  maxPendingCycles = mode === 'strict-sequential' ? 1 : 32} = {}) {
   if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) throw new Error('Explicit loopback targetPort required');
   if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) throw new Error('Invalid listenPort');
   if (!Number.isInteger(maxConnections) || maxConnections < 1 || maxConnections > 1024) throw new Error('Invalid maxConnections');
   if (!Number.isInteger(socketTimeoutMs) || socketTimeoutMs < 1 || socketTimeoutMs > 120000) throw new Error('Invalid socketTimeoutMs');
-  new ProtocolCounter({maxMessageBytes}); // Validate before acquiring the listener.
+  new ProtocolCounter({maxMessageBytes, mode, maxPendingCycles}); // Validate before acquiring the listener.
   const active = new Set(), totals = counts(), failures = {};
   let opened = 0, closed = 0, closing = false, closePromise;
+  let overlapObserved = false, peakPendingCycleSlots = 0, peakConnectionPendingCycleSlots = 0;
+  function observeResources() {
+    let pending = 0;
+    for (const pair of active) {
+      const value = pair.counter.snapshot();
+      overlapObserved ||= value.overlapObserved;
+      peakConnectionPendingCycleSlots = Math.max(peakConnectionPendingCycleSlots, value.peakPendingCycleSlots);
+      if (!pair.counter.finished) pending += value.pendingCycleSlots;
+    }
+    peakPendingCycleSlots = Math.max(peakPendingCycleSlots, pending);
+  }
   const failure = code => { failures[code] = (failures[code] ?? 0) + 1; };
   const server = net.createServer(client => {
     if (closing || active.size >= maxConnections) { failure('CONNECTION_CAPACITY'); client.destroy(); return; }
     opened++;
-    const counter = new ProtocolCounter({maxMessageBytes});
+    const counter = new ProtocolCounter({maxMessageBytes, mode, maxPendingCycles});
     const backend = net.createConnection({host: '127.0.0.1', port: targetPort});
     const pair = {client, backend, counter, done: null};
     let settled = false, resolveDone;
@@ -168,6 +210,8 @@ export async function createPostgresWireProxy({targetPort, listenPort = 0, maxMe
       if (code) counter.recordFailure(code);
       client.destroy(); backend.destroy();
       const final = counter.finish();
+      overlapObserved ||= final.overlapObserved;
+      peakConnectionPendingCycleSlots = Math.max(peakConnectionPendingCycleSlots, final.peakPendingCycleSlots);
       for (const name of Object.keys(totals)) totals[name] += final[name];
       for (const [name, count] of Object.entries(final.diagnostics)) failures[name] = (failures[name] ?? 0) + count;
       // Keep the pair counted until both owned sockets have actually closed.
@@ -183,8 +227,8 @@ export async function createPostgresWireProxy({targetPort, listenPort = 0, maxMe
     function forward(source, destination, side) {
       source.on('data', bytes => {
         if (settled) return;
-        try { counter[side](bytes); }
-        catch (_) { dispose(); return; }
+        try { counter[side](bytes); observeResources(); }
+        catch (_) { observeResources(); dispose(); return; }
         if (!destination.write(bytes)) source.pause();
       });
       destination.on('drain', () => { if (!settled) source.resume(); });
@@ -216,7 +260,11 @@ export async function createPostgresWireProxy({targetPort, listenPort = 0, maxMe
       allocatedParserBytes: active.size * 13,
       status: valid ? (closing && active.size === 0 ? 'complete' : 'measuring') : 'inconclusive',
       startupExchanges: valid ? observed.completedStartupExchanges : null,
-      syncExchanges: valid ? observed.completedSyncExchanges : null,
+      syncExchanges: valid && !overlapObserved ? observed.completedSyncExchanges : null,
+      completedProtocolSyncCycles: valid ? observed.completedSyncExchanges : null,
+      physicalRoundTrips: null, overlapObserved, mode, maxPendingCycles,
+      pendingCycleSlots: pending, peakPendingCycleSlots, peakConnectionPendingCycleSlots,
+      headerStorageBytes: active.size * 13, cycleStorageBytes: active.size * maxPendingCycles,
       diagnostics: Object.freeze(diagnostics)});
   }
   return Object.freeze({port: address.port, snapshot,

@@ -59,10 +59,12 @@ final class JdbcReferenceBackend(
   entropy: Int => Array[Byte],
   newId: () => UUID,
   material: JdbcReferenceHost.MaterialCipher,
-  afterPreparedCommit: UUID => Unit = _ => ()
+  afterPreparedCommit: UUID => Unit = _ => (),
+  val policy: ReferencePolicy = ReferencePolicy.Default
 )(using ExecutionContext)
     extends ReferenceBackend[JdbcBrowserSecurity.Principal] {
   import JdbcReferenceBackend.*
+  private val accountIds = policy.accounts.map(account => account.name -> account.subject).toMap
   val security = new JdbcBrowserSecurity[Page, Projection](
     source,
     blockingContext,
@@ -79,7 +81,9 @@ final class JdbcReferenceBackend(
     restore,
     singleNodeExclusiveWriters = true,
     origin = origin,
-    afterPreparedCommit = afterPreparedCommit
+    afterPreparedCommit = afterPreparedCommit,
+    limits = JdbcBrowserSecurity.limitsFor(policy),
+    referencePolicy = Some(policy)
   )
 
   def accessControl    = security
@@ -87,7 +91,7 @@ final class JdbcReferenceBackend(
   def authority        = security.authority
   def completionConfig = security.completionConfig
   private def subjectName(subject: UUID): String =
-    accounts.collectFirst { case (name, known) if known == subject => name }
+    accountIds.collectFirst { case (name, known) if known == subject => name }
       .getOrElse(throw new SessionAccessDenied)
   def displayName(principal: JdbcBrowserSecurity.Principal): String = subjectName(principal.subject)
   override def initialPage(request: Request.Head): Future[Page] = security.bootstrapRecovery(request).map {
@@ -128,7 +132,7 @@ final class JdbcReferenceBackend(
     security.bootstrapBinding(binding).map(_.left.map(settlement).map(_ => ()))
   def begin(owner: ConnectionId): Future[Either[Failure, UUID]] = security.begin(owner).map(_.left.map(settlement))
   def password(owner: ConnectionId, ceremony: UUID, username: String, value: String): Future[Either[Failure, Reply]] =
-    accounts.get(username) match {
+    accountIds.get(username) match {
       case None          => Future.successful(Left(Failure.Denied))
       case Some(subject) => security.password(owner, ceremony, subject, value).map(_.left.map(settlement).map(reply))
     }
@@ -167,10 +171,11 @@ final class JdbcReferenceBackend(
    */
   def initialize(connection: Connection): Unit = {
     security.initialize(connection)
-    Vector(alice -> Option.empty[String], bob -> Some("123456")).foreach { case (subject, factor) =>
+    val passwordDigest = policy.proof.hash("password")
+    policy.accounts.foreach { account =>
       Using.resource(connection.prepareStatement("INSERT INTO baseline_account VALUES (?,1,TRUE,?,?)")) { query =>
-        query.setObject(1, subject); query.setBytes(2, JdbcReferenceHost.syntheticHash("password"))
-        factor match {
+        query.setObject(1, account.subject); query.setBytes(2, passwordDigest)
+        account.factor match {
           case Some(value) => query.setBytes(3, JdbcReferenceHost.syntheticHash(value))
           case None        => query.setNull(3, java.sql.Types.BINARY)
         }

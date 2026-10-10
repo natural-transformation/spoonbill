@@ -4,6 +4,9 @@ This is counted v3 consumer integration glue for the Phase 0 comparison. It uses
 one shared Scala UI, provider-specific host integration and the official Pekko
 adapter. Both examples use Future/Direct; the memory instance discards authority
 on restart, while JDBC retains committed host/browser/material records.
+JDBC is the default project entry point and intended feature-comparison host;
+the memory application is the complete non-JDBC atomicity/conformance example.
+Always select the provider explicitly in a workload collector.
 
 Run from the repository through its Nix environment:
 
@@ -63,8 +66,29 @@ page with sign-out and public-page links; it does not create authenticated state
 
 Changing the port changes both the completion-origin policy and the WebSocket
 guard origin. The server binds only to loopback. HTTP and cookie lifetimes are
-synthetic settings inherited from the memory host; they are not the still-proposed
-performance manifest's frozen acceptance settings. One owned one-second timer
+synthetic settings from the [shared executable policy](../common/README.md).
+Both entry points accept `--proof=short` (default) or `--proof=representative`;
+proof computation uses the same algorithm and parameters in either provider.
+The browser wrapper accepts the corresponding validated
+`SPOONBILL_AUTH_BASELINE_PROOF` setting (default `short`) and passes it to every
+server, including JDBC restart children. For representative-proof correctness:
+
+```sh
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false \
+  SPOONBILL_AUTH_BASELINE_PROVIDER=jdbc SPOONBILL_AUTH_BASELINE_PROOF=representative \
+  nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+  bash scripts/test-browser-auth-baseline.sh
+```
+
+An optional final classpath-file argument uses an already compiled runtime.
+The same readiness and workflow deadlines apply to both proof profiles. This
+checks configuration and correctness, not calibrated performance.
+
+The profile seeds 1,000 accounts and bounds both live state and retained replay
+history. `ReferencePolicyReport` exports the actual settings for automated
+manifest parity checks. These settings alone do not freeze measured budgets.
+Memory proof work uses an owned four-thread executor with bounded admission;
+shutdown drains admitted work before releasing that pool. One owned one-second timer
 admits at most one material-retirement operation at a time. Its work and SQL must
 be included in idle/churn measurements. Shutdown cancels timer admission, drains
 the server and releases the presentation registry and host. Restart discards all memory

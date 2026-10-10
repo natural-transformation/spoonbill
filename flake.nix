@@ -28,6 +28,7 @@
             jdk
             nodejs_24
             postgresql_14
+            gnutar
           ];
           # Give sbt a larger heap to avoid OOM during Scala 3 compilation.
           SBT_OPTS = "-Xms1g -Xmx4g -XX:MaxMetaspaceSize=1g";
@@ -54,7 +55,7 @@
         devShells.profiling = newPkgs.mkShell {
           nativeBuildInputs = config.devShells.default.nativeBuildInputs
             ++ config.devShells.browser.nativeBuildInputs
-            ++ [ newPkgs.time newPkgs.gnutar ]
+            ++ [ newPkgs.time ]
             ++ nixpkgs.lib.optionals newPkgs.stdenv.isLinux (with newPkgs; [
               heaptrack
               procps

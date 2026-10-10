@@ -16,6 +16,15 @@ import spoonbill.state.{DeviceId, SessionId, StateDeserializer, StateManager, St
 import spoonbill.web.Request
 
 object MemoryBrowserSecurity {
+  def limitsFor(policy: ReferencePolicy): Limits = Limits(
+    active = policy.activeViews,
+    disconnected = policy.disconnectedViews,
+    bootstrap = policy.bootstrapEntries,
+    nodesPerView = policy.nodesPerView,
+    bootstrapSeconds = policy.bootstrapSeconds,
+    reconnectSeconds = policy.reconnectSeconds,
+    activePerBinding = policy.viewsPerBinding
+  )
   final case class Limits(
     active: Int = 64,
     disconnected: Int = 128,
