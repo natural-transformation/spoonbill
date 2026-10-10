@@ -18,12 +18,21 @@ package spoonbill.pekko
 
 import scala.concurrent.duration._
 
+/** `wsSetupTimeout` bounds resources held before WebSocket materialization,
+  * including abandoned upgrades when HTTP request timeouts are disabled. A
+  * shorter configured HTTP request timeout is also respected. This deadline
+  * does not replace the application's HTTP timeout handler. An uninterruptible
+  * service effect may finish later; its result is then released without output.
+  */
 case class PekkoHttpServerConfig(
   maxRequestBodySize: Int = PekkoHttpServerConfig.DefaultMaxRequestBodySize,
   outputBufferSize: Int = PekkoHttpServerConfig.DefaultOutputBufferSize,
   wsStreamedCompletionTimeout: FiniteDuration = PekkoHttpServerConfig.DefaultWsStreamedCompletionTimeout,
-  wsStreamedParallelism: Int = PekkoHttpServerConfig.DefaultWsStreamedParallelism
-)
+  wsStreamedParallelism: Int = PekkoHttpServerConfig.DefaultWsStreamedParallelism,
+  wsSetupTimeout: FiniteDuration = 30.seconds
+) {
+  require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
+}
 
 object PekkoHttpServerConfig {
   val DefaultMaxRequestBodySize: Int                     = 8 * 1024 * 1024

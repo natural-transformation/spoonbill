@@ -1,6 +1,6 @@
 package spoonbill.zio.http
 
-import _root_.zio.{Chunk, RIO, ZIO}
+import _root_.zio.{Chunk, Promise, RIO, ZIO}
 import _root_.zio.http.*
 import _root_.zio.http.codec.PathCodec
 import _root_.zio.stream.ZStream
@@ -19,14 +19,18 @@ import spoonbill.web.{PathAndQuery as PQ, Request as SpoonbillRequest, Response 
 import spoonbill.zio.ChunkBytesLike
 import spoonbill.zio.Zio2Effect
 import spoonbill.zio.streams.*
+import scala.concurrent.duration.*
 
 class ZioHttpSpoonbill[R] {
 
   type ZEffect = Zio2Effect[R, Throwable]
 
   def service[S: StateSerializer: StateDeserializer, M](
-    config: SpoonbillServiceConfig[RIO[R, *], S, M]
+    config: SpoonbillServiceConfig[RIO[R, *], S, M],
+    wsSetupTimeout: FiniteDuration = 30.seconds
   )(implicit eff: ZEffect): Routes[R, Response] = {
+
+    require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
 
     val spoonbillServer = spoonbill.server.spoonbillService(config)
 
@@ -43,7 +47,7 @@ class ZioHttpSpoonbill[R] {
       }
       val response =
         if (isWebSocket)
-          routeWsRequest(req, subPath, spoonbillServer, config.reporter, config.webSocketProtocolsEnabled)
+          routeWsRequest(req, subPath, spoonbillServer, config.reporter, config.webSocketProtocolsEnabled, wsSetupTimeout)
         else routeHttpRequest(subPath, req, spoonbillServer)
       response.mapError(Response.fromThrowable)
     }
@@ -126,12 +130,11 @@ class ZioHttpSpoonbill[R] {
     fullPath: String,
     spoonbillServer: SpoonbillService[RIO[R, *]],
     reporter: Reporter,
-    webSocketProtocolsEnabled: Boolean
+    webSocketProtocolsEnabled: Boolean,
+    wsSetupTimeout: FiniteDuration
   )(implicit eff: ZEffect): ZIO[R, Throwable, Response] = {
 
     val fromClientKQueue = Queue[RIO[R, *], Bytes]()
-    val spoonbillRequest =
-      mkSpoonbillRequest[KStream[RIO[R, *], Bytes]](req, fullPath, fromClientKQueue.stream)
     val protocols = parseProtocols(req)
     // When protocol negotiation is disabled, force JSON to keep codecs aligned.
     val sanitizedProtocols =
@@ -144,25 +147,49 @@ class ZioHttpSpoonbill[R] {
       ZIO.succeed(Response(status = Status.BadRequest))
     } else {
       for {
-        response <- spoonbillServer.ws(WebSocketRequest(spoonbillRequest, sanitizedProtocols))
-        (selectedProtocol, toClient) = response match {
-                                         case WebSocketResponse(SpoonbillResponse(_, outStream, _, _), selectedProtocol) =>
-                                           selectedProtocol -> outStream
-                                             .map(out => WebSocketFrame.Binary(out.as[Chunk[Byte]]))
-                                             .toZStream
-                                         case null =>
-                                           throw new RuntimeException
-                                       }
-        // Pass selectedProtocol only when protocol negotiation is enabled
-        effectiveProtocol = if (webSocketProtocolsEnabled) Some(selectedProtocol) else None
-        route <- buildSocket(toClient, fromClientKQueue, reporter, effectiveProtocol)
-      } yield {
-        reporter.debug(
-          s"WebSocket upgrade accepted for $fullPath: selectedProtocol=$selectedProtocol " +
-            s"protocols=${protocolSummary(protocols)} deviceIdCookie=${hasDeviceIdCookie(req)}"
-        )
-        route
-      }
+        inputCancelled <- Promise.make[Nothing, Unit]
+        input = new KStream[RIO[R, *], Bytes] {
+                  def pull(): RIO[R, Option[Bytes]] = fromClientKQueue.stream.pull()
+                  def cancel(): RIO[R, Unit] =
+                    fromClientKQueue.stream.cancel() *> inputCancelled.succeed(()).unit
+                }
+        spoonbillRequest = mkSpoonbillRequest[KStream[RIO[R, *], Bytes]](req, fullPath, input)
+        setup <- WebSocketSetup.make(input.cancel(), wsSetupTimeout)
+        route <- ZIO.uninterruptibleMask { restore =>
+          restore(spoonbillServer.ws(WebSocketRequest(spoonbillRequest, sanitizedProtocols))).flatMap { response =>
+            setup.prepare(response.release).flatMap { admitted =>
+              if (!admitted) ZIO.fail(new java.util.concurrent.TimeoutException("WebSocket setup expired"))
+              else restore {
+                for {
+                  // Cancel the unused application input without coupling it to terminal output.
+                  discardInbound <- response match {
+                                      case WebSocketResponse.SendThenClose(_, _, _) => input.cancel().as(true)
+                                      case WebSocketResponse.Duplex(_, _, _)        => ZIO.succeed(false)
+                                    }
+                  toClient = response.output.map(out => WebSocketFrame.Binary(out.as[Chunk[Byte]])).toZStream
+                  effectiveProtocol = if (webSocketProtocolsEnabled) Some(response.selectedProtocol) else None
+                  route <- buildSocket(
+                             toClient,
+                             fromClientKQueue,
+                             reporter,
+                             effectiveProtocol,
+                             discardInbound = discardInbound,
+                             release = response.release,
+                             inputCancelled = Some(inputCancelled),
+                             attach = setup.attach
+                           )
+                } yield {
+                  reporter.debug(
+                    s"WebSocket upgrade accepted for $fullPath: selectedProtocol=${response.selectedProtocol} " +
+                      s"protocols=${protocolSummary(protocols)} deviceIdCookie=${hasDeviceIdCookie(req)}"
+                  )
+                  route
+                }
+              }
+            }
+          }
+        }.onError(_ => setup.abandon.ignore)
+      } yield route
     }
   }
 
@@ -170,11 +197,33 @@ class ZioHttpSpoonbill[R] {
     toClientStream: ZStream[R, Throwable, WebSocketFrame],
     fromClientKQueue: Queue[RIO[R, *], Bytes],
     reporter: Reporter,
-    selectedProtocol: Option[String] = None
+    selectedProtocol: Option[String] = None,
+    discardInbound: Boolean = false,
+    release: () => RIO[R, Unit] = () => ZIO.unit,
+    inputCancelled: Option[Promise[Nothing, Unit]] = None,
+    attach: RIO[R, Boolean] = ZIO.succeed(true)
   ): RIO[R, Response] = {
     val socket =
       Handler.webSocket { channel =>
-        runSocket(channel.send, channel.receiveAll, toClientStream, fromClientKQueue, reporter)
+        ZIO.acquireReleaseWith(attach) { attached =>
+          if (attached) fromClientKQueue.close().ignore *> ZIO.suspendSucceed(release()).ignore
+          else ZIO.unit
+        } {
+          case false => channel.shutdown
+          case true =>
+            runSocket(
+              channel.send,
+              channel.receiveAll,
+              toClientStream,
+              fromClientKQueue,
+              reporter,
+              // Close only after the data frames; shutdown would discard an unflushed last frame.
+              onOutputComplete = channel.send(ChannelEvent.Read(WebSocketFrame.close(1000, None))).ignore,
+              discardInbound = discardInbound,
+              inputCancelled = inputCancelled,
+              onAbort = channel.shutdown
+            )
+        }
       }
 
     // Apply WebSocketConfig with subprotocol if one was selected.
@@ -196,57 +245,85 @@ class ZioHttpSpoonbill[R] {
     receiveAll: PartialFunction[ChannelEvent[WebSocketFrame], RIO[R, Unit]] => RIO[R, Unit],
     toClientStream: ZStream[R, Throwable, WebSocketFrame],
     fromClientKQueue: Queue[RIO[R, *], Bytes],
-    reporter: Reporter
-  ): RIO[R, Unit] =
-    for {
-      // Use a promise to gate sending until handshake completes.
-      // zio-http 3.x will warn "WebSocket send before handshake completed" and may close the connection
-      // if we try to send before the handshake is done.
-      handshakeComplete <- zio.Promise.make[Nothing, Boolean]
-      sendFiber <- handshakeComplete.await
-                     .flatMap {
-                       case true =>
-                         toClientStream
-                           .mapZIO(frame => send(ChannelEvent.Read(frame)))
-                           .runDrain
-                           .catchAllCause { cause =>
-                             cause.failureOption.orElse(cause.dieOption) match {
-                               case Some(err) =>
-                                 ZIO.succeed(reporter.error("WebSocket send failed", err))
-                               case None =>
-                                 ZIO.unit
-                             }
-                           }
-                       case false =>
-                         ZIO.unit
-                     }
-                     .forkDaemon
-      _ <- receiveAll {
-             case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
-               // Signal that handshake is done; the send fiber can now start sending.
-               handshakeComplete.succeed(true).unit
-             case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeTimeout) =>
-               // Complete the promise so the send fiber can exit if handshake never happened.
-               handshakeComplete
-                 .succeed(false)
-                 .flatMap { completed =>
-                   if (completed) fromClientKQueue.close() else ZIO.unit
-                 }
-             case ChannelEvent.Read(WebSocketFrame.Binary(bytes)) =>
-               handshakeComplete.succeed(true).unit *> fromClientKQueue.offer(Bytes.wrap(bytes)).unit
-             case ChannelEvent.Read(WebSocketFrame.Text(t)) =>
-               handshakeComplete.succeed(true).unit *> fromClientKQueue.offer(BytesLike[Bytes].utf8(t)).unit
-             case ChannelEvent.Read(WebSocketFrame.Close(_, _)) =>
-               handshakeComplete.succeed(false).unit *> fromClientKQueue.close()
-             case ChannelEvent.ExceptionCaught(cause) =>
-               handshakeComplete.succeed(false).unit *> fromClientKQueue.close() *> ZIO.fail(cause)
-             case ChannelEvent.Unregistered =>
-               // Unregistered can happen without a close frame; close the queue to unblock cleanup.
-               handshakeComplete.succeed(false).unit *> fromClientKQueue.close()
-             case frame =>
-               ZIO.fail(new Exception(s"Invalid frame type ${frame.getClass.getName}"))
-           }.ensuring(sendFiber.interrupt)
-    } yield ()
+    reporter: Reporter,
+    onOutputComplete: RIO[R, Unit] = ZIO.unit,
+    discardInbound: Boolean = false,
+    release: () => RIO[R, Unit] = () => ZIO.unit,
+    inputCancelled: Option[Promise[Nothing, Unit]] = None,
+    onAbort: RIO[R, Unit] = ZIO.unit
+  ): RIO[R, Unit] = {
+    val admitBinary: Chunk[Byte] => RIO[R, Unit] =
+      if (discardInbound) _ => ZIO.unit
+      else bytes => fromClientKQueue.offer(Bytes.wrap(bytes)).unit
+    val admitText: String => RIO[R, Unit] =
+      if (discardInbound) _ => ZIO.unit
+      else text => fromClientKQueue.offer(BytesLike[Bytes].utf8(text)).unit
+
+    val handled =
+      for {
+        // Use a promise to gate sending until handshake completes.
+        // zio-http 3.x will warn "WebSocket send before handshake completed" and may close the connection
+        // if we try to send before the handshake is done.
+        handshakeComplete <- zio.Promise.make[Nothing, Boolean]
+        sender = handshakeComplete.await
+                       .flatMap {
+                         case true =>
+                           toClientStream
+                             .mapZIO(frame => send(ChannelEvent.Read(frame)))
+                             .runDrain
+                             .foldCauseZIO(
+                               cause =>
+                                 cause.failureOption.orElse(cause.dieOption) match {
+                                   case Some(err) =>
+                                     ZIO.succeed(reporter.error("WebSocket send failed", err)) *> onAbort
+                                   case None => onAbort
+                                 },
+                               _ => onOutputComplete
+                             )
+                         case false =>
+                           ZIO.unit
+                       }
+        // Acquisition is masked; explicitly restore cancellation in the child.
+        _ <- ZIO.acquireReleaseWith(sender.interruptible.forkDaemon)(_.interrupt) { _ =>
+             receiveAll {
+               case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeComplete) =>
+                 // Signal that handshake is done; the send fiber can now start sending.
+                 handshakeComplete.succeed(true).unit
+               case ChannelEvent.UserEventTriggered(ChannelEvent.UserEvent.HandshakeTimeout) =>
+                 // Complete the promise so the send fiber can exit if handshake never happened.
+                 handshakeComplete
+                   .succeed(false)
+                   .flatMap { completed =>
+                     if (completed) fromClientKQueue.close() else ZIO.unit
+                   }
+               case ChannelEvent.Read(WebSocketFrame.Binary(bytes)) =>
+                 handshakeComplete.succeed(true).unit *> admitBinary(bytes)
+               case ChannelEvent.Read(WebSocketFrame.Text(t)) =>
+                 handshakeComplete.succeed(true).unit *> admitText(t)
+               case ChannelEvent.Read(WebSocketFrame.Close(_, _)) =>
+                 handshakeComplete.succeed(false).unit *> fromClientKQueue.close()
+               case ChannelEvent.ExceptionCaught(cause) =>
+                 handshakeComplete.succeed(false).unit *> fromClientKQueue.close() *> ZIO.fail(cause)
+               case ChannelEvent.Unregistered =>
+                 // Unregistered can happen without a close frame; close the queue to unblock cleanup.
+                 handshakeComplete.succeed(false).unit *> fromClientKQueue.close()
+               case frame =>
+                 ZIO.fail(new Exception(s"Invalid frame type ${frame.getClass.getName}"))
+             }
+             }
+      } yield ()
+    // Session cleanup runs when the handler ends, including peer close and
+    // output failure. It is not run while a duplex session is still attached.
+    val coupled = inputCancelled.filterNot(_ => discardInbound) match {
+      case None => handled
+      case Some(cancelled) =>
+        cancelled.isDone.flatMap {
+          case true => onAbort
+          case false => handled.raceFirst(cancelled.await *> onAbort)
+        }
+    }
+    coupled.ensuring(fromClientKQueue.close().ignore *> release().ignore)
+  }
 
   private def mkSpoonbillRequest[B](request: Request, path: String, body: B): SpoonbillRequest[B] = {
     val cookies = request.rawHeader(Header.Cookie)

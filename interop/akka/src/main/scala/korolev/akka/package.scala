@@ -18,8 +18,8 @@ package spoonbill
 
 import _root_.akka.actor.ActorSystem
 import _root_.akka.http.scaladsl.model.*
-import _root_.akka.http.scaladsl.model.headers.RawHeader
-import _root_.akka.http.scaladsl.model.ws.{BinaryMessage, Message, TextMessage}
+import _root_.akka.http.scaladsl.model.headers.{RawHeader, `Timeout-Access`}
+import _root_.akka.http.scaladsl.model.ws.{BinaryMessage, Message, TextMessage, WebSocketUpgrade}
 import _root_.akka.http.scaladsl.server.Directives.*
 import _root_.akka.http.scaladsl.server.Route
 import _root_.akka.stream.Materializer
@@ -28,12 +28,17 @@ import _root_.akka.util.ByteString
 import spoonbill.akka.util.LoggingReporter
 import spoonbill.data.{Bytes, BytesLike}
 import spoonbill.effect.{Effect, Reporter, Stream}
+import spoonbill.effect.syntax.*
 import spoonbill.server.{HttpRequest as SpoonbillHttpRequest, SpoonbillService, SpoonbillServiceConfig}
 import spoonbill.server.{WebSocketRequest as SpoonbillWebSocketRequest, WebSocketResponse as SpoonbillWebSocketResponse}
 import spoonbill.server.internal.BadRequestException
 import spoonbill.state.{StateDeserializer, StateSerializer}
 import spoonbill.web.{PathAndQuery, Request as SpoonbillRequest, Response as SpoonbillResponse}
+import java.util.concurrent.TimeoutException
+import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success}
+import scala.util.control.NonFatal
 
 package object akka {
 
@@ -57,16 +62,16 @@ package object akka {
         else config.copy(reporter = new LoggingReporter(actorSystem))
 
       val spoonbillServer = spoonbill.server.spoonbillService(actualConfig)
-      val wsRouter      = configureWsRoute(spoonbillServer, akkaHttpConfig, actualConfig, wsLoggingEnabled)
+      val wsRouter      = configureWsRoute(spoonbillServer, akkaHttpConfig, actualConfig.reporter, wsLoggingEnabled)
       val httpRoute     = configureHttpRoute(spoonbillServer)
 
       wsRouter ~ httpRoute
   }
 
-  private def configureWsRoute[F[_]: Effect, S: StateSerializer: StateDeserializer, M](
+  private[akka] def configureWsRoute[F[_]: Effect](
     spoonbillServer: SpoonbillService[F],
     akkaHttpConfig: AkkaHttpServerConfig,
-    spoonbillServiceConfig: SpoonbillServiceConfig[F, S, M],
+    reporter: Reporter,
     wsLoggingEnabled: Boolean
   )(implicit materializer: Materializer, ec: ExecutionContext): Route =
     extractRequest { request =>
@@ -81,61 +86,231 @@ package object akka {
             // outSource - push messages to the client
             val (inStream, inSink) = Sink.spoonbillStream[F, Bytes].preMaterialize()
             val spoonbillRequest     = mkSpoonbillRequest(request, path.toString, inStream)
+            val ownership          = new UpgradeOwnership[F](request, inStream, akkaHttpConfig.wsSetupTimeout)
 
             complete {
               val spoonbillWsRequest = SpoonbillWebSocketRequest(spoonbillRequest, requestedProtocols)
               Effect[F]
-                .toFuture(spoonbillServer.ws(spoonbillWsRequest))
-                .map {
-                  case SpoonbillWebSocketResponse(SpoonbillResponse(_, outStream, _, _), selectedProtocol) =>
-                    val source = outStream.asAkkaSource
-                      .map(text => BinaryMessage.Strict(text.as[ByteString]))
-                    val sink = Flow[Message]
-                      .mapAsync(akkaHttpConfig.wsStreamedParallelism) {
-                        case TextMessage.Strict(message) =>
-                          Future.successful(Some(BytesLike[Bytes].utf8(message)))
-                        case TextMessage.Streamed(stream) =>
-                          stream
-                            .completionTimeout(akkaHttpConfig.wsStreamedCompletionTimeout)
-                            .runFold("")(_ + _)
-                            .map(message => Some(BytesLike[Bytes].utf8(message)))
-                        case BinaryMessage.Strict(data) =>
-                          Future.successful(Some(Bytes.wrap(data)))
-                        case BinaryMessage.Streamed(stream) =>
-                          stream
-                            .completionTimeout(akkaHttpConfig.wsStreamedCompletionTimeout)
-                            .runFold(ByteString.empty)(_ ++ _)
-                            .map(message => Some(Bytes.wrap(message)))
-                      }
-                      .recover { case ex =>
-                        spoonbillServiceConfig.reporter.error(
-                          "WebSocket input stream failed; shutting down output stream"
-                        )
-                        outStream.cancel()
-                        None
-                      }
-                      .collect { case Some(message) =>
-                        message
-                      }
-                      .to(inSink)
-
-                    upgrade.handleMessages(
-                      if (wsLoggingEnabled) {
-                        Flow.fromSinkAndSourceCoupled(sink, source).log("spoonbill-ws", (_: Message) => "frame")
-                      } else {
-                        Flow.fromSinkAndSourceCoupled(sink, source)
-                      },
-                      Some(selectedProtocol)
+                .toFuture(Effect[F].delayAsync(spoonbillServer.ws(spoonbillWsRequest)))
+                .transformWith {
+                  case Failure(error) =>
+                    Effect[F].toFuture(ownership.abort()).flatMap(_ => rejectedWebSocket(inStream, error))
+                  case Success(response) =>
+                    ownership.finish(response)(
+                      acceptedWebSocket(
+                        upgrade,
+                        inStream,
+                        inSink,
+                        response,
+                        akkaHttpConfig,
+                        reporter,
+                        wsLoggingEnabled,
+                        ownership.attached
+                      )
                     )
-                }
-                .recover { case BadRequestException(message) =>
-                  HttpResponse(StatusCodes.BadRequest, entity = HttpEntity(message))
                 }
             }
           }
         }
       }
     }
+
+  /** Failure stays a rejection. The pre-materialized input is released through
+    * the effect so a lazy `F` cannot drop the finalizer.
+    */
+  private def rejectedWebSocket[F[_]: Effect](inStream: Stream[F, Bytes], error: Throwable)(implicit
+    ec: ExecutionContext
+  ): Future[HttpResponse] =
+    Effect[F].toFuture(inStream.cancel().recover { case NonFatal(_) => () }).flatMap { _ =>
+      error match {
+        case BadRequestException(message) =>
+          Future.successful(HttpResponse(StatusCodes.BadRequest, entity = HttpEntity(message)))
+        case other => Future.failed(other)
+      }
+    }
+
+  /** Choose the transport once from the public variant. `SendThenClose` keeps
+    * the already-canceled application sink out of the graph and drains the
+    * peer on a fresh sink. Output completion still closes that coupled flow.
+    */
+  private def acceptedWebSocket[F[_]: Effect](
+    upgrade: WebSocketUpgrade,
+    inStream: Stream[F, Bytes],
+    inSink: Sink[Bytes, _],
+    response: SpoonbillWebSocketResponse[F],
+    httpConfig: AkkaHttpServerConfig,
+    reporter: Reporter,
+    wsLoggingEnabled: Boolean,
+    onAttached: () => Unit
+  )(implicit materializer: Materializer, ec: ExecutionContext): Future[HttpResponse] = {
+    response match {
+      case SpoonbillWebSocketResponse.SendThenClose(outStream, selectedProtocol, release) =>
+        Effect[F].toFuture(inStream.cancel().recover { case NonFatal(_) => () }).flatMap { _ =>
+          Future.successful(
+            upgrade.handleMessages(
+              terminalFlow(outStream, httpConfig, wsLoggingEnabled, release, onAttached),
+              Some(selectedProtocol)
+            )
+          )
+        }
+      case SpoonbillWebSocketResponse.Duplex(outStream, selectedProtocol, release) =>
+        Future.successful(
+          upgrade.handleMessages(
+            duplexFlow(inSink, outStream, httpConfig, reporter, wsLoggingEnabled, release, onAttached),
+            Some(selectedProtocol)
+          )
+        )
+    }
+  }
+
+  private def logFrames[Mat](flow: Flow[Message, Message, Mat], enabled: Boolean): Flow[Message, Message, Mat] =
+    if (enabled) flow.log("spoonbill-ws", (_: Message) => "frame")
+    else flow
+
+  private def duplexFlow[F[_]: Effect](
+    inSink: Sink[Bytes, _],
+    outStream: Stream[F, Bytes],
+    httpConfig: AkkaHttpServerConfig,
+    reporter: Reporter,
+    wsLoggingEnabled: Boolean,
+    release: () => F[Unit],
+    onAttached: () => Unit
+  )(implicit materializer: Materializer, ec: ExecutionContext): Flow[Message, Message, _] = {
+    val source = outStream.asAkkaSource.map(text => BinaryMessage.Strict(text.as[ByteString]))
+    val sink = Flow[Message]
+      .mapAsync(httpConfig.wsStreamedParallelism) {
+        case TextMessage.Strict(message) =>
+          Future.successful(Some(BytesLike[Bytes].utf8(message)))
+        case TextMessage.Streamed(stream) =>
+          stream
+            .completionTimeout(httpConfig.wsStreamedCompletionTimeout)
+            .runFold("")(_ + _)
+            .map(message => Some(BytesLike[Bytes].utf8(message)))
+        case BinaryMessage.Strict(data) =>
+          Future.successful(Some(Bytes.wrap(data)))
+        case BinaryMessage.Streamed(stream) =>
+          stream
+            .completionTimeout(httpConfig.wsStreamedCompletionTimeout)
+            .runFold(ByteString.empty)(_ ++ _)
+            .map(message => Some(Bytes.wrap(message)))
+      }
+      .recover { case ex =>
+        reporter.error("WebSocket input stream failed; shutting down output stream")
+        Effect[F].runAsync(outStream.cancel().recover { case NonFatal(_) => () })(_ => ())
+        None
+      }
+      .collect { case Some(message) =>
+        message
+      }
+      .to(inSink)
+    whenTerminated(logFrames(Flow.fromSinkAndSourceCoupled(sink, source), wsLoggingEnabled), release, onAttached)
+  }
+
+  /** Release application resources after the output flow terminates. Emitted
+    * frames are already owned by the transport; terminal input is detached.
+    */
+  private def whenTerminated[F[_]: Effect, Mat](
+    flow: Flow[Message, Message, Mat],
+    release: () => F[Unit],
+    onAttached: () => Unit
+  )(implicit ec: ExecutionContext): Flow[Message, Message, Mat] =
+    flow.watchTermination() { (mat, done) =>
+      // Materialization is the handoff. Before this, timeout still owns cleanup.
+      onAttached()
+      done.onComplete(_ => Effect[F].runAsync(release())(_ => ()))(ec)
+      mat
+    }
+
+  /** Drain discarded streamed bodies incrementally under the existing limit. */
+  private def terminalFlow[F[_]: Effect](
+    outStream: Stream[F, Bytes],
+    httpConfig: AkkaHttpServerConfig,
+    wsLoggingEnabled: Boolean,
+    release: () => F[Unit],
+    onAttached: () => Unit
+  )(implicit materializer: Materializer, ec: ExecutionContext): Flow[Message, Message, _] = {
+    val source = outStream.asAkkaSource.map(text => BinaryMessage.Strict(text.as[ByteString]))
+    val drain = Flow[Message]
+      .mapAsync(httpConfig.wsStreamedParallelism) {
+        case TextMessage.Streamed(stream) =>
+          stream.completionTimeout(httpConfig.wsStreamedCompletionTimeout).runWith(Sink.ignore).map(_ => ())
+        case BinaryMessage.Streamed(stream) =>
+          stream.completionTimeout(httpConfig.wsStreamedCompletionTimeout).runWith(Sink.ignore).map(_ => ())
+        case _ =>
+          Future.successful(())
+      }
+      .to(Sink.ignore)
+    whenTerminated(logFrames(Flow.fromSinkAndSourceCoupled(drain, source), wsLoggingEnabled), release, onAttached)
+  }
+
+  /** The routing API has no pre-upgrade peer-disconnect notification. Keep
+    * setup ownership bounded even when HTTP request timeouts are disabled, and
+    * never replace the caller's timeout handler or inspect its implementation.
+    * All synchronization is confined to setup/termination, never frame pulls.
+    */
+  private[akka] final class UpgradeOwnership[F[_]: Effect](
+    request: HttpRequest,
+    input: Stream[F, Bytes],
+    setupTimeout: FiniteDuration
+  )(implicit materializer: Materializer, ec: ExecutionContext) {
+    private sealed trait State
+    private case object Waiting extends State
+    private final case class Prepared(release: () => F[Unit]) extends State
+    private case object Attached extends State
+    private case object Abandoned extends State
+    private var state: State = Waiting
+    private var cancelTimer: () => Unit = () => ()
+    private val releaseInput = SpoonbillWebSocketResponse.releaseOnce[F](() => input.cancel())
+    private val deadline: FiniteDuration = request.header[`Timeout-Access`].map(_.timeoutAccess.timeout) match {
+      case Some(value: FiniteDuration) if value > Duration.Zero => if (value < setupTimeout) value else setupTimeout
+      case _ => setupTimeout
+    }
+    private val scheduled = materializer.scheduleOnce(deadline, new Runnable {
+      def run(): Unit = Effect[F].runAsync(abort())(_ => ())
+    })
+    synchronized {
+      if (state == Abandoned) scheduled.cancel()
+      else cancelTimer = () => { scheduled.cancel(); () }
+    }
+
+    def attached(): Unit = synchronized {
+      state match {
+        case Prepared(_) => state = Attached; cancelTimer()
+        case _ => throw new TimeoutException("WebSocket setup ended before materialization")
+      }
+    }
+
+    def abort(): F[Unit] = Effect[F].delay {
+      synchronized {
+        val cleanup = state match {
+          case Waiting => releaseInput
+          case Prepared(release) => () => releaseInput() *> Effect[F].delayAsync(release()).recover { case NonFatal(_) => () }
+          case _ => () => Effect[F].unit
+        }
+        if (state != Attached) state = Abandoned
+        cancelTimer()
+        cleanup
+      }
+    }.flatMap(cleanup => cleanup())
+
+    def finish(response: SpoonbillWebSocketResponse[F])(http: => Future[HttpResponse]): Future[HttpResponse] = {
+      val accepted = synchronized {
+        state match {
+          case Waiting => state = Prepared(response.release); true
+          case _ => false
+        }
+      }
+      if (!accepted)
+        Effect[F].toFuture(Effect[F].delayAsync(response.release()).recover { case NonFatal(_) => () })
+          .flatMap(_ => Future.failed(new TimeoutException("WebSocket setup expired")))
+      else {
+        val built = try http catch { case NonFatal(error) => Future.failed(error) }
+        built.recoverWith { case NonFatal(error) =>
+          Effect[F].toFuture(abort()).flatMap(_ => Future.failed(error))
+        }
+      }
+    }
+  }
 
   private def configureHttpRoute[F[_]](
     spoonbillServer: SpoonbillService[F]

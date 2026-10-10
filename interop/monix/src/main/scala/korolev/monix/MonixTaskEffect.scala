@@ -30,6 +30,9 @@ class MonixTaskEffect(implicit scheduler: Scheduler) extends Effect[Task] {
   def delay[A](value: => A): Task[A] =
     Task.delay(value)
 
+  def uncancelable[A](task: => Task[A]): Task[A] =
+    Task.defer(task).uncancelable
+
   def fail[A](e: Throwable): Task[A] = Task.raiseError(e)
 
   def fork[A](m: => Task[A])(implicit ec: ExecutionContext): Task[A] =

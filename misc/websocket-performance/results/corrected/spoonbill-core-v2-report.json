@@ -1,0 +1,188 @@
+{
+  "status": "inconclusive",
+  "confidenceFamily": 0.95,
+  "correction": "Bonferroni paired-block percentile bootstrap",
+  "replicates": 20000,
+  "minBlocks": 30,
+  "slowdownAllowance": 0,
+  "metadata": {
+    "kind": "metadata",
+    "mode": "comparison",
+    "suite": "core",
+    "blocks": 30,
+    "cells": [
+      [
+        1,
+        0
+      ]
+    ],
+    "jvmOptions": [
+      "-Xms512m",
+      "-Xmx512m"
+    ],
+    "artifactSha256": [
+      "828c43a10ee079c480ecec8f4f29967f3a8697fa9ecbc55b973bd282daf168e2",
+      "aaa377dcac9834a6bd36ccf92d3e9858fbf26780cefebda9a40c85a500289437"
+    ],
+    "fixtureSha256": "7b0d62a9b1ce1cd0ff9871030ec0d5de0839d79d1b09137786f39861ed337d5e",
+    "warmup": {
+      "perProcess": 10000
+    },
+    "measurement": {
+      "perProcess": 5000
+    },
+    "flakeLockSha256": "76b66faedcba7922a095a732ecf8bf03e53d179170441b1d93c931afef2af3e4",
+    "runtime": {
+      "node": "v24.12.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "cells": [
+    {
+      "cell": "spoonbill-core-guarded-session-v1:1:0",
+      "blocks": 30,
+      "metrics": [
+        {
+          "name": "blockP50Ns",
+          "baseline": 64951.4,
+          "candidate": 64124.933333333334,
+          "ratio": 0.9872756142798051,
+          "worseFraction": -0.010233006448912185,
+          "confidenceInterval": [
+            -0.03784835814420591,
+            0.016343766807391205
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 65292.9,
+            "candidate": 66333.26666666666,
+            "ratio": 1.0159338406881402,
+            "worseFraction": 0.019210948510043138,
+            "confidenceInterval": [
+              -0.018887525180272195,
+              0.056375282230436176
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "blockP95Ns",
+          "baseline": 82911.06666666667,
+          "candidate": 81509.7,
+          "ratio": 0.983097953952267,
+          "worseFraction": -0.014540272117746455,
+          "confidenceInterval": [
+            -0.048019855308204296,
+            0.018933851026306684
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 85267.96666666666,
+            "candidate": 86238.93333333333,
+            "ratio": 1.0113872384275613,
+            "worseFraction": 0.015868140702739328,
+            "confidenceInterval": [
+              -0.02374428343177112,
+              0.0543297232801657
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "blockP99Ns",
+          "baseline": 141516.7,
+          "candidate": 138854.16666666666,
+          "ratio": 0.9811857304944692,
+          "worseFraction": -0.013880167600768996,
+          "confidenceInterval": [
+            -0.07113022542644726,
+            0.04329285755908597
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 149041.63333333333,
+            "candidate": 155951.4,
+            "ratio": 1.04636131872772,
+            "worseFraction": 0.06051459896378082,
+            "confidenceInterval": [
+              -0.03016205828090468,
+              0.1609994166031245
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "operationsPerSecond",
+          "baseline": 14276.115311840009,
+          "candidate": 14485.155989704315,
+          "ratio": 1.0146426862839177,
+          "worseFraction": -0.01696573095818682,
+          "confidenceInterval": [
+            -0.04611164272700126,
+            0.010605563201126524
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 14114.130373024185,
+            "candidate": 13926.469125092683,
+            "ratio": 0.9867040162608833,
+            "worseFraction": 0.010019413437999624,
+            "confidenceInterval": [
+              -0.030134472485416126,
+              0.04476854114820595
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "cpuNsPerOperation",
+          "baseline": 238977.44,
+          "candidate": 243993.04,
+          "ratio": 1.020987755162161,
+          "worseFraction": 0.024957330426984774,
+          "confidenceInterval": [
+            -0.02534649082811761,
+            0.07409478138964132
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 243429.68,
+            "candidate": 243192.72666666665,
+            "ratio": 0.999026604589328,
+            "worseFraction": 0.001340106909653861,
+            "confidenceInterval": [
+              -0.044032018749031954,
+              0.0457748657562425
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "allocatedBytesPerOperation",
+          "baseline": 232646.34469333332,
+          "candidate": 232576.31402666663,
+          "ratio": 0.9996989823039816,
+          "worseFraction": -0.00029731200274829735,
+          "confidenceInterval": [
+            -0.0014649758780815464,
+            0.0009535384874783029
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 232753.39295999994,
+            "candidate": 232715.82751999993,
+            "ratio": 0.9998386041143277,
+            "worseFraction": -0.00015709358975834591,
+            "confidenceInterval": [
+              -0.001502501873821196,
+              0.0011016572295563093
+            ],
+            "status": "inconclusive"
+          }
+        }
+      ]
+    }
+  ],
+  "scope": "Only supplied workloads. Latency metrics compare means of independently measured block quantiles, not pooled tails."
+}

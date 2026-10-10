@@ -32,6 +32,9 @@ class ZioEffect[R, E](rts: Runtime[R], liftError: Throwable => E, unliftError: E
   def delay[A](value: => A): ZIO[R, E, A] =
     IO.effect(value).mapError(liftError)
 
+  def uncancelable[A](task: => ZIO[R, E, A]): ZIO[R, E, A] =
+    ZIO.effectSuspendTotal(task).uninterruptible
+
   def blocking[T](f: => T)(implicit ec: ExecutionContext): ZIO[R, E, T] =
     zio.blocking.Blocking.Service.live.effectBlocking(f).mapError(liftError)
 

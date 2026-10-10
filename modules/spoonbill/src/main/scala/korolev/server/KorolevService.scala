@@ -23,8 +23,21 @@ trait SpoonbillService[F[_]] {
    */
   def http(request: HttpRequest[F]): F[HttpResponse[F]]
 
-  /**
-   * Process WebSocket requests
-   */
+  /** Process one WebSocket upgrade.
+    *
+    * A successful result is a [[WebSocketResponse]] disposition:
+    * [[WebSocketResponse.Duplex]] keeps coupled input and output, and
+    * [[WebSocketResponse.SendThenClose]] sends finite output after application
+    * input has been released. Failure, including a rejected origin or access
+    * denial, is an error in `F`. Adapters must not infer either disposition
+    * from frame payloads, from an HTTP status, or from cancellation timing.
+    *
+    * Before the result is known, canceling the request input must not close the
+    * underlying transport. After `SendThenClose`, deliver `output` on an
+    * inbound drain that is independent of that input, then close. After
+    * `Duplex`, an already-canceled input or a later input cancellation still
+    * terminates the connection. If the upgrade is abandoned, execute
+    * `release` and do not materialize `output`.
+    */
   def ws(request: WebSocketRequest[F]): F[WebSocketResponse[F]]
 }

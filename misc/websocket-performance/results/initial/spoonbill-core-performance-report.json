@@ -1,0 +1,182 @@
+{
+  "status": "inconclusive",
+  "confidenceFamily": 0.95,
+  "correction": "Bonferroni paired-block percentile bootstrap",
+  "replicates": 20000,
+  "minBlocks": 30,
+  "slowdownAllowance": 0,
+  "metadata": {
+    "kind": "metadata",
+    "mode": "comparison",
+    "suite": "core",
+    "blocks": 30,
+    "cells": [
+      [
+        1,
+        0
+      ]
+    ],
+    "jvmOptions": [
+      "-Xms512m",
+      "-Xmx512m"
+    ],
+    "artifactSha256": [
+      "8afee5cb5841e44b59c81f042cd476031c7d35a4a829fc77d5ea29dd429a8f51",
+      "beadad558a1e3c2b3aca6e261481dd4fcdc2c0748275c311b2397a9b8764495a"
+    ],
+    "fixtureSha256": "f8c4879d59a9fd93684f04a808cd44c954b97b70045c19b0d3a60557fef822c2",
+    "flakeLockSha256": "76b66faedcba7922a095a732ecf8bf03e53d179170441b1d93c931afef2af3e4",
+    "runtime": {
+      "node": "v24.12.0",
+      "platform": "darwin",
+      "arch": "arm64"
+    }
+  },
+  "cells": [
+    {
+      "cell": "spoonbill-core-guarded-session-v1:1:0",
+      "blocks": 30,
+      "metrics": [
+        {
+          "name": "blockP50Ns",
+          "baseline": 93975.06666666667,
+          "candidate": 93987.4,
+          "ratio": 1.0001312404850649,
+          "worseFraction": 0.0008108337262901773,
+          "confidenceInterval": [
+            -0.014841403331901204,
+            0.018380855562226177
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 93644.46666666666,
+            "candidate": 93474.93333333333,
+            "ratio": 0.9981896065046022,
+            "worseFraction": -0.0013891060734286434,
+            "confidenceInterval": [
+              -0.01548391392121174,
+              0.009687549704273988
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "blockP95Ns",
+          "baseline": 125133.26666666666,
+          "candidate": 127280.66666666667,
+          "ratio": 1.0171609041880152,
+          "worseFraction": 0.020503173949859576,
+          "confidenceInterval": [
+            -0.01490556485358837,
+            0.05988252426430175
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 128979.03333333334,
+            "candidate": 128040.3,
+            "ratio": 0.9927218144757894,
+            "worseFraction": -0.002957001566201251,
+            "confidenceInterval": [
+              -0.0415718391979069,
+              0.037483519208948886
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "blockP99Ns",
+          "baseline": 241101.43333333332,
+          "candidate": 244482,
+          "ratio": 1.0140213462024215,
+          "worseFraction": 0.03072933726317937,
+          "confidenceInterval": [
+            -0.0501143695941449,
+            0.11478688675738918
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 252513.9,
+            "candidate": 243537.4,
+            "ratio": 0.9644514618799203,
+            "worseFraction": -0.020230458169763856,
+            "confidenceInterval": [
+              -0.09658334752616586,
+              0.06277809332473099
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "operationsPerSecond",
+          "baseline": 9700.441686500651,
+          "candidate": 9666.889796381844,
+          "ratio": 0.9965411997511928,
+          "worseFraction": 0.002306785061436114,
+          "confidenceInterval": [
+            -0.016203594539363823,
+            0.02306733105678791
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 9644.11836077182,
+            "candidate": 9648.255505841207,
+            "ratio": 1.0004289811587357,
+            "worseFraction": -0.0014559680533251255,
+            "confidenceInterval": [
+              -0.020816209313475185,
+              0.017059431456341135
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "cpuNsPerOperation",
+          "baseline": 302189.2166666667,
+          "candidate": 308571.55,
+          "ratio": 1.0211203212468478,
+          "worseFraction": 0.02795437949756299,
+          "confidenceInterval": [
+            -0.025150188226410932,
+            0.08618514823117066
+          ],
+          "status": "inconclusive",
+          "calibration": {
+            "baseline": 302518.95,
+            "candidate": 314709.1666666667,
+            "ratio": 1.0402957126046706,
+            "worseFraction": 0.05019259033383563,
+            "confidenceInterval": [
+              -0.01258593223606594,
+              0.11630929809142515
+            ],
+            "status": "inconclusive"
+          }
+        },
+        {
+          "name": "allocatedBytesPerOperation",
+          "baseline": 235395.48226666666,
+          "candidate": 235010.16813333338,
+          "ratio": 0.998363120100594,
+          "worseFraction": -0.0016326538377168958,
+          "confidenceInterval": [
+            -0.0026597240227358527,
+            -0.0006912314523659752
+          ],
+          "status": "pass",
+          "calibration": {
+            "baseline": 235103.36853333336,
+            "candidate": 235052.4296,
+            "ratio": 0.9997833338856388,
+            "worseFraction": -0.00021316052044000676,
+            "confidenceInterval": [
+              -0.0014610392674941066,
+              0.001012320278367697
+            ],
+            "status": "inconclusive"
+          }
+        }
+      ]
+    }
+  ],
+  "scope": "Only supplied workloads. Latency metrics compare means of independently measured block quantiles, not pooled tails."
+}

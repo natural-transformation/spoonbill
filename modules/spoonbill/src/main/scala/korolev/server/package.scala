@@ -78,7 +78,6 @@ package object server {
   }
 
   final case class WebSocketRequest[F[_]](httpRequest: Request[Stream[F, Bytes]], protocols: Seq[String])
-  final case class WebSocketResponse[F[_]](httpResponse: Response[Stream[F, Bytes]], selectedProtocol: String)
 
   type StateLoader[F[_], S] = (DeviceId, Head) => F[S]
 

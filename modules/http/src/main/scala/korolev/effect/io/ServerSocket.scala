@@ -53,6 +53,8 @@ class ServerSocket[F[_]: Effect, B: BytesLike](channel: AsynchronousServerSocket
     canceled = true
     channel.close()
   }
+
+  def localAddress: SocketAddress = channel.getLocalAddress
 }
 
 object ServerSocket {
@@ -89,6 +91,8 @@ object ServerSocket {
 
           def stopServingRequests(): F[Unit] =
             server.cancel()
+
+          def localAddress: SocketAddress = server.localAddress
         }
       }
     }
@@ -118,6 +122,9 @@ object ServerSocket {
      * waits until all client connections are closed.
      */
     def awaitShutdown(): F[Unit]
+
+    /** Address bound by [[bind]], including an ephemeral port. */
+    def localAddress: SocketAddress
 
     /**
      * Stop accepting new connections and serving requests.
