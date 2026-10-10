@@ -28,6 +28,7 @@
             jdk
             nodejs_24
             postgresql_14
+            gnutar
           ];
           # Give sbt a larger heap to avoid OOM during Scala 3 compilation.
           SBT_OPTS = "-Xms1g -Xmx4g -XX:MaxMetaspaceSize=1g";
@@ -47,6 +48,31 @@
           # Tests apply this only to their owned WebKit process.
           SPOONBILL_PLAYWRIGHT_EGL_VENDOR = nixpkgs.lib.optionalString newPkgs.stdenv.isLinux
             "${newPkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json";
+        };
+        # Profilers are separate from latency/correctness environments. GNU
+        # time reports one owned process's resource accounting; heaptrack's
+        # malloc-family observations do not count logical JavaScript allocations.
+        devShells.profiling = newPkgs.mkShell {
+          nativeBuildInputs = config.devShells.default.nativeBuildInputs
+            ++ config.devShells.browser.nativeBuildInputs
+            ++ [ newPkgs.time ]
+            ++ nixpkgs.lib.optionals newPkgs.stdenv.isLinux (with newPkgs; [
+              heaptrack
+              procps
+              util-linux
+            ]);
+          inherit (config.devShells.browser)
+            PLAYWRIGHT_DRIVER_PATH
+            PLAYWRIGHT_BROWSERS_PATH
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+            PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS
+            SPOONBILL_PLAYWRIGHT_EGL_VENDOR;
+          SBT_OPTS = config.devShells.default.SBT_OPTS;
+          SPOONBILL_PROFILING_ENVIRONMENT = "1";
+          SPOONBILL_PROFILING_PLATFORM = system;
+          SPOONBILL_GNU_TIME = "${newPkgs.time}/bin/time";
+          SPOONBILL_HEAPTRACK = nixpkgs.lib.optionalString newPkgs.stdenv.isLinux
+            "${newPkgs.heaptrack}/bin/heaptrack";
         };
       };
     };
