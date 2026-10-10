@@ -1,0 +1,327 @@
+--- a/Source/JavaScriptCore/heap/LocalAllocator.h
++++ b/Source/JavaScriptCore/heap/LocalAllocator.h
+@@ -48,6 +48,7 @@
+     unsigned cellSize() const { return m_freeList.cellSize(); }
+ 
+     void stopAllocating();
++    void spoonbillFlushAllocatedCells();
+     void prepareForAllocation();
+     void resumeAllocating();
+     void stopAllocatingForGood();
+@@ -70,6 +71,7 @@
+ 
+     BlockDirectory* m_directory;
+     FreeList m_freeList;
++    unsigned m_spoonbillChargedBytes { 0 };
+ 
+     MarkedBlock::Handle* m_currentBlock { nullptr };
+     MarkedBlock::Handle* m_lastActiveBlock { nullptr };
+--- a/Source/JavaScriptCore/heap/LocalAllocator.cpp
++++ b/Source/JavaScriptCore/heap/LocalAllocator.cpp
+@@ -43,8 +43,32 @@
+     directory->m_localAllocators.append(this);
+ }
+ 
++// Experimental interpreter-only cell ledger. Never adjust GC scheduling counters.
++void LocalAllocator::spoonbillFlushAllocatedCells()
++{
++    m_directory->assertIsMutatorOrMutatorIsStopped();
++    if (!isJSCellKind(m_directory->cellKind()))
++        return;
++    unsigned remaining = 0;
++    m_freeList.forEach([&](HeapCell*) { remaining += m_freeList.cellSize(); });
++    auto& space = m_directory->markedSpace();
++    if (remaining > m_freeList.originalSize()) {
++        space.spoonbillInvalidateAllocationLedger();
++        return;
++    }
++    unsigned consumed = m_freeList.originalSize() - remaining;
++    if (consumed < m_spoonbillChargedBytes) {
++        space.spoonbillInvalidateAllocationLedger();
++        return;
++    }
++    space.spoonbillRecordCellAllocation(consumed - m_spoonbillChargedBytes);
++    m_spoonbillChargedBytes = consumed;
++}
++
+ void LocalAllocator::reset()
+ {
++    spoonbillFlushAllocatedCells();
++    m_spoonbillChargedBytes = 0;
+     m_freeList.clear();
+     m_currentBlock = nullptr;
+     m_lastActiveBlock = nullptr;
+@@ -82,6 +106,8 @@
+         return;
+     }
+     
++    spoonbillFlushAllocatedCells();
++    m_spoonbillChargedBytes = 0;
+     m_currentBlock->stopAllocating(m_freeList);
+     m_lastActiveBlock = m_currentBlock;
+     m_currentBlock = nullptr;
+@@ -159,6 +185,8 @@
+ 
+ void LocalAllocator::didConsumeFreeList()
+ {
++    spoonbillFlushAllocatedCells();
++    m_spoonbillChargedBytes = 0;
+     if (m_currentBlock)
+         m_currentBlock->didConsumeFreeList();
+     
+--- a/Source/JavaScriptCore/heap/BlockDirectory.h
++++ b/Source/JavaScriptCore/heap/BlockDirectory.h
+@@ -65,6 +65,7 @@
+     void lastChanceToFinalize();
+     void prepareForAllocation();
+     void stopAllocating();
++    void spoonbillFlushAllocatedCells();
+     void stopAllocatingForGood();
+     void resumeAllocating();
+     void beginMarkingForFullCollection();
+--- a/Source/JavaScriptCore/heap/BlockDirectory.cpp
++++ b/Source/JavaScriptCore/heap/BlockDirectory.cpp
+@@ -194,6 +194,13 @@
+         block->didRemoveFromDirectory();
+ }
+ 
++void BlockDirectory::spoonbillFlushAllocatedCells()
++{
++    assertIsMutatorOrMutatorIsStopped();
++    Locker locker { m_localAllocatorsLock };
++    m_localAllocators.forEach([](LocalAllocator* allocator) { allocator->spoonbillFlushAllocatedCells(); });
++}
++
+ void BlockDirectory::stopAllocating()
+ {
+     dataLogLnIf(BlockDirectoryInternal::verbose, RawPointer(this), ": BlockDirectory::stopAllocating!");
+--- a/Source/JavaScriptCore/heap/MarkedSpace.h
++++ b/Source/JavaScriptCore/heap/MarkedSpace.h
+@@ -153,6 +153,18 @@
+     size_t size();
+     size_t capacity();
+ 
++    // Experimental GC-cell allocation bytes, not full JavaScript/browser memory.
++    JS_EXPORT_PRIVATE uint64_t spoonbillCellBytes();
++    JS_EXPORT_PRIVATE uint64_t spoonbillPreciseCellBytes() const { return m_spoonbillPreciseBytes; }
++    JS_EXPORT_PRIVATE bool spoonbillAllocationLedgerValid() const { return m_spoonbillAllocationValid; }
++    void spoonbillRecordCellAllocation(size_t, bool precise = false);
++    JS_EXPORT_PRIVATE uint64_t spoonbillReusedCellBytes() const { return m_spoonbillReusedBytes; }
++    void spoonbillRecordPreciseRevival(size_t bytes) { if (!spoonbillCheckedAdd(m_spoonbillReusedBytes, bytes)) m_spoonbillAllocationValid = false; }
++    JS_EXPORT_PRIVATE void spoonbillRefuseNextPreciseForTest() { m_spoonbillRefusePrecise = true; }
++    bool spoonbillTakePreciseRefusal() { bool value = m_spoonbillRefusePrecise; m_spoonbillRefusePrecise = false; return value; }
++    void spoonbillInvalidateAllocationLedger() { m_spoonbillAllocationValid = false; }
++    JS_EXPORT_PRIVATE static bool spoonbillCheckedAdd(uint64_t&, uint64_t);
++
+     bool isPagedOut();
+     
+     HeapVersion markingVersion() const { return m_markingVersion; }
+@@ -216,6 +228,11 @@
+     PreciseAllocation** m_preciseAllocationsForThisCollectionBegin { nullptr };
+     PreciseAllocation** m_preciseAllocationsForThisCollectionEnd { nullptr };
+ 
++    uint64_t m_spoonbillCellBytes { 0 };
++    uint64_t m_spoonbillPreciseBytes { 0 };
++    uint64_t m_spoonbillReusedBytes { 0 };
++    bool m_spoonbillRefusePrecise { false };
++    bool m_spoonbillAllocationValid { true };
+     size_t m_capacity { 0 };
+     HeapVersion m_markingVersion { initialVersion };
+     HeapVersion m_newlyAllocatedVersion { initialVersion };
+--- a/Source/JavaScriptCore/heap/MarkedSpace.cpp
++++ b/Source/JavaScriptCore/heap/MarkedSpace.cpp
+@@ -26,6 +26,7 @@
+ #include "IncrementalSweeper.h"
+ #include "MarkedBlockInlines.h"
+ #include "MarkedSpaceInlines.h"
++#include <limits>
+ #include <wtf/ListDump.h>
+ #include <wtf/SimpleStats.h>
+ 
+@@ -227,8 +228,40 @@
+         });
+ }
+ 
++bool MarkedSpace::spoonbillCheckedAdd(uint64_t& total, uint64_t bytes)
++{
++    if (bytes > std::numeric_limits<uint64_t>::max() - total)
++        return false;
++    total += bytes;
++    return true;
++}
++
++void MarkedSpace::spoonbillRecordCellAllocation(size_t bytes, bool precise)
++{
++    if (!m_spoonbillAllocationValid)
++        return;
++    if (!spoonbillCheckedAdd(m_spoonbillCellBytes, bytes)
++        || (precise && !spoonbillCheckedAdd(m_spoonbillPreciseBytes, bytes)))
++        m_spoonbillAllocationValid = false;
++}
++
++uint64_t MarkedSpace::spoonbillCellBytes()
++{
++    ASSERT(heap().vm().currentThreadIsHoldingAPILock());
++    heap().stopIfNecessary();
++    Locker locker { m_directoryLock };
++    forEachDirectory([](BlockDirectory& directory) {
++        directory.spoonbillFlushAllocatedCells();
++        return IterationStatus::Continue;
++    });
++    return m_spoonbillCellBytes;
++}
++
+ void MarkedSpace::registerPreciseAllocation(PreciseAllocation* allocation, bool isNewAllocation)
+ {
++    // Both first lower-tier allocations and revivals register with false.
++    if (isJSCellKind(allocation->subspace()->attributes().cellKind))
++        spoonbillRecordCellAllocation(allocation->cellSize(), true);
+     // FIXME: This is a bit of a mess we should really consolidate setting all the bits to here.
+     allocation->setIndexInSpace(m_preciseAllocations.size());
+     allocation->m_hasValidCell = true;
+--- a/Source/JavaScriptCore/heap/PreciseAllocation.h
++++ b/Source/JavaScriptCore/heap/PreciseAllocation.h
+@@ -46,7 +46,7 @@
+     friend class LLIntOffsetsExtractor;
+     friend class MarkedSpace;
+ 
+-    static PreciseAllocation* tryCreate(Heap&, size_t, Subspace*, unsigned indexInSpace);
++    JS_EXPORT_PRIVATE static PreciseAllocation* tryCreate(Heap&, size_t, Subspace*, unsigned indexInSpace);
+     static PreciseAllocation* tryCreateForLowerTierPrecise(Heap&, size_t, Subspace*, uint8_t lowerTierPreciseIndex);
+ 
+     PreciseAllocation* reuseForLowerTierPrecise();
+--- a/Source/JavaScriptCore/heap/PreciseAllocation.cpp
++++ b/Source/JavaScriptCore/heap/PreciseAllocation.cpp
+@@ -78,6 +78,9 @@
+ 
+ PreciseAllocation* PreciseAllocation::tryCreate(JSC::Heap& heap, size_t size, Subspace* subspace, unsigned indexInSpace)
+ {
++    // Bounded test-only refusal, before any native allocation or publication.
++    if (heap.objectSpace().spoonbillTakePreciseRefusal())
++        return nullptr;
+     if constexpr (validateDFGDoesGC)
+         heap.vm().verifyCanGC();
+ 
+--- a/Source/JavaScriptCore/heap/IsoSubspace.cpp
++++ b/Source/JavaScriptCore/heap/IsoSubspace.cpp
+@@ -96,6 +96,8 @@
+     if (!m_lowerTierPreciseFreeList.isEmpty()) {
+         PreciseAllocation* allocation = &*m_lowerTierPreciseFreeList.begin();
+         allocation->remove();
++        if (isJSCellKind(attributes().cellKind))
++            m_space.spoonbillRecordPreciseRevival(size);
+         return revive(allocation);
+     }
+     if (m_remainingLowerTierPreciseCount) {
+--- a/Source/JavaScriptCore/jsc.cpp
++++ b/Source/JavaScriptCore/jsc.cpp
+@@ -34,6 +34,11 @@
+ #include "Completion.h"
+ #include "ConfigFile.h"
+ #include "DeferTermination.h"
++#include "DeferGCInlines.h"
++#include "HeapCellInlines.h"
++#include "MarkedSpace.h"
++#include "PreciseAllocation.h"
++#include <limits>
+ #include "DeferredWorkTimer.h"
+ #include "Disassembler.h"
+ #include "Exception.h"
+@@ -326,6 +331,10 @@
+ static JSC_DECLARE_HOST_FUNCTION(functionFullGC);
+ static JSC_DECLARE_HOST_FUNCTION(functionEdenGC);
+ static JSC_DECLARE_HOST_FUNCTION(functionHeapSize);
++static JSC_DECLARE_HOST_FUNCTION(functionSpoonbillCellBytes);
++static JSC_DECLARE_HOST_FUNCTION(functionSpoonbillAllocationOracle);
++static JSC_DECLARE_HOST_FUNCTION(functionSpoonbillPreciseCellBytes);
++static JSC_DECLARE_HOST_FUNCTION(functionSpoonbillReusedCellBytes);
+ static JSC_DECLARE_HOST_FUNCTION(functionMemoryUsageStatistics);
+ static JSC_DECLARE_HOST_FUNCTION(functionCreateMemoryFootprint);
+ static JSC_DECLARE_HOST_FUNCTION(functionResetMemoryPeak);
+@@ -664,6 +673,10 @@
+         addFunction(vm, "fullGC"_s, functionFullGC, 0);
+         addFunction(vm, "edenGC"_s, functionEdenGC, 0);
+         addFunction(vm, "gcHeapSize"_s, functionHeapSize, 0);
++        addFunction(vm, "spoonbillCellBytes"_s, functionSpoonbillCellBytes, 0);
++        addFunction(vm, "spoonbillPreciseCellBytes"_s, functionSpoonbillPreciseCellBytes, 0);
++        addFunction(vm, "spoonbillAllocationOracle"_s, functionSpoonbillAllocationOracle, 2);
++        addFunction(vm, "spoonbillReusedCellBytes"_s, functionSpoonbillReusedCellBytes, 0);
+         addFunction(vm, "memoryUsageStatistics"_s, functionMemoryUsageStatistics, 0);
+         addFunction(vm, "MemoryFootprint"_s, functionCreateMemoryFootprint, 0);
+         addFunction(vm, "resetMemoryPeak"_s, functionResetMemoryPeak, 0);
+@@ -1797,6 +1810,75 @@
+     return JSValue::encode(jsNumber(vm.heap.sizeAfterLastEdenCollection()));
+ }
+ 
++JSC_DEFINE_HOST_FUNCTION(functionSpoonbillCellBytes, (JSGlobalObject* globalObject, CallFrame*))
++{
++    VM& vm = globalObject->vm();
++    JSLockHolder lock(vm);
++    auto& space = vm.heap.objectSpace();
++    uint64_t bytes = space.spoonbillCellBytes();
++    if (!space.spoonbillAllocationLedgerValid() || bytes > 9007199254740991ULL)
++        return JSValue::encode(jsNaN());
++    return JSValue::encode(jsNumber(static_cast<double>(bytes)));
++}
++
++JSC_DEFINE_HOST_FUNCTION(functionSpoonbillPreciseCellBytes, (JSGlobalObject* globalObject, CallFrame*))
++{
++    auto& space = globalObject->vm().heap.objectSpace();
++    uint64_t bytes = space.spoonbillPreciseCellBytes();
++    if (!space.spoonbillAllocationLedgerValid() || bytes > 9007199254740991ULL)
++        return JSValue::encode(jsNaN());
++    return JSValue::encode(jsNumber(static_cast<double>(bytes)));
++}
++
++JSC_DEFINE_HOST_FUNCTION(functionSpoonbillReusedCellBytes, (JSGlobalObject* globalObject, CallFrame*))
++{
++    auto& space = globalObject->vm().heap.objectSpace();
++    uint64_t bytes = space.spoonbillReusedCellBytes();
++    if (!space.spoonbillAllocationLedgerValid() || bytes > 9007199254740991ULL)
++        return JSValue::encode(jsNaN());
++    return JSValue::encode(jsNumber(static_cast<double>(bytes)));
++}
++
++JSC_DEFINE_HOST_FUNCTION(functionSpoonbillAllocationOracle, (JSGlobalObject* globalObject, CallFrame* callFrame))
++{
++    VM& vm = globalObject->vm();
++    JSLockHolder lock(vm);
++    unsigned count = callFrame->argument(0).asUInt32();
++    RELEASE_ASSERT(count && count <= 50000);
++    bool precise = callFrame->argumentCount() > 1 && callFrame->argument(1).asUInt32();
++    unsigned inlineCapacity = precise ? JSFinalObject::maxInlineCapacity : 0;
++    DeferGC deferGC(vm);
++    Structure* structure = JSFinalObject::createStructure(vm, globalObject, globalObject->objectPrototype(), inlineCapacity);
++    auto& space = vm.heap.objectSpace();
++    auto* sample = JSFinalObject::create(vm, structure);
++    RELEASE_ASSERT(!precise || sample->isPreciseAllocation());
++    uint64_t refusalBefore = space.spoonbillCellBytes();
++    space.spoonbillRefuseNextPreciseForTest();
++    RELEASE_ASSERT(!PreciseAllocation::tryCreate(vm.heap, 1024, sample->subspace(), 0));
++    RELEASE_ASSERT(space.spoonbillCellBytes() == refusalBefore);
++    uint64_t beforePrecise = space.spoonbillPreciseCellBytes();
++    uint64_t before = space.spoonbillCellBytes();
++    uint64_t expected = 0;
++    MarkedArgumentBuffer roots;
++    for (unsigned index = 0; index < count; ++index) {
++        auto* object = JSFinalObject::create(vm, structure);
++        expected += object->cellSize(); // Oracle reads allocated cell metadata, not ledger inputs.
++        roots.append(object);
++    }
++    RELEASE_ASSERT(!roots.hasOverflowed());
++    uint64_t after = space.spoonbillCellBytes();
++    RELEASE_ASSERT(space.spoonbillAllocationLedgerValid());
++    RELEASE_ASSERT(after >= before && after - before == expected);
++    RELEASE_ASSERT(space.spoonbillCellBytes() == after); // Quiescent reads must not double-charge.
++    if (precise)
++        RELEASE_ASSERT(space.spoonbillPreciseCellBytes() - beforePrecise == expected);
++    uint64_t overflow = std::numeric_limits<uint64_t>::max() - 4;
++    RELEASE_ASSERT(!MarkedSpace::spoonbillCheckedAdd(overflow, 5));
++    RELEASE_ASSERT(overflow == std::numeric_limits<uint64_t>::max() - 4);
++    RELEASE_ASSERT(MarkedSpace::spoonbillCheckedAdd(overflow, 4));
++    return JSValue::encode(jsNumber(static_cast<double>(expected)));
++}
++
+ JSC_DEFINE_HOST_FUNCTION(functionHeapSize, (JSGlobalObject* globalObject, CallFrame*))
+ {
+     VM& vm = globalObject->vm();

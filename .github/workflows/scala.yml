@@ -40,7 +40,8 @@ jobs:
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
           misc/performance-regression-tests.mjs \
           misc/browser-auth-baseline/*.test.mjs \
-          misc/browser-auth-baseline/performance/*.test.mjs
+          misc/browser-auth-baseline/performance/*.test.mjs \
+          misc/browser-auth-baseline/performance/jsc-prototype/*.test.mjs
 
     - name: Validate PostgreSQL wire instrumentation against the physical engine
       run: |

@@ -47,7 +47,30 @@ Retained heap, native allocator traffic, per-process RSS and experimental V8
 trace bytes have distinct scopes. The required comparable cumulative browser
 allocation and simultaneous process-tree peak RSS metrics remain unsupported.
 Future acceptance runs require dedicated controlled hardware and the reviewed
-workload/provenance/calibration contract. Any custom WebKit build uses a
-separately reviewed resource budget. Linux is not a prerequisite for the next
-allocation-counter experiment: the user requested lighter Mac-only alternatives,
-and a source/configuration audit of a JavaScriptCore-only build is underway.
+workload/provenance/calibration contract.
+
+## Approved standalone JSC experiment
+
+After the stock probes, the user approved a separate experiment in the existing
+guest: `MemoryMax=16000000000`, `MemoryHigh=14000000000`, zero swap, one compiler
+job, at most two CPU equivalents, two hours and 15 GiB additional disk. Linux is
+used for its validated process-tree resource controls; JSCOnly itself can run on
+macOS. No VM clone/restart, installed-browser replacement or shared-service
+change is authorized by this experiment.
+
+The actual tiny Nix builder and its child passed non-root, capability and cgroup
+namespace checks. The separate 64 MiB OOM proof passed after group termination
+and descendant cleanup settled. These validate containment, not allocation
+accounting. The official WebKitGTK 2.50.4 archive was acquired and Nix-hash
+verified within the owned envelope. Its source identity remains separate from
+the installed Playwright browser's unresolved source/ABI provenance.
+
+The first engine-build attempt failed on compiler-flag quoting; the second
+failed during CMake generation. Their diagnostics are preserved. The final
+attempt and native oracle outcome are pending under the original absolute
+deadline, 2026-10-10 23:02:43 UTC. No engine allocator pass, browser allocation
+metric or accepted performance ceiling follows from these preparatory checks.
+See the [ledger design](jsc-prototype/design.md),
+[resource envelope](jsc-prototype/envelope.md),
+[OOM proof](jsc-prototype/oom-proof.md) and
+[experiment results](jsc-prototype/results.md).

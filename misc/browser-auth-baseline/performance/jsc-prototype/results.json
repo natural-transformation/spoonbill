@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "experimental-jsc-cell-ledger-progress",
+  "status": "pending-final-build",
+  "acceptanceEvidence": false,
+  "platform": "aarch64-linux",
+  "executionScope": "Existing guest; isolated owned process tree and private local Nix store; interpreter-only JSC experiment",
+  "source": {
+    "release": "WebKitGTK 2.50.4",
+    "url": "https://webkitgtk.org/releases/webkitgtk-2.50.4.tar.xz",
+    "expectedArchiveSha256SRI": "sha256-07+kc4Raz6tyY1utpeDRNP2meSxblcXFzRQbRhJb2OQ=",
+    "acquisition": "Nix verified before the original source deadline",
+    "observedChargedPeakBytes": 1127829504,
+    "evidence": "controller-reported"
+  },
+  "approvedEnvelope": {
+    "memoryMaxBytes": 16000000000,
+    "memoryHighBytes": 14000000000,
+    "swapMaxBytes": 0,
+    "compilerJobs": 1,
+    "cpuQuotaEquivalents": 2,
+    "totalDurationSeconds": 7200,
+    "additionalDiskMaxBytes": 16106127360,
+    "privateFilesystemCapacityBytes": 15032385536,
+    "memoryMeaning": "cgroup charged memory including file cache; not process RSS, virtual size, or host VM footprint",
+    "deadlinesExtended": false
+  },
+  "containment": {
+    "actualTinyNixBuilder": "passed",
+    "checks": [
+      "Actual builder and child non-root in expected cgroup namespace",
+      "Zero effective builder capabilities",
+      "Actual kernel resource limits and read-only cgroup controls",
+      "Shared build-user lock identity with daemonless private store"
+    ],
+    "evidence": "locally inspected controller log",
+    "privateRawLogSha256": "c7c1863af2be9e4205f204249253c51865fd436613079571d7d3e972ed6ad60e"
+  },
+  "toyOomProof": {
+    "status": "passed",
+    "memoryMaxBytes": 67108864,
+    "memoryHigh": "max",
+    "swapMaxBytes": 0,
+    "requestedAllocationBytes": 134217728,
+    "runtimeMaxSeconds": 30,
+    "requiredResult": "oom-kill",
+    "processGroupReleased": true,
+    "retainedSiblingReleased": true,
+    "observedChargedPeakBytes": 67108864,
+    "evidence": "locally inspected settled controller log and successful verifier JSON",
+    "privateRawLogSha256": "e61ef18bd6a21f79ef21bc5728130d7d76b57e3ea808fcba42f849c739a91aeb",
+    "earlierAttempts": [
+      {"status": "refused-before-allocation", "reason": "Transient unit did not receive trusted PATH"},
+      {"status": "timeout", "reason": "48 MiB memory.high throttled allocation before memory.max", "observedChargedPeakBytes": 59019264, "privateRawLogSha256": "68d037d2ebecee798fb72074a52e799996505415daf241215582af7b699e009a"}
+    ],
+    "scope": "Hard-limit group OOM and process cleanup only; actual engine memory.high remains 14000000000 bytes"
+  },
+  "buildAttempts": [
+    {
+      "attempt": 1,
+      "status": "failed",
+      "stage": "CMake configuration",
+      "reason": "Release compiler flags split across arguments",
+      "observedChargedPeakBytes": 6587342848,
+      "evidence": "locally inspected controller log",
+      "privateRawLogSha256": "8a10ea2c12a553cc4a1f670f7d543ef85cb6d8eae0d3b8632e0a4016e0059223"
+    },
+    {
+      "attempt": 2,
+      "status": "failed",
+      "stage": "Build entry after successful CMake generation",
+      "reason": "Generated Makefiles but invoked Ninja; build.ninja missing",
+      "observedChargedPeakBytes": 1390190592,
+      "evidence": "locally inspected controller log",
+      "privateRawLogSha256": "10586d7cec9cfa52fe9f32d5e6238d9a056ba44ed5f056de78fc8f2195f5218c"
+    },
+    {"attempt": 3, "status": "pending-controller-update", "observedChargedPeakBytes": null}
+  ],
+  "validation": {
+    "staticTestsPassed": 8,
+    "staticTestsFailed": 0,
+    "compiledOracleExecuted": false,
+    "installedBrowserReplaced": false,
+    "browserAllocationMeasurement": null,
+    "phase0MetricOrBudgetUpdated": false
+  },
+  "privacy": "Raw controller logs remain private. This summary omits host and guest filesystem paths, process IDs, unit identifiers and raw environment values."
+}

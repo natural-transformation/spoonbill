@@ -197,16 +197,30 @@ forced exit can still prevent evidence finalization and SIGKILL is unsupported.
 4. Comparable cumulative browser allocation and simultaneous process-tree peak
    RSS remain unsupported. Stock retained heap/native allocator/RSS and V8 trace
    probes measure different scopes. [Profiling notes](performance/profiling.md)
-   describe the lighter Mac JSCOnly investigation and the pinned-source HTTP 422
-   download blocker. Fifteen pinned source files and the sole Playwright patch
+   preserve the lighter Mac JSCOnly investigation and earlier pinned-source HTTP
+   422 download failures. Fifteen pinned source files and the sole Playwright patch
    were fetched through Nix; the patch does not explain the installed header
    mismatch or supply a complete counter. A bounded follow-up found an exact
    upstream match for the installed header at revision `3f6cca8` (2025-09-23),
    later than the configured July base. This narrows the header provenance but
    does not identify the full binary revision or establish ABI compatibility.
-   Matching source/build provenance and
-   a bounded custom-engine build decision are still missing. No engine build or
-   additional VM clone was started.
+   Matching installed-browser source/build provenance remains unresolved.
+   The user subsequently approved a separate standalone JSC experiment in the
+   existing guest: 16,000,000,000-byte maximum, 14,000,000,000-byte high watermark,
+   zero swap, one compiler job, at most two CPUs, two hours and 15 GiB additional
+   disk. Linux supplies the validated resource limit; no VM clone/restart or
+   browser replacement is involved. Actual tiny-builder containment and the
+   settled 64 MiB OOM/descendant-cleanup proof passed, and the official WebKitGTK
+   2.50.4 archive was acquired with its Nix hash verified. Engine attempt one
+   failed on flag quoting and attempt two on CMake generation; the final native
+   outcome is pending under the unchanged 2026-10-10 23:02:43 UTC deadline.
+   See the [ledger design](performance/jsc-prototype/design.md),
+   [envelope](performance/jsc-prototype/envelope.md),
+   [OOM proof](performance/jsc-prototype/oom-proof.md) and
+   [results](performance/jsc-prototype/results.md). Interpreter-only JSCell
+   accounting excludes GC-managed Auxiliary cells and native backing stores;
+   it cannot fill browser acceptance metrics or close the 94-cell calibration
+   and workload gaps.
 
 Later phases, including pure-core extraction, the coordinator/provider API,
 client-duplication removal, publication verification and migration, are pending.

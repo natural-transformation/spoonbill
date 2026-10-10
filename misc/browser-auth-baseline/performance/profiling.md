@@ -185,16 +185,16 @@ needs a pinned build, coverage proof and cost review.
 [JSC allocation batches](https://github.com/WebKit/WebKit/blob/main/Source/JavaScriptCore/heap/LocalAllocator.cpp),
 [GC accounting and reset](https://github.com/WebKit/WebKit/blob/main/Source/JavaScriptCore/heap/Heap.cpp).
 
-The least-cost next step is the stock Chromium calibration plus the WebKit
-counter audit. No custom engine build has been started or costed. Freeze a
+The stock Chromium calibration and WebKit counter audit led to the approved,
+bounded standalone JSC experiment below. Its final native outcome is pending. Freeze a
 comparable scope, including specified backing stores and process ownership,
 before promoting either sensor to the required metric. Allocation acceptance
 stays unsupported/null, and Phase 0 remains blocked; retained heap, RSS, malloc
 traffic or one engine's partial coverage cannot replace the missing result.
 
-## Lighter macOS investigation
+## Bounded standalone JSC investigation
 
-### Proposed bounded allocator experiment
+### Approved allocator experiment
 
 The user requires this experiment to stay below 20 GB of memory. Native macOS
 has no validated aggregate process-tree limiter in this repository: resource
@@ -203,7 +203,8 @@ limits or a sampled RSS watchdog do not establish that memory ceiling.
 [Apple resource-limit implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_resource.c),
 [Nix cgroup configuration](https://nix.dev/manual/nix/2.34/command-ref/conf-file.html#conf-use-cgroups).
 
-The revised proposal uses the existing NixOS guest, with no clone or restart:
+The user approved the existing NixOS guest, with no clone or restart. Linux is
+used for the validated aggregate resource limit, not because JSCOnly requires it:
 
 - A task-owned cgroup with `MemoryHigh=14000000000`,
   `MemoryMax=16000000000`, `MemorySwapMax=0`, and group termination on OOM.
@@ -212,13 +213,14 @@ The revised proposal uses the existing NixOS guest, with no clone or restart:
   memory, and the kernel documents possible temporary accounting overshoot.
 - One compilation job, at most two CPUs, a two-hour experiment deadline and
   15 GiB of additional disk. Source acquisition/configuration has a twenty-minute
-  sub-limit and compilation a ninety-minute sub-limit. These are proposed stop
+  sub-limit and compilation a ninety-minute sub-limit. These are approved stop
   limits, not measured requirements or a completion promise.
-- Before source acquisition or compilation, validate the controller and cleanup
-  with a small owned workload and prove that actual Nix builder/test descendants
-  stay inside the limited cgroup. Capping a client whose shared daemon launches
-  builders elsewhere is insufficient. Fail closed if containment cannot be
-  established; do not reconfigure or restart shared CI services.
+- Actual tiny Nix-builder and child checks passed: non-root execution, zero
+  effective capabilities and the expected cgroup namespace/resource limits.
+  A separately capped 64 MiB OOM workload also passed its settled group-cleanup
+  checks. The real derivation repeats containment checks before configure,
+  build and its oracle. Capping only a Nix client is insufficient; shared CI
+  services are not reconfigured or restarted.
 - Wait for spare CI capacity. Build only a standalone JSC shell and allocator
   tests, without replacing the installed browser. Start with GC-cell/precise-cell
   accounting across partial free lists, collection, reclamation, reuse, failed
@@ -229,11 +231,18 @@ The locked nixpkgs input supplies an alternative official source:
 `webkitgtk_6_0.src`, WebKitGTK 2.50.4,
 [`webkitgtk-2.50.4.tar.xz`](https://webkitgtk.org/releases/webkitgtk-2.50.4.tar.xz),
 flat hash `sha256-07+kc4Raz6tyY1utpeDRNP2meSxblcXFzRQbRhJb2OQ=`.
-This metadata was evaluated without downloading the archive. It would be a
-separate experimental pin, not proof of installed Playwright WebKit 2215 source
-or ABI compatibility. A dedicated Nix derivation must provide the required build
-tools; no host installation is proposed. No custom source/build experiment has
-started. [Linux memory-controller semantics](https://docs.kernel.org/admin-guide/cgroup-v2.html).
+The official archive has now been acquired and its Nix hash verified inside the
+owned envelope. This is a separate experimental pin, not proof of installed
+Playwright WebKit 2215 source or ABI compatibility. The dedicated Nix derivation
+provides the build tools. Its first build attempt failed on compiler-flag
+quoting; the second failed during CMake generation. Both failures are retained.
+The final attempt is pending under the unchanged absolute deadline of
+2026-10-10 23:02:43 UTC; no native allocator result is claimed yet.
+See the [ledger design](jsc-prototype/design.md),
+[resource envelope](jsc-prototype/envelope.md),
+[OOM proof](jsc-prototype/oom-proof.md) and
+[experiment results](jsc-prototype/results.md).
+[Linux memory-controller semantics](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 
 ### Mac-native source investigation
 
@@ -261,9 +270,10 @@ both returned HTTP 422, `Content creation is blocked`. A bounded Nix prefetch of
 individual raw files succeeded: **15 exact-base allocator/build files, 314,895
 bytes**, plus the Playwright patch-list metadata and its 980,815-byte patch. Their immutable URLs, SHA-256
 and Nix hashes, local cache paths and findings are recorded in
-[the reproducible source audit](webkit-source-audit.json). No full source tree,
-engine build, VM clone or host installation was produced. Archive/build disk
-size and build duration have not been measured.
+[the reproducible source audit](webkit-source-audit.json). Those earlier attempts
+produced no full source tree or engine build. The later approved experiment uses
+the separately verified official 2.50.4 release above; it does not resolve the
+installed-source mismatch. No VM clone or host installation was performed.
 
 The exact base source confirms these specific coverage gaps:
 
@@ -311,23 +321,24 @@ metadata reports `623.1.10+`, SDK `macosx14.5` and Xcode build `15F31d`, without
 identifying the complete upstream commit. The earlier allocator findings apply
 to the audited July source subset, not automatically to this installed binary.
 
-The smallest useful next step is the platform-specific WebKit 2215 build/source
-manifest, reconciled against this header fingerprint, followed by matching
-complete source and a separately approved **JSCOnly** prototype. Exact audited
+Installed-browser integration still requires the platform-specific WebKit 2215
+build/source manifest, reconciled against this header fingerprint, and matching
+complete source. The approved **JSCOnly** prototype uses a separate release pin.
+The earlier audited Darwin configuration uses
 configuration uses CMake >=3.20, C++23, Perl >=5.10 with JSON::PP, Python, Ruby
 >=2.5, ICU >=70.1, and Darwin SDK/MIG support. Generic event-loop mode excludes
 GLib, WebCore, WebKit, WebInspectorUI and the browser UI. Darwin ICU symbol
 renaming must be resolved explicitly; it cannot be assumed equivalent between
-the Nix ICU and Apple's SDK library. No flake changes or configure/build commands
-have been run for this proposal.
+the Nix ICU and Apple's SDK library. The current approved build uses Linux and
+does not validate this Darwin configuration.
 
 The counter patch must cover consumed partial free lists, precise allocations
 and reuse, and the explicitly selected realloc/backing-store semantics; exposing
 `didAllocate` alone is inadequate. Validate the engine counter before attempting
 the matching browser integration. An engine-only success would not yet cover
-WebCore/DOM/native stores or prove the full browser metric. Missing full source
-and patched-source identity are concrete prerequisites; no unmeasured multi-hour
-build budget is presumed approved.
+WebCore/DOM/native stores or prove the full browser metric. Matching full source
+and patched-source identity remain prerequisites for installed-browser
+integration. The approved standalone build budget does not authorize that work.
 
 Cached audit identities can be checked without another download:
 

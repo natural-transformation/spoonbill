@@ -22,6 +22,21 @@
         };
         playwrightDriver = newPkgs.playwright-driver;
       in {
+        packages = nixpkgs.lib.optionalAttrs newPkgs.stdenv.isLinux {
+          jscPrototypeSource = newPkgs.webkitgtk_6_0.src;
+          jscAllocationPrototype = newPkgs.callPackage
+            ./misc/browser-auth-baseline/performance/jsc-prototype/default.nix {
+              src = newPkgs.webkitgtk_6_0.src;
+              expectedCgroupNamespace = "cgroup:[unconfigured]";
+            };
+          # The prototype controller supplies the observed private cgroup
+          # namespace. The default deliberately cannot pass containment.
+          jscEnvelopeProof = newPkgs.callPackage
+            ./misc/browser-auth-baseline/performance/jsc-prototype/envelope-proof.nix {
+              system = newPkgs.stdenv.hostPlatform.system;
+              expectedNamespace = "unconfigured";
+            };
+        };
         devShells.default = newPkgs.mkShell {
           nativeBuildInputs = with newPkgs; [
             sbt

@@ -1,0 +1,2 @@
+# Unified-diff context includes existing blank lines with a required prefix.
+cumulative-allocation.patch whitespace=-blank-at-eol
