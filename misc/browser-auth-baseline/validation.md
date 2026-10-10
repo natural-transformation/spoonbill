@@ -127,8 +127,16 @@ The actual [compiled policy report](reports/reference-policy-final.json) is reta
 This capture was built on Darwin with the tracked shared-policy changes and
 added sources present; it is not a clean accepted measurement baseline. CI's
 producing job is configured to link its separately built immutable upload,
-actual Git revision and archive digest, with ninety-day retention. That upload
-still requires a successful CI run. Source review/freeze remains open.
+actual Git revision and archive digest, with ninety-day retention. The
+[CI run for `ebce4da`](https://github.com/natural-transformation/spoonbill/actions/runs/38078863177)
+passed both `build` and `native-browser` and published the
+[reference runtime](https://github.com/natural-transformation/spoonbill/actions/runs/38078863177/artifacts/11680330126).
+The [CI capture summary](reports/ci-runtime-capture.json) records its merge/build
+revision, content/source/graph identities and distinct tar/upload-ZIP digests.
+Its reference source hash matches the final local inventory; compiled runtime
+and graph hashes identify the separately built Linux artifact. The producing job
+verified the capture/tar. The browser download attempt timed out, so independent
+download verification is not claimed. Source review/freeze remains open.
 The final tar was also extracted to an independent temporary directory; its
 loader verified the copied contents and executed the exact compiled policy report
 without referring to the original classpath. The default SBT main class was

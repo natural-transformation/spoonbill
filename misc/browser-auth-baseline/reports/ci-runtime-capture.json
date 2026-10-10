@@ -1,0 +1,24 @@
+{
+  "schema": "spoonbill-ci-runtime-capture-summary-v1",
+  "acceptanceEvidence": false,
+  "headRevision": "ebce4daac09158234f64669cab69290404a68bbe",
+  "buildRevision": "88ee4b664f4d399bcd0fb0a9d6e651588e622702",
+  "runUrl": "https://github.com/natural-transformation/spoonbill/actions/runs/38078863177",
+  "jobs": {
+    "build": "success",
+    "native-browser": "success"
+  },
+  "artifactUrl": "https://github.com/natural-transformation/spoonbill/actions/runs/38078863177/artifacts/11680330126",
+  "retentionDays": 90,
+  "artifactSha256": "35733d62c0e7f4abea5344a3037d8fc89824812831049ed304e7ddf1d190642d",
+  "referenceIntegrationSha256": "47ac5bcaae1835fef46604241911a3c32cf35c690ea6f075ca920cc1be5f3374",
+  "dependencyGraphSha256": "db71b2a37f4079875337bc128ea469f0bf6cf96d91b499ad54b8561739348868",
+  "tarSha256": "468e54230a0e823d1d62a5aa3deb6811db468c84848615c0baaf2d515c837ebd",
+  "uploadZipSha256": "17da796f4b716b9773ae353dbfb423dd00be23d5622890acdbc207d00012a2f6",
+  "verification": {
+    "source": "authenticated GitHub run summary and artifact listing",
+    "producingJobVerifiedCaptureAndTar": true,
+    "downloadedBundleIndependentlyVerified": false,
+    "downloadDiagnostic": "browser-download-event-timeout"
+  }
+}

@@ -194,8 +194,52 @@ traffic or one engine's partial coverage cannot replace the missing result.
 
 ## Lighter macOS investigation
 
-Linux is not required for the next counter experiment. WebKit's JSCOnly CMake
-port disables WebCore, WebKit and WebInspectorUI. A Nix-managed engine-only
+### Proposed bounded allocator experiment
+
+The user requires this experiment to stay below 20 GB of memory. Native macOS
+has no validated aggregate process-tree limiter in this repository: resource
+limits apply per process, and Nix's cgroup support is Linux-only. Compiler job
+limits or a sampled RSS watchdog do not establish that memory ceiling.
+[Apple resource-limit implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_resource.c),
+[Nix cgroup configuration](https://nix.dev/manual/nix/2.34/command-ref/conf-file.html#conf-use-cgroups).
+
+The revised proposal uses the existing NixOS guest, with no clone or restart:
+
+- A task-owned cgroup with `MemoryHigh=14000000000`,
+  `MemoryMax=16000000000`, `MemorySwapMax=0`, and group termination on OOM.
+  These decimal-byte limits leave margin below 20 GB. Linux charges anonymous,
+  file-cache and kernel memory; this is not a cap on unrelated CI or total Mac/VM
+  memory, and the kernel documents possible temporary accounting overshoot.
+- One compilation job, at most two CPUs, a two-hour experiment deadline and
+  15 GiB of additional disk. Source acquisition/configuration has a twenty-minute
+  sub-limit and compilation a ninety-minute sub-limit. These are proposed stop
+  limits, not measured requirements or a completion promise.
+- Before source acquisition or compilation, validate the controller and cleanup
+  with a small owned workload and prove that actual Nix builder/test descendants
+  stay inside the limited cgroup. Capping a client whose shared daemon launches
+  builders elsewhere is insufficient. Fail closed if containment cannot be
+  established; do not reconfigure or restart shared CI services.
+- Wait for spare CI capacity. Build only a standalone JSC shell and allocator
+  tests, without replacing the installed browser. Start with GC-cell/precise-cell
+  accounting across partial free lists, collection, reclamation, reuse, failed
+  allocation, repeated reads and overflow. Interpreter success cannot certify
+  JIT allocation paths, auxiliary/backing stores or whole-browser accounting.
+
+The locked nixpkgs input supplies an alternative official source:
+`webkitgtk_6_0.src`, WebKitGTK 2.50.4,
+[`webkitgtk-2.50.4.tar.xz`](https://webkitgtk.org/releases/webkitgtk-2.50.4.tar.xz),
+flat hash `sha256-07+kc4Raz6tyY1utpeDRNP2meSxblcXFzRQbRhJb2OQ=`.
+This metadata was evaluated without downloading the archive. It would be a
+separate experimental pin, not proof of installed Playwright WebKit 2215 source
+or ABI compatibility. A dedicated Nix derivation must provide the required build
+tools; no host installation is proposed. No custom source/build experiment has
+started. [Linux memory-controller semantics](https://docs.kernel.org/admin-guide/cgroup-v2.html).
+
+### Mac-native source investigation
+
+JSCOnly can run natively on macOS; that platform capability does not establish
+the aggregate memory enforcement required above. Its CMake port disables
+WebCore, WebKit and WebInspectorUI. A Nix-managed engine-only
 prototype on aarch64-darwin could validate allocator accounting before attempting
 browser integration. The installed Playwright WebKit 2215 bundle has a separate
 `JavaScriptCore.framework`; its metadata identifies macOS 14.5 SDK/Xcode 15.4.
