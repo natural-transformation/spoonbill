@@ -36,7 +36,14 @@ jobs:
       run: |
         nix develop --no-write-lock-file --command node --test \
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
-          misc/performance-regression-tests.mjs
+          misc/performance-regression-tests.mjs \
+          misc/browser-auth-baseline/*.test.mjs \
+          misc/browser-auth-baseline/performance/*.test.mjs
+
+    - name: Validate PostgreSQL wire instrumentation against the physical engine
+      run: |
+        nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+          node --test misc/browser-auth-baseline/performance/postgres-wire-proxy.pg-tests.mjs
 
   native-browser:
     runs-on: ubuntu-latest
@@ -53,3 +60,21 @@ jobs:
 
     - name: Test native Chromium and WebKit
       run: nix develop .#browser --no-write-lock-file --command bash scripts/test-native-browsers.sh
+
+    - name: Validate profiling capabilities and owned-process measurements
+      run: |
+        nix develop .#profiling --no-write-lock-file --command node --test \
+          misc/browser-auth-baseline/performance/native-memory.linux-tests.mjs \
+          misc/browser-auth-baseline/performance/browser-heap.native-tests.mjs \
+          misc/browser-auth-baseline/performance/chromium-allocation.native-tests.mjs
+
+    - name: Test the Scala browser authentication reference
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash scripts/test-browser-auth-baseline.sh
+
+    - name: Test the JDBC Scala browser authentication reference
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash scripts/with-test-postgres.sh env SPOONBILL_AUTH_BASELINE_PROVIDER=jdbc \
+          bash scripts/test-browser-auth-baseline.sh
