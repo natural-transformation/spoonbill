@@ -145,6 +145,34 @@ class StateSchemaSpec extends AnyFlatSpec with Matchers:
     """) should not be empty
   }
 
+  "Snapshot compatibility" should "read only explicitly declared versions without changing the write format" in {
+    case class OldPage(title: String) derives StateSchema
+    val old = new SnapshotFormat[OldPage](id("profile.page"), version(1))
+    val current = new SnapshotFormat[Page](id("profile.page"), version(2))
+    val compatible = current.reading(old)(value => Right(page.copy(title = value.title)))
+    val document = right(old.write(OldPage("Acknowledged draft")))
+    compatible.read(document) shouldBe Right(page.copy(title = "Acknowledged draft"))
+    current.read(document) shouldBe Left(SnapshotError.VersionMismatch)
+    compatible.accepts("profile.page", 1) shouldBe true
+    compatible.accepts("profile.page", 3) shouldBe false
+    compatible.accepts("other.page", 1) shouldBe false
+    right(compatible.write(page)).version.value shouldBe 2
+    compatible.read(right(current.write(page))) shouldBe Right(page)
+    compatible.read(document.copy(value = SnapshotValue.unit)) shouldBe Left(SnapshotError.ShapeMismatch)
+  }
+
+  it should "bound converted state and redact a failed conversion without falling back to fresh state" in {
+    val old = new SnapshotFormat[Int](id("counter"), version(1))
+    val current = new SnapshotFormat[String](id("counter"), version(2), right(SnapshotLimits.create(maxStringUtf8Bytes = 8)))
+    val document = right(old.write(1))
+    current.reading(old)(_ => Right("oversized converted draft")).read(document) shouldBe Left(SnapshotError.StringTooLarge)
+    current.reading(old)(_ => throw new IllegalArgumentException("synthetic-private-draft")).read(document) shouldBe
+      Left(SnapshotError.InvalidValue)
+    intercept[IllegalArgumentException](current.reading(current)(Right(_)))
+    val compatible = current.reading(old)(value => Right(value.toString))
+    intercept[IllegalArgumentException](compatible.reading(old)(value => Right(value.toString)))
+  }
+
   it should "reject secrets directly and inside supported containers" in {
     typeCheckErrors("""
       import spoonbill.snapshot.*

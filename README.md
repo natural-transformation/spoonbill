@@ -27,7 +27,7 @@ libraryDependencies += "com.natural-transformation" %% "spoonbill" % "<version>"
 ```
 
 See the [examples](examples/) directory for working projects.
-The current development line is Spoonbill 4 (`4.0.0-SNAPSHOT` in this checkout).
+The current development line is Spoonbill 5 (`5.0.0-SNAPSHOT` in this checkout).
 Keep every Spoonbill module on the same version. See the
 [browser authentication example](examples/browser-auth/) for password/factor
 login, recovery, protected actions and logout without application JavaScript.
@@ -47,6 +47,8 @@ the managed IO application.
 * [Docs](https://natural-transformation.com/open-source/spoonbill/overview)
 * [User guide](docs/user-guide.adoc)
 * [Browser authentication](docs/browser-authentication.md)
+* [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
+* [Migrating to 5.0](docs/migration-v5.md)
 * [Migrating to 4.0](docs/migration-v4.md)
 * [Migrating to 3.0](docs/migration-3.0.md)
 * [Migrating to 2.0](docs/migration-2.0.md)

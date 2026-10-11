@@ -85,6 +85,11 @@ final class MemoryAccounts[F[_]](
     clock = clock
   )
 
+  def currentCount(principal: Principal): F[Int] = provider.inspectHost.flatMap {
+    case Right(state) => F.pure(state.counters.getOrElse(principal.subject, 0))
+    case Left(_)      => F.fail(new IllegalStateException("The example account store is unavailable"))
+  }
+
   private val admission = new Object
   private var pending   = 0
   private var stopped   = false

@@ -1,5 +1,31 @@
 # Changelog
 
+## 5.0.0 — 2026-10-11
+
+This is a breaking release. Update all modules together and recompile consumers
+using the [v5 migration guide](docs/migration-v5.md).
+
+- Opt-in shared PostgreSQL browser authentication across overlapping web nodes,
+  with durable view registration, fenced takeover and protected output admission.
+- `JdbcBrowserPersistence.projectedSnapshots` restores explicitly selected
+  non-sensitive presentation after reconnect or process replacement.
+- Snapshot schema incompatibility preserves stored drafts; `SnapshotFormat.reading`
+  supports explicit pure compatibility conversions.
+- A two-process browser fixture exercises rolling handoff, process loss and
+  recovery without replaying committed business actions.
+- `BrowserOwnership.ExclusiveScope` / `SharedViews` replaces Boolean ownership
+  configuration and capability flags.
+- Ordinary output validates its producer/current presentation and owner in one
+  database admission, preserving fresh checks while avoiding duplicate work.
+- Bounded administrative usage, owner discovery and authorized conditional
+  retirement release active capacity while preserving snapshots and fences.
+- Failed snapshot initialization cannot commit; setup failures produce a
+  redacted diagnostic without changing refusal or cleanup behavior.
+
+See the [shared-store integration guide](docs/clustered-browser-authentication.md).
+The initial move from 4.0.0's exclusive mode requires draining old writers.
+Performance acceptance remains unmeasured for the new shared mode.
+
 ## 4.0.0 — 2026-10-11
 
 Browser authentication is coordinated through a Scala API with generic memory

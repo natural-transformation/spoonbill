@@ -16,6 +16,9 @@ import spoonbill.web.Request
 /**
  * Application functions operate on immutable ordinary presentation. Neither a
  * state field nor an opaque continuation lookup can establish authorization.
+ * These functions must be pure, bounded and repeatable. In shared mode `allowed`
+ * can run inside the authoritative output-admission transaction; it must never
+ * perform I/O, block or mutate application state.
  */
 final case class BrowserPresentation[S, P](
   fresh: () => S,
@@ -29,7 +32,7 @@ trait BrowserSecurityInstallation[F[_], S] {
 }
 
 /**
- * One coordinator for one provider's exclusive view ownership domain.
+ * One local coordinator for a provider's fenced view ownership domain.
  * Password/factor policy and the atomic host transaction remain application
  * concerns. Construction performs no I/O or starts any background work. The
  * application owns close(), including on startup failure.
@@ -49,7 +52,7 @@ final class BrowserAuthentication[F[_], S, P](
   require(configuration.errors.isEmpty, configuration.errors.mkString("; "))
   require(configuration.scope == persistence.scope, "Browser/provider scope mismatch")
   require(persistence.capabilities.atomicHostPreparation, "Provider cannot atomically prepare with the host store")
-  require(persistence.capabilities.exclusiveOwnership, "Provider must establish exclusive ownership publication")
+  private val shared = persistence.capabilities.ownership == BrowserOwnership.SharedViews
 
   private val gate  = new BrowserCoordinatorGate[F](configuration.maxPendingOperations)
   private val store = new BoundedPresentationStore[F, S](storageLimits, clock)
@@ -137,6 +140,13 @@ final class BrowserAuthentication[F[_], S, P](
         if (presentation.allowed(state, principal(identity))) F.unit else denied
       }
     }
+    override def prepareHttp(qsid: Qsid, request: Request.Head, state: S): Option[F[Unit]] =
+      Option.when(shared)(gate {
+        capture(request, activate = false).flatMap { identity =>
+          if (!presentation.allowed(state, principal(identity))) denied
+          else persistence.registerView(identity, qsid).flatMap(requireResult)
+        }
+      })
     def open(qsid: Qsid, request: Request.Head, owner: ConnectionId): F[SessionGuard[F, S]] =
       acquire(qsid, request, owner, existingOnly = false)
     override def resume(qsid: Qsid, request: Request.Head, owner: ConnectionId): Option[F[SessionGuard[F, S]]] =
@@ -195,6 +205,20 @@ final class BrowserAuthentication[F[_], S, P](
                       }
                     }
                     override val viewSnapshots: Option[ViewSnapshotSession[F, S]] = snapshots(view)
+                    override val ownershipEpoch: Option[spoonbill.security.Versions.ViewOwnershipEpoch] =
+                      Option.when(shared)(view.fence.epoch)
+                    override val outputAdmission: Option[SessionOutputAdmission[F, S]] =
+                      Option.when(shared)(new SessionOutputAdmission[F, S] {
+                        def apply[A](output: A, produced: S, current: S): F[A] = withView(owner) { actual =>
+                          persistence.admitOutputIf(actual.view, output) { identity =>
+                            val who = principal(identity)
+                            actual.view.identity.sameAuthority(identity) &&
+                              presentation.allowed(produced, who) && presentation.allowed(current, who)
+                          }.flatMap(requireResult).recoverF { case error =>
+                            detach(actual).recover { case _ => () }.flatMap(_ => F.fail(error))
+                          }
+                        }
+                      })
                     def authorize(state: S): F[Unit] = withView(owner) { actual =>
                       check(actual).flatMap { fresh =>
                         if (presentation.allowed(state, principal(fresh))) F.unit

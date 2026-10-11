@@ -36,6 +36,35 @@ final class JdbcViewSnapshots[P] private[jdbc] (
   format: SnapshotFormat[P],
   identityCheck: HostSnapshotIdentity
 ) {
+  private val data = new JdbcViewSnapshotData(
+    sessions.snapshotRealm, sessions.snapshotCookieNamespace, viewId, bindingHash, ownerId, ownerEpoch, identity, format
+  )
+
+  private def owned[A](run: (Connection, ViewRevision) => Either[ViewSnapshotError, A]): Either[ViewSnapshotError, A] =
+    sessions.withSnapshotView(viewId, bindingHash, ownerId, ownerEpoch, tokenHash, identity, identityCheck)(run)
+
+  def load(): Either[ViewSnapshotError, SnapshotLoad[P]] = owned(data.load)
+  def save(expected: ViewRevision, value: P): Either[ViewSnapshotError, ViewRevision] = write(expected, value, resetting = false)
+  def reset(expected: ViewRevision, value: P): Either[ViewSnapshotError, ViewRevision] = write(expected, value, resetting = true)
+
+  private def write(expected: ViewRevision, value: P, resetting: Boolean): Either[ViewSnapshotError, ViewRevision] =
+    data.encode(value).flatMap(payload => owned((connection, current) => data.write(connection, current, expected, payload, resetting)))
+}
+
+/** Connection-local storage shared by the low-level adapter and ordinary browser
+  * provider. The caller owns the transaction and freshly authorizes this exact
+  * view, holding its owner fence until settlement. These methods never commit.
+  */
+private[jdbc] final class JdbcViewSnapshotData[P](
+  realm: String,
+  namespace: String,
+  viewId: String,
+  bindingHash: Digest256,
+  ownerId: UUID,
+  ownerEpoch: ViewOwnershipEpoch,
+  identity: SnapshotIdentity,
+  format: SnapshotFormat[P]
+) {
   private case class Metadata(
     revision: Long,
     subject: String,
@@ -47,29 +76,38 @@ final class JdbcViewSnapshots[P] private[jdbc] (
     schemaVersion: Int
   )
 
-  private def owned[A](run: (Connection, ViewRevision) => Either[ViewSnapshotError, A]): Either[ViewSnapshotError, A] =
-    sessions.withSnapshotView(viewId, bindingHash, ownerId, ownerEpoch, tokenHash, identity, identityCheck)(run)
+  def revision(connection: Connection): Either[ViewSnapshotError, ViewRevision] =
+    statement(connection, """SELECT snapshot_revision FROM spoonbill_browser_view
+      WHERE realm = ? AND cookie_namespace = ? AND view_id = ? AND binding_hash = ? AND owner_id = ? AND epoch = ?""") { query =>
+      scope(query)
+      query.setBytes(4, bindingHash.bytes)
+      query.setObject(5, ownerId)
+      query.setLong(6, ownerEpoch.toLong)
+      Using.resource(query.executeQuery()) { result =>
+        if (!result.next()) Left(ViewSnapshotError.StaleOwner)
+        else ViewRevision.fromLong(result.getLong(1)).left.map(_ => ViewSnapshotError.MalformedSnapshot)
+      }
+    }
 
-  def load(): Either[ViewSnapshotError, SnapshotLoad[P]] = owned { (connection, revision) =>
+  def load(connection: Connection, revision: ViewRevision): Either[ViewSnapshotError, SnapshotLoad[P]] = {
     metadata(connection) match {
       case None if revision.toLong == 0L => Right(SnapshotLoad.Empty(revision))
       case None => Left(ViewSnapshotError.MalformedSnapshot)
       case Some(stored) if stored.revision != revision.toLong => Left(ViewSnapshotError.MalformedSnapshot)
       case Some(stored) => mismatch(stored) match {
         case Some(reason) => Right(SnapshotLoad.ResetRequired(revision, reason))
-        case None => readPayload(connection, revision).map(value => SnapshotLoad.Restored(revision, value))
+        case None => readPayload(connection, revision, stored).map(value => SnapshotLoad.Restored(revision, value))
       }
     }
   }
 
-  def save(expected: ViewRevision, value: P): Either[ViewSnapshotError, ViewRevision] = write(expected, value, resetting = false)
-  def reset(expected: ViewRevision, value: P): Either[ViewSnapshotError, ViewRevision] = write(expected, value, resetting = true)
-
-  private def write(expected: ViewRevision, value: P, resetting: Boolean): Either[ViewSnapshotError, ViewRevision] = {
-    val encoded = try format.write(value).flatMap(SnapshotBinaryCodec.encode(_, format.limits))
+  def encode(value: P): Either[ViewSnapshotError, Array[Byte]] =
+    try format.write(value).flatMap(SnapshotBinaryCodec.encode(_, format.limits))
       .left.map(ViewSnapshotError.InvalidState.apply)
     catch { case NonFatal(_) => Left(ViewSnapshotError.InvalidState(SnapshotError.InvalidValue)) }
-    encoded.flatMap { payload => owned { (connection, current) =>
+
+  def write(connection: Connection, current: ViewRevision, expected: ViewRevision, payload: Array[Byte],
+    resetting: Boolean): Either[ViewSnapshotError, ViewRevision] = {
       if (current != expected) Left(ViewSnapshotError.RevisionConflict)
       else {
         val stored = metadata(connection)
@@ -106,8 +144,8 @@ final class JdbcViewSnapshots[P] private[jdbc] (
             WHERE realm = ? AND cookie_namespace = ? AND view_id = ? AND binding_hash = ?
               AND owner_id = ? AND epoch = ? AND snapshot_revision = ?""") { query =>
             query.setLong(1, next.toLong)
-            query.setString(2, sessions.snapshotRealm)
-            query.setString(3, sessions.snapshotCookieNamespace)
+            query.setString(2, realm)
+            query.setString(3, namespace)
             query.setString(4, viewId)
             query.setBytes(5, bindingHash.bytes)
             query.setObject(6, ownerId)
@@ -118,7 +156,6 @@ final class JdbcViewSnapshots[P] private[jdbc] (
           next
         }
       }
-    }}
   }
 
   private def mismatch(stored: Metadata): Option[SnapshotResetReason] =
@@ -126,7 +163,7 @@ final class JdbcViewSnapshots[P] private[jdbc] (
         stored.sessionId != identity.sessionId || stored.securityGeneration != identity.securityGeneration.toLong ||
         stored.slotGeneration != identity.slotGeneration.toLong)
       Some(SnapshotResetReason.IdentityChanged)
-    else if (stored.schemaId != format.schemaId.value || stored.schemaVersion != format.version.value)
+    else if (!format.accepts(stored.schemaId, stored.schemaVersion))
       Some(SnapshotResetReason.SchemaChanged)
     else None
 
@@ -142,7 +179,7 @@ final class JdbcViewSnapshots[P] private[jdbc] (
       }
     }
 
-  private def readPayload(connection: Connection, revision: ViewRevision): Either[ViewSnapshotError, P] =
+  private def readPayload(connection: Connection, revision: ViewRevision, stored: Metadata): Either[ViewSnapshotError, P] =
     statement(connection, """SELECT payload FROM spoonbill_view_snapshot
       WHERE realm = ? AND cookie_namespace = ? AND view_id = ? AND revision = ? AND octet_length(payload) <= ?""") { query =>
       scope(query)
@@ -151,14 +188,18 @@ final class JdbcViewSnapshots[P] private[jdbc] (
       query.setInt(5, SnapshotBinaryCodec.maxEncodedBytes(format.limits))
       Using.resource(query.executeQuery()) { result =>
         if (!result.next()) Left(ViewSnapshotError.MalformedSnapshot)
-        else SnapshotBinaryCodec.decode(result.getBytes(1), format.limits).flatMap(format.read)
+        else SnapshotBinaryCodec.decode(result.getBytes(1), format.limits).flatMap { document =>
+          if (document.schemaId.value != stored.schemaId || document.version.value != stored.schemaVersion)
+            Left(SnapshotError.MalformedEncoding)
+          else format.read(document)
+        }
           .left.map(_ => ViewSnapshotError.MalformedSnapshot)
       }
     }
 
   private def scope(query: PreparedStatement): Unit = {
-    query.setString(1, sessions.snapshotRealm)
-    query.setString(2, sessions.snapshotCookieNamespace)
+    query.setString(1, realm)
+    query.setString(2, namespace)
     query.setString(3, viewId)
   }
   private def statement[A](connection: Connection, sql: String)(run: PreparedStatement => A): A =

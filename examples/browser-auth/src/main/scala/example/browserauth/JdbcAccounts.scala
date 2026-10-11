@@ -12,6 +12,7 @@ import scala.util.control.NonFatal
 import spoonbill.auth.*
 import spoonbill.security.jdbc.*
 import spoonbill.security.transaction.*
+import spoonbill.snapshot.{ViewSnapshotError, ViewSnapshotException, ViewSnapshotSession}
 
 /**
  * Synthetic account policy and SQL. Browser ceremonies, cookie custody,
@@ -23,7 +24,11 @@ final class JdbcAccounts(
   blockingContext: ExecutionContext,
   origin: String,
   vault: JdbcCredentialVault,
-  clock: () => Instant = () => Instant.now()
+  clock: () => Instant = () => Instant.now(),
+  clustered: Boolean = false,
+  snapshotVersion: Int = 1,
+  activeViewLimit: Int = 16,
+  fixtureDiagnostics: Boolean = false
 )(using ec: ExecutionContext)
     extends Accounts[Future] {
   private case class Account(
@@ -108,8 +113,26 @@ final class JdbcAccounts(
     clock,
     host,
     vault,
-    exclusiveAuthorityWriters = true
+    ownership = if (clustered) BrowserOwnership.SharedViews else BrowserOwnership.ExclusiveScope,
+    limits = BrowserPersistenceLimits(activeViewsPerBinding = activeViewLimit)
   )
+  private val projected = persistence.projectedSnapshots(
+    DraftPresentation.format(snapshotVersion), DraftPresentation.project, DraftPresentation.restore
+  )
+  private def snapshots(view: BrowserView[Principal]): Option[ViewSnapshotSession[Future, Page]] =
+    if (!clustered) None
+    else projected(view).map { session =>
+      if (!fixtureDiagnostics) session
+      else new ViewSnapshotSession[Future, Page] {
+        def ownerEpoch = session.ownerEpoch
+        def initialize(fresh: Page): Future[Page] = session.initialize(fresh).recoverWith {
+          case error: ViewSnapshotException if error.error == ViewSnapshotError.SchemaIncompatible =>
+            System.err.println("SPOONBILL_FIXTURE_SCHEMA_INCOMPATIBLE")
+            Future.failed(error)
+        }
+        def commit(candidate: Page): Future[Unit] = session.commit(candidate)
+      }
+    }
   val browser = new BrowserAuthentication[Future, Page, Principal](
     persistence,
     Presentation.policy,
@@ -118,7 +141,8 @@ final class JdbcAccounts(
       Set(origin),
       secureCookies = origin.startsWith("https://")
     ),
-    clock = clock
+    clock = clock,
+    snapshots = snapshots
   )
 
   /**
@@ -280,6 +304,17 @@ final class JdbcAccounts(
       audit(tx.connection, subject, "increment")
       count
   }
+  def currentCount(principal: Principal): Future[Int] = Future {
+    Using.resource(source.getConnection) { connection =>
+      sql(connection, "SELECT value FROM example_counter WHERE subject=?") { query =>
+        query.setObject(1, principal.subject)
+        Using.resource(query.executeQuery()) { rows =>
+          if (!rows.next()) deny()
+          rows.getInt(1)
+        }
+      }
+    }
+  }(blockingContext)
   def initialize(): Future[Unit] = Future {
     Using.resource(source.getConnection) { connection =>
       connection.setAutoCommit(false)

@@ -60,10 +60,14 @@ final class ApplicationInstance[
   recovery: PartialFunction[Throwable, S => S],
   delayedRender: FiniteDuration,
   awaitReady: Option[() => F[Unit]] = None,
-  authorizeProduced: Option[S => F[Unit]] = None
+  authorizeProduced: Option[S => F[Unit]] = None,
+  captureProducedAuthorization: Option[S => (() => F[Unit])] = None
 )(implicit ec: ExecutionContext) { application =>
 
   import reporter.Implicit
+
+  private def outputAuthorization(state: S): () => F[Unit] =
+    captureProducedAuthorization.fold(() => authorizeProduced.fold(frontend.authorizeInteraction())(check => check(state)))(_(state))
 
   private val devMode       = new DevMode.ForRenderContext(sessionId.toString)
   private val eventCounters = new TrieMap[(Id, String), Int]()
@@ -129,7 +133,7 @@ final class ApplicationInstance[
       _ <- router.fromState
              .lift(producedState)
              .fold(Effect[F].unit) { uri => authorizeProduced match {
-               case Some(check) => frontend.changePageUrlAuthorized(rootPath ++ uri, () => check(producedState))
+               case Some(_) => frontend.changePageUrlAuthorized(rootPath ++ uri, outputAuthorization(producedState))
                case None => frontend.changePageUrl(rootPath ++ uri)
              }}
       _ <- Effect[F].delay {
@@ -152,8 +156,8 @@ final class ApplicationInstance[
       handlers = if (frontend.recoversView) topLevelComponentInstance.allEventHandlers.toMap
         else Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]]
       _ <- authorizeProduced match {
-        case Some(check) =>
-          frontend.performDomChangesAuthorized(renderContext.diff, () => check(producedState),
+        case Some(_) =>
+          frontend.performDomChangesAuthorized(renderContext.diff, outputAuthorization(producedState),
             () => publishedEventHandlers.set(handlers))
         case None => frontend.performDomChanges(renderContext.diff)
       }
@@ -298,7 +302,7 @@ final class ApplicationInstance[
           val produced = snapshot[S](Id.TopLevel).getOrElse(initialState)
           val handlers = topLevelComponentInstance.allEventHandlers.toMap
           frontend.resetDomChangesAuthorized(renderContext.diff,
-            () => authorizeProduced.fold(frontend.authorizeInteraction())(check => check(produced)),
+            outputAuthorization(produced),
             () => publishedEventHandlers.set(handlers))
         } else Effect[F].unit
         _        <- saveRenderContextIfNecessary()

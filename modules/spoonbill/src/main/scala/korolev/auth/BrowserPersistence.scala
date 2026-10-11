@@ -124,6 +124,11 @@ trait BrowserPersistence[F[_], P] {
   def capabilities: BrowserProviderCapabilities
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
+  /** Register a server-generated HTTP bootstrap for first attachment on another
+    * serving node. Unknown client view IDs must still be rejected by resume.
+    */
+  def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, Unit]] =
+    F.pure(Left(BrowserFailure.Denied))
   def claim(
     identity: BrowserIdentity[P],
     qsid: Qsid,
@@ -131,6 +136,22 @@ trait BrowserPersistence[F[_], P] {
     existingOnly: Boolean
   ): F[Either[BrowserFailure, BrowserView[P]]]
   def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]]
+  /** Admit one already materialized immutable output at the ownership boundary.
+    * A successful result applies only to this value, never to future rendering,
+    * callbacks, streams or subsequent frames. Shared providers serialize this
+    * check with takeover and expose success only after known settlement. Bytes
+    * admitted before takeover may subsequently arrive over the network.
+    */
+  def admitOutput[A](view: BrowserView[P], output: A)(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, A]] =
+    F.map(authorize(view))(_.map(_ => output))
+  /** Admit a fixed output and a pure, bounded presentation predicate against
+    * the same fresh authority observation. The predicate must not perform I/O,
+    * retain authority or grant permission for a later output.
+    */
+  def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(
+    using F: spoonbill.effect.Effect[F]
+  ): F[Either[BrowserFailure, A]] =
+    F.map(authorize(view))(_.flatMap(identity => Either.cond(allowed(identity), output, BrowserFailure.Denied)))
   def release(view: BrowserView[P]): F[Unit]
   def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]]
   def bindChallenge(ceremony: BrowserCeremony, challenge: BrowserChallenge): F[Either[BrowserFailure, BrowserCeremony]]

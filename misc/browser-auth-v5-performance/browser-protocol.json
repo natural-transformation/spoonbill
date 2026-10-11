@@ -1,0 +1,62 @@
+{
+  "schema": "spoonbill-bounded-release-diagnostic-v1",
+  "declaredAtUtc": "2026-10-11T17:17:00Z",
+  "preObservationAmendment": "Before any application observations: use two memory comparison pairs per provider so two A/A calibration pairs and complete cleanup fit the one-hour cap; measure allocations for protected increments separately from reconnect churn. Record protocol-ready reconnect timing separately from the polled interactive verification.",
+  "completedWorkAmendment": "Two fixture warmups failed before any numeric sample: submitting the next action before SET_EVENT_COUNTER acknowledgment causes intentional event deduplication. The collector must await that acknowledgment and browser handling before the next action. Per-event latency remains click-to-DOM acknowledgment; achieved throughput includes the full protocol acknowledgment. Both failed attempts are retained; a third failure on this issue stops collection.",
+  "startedAtUtc": "2026-10-11T17:07:22Z",
+  "collectionDeadlineUtc": "2026-10-11T17:57:22Z",
+  "hardDeadlineUtc": "2026-10-11T18:07:22Z",
+  "baseline": {"version": "4.0.0", "commit": "53be8c017d46423feb396d91e3b4cb67c853524b"},
+  "candidate": {"version": "5.0.0-SNAPSHOT", "commit": "9e5b3011a088526096cf7585e60415ddb45e1640"},
+  "historicalPinsUnchanged": ["0c6df154a185815d187b4f5d04aad3aab0570f8b", "ab95a4fe65399814931c6ddd7f29dd68f33bbc5c"],
+  "scope": "Identical v4 public example sources against fixed v4 release and v5 candidate JARs. Only a common configurable-origin fixture patch and candidate ownership-enum source migration are permitted. Compare memory and JDBC exclusive mode. Shared multi-node behavior has no supported equivalent v4 topology and is not represented as a paired no-regression comparison.",
+  "engine": "chromium",
+  "providers": ["memory", "jdbc"],
+  "latency": {
+    "comparisonPairsPerProvider": 6,
+    "calibrationPairsPerProvider": 2,
+    "warmupProtectedEvents": 30,
+    "measuredProtectedEvents": 120,
+    "warmupReconnects": 10,
+    "measuredReconnects": 20,
+    "profiling": false,
+    "metrics": ["protectedEventP50Ms", "protectedEventP95Ms", "protectedEventP99Ms", "singleClientThroughputPerSecond", "reconnectP50Ms", "reconnectP95Ms", "reconnectP99Ms"]
+  },
+  "memory": {
+    "comparisonPairsPerProvider": 2,
+    "calibrationPairsPerProvider": 2,
+    "warmupProtectedEvents": 30,
+    "warmupReconnects": 10,
+    "measuredProtectedEvents": 30,
+    "measuredReconnects": 30,
+    "quiescenceSeconds": 30,
+    "fullGcRequestsPerObservation": 2,
+    "phases": ["baseline", "afterChurn", "afterBrowserClose"],
+    "jvmAgentSha256": "92f8ac7edfa7d7969c166e199b05426d6ab1ff0f01ad6704c09abd4186be9b94",
+    "metrics": ["jvmAllocatedBytesPerProtectedEvent", "jvmRetainedHeapAfterChurn", "jvmRetainedHeapAfterClose", "browserRetainedJavaScriptHeapAfterChurn"],
+    "unsupported": ["browserCumulativeAllocatedBytes", "simultaneousWholeBrowserPeakRss", "nativeAllocatorBytes"]
+  },
+  "execution": {
+    "freshServerProcessPerSample": true,
+    "freshBrowserContextPerSample": true,
+    "order": "A/A calibration first, then alternating AB/BA paired comparison",
+    "concurrentMeasurements": 1,
+    "maximumAttemptsPerIssue": 3,
+    "jvmFlags": ["-Xms128m", "-Xmx512m", "-XX:ActiveProcessorCount=2", "-XX:+UseG1GC"],
+    "rawFailuresPreserved": true,
+    "neverRepeatToReplaceAnUnfavorableSample": true
+  },
+  "analysis": {
+    "slowdownAllowance": 0,
+    "familyConfidence": 0.95,
+    "familyMetrics": 22,
+    "bootstrapReplicates": 50000,
+    "seed": 20261011,
+    "estimator": "Mean paired relative change, oriented so positive is worse; absolute differences when a baseline is zero. Quantiles remain per process, never pooled.",
+    "interval": "Bonferroni-adjusted paired percentile bootstrap across 44 comparison/calibration intervals, tail=0.05/(4*22); small pair counts are diagnostic, not a full acceptance proof.",
+    "calibrationMaximumAbsoluteMeanDrift": 0.01,
+    "calibrationMaximumIntervalWidth": 0.10,
+    "pass": "All measured bounds at or below zero with usable A/A calibration. Missing, unsupported, incomplete or ambiguous results remain inconclusive. No positive slowdown allowance is introduced.",
+    "fullReleaseAcceptance": "Not established by this reduced diagnostic matrix or unsupported measurements. Do not modify or freeze the historical 94-cell manifest."
+  }
+}

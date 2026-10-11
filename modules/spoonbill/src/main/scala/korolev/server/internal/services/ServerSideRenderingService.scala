@@ -42,11 +42,12 @@ private[spoonbill] final class ServerSideRenderingService[F[_]: Effect, S, M](
       proxy  = pageService.setupStatelessProxy(rc, qsid)
       _      = rc.builder.append("<!DOCTYPE html>\n")
       _      = config.document(state)(proxy)
+      rendered = rc.mkString
       // Preserve the earlier check and revalidate before releasing rendered output.
       _ <- config.sessionAccessControl.fold(Effect[F].unit)(_.authorizeHttp(request, state))
       response <- HttpResponse(
                     Status.Ok,
-                    rc.mkString,
+                    rendered,
                     Seq(
                       Headers.ContentTypeHtmlUtf8,
                       if (config.sessionAccessControl.nonEmpty) "Cache-Control" -> "no-store" else Headers.CacheControlNoCache,

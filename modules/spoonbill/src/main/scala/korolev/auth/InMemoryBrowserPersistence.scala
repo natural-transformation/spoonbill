@@ -76,7 +76,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       extends InMemoryBrowserPersistence.Transaction[H](initial, () => InMemoryBrowserPersistence.this.now())
   type Tx = LiveTransaction
   def capabilities: BrowserProviderCapabilities =
-    BrowserProviderCapabilities(atomicHostPreparation = true, durable = false, exclusiveOwnership = true)
+    BrowserProviderCapabilities(atomicHostPreparation = true, durable = false, ownership = BrowserOwnership.ExclusiveScope)
   private type Key = Vector[Byte]
   private case class Slot(generation: Long, current: Option[UUID])
   private case class Session(
