@@ -13,6 +13,17 @@ export function bundleInventory(bytes) {
 
 export function clientInventory(sourceDirectory, bundlePath, applicationDirectories) {
   const sources = inventory({handwrittenClient: sourceDirectory});
+  // The only generated module is checked byte-for-byte against the Scala wire
+  // definitions by the build. It still belongs in the total source inventory.
+  for (const file of sources.files)
+    if (file.file === 'protocol.js') file.category = 'generatedClient';
+  sources.files.sort((a, b) => `${a.category}/${a.file}`.localeCompare(`${b.category}/${b.file}`, 'en'));
+  sources.sourceSha256 = createHash('sha256').update(JSON.stringify(sources.files)).digest('hex');
+  const sourceKinds = Object.fromEntries(['handwrittenClient', 'generatedClient'].map(category => {
+    const files = sources.files.filter(file => file.category === category);
+    return [category, {files: files.length, bytes: files.reduce((n, file) => n + file.bytes, 0),
+      nonblankLines: files.reduce((n, file) => n + file.nonblankLines, 0)}];
+  }));
   const applications = inventory(applicationDirectories);
   const scripts = applications.files.filter(file => /\.(m?js|html)$/.test(file.file));
   const embeddedScriptCandidates = [];
@@ -30,7 +41,7 @@ export function clientInventory(sourceDirectory, bundlePath, applicationDirector
     }
     visit('');
   }
-  return {schema: 'spoonbill-browser-auth-client-inventory-v1', sources,
+  return {schema: 'spoonbill-browser-auth-client-inventory-v1', sources, sourceKinds,
     emittedClient: bundleInventory(readFileSync(bundlePath)),
     compression: {node: process.version, gzipLevel: 9, brotliQuality: 11},
     applicationScripts: scripts,

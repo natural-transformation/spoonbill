@@ -72,9 +72,9 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
       // Server side rendering
       case (_, path) if path == Root || ssrService.canBeRendered(request.pq) =>
         for {
-          cookies <- authenticationService.fold(Effect[F].pure(Seq.empty[(String, String)]))(_.initialCookies(request))
-          response <- ssrService.serverSideRenderedPage(request)
-        } yield response.copy(headers = response.headers ++ cookies)
+          initial <- authenticationService.fold(Effect[F].pure(request -> Seq.empty[(String, String)]))(_.prepareInitial(request))
+          response <- ssrService.serverSideRenderedPage(initial._1)
+        } yield response.copy(headers = response.headers ++ initial._2)
 
       // Not found
       case _ => http.applyOrElse(request, (_: HttpRequest[F]) => commonService.notFoundResponseF)

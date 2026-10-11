@@ -9,7 +9,7 @@ const sourceRoot = path.resolve(__dirname, '../modules/spoonbill/src/main/es6');
 const origin = 'http://127.0.0.1:18989';
 
 (async () => {
-  const modules = new Map(await Promise.all(['bridge.js', 'spoonbill.js', 'connection.js', 'utils.js', 'sensitive.js']
+  const modules = new Map(await Promise.all(['bridge.js', 'spoonbill.js', 'connection.js', 'utils.js', 'sensitive.js', 'protocol.js']
     .map(async name => ['/' + name, await fs.readFile(path.join(sourceRoot, name), 'utf8')])));
   for (const [engine, type] of Object.entries({chromium, webkit})) {
     const env = {...process.env};

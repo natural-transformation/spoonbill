@@ -116,7 +116,7 @@ class ClientEventListenerSpec extends AnyFlatSpec with Matchers {
   it should "report extractEventData failures in the bridge" in {
     val path = Paths.get("modules/spoonbill/src/main/es6/bridge.js")
     val source = new String(Files.readAllBytes(path), "UTF-8")
-    source.contains("pCode === 11") shouldBe true
+    source.contains("pCode === Procedure.EXTRACT_EVENT_DATA") shouldBe true
     source.contains("EXTRACT_EVENT_DATA_RESPONSE") shouldBe true
   }
 

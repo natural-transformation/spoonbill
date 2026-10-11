@@ -45,7 +45,27 @@ jobs:
       run: |
         nix develop --no-write-lock-file --command node --test \
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+          misc/browser-protocol-tests.mjs \
+          misc/core-purity-tests.mjs \
           misc/browser-auth-baseline/*.test.mjs
+
+    - name: Verify the pure core boundary
+      run: nix develop --no-write-lock-file --command node scripts/check-core-purity.mjs
+
+    - name: Verify explicit PostgreSQL migration matches the provider schema
+      run: nix develop --no-write-lock-file --command node scripts/export-browser-auth-schema.mjs --check
+
+    - name: Verify published native Scala 3 Pekko dependencies
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          sbt --batch --supershell=false -Dsbt.server.autostart=false \
+          'core/publishLocal' 'bytes/publishLocal' 'effect/publishLocal' \
+          'http/publishLocal' 'web/publishLocal' 'webDsl/publishLocal' \
+          'spoonbill/publishLocal' 'pekko/publishLocal' 'pekko/makePom'
+        nix develop --no-write-lock-file --command node misc/pekko-native-consumer/check-pom.mjs \
+          interop/pekko/target/scala-3.3.8/spoonbill-pekko_3-4.0.0-SNAPSHOT.pom
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash -c 'cd misc/pekko-native-consumer && sbt --batch --supershell=false -Dsbt.server.autostart=false verifyNativeGraph compile run'
 
     - name: Test optional performance tooling
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
@@ -105,7 +125,8 @@ jobs:
 
   native-browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Includes cold compilation of the public example plus both provider suites.
+    timeout-minutes: 45
 
     steps:
     - name: Check out repository
@@ -140,3 +161,19 @@ jobs:
         env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
           bash scripts/with-test-postgres.sh env SPOONBILL_AUTH_BASELINE_PROVIDER=jdbc \
           bash scripts/test-browser-auth-baseline.sh
+
+    - name: Test the public memory browser authentication example
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash scripts/test-browser-auth.sh
+
+    - name: Test the public native IO browser authentication example
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          env SPOONBILL_AUTH_PROVIDER=io bash scripts/test-browser-auth.sh
+
+    - name: Test the public JDBC browser authentication example
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash scripts/with-test-postgres.sh env SPOONBILL_AUTH_PROVIDER=jdbc \
+          bash scripts/test-browser-auth.sh

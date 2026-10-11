@@ -60,7 +60,9 @@ object StateManager {
         }
 
       def read[T: StateDeserializer](nodeId: Id): F[Option[T]] =
-        snapshot.map(_.apply(nodeId))
+        Effect[F].delay {
+          cache.get(nodeId).asInstanceOf[Option[T]]
+        }
 
       def delete(nodeId: Id): F[Unit] =
         Effect[F].delay(cache.remove(nodeId)).flatMap(_ => actualOnDelete(nodeId))
@@ -94,7 +96,11 @@ object StateManager {
         }
 
       def read[T: StateDeserializer](nodeId: Id): F[Option[T]] =
-        snapshot.map(_.apply(nodeId))
+        Effect[F].delay {
+          cache.get(nodeId).flatMap { bytes =>
+            implicitly[StateDeserializer[T]].deserialize(bytes.clone())
+          }
+        }
 
       def delete(nodeId: Id): F[Unit] =
         Effect[F].delay(cache.remove(nodeId)).flatMap(_ => actualOnDelete(nodeId))

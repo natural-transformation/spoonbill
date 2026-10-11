@@ -50,7 +50,8 @@ case class SpoonbillServiceConfig[F[_], S, M](
     None, // users should use java.util.zip.{Deflater, Inflater} in their service to make sure of the right compression format
   webSocketCompressionEnabled: Boolean = false,
   sessionAccessControl: Option[SessionAccessControl[F, S]] = None,
-  authenticationCompletion: Option[AuthenticationCompletionConfig[F]] = None
+  authenticationCompletion: Option[AuthenticationCompletionConfig[F]] = None,
+  private[spoonbill] val browserSecurityInstallation: Option[spoonbill.auth.BrowserSecurityInstallation[F, S]] = None
 )(implicit val executionContext: ExecutionContext)
 
 object SpoonbillServiceConfig {

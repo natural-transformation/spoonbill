@@ -171,6 +171,38 @@ class AuthenticationCompletionServiceSpec extends AnyFlatSpec with Matchers {
     run(service.initialCookies(request(method = Request.Method.Get, contentType = None))) shouldBe empty
   }
 
+  "prepareInitial" should "give the loader the issued binding and remove orphaned authority" in {
+    val service = new AuthenticationCompletionService[Future](config())
+    val original = request(binding = None, session = Some(tokenValue))
+      .copy(renderedCookie = s"theme=dark; $sessionName=$tokenValue")
+    val (prepared, cookies) = run(service.prepareInitial(original))
+    val issued = cookies.find(_._2.startsWith(s"$bindingName=")).get._2
+      .drop(bindingName.length + 1).takeWhile(_ != ';')
+    prepared.cookie(bindingName) shouldBe Some(issued)
+    prepared.cookie(sessionName) shouldBe None
+    prepared.cookie("theme") shouldBe Some("dark")
+    prepared.header("Cookie") shouldBe Some(prepared.renderedCookie)
+  }
+
+  "completion endpoints" should "reject duplicate origin, fetch-site, and authority cookies" in {
+    val called = new AtomicInteger()
+    val service = new AuthenticationCompletionService[Future](config(
+      deliver = (_, _) => { called.incrementAndGet(); Future.successful(Some(token)) },
+      logout = (_, _) => { called.incrementAndGet(); Future.successful(()) }))
+    def valid = request(chunks = Seq(completionId.toString), contentLength = Some(36L))
+    val variants: Seq[HttpRequest[Future] => HttpRequest[Future]] = Seq(
+      request => request.copy(headers = request.headers :+ ("origin" -> origin)),
+      request => request.copy(headers = request.headers :+ ("Sec-Fetch-Site" -> "same-origin")),
+      request => request.copy(renderedCookie = request.renderedCookie + s"; $bindingName=$bindingValue"),
+      request => request.copy(renderedCookie = request.renderedCookie + s"; $sessionName=$tokenValue")
+    )
+    variants.foreach { modify =>
+      run(service.complete(modify(valid))).status.code shouldBe 403
+      run(service.logout(modify(valid))).status.code shouldBe 403
+    }
+    called.get() shouldBe 0
+  }
+
   "AuthenticationCompletionConfig" should "reject insecure remote origins" in {
     intercept[IllegalArgumentException] {
       config(allowedOrigins = Set("http://app.example"), secureCookies = false)
@@ -194,5 +226,14 @@ class AuthenticationCompletionServiceSpec extends AnyFlatSpec with Matchers {
     clearCookie should include("HttpOnly")
     clearCookie should include("Max-Age=0")
     responseBody(response) shouldBe ""
+  }
+
+  it should "redirect native HTML forms only after acknowledged logout" in {
+    val service = new AuthenticationCompletionService[Future](config().copy(logoutRedirect = Some("/")))
+    val response = run(service.logout(request()))
+    response.status.code shouldBe 303
+    response.header("Location") shouldBe Some("/")
+    response.header("Set-Cookie").get should include("Max-Age=0")
+    intercept[IllegalArgumentException](config().copy(logoutRedirect = Some("//other.example")))
   }
 }

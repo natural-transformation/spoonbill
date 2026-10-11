@@ -1,6 +1,9 @@
 # Browser authentication integration: implementation plan for the next major release
 
-Status: planned work; no implementation, benchmark pass, or release is claimed by this document.
+Status: implementation and release preparation are tracked in the
+[v4 validation report](browser-auth-v4-validation.md). This document records the
+design and original acceptance contract; it does not itself claim a benchmark
+pass or artifact publication.
 
 Scope update, 2026-10-11: the maintainer requested no further performance testing
 and authorized making PR #7 merge-ready within its current reference/tooling
@@ -11,6 +14,13 @@ does not claim a latency/memory pass or deliver the v4 coordinator. Subsequent
 correctness-focused implementation can build on the reference; do not describe
 unmeasured performance as validated. The original measurement contract below is
 retained for when that work is explicitly resumed.
+
+Implementation scope update, 2026-10-11: after merging PR #7, the maintainer
+requested the complete feature in a new release-ready PR. Implement the remaining
+feature, portability, migration and correctness work. Keep performance validation
+to the subsequently authorized small local smoke checks; the larger measurement
+programme remains deferred. Report deterministic bounds and bundle/source
+accounting separately from unmeasured latency and memory acceptance.
 
 Prepared: 2026-10-10. Feature baseline: Spoonbill 3.0.0, commit `ab95a4fe65399814931c6ddd7f29dd68f33bbc5c`.
 

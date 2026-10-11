@@ -85,6 +85,12 @@ package object server {
     config: SpoonbillServiceConfig[F, S, M]
   ): SpoonbillService[F] = {
 
+    config.browserSecurityInstallation.foreach(_.validate(config))
+    config.sessionAccessControl.flatMap(_.securityInstallation).foreach { installation =>
+      require(config.browserSecurityInstallation.contains(installation), "Browser security installation was removed")
+      installation.validate(config)
+    }
+
     require(config.authenticationCompletion.isEmpty || config.sessionAccessControl.nonEmpty,
       "Authentication completion requires mandatory session access control")
     require(config.sessionAccessControl.isEmpty || (config.webSocketEnabled && !config.webSocketCompressionEnabled),

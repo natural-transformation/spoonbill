@@ -30,7 +30,8 @@ final case class AuthenticationCompletionConfig[F[_]](
   secureCookies: Boolean,
   cookieMaxAgeSeconds: Long,
   deliver: (UUID, String) => F[Option[BrowserSessionToken]],
-  logout: (String, Option[String]) => F[Unit]
+  logout: (String, Option[String]) => F[Unit],
+  logoutRedirect: Option[String] = None
 ) {
   private def validName(value: String): Boolean = value.matches("[A-Za-z0-9_-]{1,80}")
   require(validName(bindingCookieName) && validName(sessionCookieName), "Invalid authentication cookie name")
@@ -50,4 +51,8 @@ final case class AuthenticationCompletionConfig[F[_]](
   }, "Origins must be exact HTTPS origins; insecure mode is loopback only")
   require(secureCookies || !Set(bindingCookieName, sessionCookieName).exists(_.startsWith("__Host-")),
     "__Host- cookies require Secure")
+  require(logoutRedirect.forall { value =>
+    value.startsWith("/") && !value.startsWith("//") && !value.exists(c => c == '\\' || c <= ' ') &&
+      scala.util.Try(new URI(value)).toOption.exists(uri => uri.getScheme == null && uri.getRawAuthority == null)
+  }, "Logout redirect must be an origin-relative path")
 }

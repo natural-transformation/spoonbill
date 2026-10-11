@@ -10,6 +10,7 @@ import spoonbill.web.Request
   * open must release any partially acquired resources when it fails.
   */
 trait SessionAccessControl[F[_], S] {
+  private[spoonbill] def securityInstallation: Option[spoonbill.auth.BrowserSecurityInstallation[F, S]] = None
   def authorizeHttp(request: Request.Head, state: S): F[Unit]
   def open(qsid: Qsid, request: Request.Head, connectionId: ConnectionId): F[SessionGuard[F, S]]
   /** Opt-in restart recovery when there is no local bootstrap cache. The host
@@ -21,6 +22,8 @@ trait SessionAccessControl[F[_], S] {
 }
 
 trait SessionGuard[F[_], S] {
+  /** Coordinator-installed action authority; foreign form authorities fail closed. */
+  def actionAuthority: Option[spoonbill.action.SessionAuthority[F, ?]] = None
   /** Separate, default-deny authority for transient sensitive disclosure. */
   def sensitive: Option[spoonbill.sensitive.SensitiveAccess[F, S]] = None
   /** Opt-in, non-sensitive presentation persistence bound to this guard's

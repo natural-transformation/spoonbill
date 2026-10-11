@@ -1,0 +1,80 @@
+{
+  "schema": "spoonbill-browser-auth-v4-source-comparison-v1",
+  "baseline": {
+    "report": "misc/browser-auth-baseline/reports/v3-source-inventory-final.json",
+    "sourceSha256": "47ac5bcaae1835fef46604241911a3c32cf35c690ea6f075ca920cc1be5f3374",
+    "totals": {
+      "files": 14,
+      "bytes": 184282,
+      "nonblankLines": 4018
+    }
+  },
+  "candidate": {
+    "schema": "spoonbill-browser-auth-inventory-v1",
+    "baselineRevision": "ab95a4fe65399814931c6ddd7f29dd68f33bbc5c",
+    "method": "All nonblank physical lines, including comments, in all declared production integration roots",
+    "sourceSha256": "fd92bf0e309535fd82026c0b7d86d867d5989b9e3dff69a0f1a541bb9895392a",
+    "files": [
+      {
+        "category": "application",
+        "file": "example/browserauth/Application.scala",
+        "sha256": "6a0055afc7d9591eaddc6df9ea5221b5c36ef321c2055e1b9d6d123bea1241a1",
+        "bytes": 9214,
+        "nonblankLines": 206
+      },
+      {
+        "category": "application",
+        "file": "example/browserauth/DomainPolicy.scala",
+        "sha256": "44fc8a0c01fdc1f788e95d185024088e952aff508f662934a2145952eb14b915",
+        "bytes": 3548,
+        "nonblankLines": 70
+      },
+      {
+        "category": "application",
+        "file": "example/browserauth/JdbcAccounts.scala",
+        "sha256": "956d07318be4d8a10b98f78e470c7c6b982a2cea037a19a8f591329404000f68",
+        "bytes": 15353,
+        "nonblankLines": 318
+      },
+      {
+        "category": "application",
+        "file": "example/browserauth/LazyMain.scala",
+        "sha256": "fed29964a764a4215e6476db32824ced0cacb30d1919cd5d6f1f7ed95ae587a1",
+        "bytes": 4847,
+        "nonblankLines": 105
+      },
+      {
+        "category": "application",
+        "file": "example/browserauth/Main.scala",
+        "sha256": "da07178c14d551b823b6187d086c37dfc1f53c5abc288e23c84d3bec9de18790",
+        "bytes": 10180,
+        "nonblankLines": 194
+      },
+      {
+        "category": "application",
+        "file": "example/browserauth/MemoryAccounts.scala",
+        "sha256": "24b9ed80433b070ce5500ebf50e544ae7428ee1dc3d9ca6c00b9f2296d9b7f34",
+        "bytes": 11547,
+        "nonblankLines": 260
+      },
+      {
+        "category": "application",
+        "file": "example/browserauth/Model.scala",
+        "sha256": "2a960493bb4c067c04aa238b6fc5d171bd7d0517b47745caab2de20dc74c7a93",
+        "bytes": 2114,
+        "nonblankLines": 53
+      }
+    ],
+    "totals": {
+      "files": 7,
+      "bytes": 56803,
+      "nonblankLines": 1206
+    }
+  },
+  "delta": {
+    "files": -7,
+    "bytes": -127479,
+    "nonblankLines": -2812
+  },
+  "scope": "All v3 common/memory/JDBC/application production helpers versus all public v4 example Scala sources, including Main and domain policy. Tests, docs and library implementation are separate. Counts alone do not establish equivalent behavior or performance."
+}

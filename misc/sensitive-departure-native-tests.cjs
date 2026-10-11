@@ -162,7 +162,7 @@ async function cancelNativeDeparture(page) {
 }
 
 (async () => {
-  const modules = new Map(await Promise.all(['bridge.js', 'spoonbill.js', 'connection.js', 'utils.js', 'sensitive.js']
+  const modules = new Map(await Promise.all(['bridge.js', 'spoonbill.js', 'connection.js', 'utils.js', 'sensitive.js', 'protocol.js']
     .map(async name => ['/' + name, await fs.readFile(path.join(sourceRoot, name), 'utf8')])));
   const sockets = new Set();
   const peers = [];

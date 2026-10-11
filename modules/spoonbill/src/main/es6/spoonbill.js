@@ -1,28 +1,6 @@
 import { encodeRFC5987ValueChars } from './utils.js';
 
-/** @enum {number} */
-export const CallbackType = {
-  DOM_EVENT: 0, // `$eventCounter:$elementId:$eventType`
-  CUSTOM_CALLBACK: 1, // `$name:$arg`
-  EXTRACT_PROPERTY_RESPONSE: 2, // `$descriptor:$propertyType:$value`
-  HISTORY: 3, // URL
-  EVALJS_RESPONSE: 4, // `$descriptor:$status:$value`
-  EXTRACT_EVENT_DATA_RESPONSE: 5, // `$descriptor:$dataJson`
-  HEARTBEAT: 6, // `$descriptor`
-  VIEW_EVENT: 7, // connection:renderRevision:callback:args
-  SENSITIVE_ACK: 8, // connection:presentation:region:ok|failed (never payload)
-  SENSITIVE_CLEARED: 9, // connection:presentation:region
-  SENSITIVE_DEPARTURE: 10 // attempted departure counter; no URL or payload
-};
-
-/** @enum {number} */
-export const PropertyType = {
-  STRING: 0,
-  NUMBER: 1,
-  BOOLEAN: 2,
-  OBJECT: 3,
-  ERROR: 4
-};
+import { CallbackType, PropertyType, ModifyDomProcedure } from './protocol.js';
 
 function eventCounterKey(id, eventType) {
   return `${id}_${eventType}`;
@@ -87,6 +65,13 @@ export class Spoonbill {
           }
           target = node;
         }
+        // Only an explicitly marked native form bypasses framework dispatch.
+        // Prototype lookup survives form controls named getAttribute/elements.
+        const submitForm = event.type === 'submit' && event.target instanceof HTMLFormElement ? event.target : null;
+        const actionFields = submitForm
+          ? Element.prototype.getAttribute.call(submitForm, 'data-spoonbill-action-fields') : null;
+        if (submitForm && actionFields === null &&
+            Element.prototype.getAttribute.call(submitForm, 'data-spoonbill-native-submit') !== null) return;
         if (preventDefault) {
           event.preventDefault();
         }
@@ -95,8 +80,6 @@ export class Spoonbill {
           let ec = this.eventCounters[ecKey] ?? 0;
           // Named form controls can shadow native methods and getters. Resolve
           // these through their prototypes so valid field names remain usable.
-          const actionFields = event.type === 'submit'
-            ? Element.prototype.getAttribute.call(target, 'data-spoonbill-action-fields') : null;
           if (actionFields && target instanceof HTMLFormElement) {
             // Capture declared values now. Never retain a credential-bearing
             // submit event for later extraction or automatic reconnect replay.
@@ -253,13 +236,13 @@ export class Spoonbill {
     let r = atad.pop.bind(atad);
     while (data.length > 0) {
       switch (r()) {
-        case 0: this.create(r(), r(), r(), r()); break;
-        case 1: this.createText(r(), r(), r()); break;
-        case 2: this.remove(r(), r()); break;
-        case 3: this.setAttr(r(), r(), r(), r(), r()); break;
-        case 4: this.removeAttr(r(), r(), r(), r()); break;
-        case 5: this.setStyle(r(), r(), r()); break;
-        case 6: this.removeStyle(r(), r()); break;
+        case ModifyDomProcedure.CREATE: this.create(r(), r(), r(), r()); break;
+        case ModifyDomProcedure.CREATE_TEXT: this.createText(r(), r(), r()); break;
+        case ModifyDomProcedure.REMOVE: this.remove(r(), r()); break;
+        case ModifyDomProcedure.SET_ATTR: this.setAttr(r(), r(), r(), r(), r()); break;
+        case ModifyDomProcedure.REMOVE_ATTR: this.removeAttr(r(), r(), r(), r()); break;
+        case ModifyDomProcedure.SET_STYLE: this.setStyle(r(), r(), r()); break;
+        case ModifyDomProcedure.REMOVE_STYLE: this.removeStyle(r(), r()); break;
       }
     }
   }

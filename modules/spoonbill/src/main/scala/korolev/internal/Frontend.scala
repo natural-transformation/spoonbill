@@ -51,7 +51,8 @@ final class Frontend[F[_]: Effect](
   rpcSettings: Frontend.RpcSettings = Frontend.defaultRpcSettings,
   rpcDeadlineScheduler: Option[Frontend.RpcDeadlineScheduler] = None,
   viewRecoveryEpoch: Option[spoonbill.security.Versions.ViewOwnershipEpoch] = None,
-  captureSensitiveAuthorization: Option[spoonbill.sensitive.Purpose => F[SensitiveAuthorization[F]]] = None
+  captureSensitiveAuthorization: Option[spoonbill.sensitive.Purpose => F[SensitiveAuthorization[F]]] = None,
+  expectedActionAuthority: Option[AnyRef] = None
 )(implicit
   reporter: Reporter,
   ec: ExecutionContext
@@ -203,7 +204,8 @@ final class Frontend[F[_]: Effect](
       spoonbill.security.Identifiers.InvocationId.fromUuid(java.util.UUID.randomUUID()),
       actionConnectionId,
       Option.when(guarded && captureSensitiveAuthorization.nonEmpty)(sensitiveOutcomes),
-      browserAdmission(expectedDeparture.getOrElse(sensitiveDeparture.get()))
+      browserAdmission(expectedDeparture.getOrElse(sensitiveDeparture.get())),
+      expectedActionAuthority
     ))
 
   private val lastDescriptor            = new AtomicLong(0)
@@ -858,18 +860,18 @@ object Frontend {
       All.find(_.code == n)
   }
 
-  sealed abstract class ModifyDomProcedure(final val code: Int) {
+  sealed abstract class ModifyDomProcedure(final val code: Int, final val operandCount: Int) {
     final val codeString = code.toString
   }
 
   object ModifyDomProcedure {
-    case object Create      extends ModifyDomProcedure(0) // (id, childId, xmlNs, tag)
-    case object CreateText  extends ModifyDomProcedure(1) // (id, childId, text)
-    case object Remove      extends ModifyDomProcedure(2) // (id, childId)
-    case object SetAttr     extends ModifyDomProcedure(3) // (id, xmlNs, name, value, isProperty)
-    case object RemoveAttr  extends ModifyDomProcedure(4) // (id, xmlNs, name, isProperty)
-    case object SetStyle    extends ModifyDomProcedure(5) // (id, name, value)
-    case object RemoveStyle extends ModifyDomProcedure(6) // (id, name)
+    case object Create      extends ModifyDomProcedure(0, 4) // (id, childId, xmlNs, tag)
+    case object CreateText  extends ModifyDomProcedure(1, 3) // (id, childId, text)
+    case object Remove      extends ModifyDomProcedure(2, 2) // (id, childId)
+    case object SetAttr     extends ModifyDomProcedure(3, 5) // (id, xmlNs, name, value, isProperty)
+    case object RemoveAttr  extends ModifyDomProcedure(4, 4) // (id, xmlNs, name, isProperty)
+    case object SetStyle    extends ModifyDomProcedure(5, 3) // (id, name, value)
+    case object RemoveStyle extends ModifyDomProcedure(6, 2) // (id, name)
   }
 
   sealed abstract class PropertyType(final val code: Int)

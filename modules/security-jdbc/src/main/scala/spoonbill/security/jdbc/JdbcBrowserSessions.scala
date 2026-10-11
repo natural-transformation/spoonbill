@@ -233,9 +233,14 @@ final class JdbcBrowserSessions(
   /** The first successful slot activation CAS wins. An active-cookie retry
     * validates the existing session even after completion delivery has expired.
     */
-  def activate(tokenHash: Digest256, bindingHash: Digest256): Either[JdbcAuthError, ActiveBrowserSession] = transaction { connection =>
+  def activate(tokenHash: Digest256, bindingHash: Digest256): Either[JdbcAuthError, ActiveBrowserSession] =
+    transaction(connection => Right(activateIn(connection, tokenHash, bindingHash)))
+
+  /** Activate within a supplied outer transaction. Refusal must abort it. */
+  def activateIn(connection: Connection, tokenHash: Digest256, bindingHash: Digest256): ActiveBrowserSession = {
+    if (connection.getAutoCommit) throw new JdbcAuthException(JdbcAuthError.TransactionRequired)
     val now = clock()
-    rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound).flatMap { row =>
+    val result = rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound).flatMap { row =>
       checkHost(connection, row, bindingHash, now).flatMap { _ =>
         slot(connection, bindingHash).toRight(JdbcAuthError.NotFound).flatMap { current =>
           val latest = rowByToken(connection, tokenHash).getOrElse(throw new JdbcAuthException(JdbcAuthError.NotFound))
@@ -273,6 +278,7 @@ final class JdbcBrowserSessions(
         }
       }
     }
+    result.fold(error => throw new JdbcAuthException(error), identity)
   }
 
   def validate(tokenHash: Digest256, bindingHash: Digest256): Either[JdbcAuthError, ActiveBrowserSession] = transaction { connection =>
@@ -287,11 +293,84 @@ final class JdbcBrowserSessions(
     }
   }
 
+  /** Resolve typed host authority and the browser generation/view in one short
+    * transaction. A missing credential is accepted only for an anonymous slot;
+    * a supplied invalid credential never falls back to anonymous authorization.
+    * Omit expectedGeneration only on initial capture. Retain that generation
+    * and the exact token on the physical connection for every later check;
+    * never refresh either from a newer request or browser cookie.
+    */
+  def authorize[P](bindingHash: Digest256, tokenHash: Option[Digest256], authorization: HostSessionAuthorization[P],
+    expectedGeneration: Option[Long] = None, viewFence: Option[JdbcViewFence] = None,
+    allowPending: Boolean = false): Either[JdbcAuthError, JdbcBrowserAuthorization[P]] =
+    transaction { connection =>
+      Right(authorizeIn(connection, bindingHash, tokenHash, authorization, expectedGeneration, viewFence, allowPending))
+    }
+
+  /** Join an existing host transaction without owning its settlement. A refusal
+    * throws and must roll back the entire transaction, including domain writes.
+    * Host locks precede slot and view locks; callers must preserve that order.
+    */
+  def authorizeIn[P](connection: Connection, bindingHash: Digest256, tokenHash: Option[Digest256],
+    authorization: HostSessionAuthorization[P], expectedGeneration: Option[Long] = None,
+    viewFence: Option[JdbcViewFence] = None, allowPending: Boolean = false): JdbcBrowserAuthorization[P] = {
+    def reject(error: JdbcAuthError): Nothing = throw new JdbcAuthException(error)
+    def required[A](result: Either[JdbcAuthError, A]): A = result.fold(reject, identity)
+    def principal(row: Row): P = {
+      if (row.prepared.bindingHash != bindingHash) reject(JdbcAuthError.BindingMismatch)
+      val time = clock()
+      required(checkSession(row, time))
+      authorization.authorize(connection, row.prepared.hostSessionId, time).getOrElse(reject(JdbcAuthError.HostDenied))
+    }
+    try {
+      if (connection.getAutoCommit) reject(JdbcAuthError.TransactionRequired)
+      if (expectedGeneration.exists(_ < 0)) reject(JdbcAuthError.StaleGeneration)
+      viewFence.foreach { fence =>
+        if (!validViewId(fence.viewId)) reject(JdbcAuthError.InvalidViewId)
+        if (fence.epoch <= 0) reject(JdbcAuthError.StaleViewFence)
+      }
+      val initial = tokenHash.map { token =>
+        val row = rowByToken(connection, token).getOrElse(reject(JdbcAuthError.NotFound))
+        row -> principal(row)
+      }
+      val current = slot(connection, bindingHash).getOrElse(reject(JdbcAuthError.NotFound))
+      if (expectedGeneration.exists(_ != current.generation)) reject(JdbcAuthError.StaleGeneration)
+      viewFence.foreach { fence =>
+        val owned = view(connection, fence.viewId).getOrElse(reject(JdbcAuthError.NotFound))
+        required(checkView(owned, bindingHash, fence.ownerId, fence.epoch))
+      }
+      initial match {
+        case None =>
+          if (current.current.nonEmpty) reject(JdbcAuthError.HostDenied)
+          JdbcBrowserAuthorization.Anonymous(current.generation)
+        case Some((before, captured)) =>
+          val latest = rowByToken(connection, before.prepared.tokenHash).getOrElse(reject(JdbcAuthError.NotFound))
+          if (latest.prepared != before.prepared) reject(JdbcAuthError.Conflict)
+          val fresh = principal(latest)
+          if (fresh != captured) reject(JdbcAuthError.HostDenied)
+          // Host hooks may wait on row locks. Expiry must be sampled after the
+          // final hook as well, not only before it acquires those locks.
+          required(checkSession(latest, clock()))
+          if (allowPending && latest.activeGeneration.isEmpty) {
+            required(pending(current, latest, clock()))
+            JdbcBrowserAuthorization.Anonymous(current.generation)
+          } else JdbcBrowserAuthorization.Authenticated(required(active(current, latest)), fresh)
+      }
+    } catch {
+      case error: JdbcAuthException => throw error
+      case NonFatal(_) => throw new JdbcAuthException(JdbcAuthError.StorageFailure)
+    }
+  }
+
   /** Caller has validated the binding cookie and same-origin/CSRF contract.
     * Logout targets the slot, including all pending outcomes at its generation.
     */
-  def logout(bindingHash: Digest256): Either[JdbcAuthError, Long] = transaction { connection =>
-    slot(connection, bindingHash).toRight(JdbcAuthError.NotFound).flatMap { current =>
+  def logout(bindingHash: Digest256): Either[JdbcAuthError, Long] =
+    transaction(connection => Right(logoutIn(connection, bindingHash)))
+
+  def logoutIn(connection: Connection, bindingHash: Digest256): Long = {
+    if (connection.getAutoCommit) throw new JdbcAuthException(JdbcAuthError.TransactionRequired)
+    val result = slot(connection, bindingHash).toRight(JdbcAuthError.NotFound).flatMap { current =>
       nextGeneration(current).map { next =>
         statement(connection, """UPDATE spoonbill_browser_slot SET generation = ?, current_session_id = NULL
           WHERE realm = ? AND cookie_namespace = ? AND binding_hash = ?""") { query =>
@@ -301,6 +380,7 @@ final class JdbcBrowserSessions(
         next
       }
     }
+    result.fold(error => throw new JdbcAuthException(error), identity)
   }
 
   def revoke(hostSessionId: UUID): Either[JdbcAuthError, Unit] = transaction { connection =>

@@ -301,7 +301,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
       frontend = new Frontend[F](monitored, config.heartbeatLimit, Some(connectionId), Some(authorizeCurrent),
         Some(() => ready.get(())), Some(captureProducer), viewRecoveryEpoch = snapshots.map(_.ownerEpoch),
-        captureSensitiveAuthorization = captureSensitive)
+        captureSensitiveAuthorization = captureSensitive, expectedActionAuthority = guard.actionAuthority)
       _ <- Effect[F].delay(frontendRef.set(Some(frontend)))
       app = new ApplicationInstance[F, S, M](qsid, frontend, manager, initial, config.document, config.rootPath,
         config.router, (rc, k) => pageService.setupStatefulProxy(rc, qsid, k), scheduler, config.reporter,

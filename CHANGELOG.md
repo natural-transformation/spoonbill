@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.0.0 — Unreleased
+
+Browser authentication is coordinated through a Scala API with generic memory
+and PostgreSQL providers. Upgrade modules together and recompile using the
+[v4 migration guide](docs/migration-v4.md).
+
+### Added
+
+- `spoonbill-core` for immutable security decisions and browser ceremony models.
+- `BrowserAuthentication` for coherent HTTP/socket/action authorization,
+  completion delivery, continuation recovery and bounded presentation ownership.
+- Provider-owned live ceremonies, commit-gated receipts, and instance-dependent
+  host transaction handles with scope and thread checks.
+- Atomic in-memory host/browser publication and a generic JDBC provider with
+  explicit host hooks, encrypted credential custody, durable recovery and
+  restart-safe expiry checkpoints.
+- Shared provider conformance tests and an effect-polymorphic Scala example:
+  native IO/Future memory authentication and Future PostgreSQL authentication.
+
+### Changed
+
+- Browser security configuration is installed and validated as one bundle;
+  partial replacement is rejected.
+- The Pekko adapter uses native Scala 3 dependencies.
+- Browser protocol tables are generated from Scala declarations, replacing
+  independently maintained client constants and operand widths.
+- Cached state managers support direct node reads and immutable snapshots.
+
+Performance acceptance and artifact publication are separate from these source
+changes; this entry asserts neither.
+
 ## 3.0.0
 
 This release makes WebSocket response lifetime explicit. Recompile all integrations

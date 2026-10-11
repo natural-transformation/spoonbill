@@ -5,18 +5,19 @@
 # Spoonbill
 
 Spoonbill is a server-side single-page application framework for Scala 3.
-The browser runs a minimal JS bridge (~6kB). The server owns all application state and renders UI updates.
+The browser runs a small JS bridge. The server owns all application state and renders UI updates.
 Client and server are combined into a single app without any REST protocol in the middle.
 
 ## Why?
 
-* Lightning-fast page loading speed (~6kB of uncompressed JS)
+* A shared browser runtime that does not grow with application code
 * Comparable to static HTML client-side RAM consumption
 * Indexable pages out of the box
 * Routing out of the box
 * Build extremely large app without increasing size of the page
 * No need to make CRUD REST service
 * Connect to infrastructure (DBMS, Message queue) directly from application
+* Coordinate browser authentication in Scala with atomic memory or PostgreSQL host transactions
 
 ## Getting Started
 
@@ -26,11 +27,27 @@ libraryDependencies += "com.natural-transformation" %% "spoonbill" % "<version>"
 ```
 
 See the [examples](examples/) directory for working projects.
+The current development line is Spoonbill 4 (`4.0.0-SNAPSHOT` in this checkout).
+Keep every Spoonbill module on the same version. See the
+[browser authentication example](examples/browser-auth/) for password/factor
+login, recovery, protected actions and logout without application JavaScript.
+Its shared UI runs natively in cats-effect IO or Future; the
+[guide](docs/browser-authentication.md#run-the-synthetic-application) starts with
+the managed IO application.
+
+| Module | Responsibility |
+| --- | --- |
+| `spoonbill-core` | Pure immutable security and ceremony decisions |
+| `spoonbill` | Application runtime, browser coordinator and memory provider |
+| `spoonbill-security-jdbc` | Optional PostgreSQL browser, transaction and snapshot integration |
+| `spoonbill-pekko` | Native Scala 3 Pekko HTTP/WebSocket adapter |
 
 ## Documentation
 
 * [Docs](https://natural-transformation.com/open-source/spoonbill/overview)
 * [User guide](docs/user-guide.adoc)
+* [Browser authentication](docs/browser-authentication.md)
+* [Migrating to 4.0](docs/migration-v4.md)
 * [Migrating to 3.0](docs/migration-3.0.md)
 * [Migrating to 2.0](docs/migration-2.0.md)
 * [Changelog](CHANGELOG.md)

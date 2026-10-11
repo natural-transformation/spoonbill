@@ -202,6 +202,153 @@ class JdbcBrowserSessionsSpec extends AsyncFlatSpec with Matchers {
     db.store.captureExistingSlotGeneration(binding) shouldBe Right(generation)
   }
 
+  it should "resolve typed current host authority and a view fence on the same transaction" in {
+    val db = new Fixture
+    val binding = digest()
+    val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
+    db.persist(prepared)
+    val active = accepted(db.store.activate(prepared.tokenHash, binding))
+    val owner = UUID.randomUUID()
+    val epoch = accepted(db.store.claimView("typed-view", binding, owner))
+    val observed = scala.collection.mutable.ArrayBuffer.empty[Connection]
+    val authorization = new HostSessionAuthorization[(UUID, UUID)] {
+      def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[(UUID, UUID)] = {
+        connection.getAutoCommit shouldBe false
+        observed += connection
+        Using.resource(connection.prepareStatement("SELECT completion_id FROM spoonbill_jdbc_test_host WHERE session_id=? AND valid=TRUE FOR UPDATE")) { query =>
+          query.setObject(1, sessionId)
+          Using.resource(query.executeQuery()) { rows =>
+            if (rows.next()) Some(sessionId -> rows.getObject(1, classOf[UUID])) else None
+          }
+        }
+      }
+    }
+    val fence = JdbcViewFence("typed-view", owner, epoch)
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization, Some(active.generation), Some(fence)) shouldBe
+      Right(JdbcBrowserAuthorization.Authenticated(active, prepared.hostSessionId -> prepared.hostCompletionId))
+    observed.size shouldBe 2
+    (observed.head eq observed.last) shouldBe true
+    accepted(db.store.claimView("typed-view", binding, UUID.randomUUID()))
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization, Some(active.generation), Some(fence)) shouldBe
+      Left(JdbcAuthError.StaleViewFence)
+  }
+
+  it should "fence anonymous authorization by generation without accepting missing or invalid credentials" in {
+    val db = new Fixture
+    val binding = digest()
+    val generation = accepted(db.store.openSlot(binding))
+    val authorization = new HostSessionAuthorization[UUID] {
+      def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[UUID] =
+        if (db.hooks.isCurrent(connection, sessionId, now)) Some(sessionId) else None
+    }
+    db.store.authorize(binding, None, authorization, Some(generation)) shouldBe
+      Right(JdbcBrowserAuthorization.Anonymous(generation))
+    db.store.authorize(binding, Some(digest()), authorization, Some(generation)) shouldBe Left(JdbcAuthError.NotFound)
+    val prepared = db.prepared(binding, generation)
+    db.persist(prepared)
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization) shouldBe Left(JdbcAuthError.StaleGeneration)
+    accepted(db.store.activate(prepared.tokenHash, binding))
+    db.store.authorize(binding, None, authorization) shouldBe Left(JdbcAuthError.HostDenied)
+    val next = accepted(db.store.logout(binding))
+    db.store.authorize(binding, None, authorization, Some(generation)) shouldBe Left(JdbcAuthError.StaleGeneration)
+    db.store.authorize(binding, None, authorization, Some(next)) shouldBe Right(JdbcBrowserAuthorization.Anonymous(next))
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization, Some(next)) shouldBe Left(JdbcAuthError.StaleGeneration)
+  }
+
+  it should "reject a changed typed host identity instead of adopting it after slot locking" in {
+    val db = new Fixture
+    val binding = digest()
+    val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
+    db.persist(prepared)
+    accepted(db.store.activate(prepared.tokenHash, binding))
+    val first = new AtomicBoolean(true)
+    val authorization = new HostSessionAuthorization[(UUID, Long)] {
+      def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[(UUID, Long)] = {
+        db.hooks.isCurrent(connection, sessionId, now) shouldBe true
+        Some(sessionId -> (if (first.getAndSet(false)) 1L else 2L))
+      }
+    }
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization) shouldBe Left(JdbcAuthError.HostDenied)
+  }
+
+  it should "resample expiry after resolving the typed principal under host locks" in {
+    val db = new Fixture
+    val binding = digest()
+    val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
+    db.persist(prepared)
+    accepted(db.store.activate(prepared.tokenHash, binding))
+    val authorization = new HostSessionAuthorization[UUID] {
+      def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[UUID] = {
+        db.hooks.isCurrent(connection, sessionId, now) shouldBe true
+        db.clock.set(prepared.sessionExpiresAt)
+        Some(sessionId)
+      }
+    }
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization) shouldBe Left(JdbcAuthError.Expired)
+  }
+
+  it should "leave typed authorization and protected writes under the caller's transaction ownership" in {
+    val db = new Fixture
+    val binding = digest()
+    val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
+    db.persist(prepared)
+    val active = accepted(db.store.activate(prepared.tokenHash, binding))
+    val authorization = new HostSessionAuthorization[UUID] {
+      def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[UUID] =
+        if (db.hooks.isCurrent(connection, sessionId, now)) Some(sessionId) else None
+    }
+    Using.resource(db.dataSource.getConnection) { connection =>
+      intercept[JdbcAuthException](db.store.authorizeIn(connection, binding, Some(prepared.tokenHash), authorization)).error shouldBe
+        JdbcAuthError.TransactionRequired
+      connection.setAutoCommit(false)
+      try {
+        db.store.authorizeIn(connection, binding, Some(prepared.tokenHash), authorization, Some(active.generation)) shouldBe
+          JdbcBrowserAuthorization.Authenticated(active, prepared.hostSessionId)
+        Using.resource(connection.prepareStatement("UPDATE spoonbill_jdbc_test_host SET valid=FALSE WHERE session_id=?")) { query =>
+          query.setObject(1, prepared.hostSessionId); query.executeUpdate()
+        }
+        intercept[JdbcAuthException](db.store.authorizeIn(connection, binding, Some(prepared.tokenHash), authorization)).error shouldBe
+          JdbcAuthError.HostDenied
+      } finally connection.rollback()
+    }
+    db.hostFlag(prepared.hostSessionId, "valid") shouldBe Some(true)
+    db.store.authorize(binding, Some(prepared.tokenHash), authorization) shouldBe
+      Right(JdbcBrowserAuthorization.Authenticated(active, prepared.hostSessionId))
+  }
+
+  it should "hold typed host authority before waiting on the slot and reject expiry during that wait" in {
+    val db = new Fixture
+    val binding = digest()
+    val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
+    db.persist(prepared)
+    accepted(db.store.activate(prepared.tokenHash, binding))
+    val blocker = db.dataSource.getConnection
+    blocker.setAutoCommit(false)
+    Using.resource(blocker.prepareStatement("""SELECT generation FROM spoonbill_browser_slot
+      WHERE realm=? AND cookie_namespace='session' AND binding_hash=? FOR UPDATE""")) { query =>
+      query.setString(1, db.realm); query.setBytes(2, binding.bytes)
+      Using.resource(query.executeQuery())(_.next() shouldBe true)
+    }
+    val observed = Promise[Int]()
+    val authorization = new HostSessionAuthorization[UUID] {
+      def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[UUID] = {
+        val accepted = db.hooks.isCurrent(connection, sessionId, now)
+        observed.trySuccess(backendId(connection))
+        Option.when(accepted)(sessionId)
+      }
+    }
+    val pending = Future(blocking(db.store.authorize(binding, Some(prepared.tokenHash), authorization)))(ExecutionContext.global)
+    (for {
+      pid <- bounded(observed)
+      _ <- awaitBlocked(db, pid, backendId(blocker))
+      _ = db.clock.set(prepared.sessionExpiresAt)
+      _ = blocker.rollback()
+      result <- pending
+    } yield result shouldBe Left(JdbcAuthError.Expired)).transform { result =>
+      blocker.rollback(); blocker.close(); result
+    }
+  }
+
   it should "isolate generation observations by realm, cookie namespace and browser binding" in {
     val db = new Fixture
     val binding = digest()
