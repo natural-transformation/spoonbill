@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.0.0 — Unreleased
+## 4.0.0 — 2026-10-11
 
 Browser authentication is coordinated through a Scala API with generic memory
 and PostgreSQL providers. Upgrade modules together and recompile using the
@@ -28,8 +28,13 @@ and PostgreSQL providers. Upgrade modules together and recompile using the
   independently maintained client constants and operand widths.
 - Cached state managers support direct node reads and immutable snapshots.
 
-Performance acceptance and artifact publication are separate from these source
-changes; this entry asserts neither.
+### Fixed
+
+- Wake another waiting producer after direct queue delivery so free capacity
+  cannot leave a bounded queue stalled.
+
+See the [validation report](docs/browser-auth-v4-validation.md) for correctness
+and bundle-size results. Comprehensive performance profiling remains deferred.
 
 ## 3.0.0
 
