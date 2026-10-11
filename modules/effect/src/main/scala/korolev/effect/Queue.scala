@@ -91,10 +91,14 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
         // Pull callbacks can be nonempty
         // if queue was empty when pull was ran.
         if (ref.pullCallbacks.nonEmpty) {
-          val newValue = ref.copy(pullCallbacks = Nil)
+          // A prior dequeue may have left other capacity waiters behind. Direct
+          // handoff keeps the buffer free, so pass that hint to one more waiter.
+          val canOfferCallback = ref.canOfferCallbacks.headOption
+          val newValue = ref.copy(pullCallbacks = Nil, canOfferCallbacks = ref.canOfferCallbacks.drop(1))
           if (state.compareAndSet(ref, newValue)) {
             val token = Right(Some(item))
             ref.pullCallbacks.foreach(cb => cb(token))
+            canOfferCallback.foreach(cb => cb(unitToken))
             true
           } else {
             aux()

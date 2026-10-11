@@ -54,6 +54,37 @@ class QueueSpec extends AsyncFreeSpec with AsyncTimeLimitedTests {
 
   ".canOffer" - {
 
+    "passes the free-capacity hint onward after direct handoff" in {
+      val queue = Queue[Future, Int](1)
+      val initial = queue.offer(1)
+      val older = queue.canOffer
+      val newer = queue.canOffer
+      assert(!older.isCompleted && !newer.isCompleted)
+
+      val first = queue.stream.pull()
+      assert(newer.isCompleted)
+      assert(!older.isCompleted)
+      val waitingPull = queue.stream.pull()
+      assert(!waitingPull.isCompleted)
+
+      val handoff = queue.offer(2)
+      // Check before awaiting either future: a regression fails immediately
+      // instead of leaving an asynchronous suite waiting forever.
+      assert(older.isCompleted)
+      assert(waitingPull.isCompleted)
+      for {
+        initialAccepted <- initial
+        firstValue <- first
+        handoffAccepted <- handoff
+        delivered <- waitingPull
+        _ <- older
+        _ <- newer
+      } yield {
+        assert(initialAccepted && handoffAccepted)
+        assert(firstValue.contains(1) && delivered.contains(2))
+      }
+    }
+
     def checkCanOffer(maxSize: Int): Future[Assertion] = {
       val queue = Queue[Future, Int](maxSize)
 
