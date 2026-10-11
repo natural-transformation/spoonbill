@@ -24,7 +24,7 @@ accounting separately from unmeasured latency and memory acceptance.
 
 Prepared: 2026-10-10. Feature baseline: Spoonbill 3.0.0, commit `ab95a4fe65399814931c6ddd7f29dd68f33bbc5c`.
 
-Target: the next major release, provisionally 4.0.0. Breaking source, binary, provider, and configuration changes are permitted. Publication and production migration are separate release actions.
+Target: 4.0.0. Breaking source, binary, provider, and configuration changes are permitted. Publication and production migration are separate release actions.
 
 This plan implements the [browser authentication proposal](browser-auth-integration-proposal.md). Where it makes stronger decisions, this plan governs implementation: the domain core must be pure, caller APIs must support ordinary functional composition, and new features must not regress latency or memory usage. Public names below are proposed until the complete examples compile.
 
@@ -612,21 +612,26 @@ Ship explicit SQL migration and rollback/deployment guidance. No request-time sc
 
 Document recovery from failed migration separately from application rollback, including key/material compatibility and retained negative fences. Consumer Nix users regenerate dependency locks with their supported generator before CI validation. Publication metadata must resolve without undocumented dependency exclusions.
 
-- [ ] Pure core contains no side-effect implementation or runtime dependency.
-- [ ] Complete functional examples compile; provider/host code is visible and counted.
-- [ ] Existing-runner enlistment and commit-before-response-loss recovery work.
-- [ ] Subject/challenge association, proof replay, and competing-ceremony rules are tested.
-- [ ] Delivery custody, restart retrieval, redaction, expiry, and key failure are specified and tested.
-- [ ] JDBC and non-JDBC providers pass shared conformance plus their physical atomicity tests.
-- [ ] Ownership, invalidation, late publication, bounds, and retirement behavior pass concurrency/churn tests.
-- [ ] Sensitive disclosures, snapshots, and v3 transport guarantees are preserved.
-- [ ] Native Scala 3 adapter artifacts resolve and run in the supported downstream matrix.
-- [ ] Consumer production integration code has no net growth.
-- [ ] Reference authentication flows require zero custom application JavaScript; Scala owns policy/orchestration and identified removable client duplication is eliminated, with actual reductions and retained browser responsibilities reported separately.
-- [ ] Browser-local safety/lifecycle checks remain intact; client bundle sizes and exchange counts do not grow, and browser/server latency and memory gates pass.
+- [x] Pure core contains no side-effect implementation or runtime dependency.
+- [x] Complete functional examples compile; provider/host code is visible and counted.
+- [x] Existing-runner enlistment and commit-before-response-loss recovery work.
+- [x] Subject/challenge association, proof replay, and competing-ceremony rules are tested.
+- [x] Delivery custody, restart retrieval, redaction, expiry, and key failure are specified and tested.
+- [x] JDBC and non-JDBC providers pass shared conformance plus their physical atomicity tests.
+- [x] Ownership, invalidation, late publication, bounds, and retirement behavior pass concurrency/churn tests.
+- [x] Sensitive disclosures, snapshots, and v3 transport guarantees are preserved.
+- [x] Native Scala 3 adapter artifacts resolve and run in the supported downstream matrix.
+- [x] Consumer production integration code has no net growth.
+- [x] Reference authentication flows require zero custom application JavaScript; Scala owns policy/orchestration and identified removable client duplication is eliminated, with actual reductions and retained browser responsibilities reported separately.
+- [x] Browser-local safety/lifecycle checks remain intact. The maintainer accepted the final native-form adapter size exception: +149 raw, +35 gzip, +37 Brotli bytes. Logout adds no HTTP round trip.
 - [ ] Every required latency/memory cell passes the zero-regression gate; no missing or inconclusive metric is counted as passed.
 - [ ] Raw results, provenance, operation counts, and resource/retention evidence are published with synthetic data.
-- [ ] Migration, mixed-version deployment constraints, schema changes, and recovery procedures are reviewed.
+- [x] Migration, mixed-version deployment constraints, schema changes, and recovery procedures are reviewed.
+
+The unchecked performance items remain deferred under the implementation scope
+update at the start of this document. They are not claimed passed. The
+[validation report](browser-auth-v4-validation.md) records the completed
+correctness, browser, packaging and inventory checks and the accepted size exception.
 
 ## 16. Stop and redesign conditions
 
@@ -636,4 +641,6 @@ A latency/memory regression blocks the feature. Inconclusive evidence blocks rel
 
 For execution failures, follow the repository recovery policy: read the full failure, re-plan after two failed attempts on the same issue, and escalate with evidence if the first attempt after re-planning also fails. Keep unaffected work moving. Report unsupported infrastructure or unresolved design choices concretely, with the smallest decision needed to continue.
 
-This document plans future implementation. Its completion means the plan has been written and reviewed; none of the feature or release checkboxes above are implicitly complete.
+This document preserves the implementation design and original measurement
+contract. The checklist records completed implementation checks; publishing
+artifacts and production deployment remain separate actions.
