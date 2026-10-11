@@ -1,0 +1,922 @@
+{
+  "schema": "spoonbill-provider-measurement-protocol-v1",
+  "frozenAt": "2026-10-11T17:35:04.195Z",
+  "stopAt": "2026-10-11T17:57:00Z",
+  "rawFile": "/tmp/spoonbill-perf-20261011-170722/provider-results.jsonl",
+  "scope": "Actual released v4 vs fixed v5 public exclusive providers; no browser, coordinator, shared-view or durable-projection acceptance claim",
+  "javaArgs": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:ActiveProcessorCount=2"
+  ],
+  "warmup": {
+    "memory": 1000,
+    "jdbc": 50,
+    "reconnect": 10
+  },
+  "measuredOperations": {
+    "memory": 5000,
+    "jdbc": 200
+  },
+  "measuredReconnects": {
+    "memory": 1000,
+    "jdbc": 100
+  },
+  "distinctViewChurn": {
+    "memory": 500,
+    "jdbc": 50
+  },
+  "clock": {
+    "sample": "2026-10-11T12:00:00Z",
+    "expiresAfterSeconds": 86400,
+    "mode": "fixed equal samples; exclusive acknowledged-clock cache",
+    "checkpointConnectionDeltasRecorded": true
+  },
+  "memory": {
+    "instrumentation": "JDK21 total thread allocated bytes + fixed existing PerformanceProbe JDBC API counters",
+    "quietSecondsPerBoundary": 30,
+    "observedFullGCsPerBoundary": 2,
+    "retainedHistoryExpected": "exactly one tombstone per distinct view; no plateau claim"
+  },
+  "analysis": {
+    "bootstrapReplicates": 50000,
+    "seed": 20261011,
+    "primaryMetricsPerProvider": 11,
+    "jointIntervals": 44,
+    "intervalTail": 0.0005681818181818183,
+    "comparisonAllowance": 0,
+    "calibrationMaximumAbsoluteDrift": 0.01,
+    "calibrationMaximumWidth": 0.1,
+    "primaryMetrics": [
+      "protected/reconnect p50 p95 p99 achieved serial operations/s",
+      "protected/reconnect allocated bytes per operation",
+      "post-churn heapAfter"
+    ],
+    "fullReleaseAcceptance": "not established by this provider-only bounded sample"
+  },
+  "runtime": {
+    "baseline": {
+      "probeJar": "/tmp/spoonbill-perf-20261011-170722/provider-baseline.jar",
+      "probeSha256": "be889e148746d6f7c95af9352a3fa8e934eefe903d409a0b09a5cfe16b916266",
+      "classpath": "/tmp/spoonbill-perf-20261011-170722/provider-baseline.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/00-baseline_3-0.0.0-probe.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/01-scala3-library_3-3.3.8.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/02-spoonbill-pekko_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/03-spoonbill-security-jdbc_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/04-spoonbill-ce3_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/05-postgresql-42.7.13.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/06-scala-library-2.13.18.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/07-spoonbill_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/08-pekko-actor_3-1.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/09-pekko-stream_3-1.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/10-pekko-http_3-1.4.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/11-spoonbill-effect_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/12-cats-effect_3-3.3.12.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/13-checker-qual-3.55.1.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/14-spoonbill-core_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/15-spoonbill-web_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/16-avocet-core_3-1.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/17-avocet-events_3-1.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/18-config-1.4.9.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/19-pekko-protobuf-v3_3-1.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/20-reactive-streams-1.0.4.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/21-ssl-config-core_3-0.7.1.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/22-pekko-http-core_3-1.4.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/23-spoonbill-bytes_3-4.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/24-cats-effect-kernel_3-3.3.12.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/25-cats-effect-std_3-3.3.12.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/26-pekko-parsing_3-1.4.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/27-parboiled_3-2.5.1.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/28-cats-core_3-2.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/29-cats-kernel_3-2.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/30-simulacrum-scalafix-annotations_3-0.5.4.jar",
+      "revision": "53be8c017d46423feb396d91e3b4cb67c853524b",
+      "frozenLibraryArtifacts": [
+        {
+          "name": "baseline_3-0.0.0-probe.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/00-baseline_3-0.0.0-probe.jar",
+          "sha256": "1b7e14e50f52492ad29eac2a632183ca62190a05d8d363b889c6cf20afba3eab",
+          "bytes": 234296
+        },
+        {
+          "name": "scala3-library_3-3.3.8.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/01-scala3-library_3-3.3.8.jar",
+          "sha256": "2c6eace9158df8ee4485a06128a479d968c1ebfc83ae9b1a394b58429f0d1492",
+          "bytes": 1254536
+        },
+        {
+          "name": "spoonbill-pekko_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/02-spoonbill-pekko_3-4.0.0.jar",
+          "sha256": "71ea31696bf2701639b9755f1818440cc4ed14b411ce5b2c66e3ebb548cba641",
+          "bytes": 135507
+        },
+        {
+          "name": "spoonbill-security-jdbc_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/03-spoonbill-security-jdbc_3-4.0.0.jar",
+          "sha256": "b1c8a5ee4f9b4d88b0e13e7f5ff3ab30f38a022e5419acb574bf8811a399f9eb",
+          "bytes": 336076
+        },
+        {
+          "name": "spoonbill-ce3_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/04-spoonbill-ce3_3-4.0.0.jar",
+          "sha256": "d351f15ffbefd6165122f89635230de82631221a4bc3b87fe38fb2725f5afbbd",
+          "bytes": 11339
+        },
+        {
+          "name": "postgresql-42.7.13.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/05-postgresql-42.7.13.jar",
+          "sha256": "6e0e4cc2d8cae902084f8a2b18728b073a6fd9d1f87c9d8bff8f298c18185b93",
+          "bytes": 1220948
+        },
+        {
+          "name": "scala-library-2.13.18.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/06-scala-library-2.13.18.jar",
+          "sha256": "4e85d96ff7bc7dc627985523c3541b9917aaa08e956391380c42db21a2c4e5a0",
+          "bytes": 5940741
+        },
+        {
+          "name": "spoonbill_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/07-spoonbill_3-4.0.0.jar",
+          "sha256": "e99718deb8bdcacc14defb9e2de959be70938fa25b3270c14b05e9f3e5eb2b8b",
+          "bytes": 2103880
+        },
+        {
+          "name": "pekko-actor_3-1.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/08-pekko-actor_3-1.7.0.jar",
+          "sha256": "30811858601f7297e74777772f2e1eec7e9cf90c00de46aaa5ded1cb5bed7e86",
+          "bytes": 5475010
+        },
+        {
+          "name": "pekko-stream_3-1.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/09-pekko-stream_3-1.7.0.jar",
+          "sha256": "eef316ea8ccbc78ab3d73dce13262bed455091baeb437121e657f833439cd1a1",
+          "bytes": 7293601
+        },
+        {
+          "name": "pekko-http_3-1.4.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/10-pekko-http_3-1.4.0.jar",
+          "sha256": "3ac7d4bde470d4502cc8c8d07d2339e9e403ea27bc91bf78914881923fd37449",
+          "bytes": 2574788
+        },
+        {
+          "name": "spoonbill-effect_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/11-spoonbill-effect_3-4.0.0.jar",
+          "sha256": "1aedbf7bc8d6be7a56428f69d7e22348a4dda837f2b6bcf4a5a180e26107a6fd",
+          "bytes": 246313
+        },
+        {
+          "name": "cats-effect_3-3.3.12.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/12-cats-effect_3-3.3.12.jar",
+          "sha256": "4b981caf39cabcbdc5d914695209d520b635693aeff9cc1a9de72d4e420c07ce",
+          "bytes": 593538
+        },
+        {
+          "name": "checker-qual-3.55.1.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/13-checker-qual-3.55.1.jar",
+          "sha256": "857658c8bdcbff794949a8d9922f88d63ee3751c203c7cd7d21ea97f9e745288",
+          "bytes": 241885
+        },
+        {
+          "name": "spoonbill-core_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/14-spoonbill-core_3-4.0.0.jar",
+          "sha256": "e7e74e8de0e14dd1fe788977e86e54a8533ab5e0ce6c0868482c1345b9be0f3b",
+          "bytes": 234527
+        },
+        {
+          "name": "spoonbill-web_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/15-spoonbill-web_3-4.0.0.jar",
+          "sha256": "356d7569d7e01a4d5b2cd833fbca2378f85dcf9bf532f73ec7b56bd8f397e596",
+          "bytes": 211603
+        },
+        {
+          "name": "avocet-core_3-1.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/16-avocet-core_3-1.0.0.jar",
+          "sha256": "b2fdf6d6135e99fe4331dacb82650c7b6ed981d149217fcba3401a9c2f9c54e1",
+          "bytes": 294158
+        },
+        {
+          "name": "avocet-events_3-1.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/17-avocet-events_3-1.0.0.jar",
+          "sha256": "c627d7ca5f0f6bc2db97b03d9be9eab1cd7c1cbdb310ca0dab027da8ab65fe48",
+          "bytes": 14583
+        },
+        {
+          "name": "config-1.4.9.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/18-config-1.4.9.jar",
+          "sha256": "47d13e3196c84f2a8ccd014ae563738c3da5b7406b38e03505ec0601a2f4fc37",
+          "bytes": 297970
+        },
+        {
+          "name": "pekko-protobuf-v3_3-1.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/19-pekko-protobuf-v3_3-1.7.0.jar",
+          "sha256": "67c511644ab095f9de5fedd29ccee2eb52397619daa363777b210b2c86fc13e5",
+          "bytes": 1926661
+        },
+        {
+          "name": "reactive-streams-1.0.4.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/20-reactive-streams-1.0.4.jar",
+          "sha256": "f75ca597789b3dac58f61857b9ac2e1034a68fa672db35055a8fb4509e325f28",
+          "bytes": 11640
+        },
+        {
+          "name": "ssl-config-core_3-0.7.1.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/21-ssl-config-core_3-0.7.1.jar",
+          "sha256": "f4f3d17978b0714ba8c02f6834c1c6dc87386bc74303bbd2397a1272f53488bd",
+          "bytes": 303385
+        },
+        {
+          "name": "pekko-http-core_3-1.4.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/22-pekko-http-core_3-1.4.0.jar",
+          "sha256": "984f614d3b5bbbaefcab4936d2a29b4aace65d16b992d148a9389458221b615d",
+          "bytes": 5861266
+        },
+        {
+          "name": "spoonbill-bytes_3-4.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/23-spoonbill-bytes_3-4.0.0.jar",
+          "sha256": "476d7913bfb628ad47b5576731b5d1fa3edc33ff8956c72dbd634847cc70e72d",
+          "bytes": 35509
+        },
+        {
+          "name": "cats-effect-kernel_3-3.3.12.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/24-cats-effect-kernel_3-3.3.12.jar",
+          "sha256": "b11acb5d5beae7437d500be57027fde4ead1e9d8977824ef67c4aa0e129a6ad4",
+          "bytes": 1175611
+        },
+        {
+          "name": "cats-effect-std_3-3.3.12.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/25-cats-effect-std_3-3.3.12.jar",
+          "sha256": "00fbf6627496aa544011664f64f4605ecf043ab4c6e7fc7e51940bea1a0787b5",
+          "bytes": 396313
+        },
+        {
+          "name": "pekko-parsing_3-1.4.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/26-pekko-parsing_3-1.4.0.jar",
+          "sha256": "03c076c07aae6e5126485818555b6b11038acf09051359faacfab4f9fbd9c2bc",
+          "bytes": 13996
+        },
+        {
+          "name": "parboiled_3-2.5.1.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/27-parboiled_3-2.5.1.jar",
+          "sha256": "c47b8e001b5b00ed7fbf11f7751e38e14de8b37a5f6f3c11bf8e3a18dc5be946",
+          "bytes": 933840
+        },
+        {
+          "name": "cats-core_3-2.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/28-cats-core_3-2.7.0.jar",
+          "sha256": "6f3e17cb666886b7f21998e981ebf45966fe951898f851437a518a93cab667bd",
+          "bytes": 6697260
+        },
+        {
+          "name": "cats-kernel_3-2.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/29-cats-kernel_3-2.7.0.jar",
+          "sha256": "48285626d0af5d947ab50458a59050e99bd32ce85f0dbb9e108b3853a72e8548",
+          "bytes": 2499582
+        },
+        {
+          "name": "simulacrum-scalafix-annotations_3-0.5.4.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/baseline/30-simulacrum-scalafix-annotations_3-0.5.4.jar",
+          "sha256": "709de38ab97276415f8e3294db0fdd0e6c910da9edfe5c1bbb6b0b5ca1cb7e01",
+          "bytes": 5654
+        }
+      ]
+    },
+    "candidate": {
+      "probeJar": "/tmp/spoonbill-perf-20261011-170722/provider-candidate.jar",
+      "probeSha256": "859ec5de424ced4d094dd8e311043c063768a60bb17f45dfbba35e650ad07fe2",
+      "classpath": "/tmp/spoonbill-perf-20261011-170722/provider-candidate.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/00-candidate_3-0.0.0-probe.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/01-scala3-library_3-3.3.8.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/02-spoonbill-pekko_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/03-spoonbill-security-jdbc_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/04-spoonbill-ce3_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/05-postgresql-42.7.13.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/06-scala-library-2.13.18.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/07-spoonbill_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/08-pekko-actor_3-1.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/09-pekko-stream_3-1.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/10-pekko-http_3-1.4.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/11-spoonbill-effect_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/12-cats-effect_3-3.3.12.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/13-checker-qual-3.55.1.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/14-spoonbill-core_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/15-spoonbill-web_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/16-avocet-core_3-1.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/17-avocet-events_3-1.0.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/18-config-1.4.9.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/19-pekko-protobuf-v3_3-1.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/20-reactive-streams-1.0.4.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/21-ssl-config-core_3-0.7.1.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/22-pekko-http-core_3-1.4.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/23-spoonbill-bytes_3.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/24-cats-effect-kernel_3-3.3.12.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/25-cats-effect-std_3-3.3.12.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/26-pekko-parsing_3-1.4.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/27-parboiled_3-2.5.1.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/28-cats-core_3-2.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/29-cats-kernel_3-2.7.0.jar:/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/30-simulacrum-scalafix-annotations_3-0.5.4.jar",
+      "revision": "9e5b3011a088526096cf7585e60415ddb45e1640",
+      "frozenLibraryArtifacts": [
+        {
+          "name": "candidate_3-0.0.0-probe.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/00-candidate_3-0.0.0-probe.jar",
+          "sha256": "43086addcc161f89f976f522cc7373e126f1478d0a416def8a1b79331e53df9d",
+          "bytes": 234347
+        },
+        {
+          "name": "scala3-library_3-3.3.8.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/01-scala3-library_3-3.3.8.jar",
+          "sha256": "2c6eace9158df8ee4485a06128a479d968c1ebfc83ae9b1a394b58429f0d1492",
+          "bytes": 1254536
+        },
+        {
+          "name": "spoonbill-pekko_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/02-spoonbill-pekko_3.jar",
+          "sha256": "33d607b695dc1f4524d7e194b8af27f2fec3017bf13d39704d0e1921f5c3788e",
+          "bytes": 135516
+        },
+        {
+          "name": "spoonbill-security-jdbc_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/03-spoonbill-security-jdbc_3.jar",
+          "sha256": "1cb7ae2a0e6b93f7b89b28de8857d27a1e13b33c5165c024f0a085b09466be74",
+          "bytes": 372009
+        },
+        {
+          "name": "spoonbill-ce3_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/04-spoonbill-ce3_3.jar",
+          "sha256": "228aa13f8c0dde3634c0ee6978a8b480d795e48389eae78a2d49ebc5c01df996",
+          "bytes": 11349
+        },
+        {
+          "name": "postgresql-42.7.13.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/05-postgresql-42.7.13.jar",
+          "sha256": "6e0e4cc2d8cae902084f8a2b18728b073a6fd9d1f87c9d8bff8f298c18185b93",
+          "bytes": 1220948
+        },
+        {
+          "name": "scala-library-2.13.18.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/06-scala-library-2.13.18.jar",
+          "sha256": "4e85d96ff7bc7dc627985523c3541b9917aaa08e956391380c42db21a2c4e5a0",
+          "bytes": 5940741
+        },
+        {
+          "name": "spoonbill_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/07-spoonbill_3.jar",
+          "sha256": "7dee5a46f37151259502aa20b5b877414053f73e1872025eaae322f3ba8bafbe",
+          "bytes": 2154252
+        },
+        {
+          "name": "pekko-actor_3-1.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/08-pekko-actor_3-1.7.0.jar",
+          "sha256": "30811858601f7297e74777772f2e1eec7e9cf90c00de46aaa5ded1cb5bed7e86",
+          "bytes": 5475010
+        },
+        {
+          "name": "pekko-stream_3-1.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/09-pekko-stream_3-1.7.0.jar",
+          "sha256": "eef316ea8ccbc78ab3d73dce13262bed455091baeb437121e657f833439cd1a1",
+          "bytes": 7293601
+        },
+        {
+          "name": "pekko-http_3-1.4.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/10-pekko-http_3-1.4.0.jar",
+          "sha256": "3ac7d4bde470d4502cc8c8d07d2339e9e403ea27bc91bf78914881923fd37449",
+          "bytes": 2574788
+        },
+        {
+          "name": "spoonbill-effect_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/11-spoonbill-effect_3.jar",
+          "sha256": "1f209bd65de5129aaf4d9c4760cb8edcd205c79434095e9270144dcbcb84ac7f",
+          "bytes": 246344
+        },
+        {
+          "name": "cats-effect_3-3.3.12.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/12-cats-effect_3-3.3.12.jar",
+          "sha256": "4b981caf39cabcbdc5d914695209d520b635693aeff9cc1a9de72d4e420c07ce",
+          "bytes": 593538
+        },
+        {
+          "name": "checker-qual-3.55.1.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/13-checker-qual-3.55.1.jar",
+          "sha256": "857658c8bdcbff794949a8d9922f88d63ee3751c203c7cd7d21ea97f9e745288",
+          "bytes": 241885
+        },
+        {
+          "name": "spoonbill-core_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/14-spoonbill-core_3.jar",
+          "sha256": "7d524c7af54359fa716cddae8a719e8a500e41556459443f8e8fd178d76d02f9",
+          "bytes": 257454
+        },
+        {
+          "name": "spoonbill-web_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/15-spoonbill-web_3.jar",
+          "sha256": "28f590665d8eb3dcf8ef5c9978dac15a98d8d8e371b8d5a48d2b5367dc59041f",
+          "bytes": 211607
+        },
+        {
+          "name": "avocet-core_3-1.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/16-avocet-core_3-1.0.0.jar",
+          "sha256": "b2fdf6d6135e99fe4331dacb82650c7b6ed981d149217fcba3401a9c2f9c54e1",
+          "bytes": 294158
+        },
+        {
+          "name": "avocet-events_3-1.0.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/17-avocet-events_3-1.0.0.jar",
+          "sha256": "c627d7ca5f0f6bc2db97b03d9be9eab1cd7c1cbdb310ca0dab027da8ab65fe48",
+          "bytes": 14583
+        },
+        {
+          "name": "config-1.4.9.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/18-config-1.4.9.jar",
+          "sha256": "47d13e3196c84f2a8ccd014ae563738c3da5b7406b38e03505ec0601a2f4fc37",
+          "bytes": 297970
+        },
+        {
+          "name": "pekko-protobuf-v3_3-1.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/19-pekko-protobuf-v3_3-1.7.0.jar",
+          "sha256": "67c511644ab095f9de5fedd29ccee2eb52397619daa363777b210b2c86fc13e5",
+          "bytes": 1926661
+        },
+        {
+          "name": "reactive-streams-1.0.4.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/20-reactive-streams-1.0.4.jar",
+          "sha256": "f75ca597789b3dac58f61857b9ac2e1034a68fa672db35055a8fb4509e325f28",
+          "bytes": 11640
+        },
+        {
+          "name": "ssl-config-core_3-0.7.1.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/21-ssl-config-core_3-0.7.1.jar",
+          "sha256": "f4f3d17978b0714ba8c02f6834c1c6dc87386bc74303bbd2397a1272f53488bd",
+          "bytes": 303385
+        },
+        {
+          "name": "pekko-http-core_3-1.4.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/22-pekko-http-core_3-1.4.0.jar",
+          "sha256": "984f614d3b5bbbaefcab4936d2a29b4aace65d16b992d148a9389458221b615d",
+          "bytes": 5861266
+        },
+        {
+          "name": "spoonbill-bytes_3.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/23-spoonbill-bytes_3.jar",
+          "sha256": "52a0c9c04e7b197c686cc3d763b13ea995f61dfb01d25e20fb69ab4955df0e18",
+          "bytes": 35518
+        },
+        {
+          "name": "cats-effect-kernel_3-3.3.12.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/24-cats-effect-kernel_3-3.3.12.jar",
+          "sha256": "b11acb5d5beae7437d500be57027fde4ead1e9d8977824ef67c4aa0e129a6ad4",
+          "bytes": 1175611
+        },
+        {
+          "name": "cats-effect-std_3-3.3.12.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/25-cats-effect-std_3-3.3.12.jar",
+          "sha256": "00fbf6627496aa544011664f64f4605ecf043ab4c6e7fc7e51940bea1a0787b5",
+          "bytes": 396313
+        },
+        {
+          "name": "pekko-parsing_3-1.4.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/26-pekko-parsing_3-1.4.0.jar",
+          "sha256": "03c076c07aae6e5126485818555b6b11038acf09051359faacfab4f9fbd9c2bc",
+          "bytes": 13996
+        },
+        {
+          "name": "parboiled_3-2.5.1.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/27-parboiled_3-2.5.1.jar",
+          "sha256": "c47b8e001b5b00ed7fbf11f7751e38e14de8b37a5f6f3c11bf8e3a18dc5be946",
+          "bytes": 933840
+        },
+        {
+          "name": "cats-core_3-2.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/28-cats-core_3-2.7.0.jar",
+          "sha256": "6f3e17cb666886b7f21998e981ebf45966fe951898f851437a518a93cab667bd",
+          "bytes": 6697260
+        },
+        {
+          "name": "cats-kernel_3-2.7.0.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/29-cats-kernel_3-2.7.0.jar",
+          "sha256": "48285626d0af5d947ab50458a59050e99bd32ce85f0dbb9e108b3853a72e8548",
+          "bytes": 2499582
+        },
+        {
+          "name": "simulacrum-scalafix-annotations_3-0.5.4.jar",
+          "file": "/tmp/spoonbill-perf-20261011-170722/browser-artifacts/candidate/30-simulacrum-scalafix-annotations_3-0.5.4.jar",
+          "sha256": "709de38ab97276415f8e3294db0fdd0e6c910da9edfe5c1bbb6b0b5ca1cb7e01",
+          "bytes": 5654
+        }
+      ]
+    }
+  },
+  "sources": {
+    "ProviderProbe.scala": "b80ba1e1cbabd88a6e53847b45c8082d4b8c12a4225e905eab71800818a5bb84",
+    "baseline/src/main/scala/ProviderAdapter.scala": "d10ff3897f06401f650e414f9e4d10b9ea9549ebe597167a372f164cc8bc338e",
+    "candidate/src/main/scala/ProviderAdapter.scala": "309740b28ead915c8b2f7c35407da1e6f71110c0fc87b14a794227bca4eead90"
+  },
+  "runs": [
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-0-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-0-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-1-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-1-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-0-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-0-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-1-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-1-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-2-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-2-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 3,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-3-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 3,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-3-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 4,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-4-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 4,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-4-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 5,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-5-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 5,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-5-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-0-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-0-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-1-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-1-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-0-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-0-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-1-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-1-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-2-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-2-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 3,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-3-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 3,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-3-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 4,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-4-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 4,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-4-right"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 5,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-5-left"
+    },
+    {
+      "pass": "latency",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 5,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-5-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-0-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-0-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-1-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-1-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-0-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-0-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-1-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-1-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-2-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "memory",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-2-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-0-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 0,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-0-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "left",
+      "variant": "baseline",
+      "block": "calibration-1-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "calibration",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "calibration-1-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-0-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 0,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-0-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "left",
+      "variant": "candidate",
+      "block": "comparison-1-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 1,
+      "side": "right",
+      "variant": "baseline",
+      "block": "comparison-1-right"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "left",
+      "variant": "baseline",
+      "block": "comparison-2-left"
+    },
+    {
+      "pass": "memory",
+      "backend": "jdbc",
+      "mode": "comparison",
+      "pair": 2,
+      "side": "right",
+      "variant": "candidate",
+      "block": "comparison-2-right"
+    }
+  ]
+}
