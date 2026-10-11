@@ -5,7 +5,7 @@ import avocet.dsl.*
 import avocet.dsl.html.*
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong, AtomicReference}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, Future, Promise}
@@ -22,11 +22,17 @@ import spoonbill.web.{PathAndQuery, Request}
 
 class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
   private def await[A](value: Future[A]): A = Await.result(value, 3.seconds)
-  private class Fixture(limits: BoundedPresentationStore.Limits = BoundedPresentationStore.Limits()) {
+  private class Fixture(
+    limits: BoundedPresentationStore.Limits = BoundedPresentationStore.Limits(),
+    ownership: BrowserOwnership = BrowserOwnership.ExclusiveScope,
+    allowed: String => Boolean = _ => true
+  ) {
     private val ids    = new AtomicLong()
     private val time   = Instant.parse("2026-10-11T00:00:00Z")
     val releaseFails   = new AtomicBoolean()
     val authorizeFails = new AtomicBoolean()
+    val authorizeCalls = new AtomicInteger()
+    val authorizeNewGeneration = new AtomicBoolean()
     val factoryFails   = new AtomicBoolean()
     val releaseDelay   = new AtomicReference(Option.empty[Promise[Unit]])
     val authorizeDelay = new AtomicReference(Option.empty[Promise[Unit]])
@@ -48,15 +54,25 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
     )
     val persistence = new BrowserPersistence[Future, String] {
       def scope                                     = underlying.scope
-      def capabilities                              = underlying.capabilities
+      def capabilities                              = underlying.capabilities.copy(ownership = ownership)
       def accepts(receipt: CommittedAuthentication) = underlying.accepts(receipt)
       def capture(binding: String, token: Option[String], activate: Boolean) =
         underlying.capture(binding, token, activate)
       def claim(identity: BrowserIdentity[String], qsid: Qsid, id: ConnectionId, existingOnly: Boolean) =
         underlying.claim(identity, qsid, id, existingOnly)
-      def authorize(view: BrowserView[String]) =
+      def authorize(view: BrowserView[String]) = {
+        authorizeCalls.incrementAndGet()
         if (authorizeFails.get()) Future.failed(authorizeError)
-        else authorizeDelay.get().fold(Future.unit)(_.future).flatMap(_ => underlying.authorize(view))
+        else authorizeDelay.get().fold(Future.unit)(_.future).flatMap(_ => underlying.authorize(view)).map {
+          case Right(identity) if authorizeNewGeneration.get() =>
+            // A provider may return a fresh observation of changed authority.
+            // Preserve issuer and credentials so the coordinator must compare
+            // the captured generation, not only its presentation policy.
+            Right(new BrowserIdentity[String](identity.issuer, identity.binding, identity.token,
+              identity.generation + 1, identity.host, identity.sessionId))
+          case result => result
+        }
+      }
       def release(view: BrowserView[String]): Future[Unit] =
         if (releaseFails.get()) Future.failed(releaseError)
         else releaseDelay.get().fold(Future.unit)(_.future).flatMap(_ => underlying.release(view))
@@ -73,7 +89,7 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
     }
     val browser = new BrowserAuthentication[Future, String, String](
       persistence,
-      BrowserPresentation(() => "fresh", (_, _) => true, (state, _, _) => state),
+      BrowserPresentation(() => "fresh", (state, _) => allowed(state), (state, _, _) => state),
       config,
       storageLimits = limits,
       clock = () => time,
@@ -112,6 +128,42 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
     val fixture = new Fixture
     try body(fixture)
     finally fixture.close()
+  }
+
+  "Shared output policy" should "check current and produced presentation in one observation and detach rejected owners" in {
+    for ((produced, current, accepted) <- Vector(
+      ("fresh", "fresh", true), ("forbidden", "fresh", false), ("fresh", "forbidden", false)
+    )) {
+      val fixture = new Fixture(ownership = BrowserOwnership.SharedViews, allowed = _ != "forbidden")
+      try {
+        val guard = fixture.open()
+        fixture.authorizeCalls.set(0)
+        val result = guard.outputAdmission.get("fixed frame", produced, current)
+        if (accepted) await(result) shouldBe "fixed frame"
+        else {
+          intercept[SessionAccessDenied](await(result))
+          await(fixture.underlying.resources).ownedViews shouldBe 0
+        }
+        fixture.authorizeCalls.get() shouldBe 1
+      } finally fixture.close()
+    }
+  }
+
+  it should "reject changed captured authority in the same observation even when both presentations remain allowed" in {
+    val fixture = new Fixture(ownership = BrowserOwnership.SharedViews)
+    try {
+      val guard = fixture.open()
+      fixture.authorizeCalls.set(0)
+      fixture.authorizeNewGeneration.set(true)
+      intercept[SessionAccessDenied](await(guard.outputAdmission.get("fixed frame", "fresh", "fresh")))
+      fixture.authorizeCalls.get() shouldBe 1
+      await(fixture.underlying.resources).ownedViews shouldBe 0
+      // Detachment prevents later output even if the provider's observation
+      // returns to its earlier value; a new socket must acquire fresh authority.
+      fixture.authorizeNewGeneration.set(false)
+      intercept[SessionAccessDenied](await(guard.outputAdmission.get("later frame", "fresh", "fresh")))
+      fixture.authorizeCalls.get() shouldBe 1
+    } finally fixture.close()
   }
 
   "Coordinator cleanup" should "keep a failed release retryable without restoring its discarded presentation" in withFixture {

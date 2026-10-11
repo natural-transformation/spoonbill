@@ -52,7 +52,8 @@ final class Frontend[F[_]: Effect](
   rpcDeadlineScheduler: Option[Frontend.RpcDeadlineScheduler] = None,
   viewRecoveryEpoch: Option[spoonbill.security.Versions.ViewOwnershipEpoch] = None,
   captureSensitiveAuthorization: Option[spoonbill.sensitive.Purpose => F[SensitiveAuthorization[F]]] = None,
-  expectedActionAuthority: Option[AnyRef] = None
+  expectedActionAuthority: Option[AnyRef] = None,
+  outputAdmission: Option[Frontend.OutputAdmission[F]] = None
 )(implicit
   reporter: Reporter,
   ec: ExecutionContext
@@ -260,15 +261,26 @@ final class Frontend[F[_]: Effect](
   val outgoingMessages: Stream[F, String] = outgoingQueue.stream.mapAsync { outgoing =>
     if (!outgoing.pending()) Effect[F].pure(Option.empty[String])
     else {
+      val fused = if (outputAdmission.isEmpty) None
+        else outgoing.producer.collect { case value: FusedOutputAuthorization[F] @unchecked => value }
       val allowed = outgoing.producer match {
+        case Some(_: FusedOutputAuthorization[F] @unchecked) if fused.nonEmpty => requireOpen()
         case Some(check) => authorizeInteraction().flatMap(_ => Effect[F].delayAsync(check())).flatMap(_ => requireOpen())
         case None => requireOpen()
       }
-      allowed.flatMap { _ => outgoing.sensitiveId match {
+      val materialized = allowed.flatMap { _ => outgoing.sensitiveId match {
         case Some(id) => sensitiveRuntime.pull(id)
         case None => Effect[F].pure(Option.when(outgoing.pending())(outgoing.message))
       }}
-        .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
+      val admitted = fused.orElse(outputAdmission) match {
+        case Some(admit) if outgoing.producer.nonEmpty => materialized.flatMap {
+          case Some(message) => admit(message).map(Some(_))
+          case None => Effect[F].pure(Option.empty[String])
+        }
+        // Preserve the existing effect chain for single-owner applications.
+        case _ => materialized
+      }
+      admitted.recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
     }
   }.collect { case Some(message) => message }
 
@@ -333,7 +345,13 @@ final class Frontend[F[_]: Effect](
         case None => captureOutputAuthorization.fold(Effect[F].pure(() => authorizeInteraction()))(capture => Effect[F].delayAsync(capture()))
       }
       captured.flatMap { check =>
-        authorizeInteraction().flatMap(_ => Effect[F].delayAsync(check()))
+        val allowed = check match {
+          // Current and produced presentation are checked together when this
+          // fixed frame is admitted, before any transport receives it.
+          case _: FusedOutputAuthorization[F] @unchecked if outputAdmission.nonEmpty => requireOpen()
+          case _ => authorizeInteraction().flatMap(_ => Effect[F].delayAsync(check()))
+        }
+        allowed
           .flatMap { _ =>
             if (!pending()) Effect[F].unit
             else enqueueOutput(str, Some(check), pending, rejectIfFull, resetView, onPublished)
@@ -400,9 +418,18 @@ final class Frontend[F[_]: Effect](
           if (canceled.get()) Effect[F].pure(None)
           else stream.pull().flatMap {
             case None => Effect[F].delay { downloadFiles.remove(id); Option.empty[Bytes] }
-            case some => Effect[F].pure(some)
+            case some @ Some(chunk) => outputAdmission match {
+              case None => Effect[F].pure(some)
+              case Some(admit) =>
+                // Bytes may wrap a producer-owned mutable array. Freeze this
+                // chunk before its authoritative admission, not afterwards.
+                val frozen = Bytes.wrap(chunk.asArray.clone())
+                authorizeInteraction().flatMap(_ => admit(frozen)).map(Some(_))
+            }
           }.recoverF { case error =>
-            Effect[F].delay(downloadFiles.remove(id)).flatMap(_ => Effect[F].fail(error))
+            if (outputAdmission.isEmpty)
+              Effect[F].delay(downloadFiles.remove(id)).flatMap(_ => Effect[F].fail(error))
+            else cancel().recover { case _ => () }.flatMap(_ => close()).flatMap(_ => Effect[F].fail(error))
           }
         def cancel(): F[Unit] = Effect[F].delay(canceled.compareAndSet(false, true)).flatMap {
           case true => Effect[F].delay(downloadFiles.remove(id)).flatMap(_ => stream.cancel())
@@ -732,6 +759,16 @@ final class Frontend[F[_]: Effect](
 }
 
 object Frontend {
+
+  /** Receives one materialized output; never a reusable permission. */
+  trait OutputAdmission[F[_]] {
+    def apply[A](output: A): F[A]
+  }
+
+  /** Installed only by the guarded runtime. The final admission checks current
+    * and producer presentation plus ownership in one authority observation.
+    */
+  private[spoonbill] trait FusedOutputAuthorization[F[_]] extends (() => F[Unit]) with OutputAdmission[F]
 
   /** Positive bounded waits; zero/negative values never disable RPC deadlines.
     * The file timeout covers waiting for an incoming transfer to be supplied,

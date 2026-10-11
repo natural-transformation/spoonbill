@@ -125,6 +125,13 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
         }
     }
   }
+  private val saveDraft = actions.authenticated(
+    name("example.save-draft"),
+    InputSchema.text(field("draft"), 4096).zip(InputSchema.text(field("selectedItem"), 64)),
+    ActionPolicy[F, (String, String), Principal]((_, _) => F.pure(AccessDecision.Allowed))
+  ) { case ((draft, selectedItem), _) =>
+    F.pure(UiOutcome.update[Page](_.copy(draft = draft, selectedItem = selectedItem, message = "Draft saved.")))
+  }
   private def hidden(id: CeremonyId): Document.Node[Binding] =
     input(`type` := "hidden", avocet.dsl.html.name := "ceremony", value := id.value.toString)
   private def signIn(page: Page): Document.Node[Binding] = div(
@@ -173,6 +180,13 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
           div(
             p(s"Authenticated account: $account"),
             p(s"This view's last confirmed increment: ${page.counter}"),
+            form(
+              ActionForms.onSubmit[F, Page, Any, (String, String), Principal](saveDraft, browser.authority, onRejected),
+              label("Selected item", input(avocet.dsl.html.name := "selectedItem", value := page.selectedItem)),
+              label("Draft", textarea(avocet.dsl.html.name := "draft", page.draft)),
+              button("Save draft")
+            ),
+            p(id := "saved-draft", s"Saved draft: ${page.draft}"),
             if (page.mutationUnresolved) p("This view has an unresolved protected mutation.")
             else
               form(
@@ -189,10 +203,12 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
   val config: SpoonbillServiceConfig[F, Page, Any] = browser.configure(
     SpoonbillServiceConfig(
       stateLoader = StateLoader[F, Page] { (_, request) =>
-        browser.currentPrincipal(request).map {
+        browser.currentPrincipal(request).flatMap {
           case Right(current) =>
-            Page(account = current.map(_.name), protectedPage = request.pq.asPath == Root / "protected")
-          case Left(_) => throw new SessionAccessDenied
+            current.fold(F.pure(0))(accounts.currentCount).map { count =>
+              Page(account = current.map(_.name), protectedPage = request.pq.asPath == Root / "protected", counter = count)
+            }
+          case Left(_) => F.fail(new SessionAccessDenied)
         }
       },
       document = document,

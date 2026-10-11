@@ -44,7 +44,10 @@ object Main {
       sys.env.get("SPOONBILL_JDBC_TEST_USER").foreach(properties.setProperty("user", _))
       sys.env.get("SPOONBILL_JDBC_TEST_PASSWORD").foreach(properties.setProperty("password", _))
       properties.setProperty("currentSchema", schema)
-      properties.setProperty("options", "-c statement_timeout=15000 -c lock_timeout=12000")
+      properties.setProperty(
+        "options",
+        "-c statement_timeout=15000 -c lock_timeout=12000 -c idle_in_transaction_session_timeout=10000"
+      )
       properties.setProperty("connectTimeout", "5")
       properties.setProperty("socketTimeout", "20")
       properties.setProperty("cancelSignalTimeout", "5")
@@ -67,7 +70,21 @@ object Main {
     require(port > 0 && port <= 65535, "Port must be between 1 and 65535")
     val provider = sys.env.getOrElse("SPOONBILL_AUTH_PROVIDER", "memory")
     require(Set("memory", "jdbc").contains(provider), "SPOONBILL_AUTH_PROVIDER must be memory or jdbc")
-    val origin = s"http://localhost:$port"
+    val clustered = sys.env.get("SPOONBILL_AUTH_CLUSTERED").contains("true")
+    val snapshotVersion = sys.env.get("SPOONBILL_AUTH_SNAPSHOT_VERSION").fold(1)(_.toInt)
+    val fixtureDiagnostics = sys.env.get("SPOONBILL_AUTH_TEST_FIXTURES").contains("true")
+    require(snapshotVersion == 1 || snapshotVersion == 2 || (fixtureDiagnostics && snapshotVersion == 3),
+      "Select synthetic snapshot version 1 or 2; incompatible 3 requires explicit test fixtures")
+    val activeViewLimit = sys.env.get("SPOONBILL_AUTH_MAX_ACTIVE_VIEWS").fold(16)(_.toInt)
+    require(activeViewLimit > 0 && activeViewLimit <= 32, "Synthetic active view limit must be between 1 and 32")
+    require(!clustered || provider == "jdbc", "Clustered mode requires the shared JDBC provider")
+    val origin = sys.env.getOrElse("SPOONBILL_AUTH_ORIGIN", s"http://localhost:$port")
+    val publicUri = URI.create(origin)
+    require(
+      publicUri.getScheme == "http" && Set("localhost", "127.0.0.1").contains(publicUri.getHost) &&
+        publicUri.getRawPath.isEmpty && publicUri.getRawQuery == null && publicUri.getRawFragment == null,
+      "The synthetic example requires a loopback HTTP origin without a path"
+    )
     val source = Option.when(provider == "jdbc") {
       val url = sys.env.getOrElse(
         "SPOONBILL_JDBC_TEST_URL",
@@ -125,7 +142,16 @@ object Main {
         case Some((database, _)) =>
           val publicTestKey =
             MessageDigest.getInstance("SHA-256").digest("public-synthetic-spoonbill-example-key-v1".getBytes(UTF_8))
-          new JdbcAccounts(database, workerContext, origin, JdbcCredentialVault.aesGcm(publicTestKey))
+          new JdbcAccounts(
+            database,
+            workerContext,
+            origin,
+            JdbcCredentialVault.aesGcm(publicTestKey),
+            clustered = clustered,
+            snapshotVersion = snapshotVersion,
+            activeViewLimit = activeViewLimit,
+            fixtureDiagnostics = fixtureDiagnostics
+          )
       }
       owned.set(Some(accounts))
       val application = new Application[Future](accounts)

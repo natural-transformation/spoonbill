@@ -1,6 +1,7 @@
 package spoonbill.snapshot
 
 import avocet.Id
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Future, Promise}
@@ -55,6 +56,61 @@ class ViewSnapshotSessionSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
+  it should "leave a failed restore uninitialized and retry without overwriting its durable projection" in {
+    val store = new Store(Right(SnapshotLoad.Restored(initial, 7)))
+    val failFirst = new AtomicBoolean(true)
+    val original = new IllegalArgumentException("Synthetic rejected presentation")
+    val bound = ViewSnapshotSession.projected[Future, State, Int](store, _.counter, (state, count) => {
+      if (failFirst.getAndSet(false)) throw original
+      state.copy(counter = count)
+    })
+    for {
+      rejected <- bound.initialize(fresh).failed
+      uninitialized <- bound.commit(fresh.copy(counter = 99)).failed
+      _ = store.saves shouldBe empty
+      restored <- bound.initialize(fresh)
+      _ <- bound.commit(restored.copy(counter = 8))
+    } yield {
+      rejected should be theSameInstanceAs original
+      uninitialized shouldBe a[IllegalStateException]
+      restored shouldBe fresh.copy(counter = 7)
+      store.saves shouldBe Vector(initial -> 8)
+      store.resets shouldBe empty
+    }
+  }
+
+  it should "reject concurrent and repeated successful initialization without losing the accepted revision" in {
+    val entered = Promise[Unit]()
+    val loaded = Promise[Either[ViewSnapshotError, SnapshotLoad[Int]]]()
+    val loads = new AtomicInteger()
+    val store = new Store(Right(SnapshotLoad.Restored(initial, 7))) {
+      override def load() = {
+        loads.incrementAndGet()
+        entered.trySuccess(())
+        loaded.future
+      }
+    }
+    val bound = session(store)
+    val first = bound.initialize(fresh)
+    for {
+      _ <- entered.future
+      concurrent <- bound.initialize(fresh).failed
+      premature <- bound.commit(fresh).failed
+      _ = loaded.success(Right(SnapshotLoad.Restored(initial, 7)))
+      restored <- first
+      _ <- bound.commit(restored.copy(counter = 8))
+      repeated <- bound.initialize(fresh).failed
+      _ <- bound.commit(restored.copy(counter = 9))
+    } yield {
+      concurrent shouldBe a[IllegalStateException]
+      premature shouldBe a[IllegalStateException]
+      repeated shouldBe a[IllegalStateException]
+      loads.get() shouldBe 1
+      store.saves.map { case (revision, value) => revision.toLong -> value } shouldBe Vector(0L -> 8, 1L -> 9)
+      store.resets shouldBe empty
+    }
+  }
+
   it should "reset an incompatible identity without applying its presentation" in {
     val store = new Store(Right(SnapshotLoad.ResetRequired(initial, SnapshotResetReason.IdentityChanged)))
     session(store).initialize(fresh).map { state =>
@@ -68,6 +124,20 @@ class ViewSnapshotSessionSpec extends AsyncFlatSpec with Matchers {
     val store = new Store(Left(ViewSnapshotError.MalformedSnapshot))
     session(store).initialize(fresh).failed.map { error =>
       error.asInstanceOf[ViewSnapshotException].error shouldBe ViewSnapshotError.MalformedSnapshot
+      store.resets shouldBe empty
+      store.saves shouldBe empty
+    }
+  }
+
+  it should "preserve an acknowledged projection when this node cannot read its schema" in {
+    val store = new Store(Right(SnapshotLoad.ResetRequired(initial, SnapshotResetReason.SchemaChanged)))
+    val bound = session(store)
+    for {
+      rejected <- bound.initialize(fresh).failed
+      uninitialized <- bound.commit(fresh).failed
+    } yield {
+      rejected.asInstanceOf[ViewSnapshotException].error shouldBe ViewSnapshotError.SchemaIncompatible
+      uninitialized shouldBe a[IllegalStateException]
       store.resets shouldBe empty
       store.saves shouldBe empty
     }

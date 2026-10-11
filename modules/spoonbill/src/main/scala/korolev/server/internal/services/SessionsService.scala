@@ -115,6 +115,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                  .lift(rh.pq)
                  .fold(Effect[F].pure(defaultState))(f => f(defaultState))
       _ <- config.sessionAccessControl.fold(Effect[F].unit)(control => required(control.authorizeHttp(rh, state)))
+      _ <- config.sessionAccessControl.flatMap(_.prepareHttp(qsid, rh, state)).fold(Effect[F].unit)(required(_))
       _ <- stateStorage.create(qsid.deviceId, qsid.sessionId, state)
       _ <- Effect[F].delay {
         bootstrapPath.foreach { path =>
@@ -201,6 +202,32 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       requireLive().flatMap(_ => required(guard.authorize(state))).flatMap(_ => requireLive())
         .recoverF { case error => deny(error) }
 
+    final class OutputAuthorization(raw: StateManager[F], guard: SessionGuard[F, S]) {
+      private def current: F[S] = raw.read[S](avocet.Id.TopLevel).flatMap {
+        case Some(value) => Effect[F].pure(value)
+        case None => Effect[F].fail(new SessionAccessDenied)
+      }
+      private def admit[A](policy: spoonbill.server.SessionOutputAdmission[F, S], produced: S, output: A): F[A] =
+        requireLive().flatMap(_ => current).flatMap { state =>
+          required(policy(output, produced, state))
+        }.flatMap(value => requireLive().as(value))
+          .recoverF { case error => deny(error).flatMap(_ => Effect[F].fail(error)) }
+
+      def producer(state: S): () => F[Unit] = guard.outputAdmission match {
+        case None => () => authorize(guard, state)
+        case Some(policy) => new Frontend.FusedOutputAuthorization[F] {
+          def apply(): F[Unit] = authorize(guard, state)
+          def apply[A](output: A): F[A] = admit(policy, state, output)
+        }
+      }
+      def capture(): F[() => F[Unit]] = current.map(producer)
+      val admission: Option[Frontend.OutputAdmission[F]] = guard.outputAdmission.map { policy =>
+        new Frontend.OutputAdmission[F] {
+          def apply[A](output: A): F[A] = current.flatMap(state => admit(policy, state, output))
+        }
+      }
+    }
+
     def cleanup(): F[Unit] = Effect[F].delay(cleaned.compareAndSet(false, true)).flatMap {
       case false => Effect[F].unit
       case true => for {
@@ -272,9 +299,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         case Some(state) => authorize(guard, state)
         case None => deny(new SessionAccessDenied)
       }
-      captureProducer = () => rawManager.read[S](avocet.Id.TopLevel).flatMap {
-        case Some(state) => Effect[F].pure(() => authorize(guard, state))
-        case None => Effect[F].fail[() => F[Unit]](new SessionAccessDenied)
+      outputAuthorization = guard.outputAdmission.map(_ => new OutputAuthorization(rawManager, guard))
+      captureProducer = () => outputAuthorization match {
+        case Some(output) => output.capture()
+        case None => rawManager.read[S](avocet.Id.TopLevel).flatMap {
+          case Some(state) => Effect[F].pure(() => authorize(guard, state))
+          case None => Effect[F].fail[() => F[Unit]](new SessionAccessDenied)
+        }
       }
       captureSensitive = guard.sensitive.map { policy => (purpose: spoonbill.sensitive.Purpose) =>
         for {
@@ -300,12 +331,14 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         } yield ())
       }
       frontend = new Frontend[F](monitored, config.heartbeatLimit, Some(connectionId), Some(authorizeCurrent),
-        Some(() => ready.get(())), Some(captureProducer), viewRecoveryEpoch = snapshots.map(_.ownerEpoch),
-        captureSensitiveAuthorization = captureSensitive, expectedActionAuthority = guard.actionAuthority)
+        Some(() => ready.get(())), Some(captureProducer), viewRecoveryEpoch = guard.ownershipEpoch.orElse(snapshots.map(_.ownerEpoch)),
+        captureSensitiveAuthorization = captureSensitive, expectedActionAuthority = guard.actionAuthority,
+        outputAdmission = outputAuthorization.flatMap(_.admission))
       _ <- Effect[F].delay(frontendRef.set(Some(frontend)))
       app = new ApplicationInstance[F, S, M](qsid, frontend, manager, initial, config.document, config.rootPath,
         config.router, (rc, k) => pageService.setupStatefulProxy(rc, qsid, k), scheduler, config.reporter,
-        config.recovery, config.delayedRender, Some(() => ready.get(())), Some(state => authorize(guard, state)))
+        config.recovery, config.delayedRender, Some(() => ready.get(())), Some(state => authorize(guard, state)),
+        outputAuthorization.map(output => (state: S) => output.producer(state)))
       _ <- Effect[F].delay(appRef.set(Some(app)))
       _ <- app.initialize()
       state <- rawManager.read[S](avocet.Id.TopLevel).map(_.getOrElse(initial))
@@ -345,7 +378,18 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         // A missing baseline can be discovered after the guard is acquired.
         // Cleanup still closes that guard; the successful recovery result is reload.
         case MissingLocalView => cleanup().map(_ => SessionStart.Reload(): SessionStart[F])
-        case error            => cleanup() *> Effect[F].fail(error)
+        case error =>
+          cleanup() *> Effect[F].delay {
+            error match {
+              case snapshot: spoonbill.snapshot.ViewSnapshotException =>
+                // Report only the closed error code, never a caller-supplied
+                // cause, suppressed exception, view identity or projection.
+                try config.reporter.error("Guarded view snapshot setup rejected",
+                  new spoonbill.snapshot.ViewSnapshotException(snapshot.error))
+                catch { case scala.util.control.NonFatal(_) => () }
+              case _ => ()
+            }
+          } *> Effect[F].fail(error)
       }
     }
   }

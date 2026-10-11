@@ -42,7 +42,7 @@ object BrowserPreparationSpec extends ZIOSpecDefault {
 
   private final class Provider extends TransactionalBrowserPersistence[Future, Task, String] {
     val scope                                              = BrowserProviderScope("native-test", "session")
-    val capabilities                                       = BrowserProviderCapabilities(true, false, true)
+    val capabilities                                       = BrowserProviderCapabilities(true, false, BrowserOwnership.ExclusiveScope)
     private val issuer                                     = new BrowserCapabilityScope[String]
     val durable                                            = new AtomicReference(State())
     val constructions                                      = new AtomicInteger()

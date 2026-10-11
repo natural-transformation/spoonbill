@@ -1,6 +1,6 @@
 # Browser authentication
 
-Spoonbill 4 coordinates browser authentication in Scala. Applications supply
+Spoonbill coordinates browser authentication in Scala. Applications supply
 account policy and host transactions; `BrowserAuthentication[F, S, P]` connects
 that authority to HTTP rendering, physical WebSocket ownership, typed actions,
 cookie delivery and presentation storage. The application does not need an
@@ -11,6 +11,12 @@ shares one effect-polymorphic UI between native cats-effect IO memory, Future
 memory, and Future PostgreSQL implementations. Its accounts,
 password parameters, factors and encryption key are public synthetic fixtures,
 not deployment defaults.
+
+For multiple live web nodes and rolling handoff, use the explicit
+[shared PostgreSQL mode and presentation projection](clustered-browser-authentication.md).
+Explicit exclusive mode retains its single-owner deployment contract.
+The [snapshot migration and testing guide](migration-testing-5.0.0-snapshot.md)
+covers trying it in an existing application.
 
 ## Install the coordinator
 
@@ -147,12 +153,18 @@ concrete providers use `Direct` transaction callbacks. The portable
 from transaction program without claiming that these providers execute arbitrary
 asynchronous `G` programs.
 
-The JDBC constructor requires `exclusiveAuthorityWriters = true`. This is an
+The JDBC constructor requires an explicit `BrowserOwnership` mode. Selecting
+`BrowserOwnership.ExclusiveScope` is an
 explicit deployment promise that authority changes and presentation ownership
 are coordinated through the owning integration; it is not automatic distributed
 cache invalidation. Realm-level transaction advisory locking serializes provider
 admission and retained-capacity checks. Raw authority writes outside that
 contract are unsupported.
+
+Select `BrowserOwnership.SharedViews` for overlapping web nodes using the
+supported shared PostgreSQL integration. It revalidates shared authority and
+fences ownership per view; the [clustered guide](clustered-browser-authentication.md)
+describes publication, recovery and explicit presentation projections.
 
 ## JDBC deployment and credential custody
 

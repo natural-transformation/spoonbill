@@ -163,6 +163,21 @@ class JdbcViewSnapshotsSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
+  it should "retain acknowledged presentation through ordinary release and reject late prior-owner cleanup" in {
+    val db = new Fixture
+    val old = db.bound()
+    val revision = accepted(old.save(ViewRevision.initial, Counter(41)))
+    db.sessions.releaseView(db.viewId, db.bindingHash, db.ownerId, db.ownerEpoch.toLong) shouldBe Right(())
+    val replacement = UUID.randomUUID()
+    val epoch = accepted(ViewOwnershipEpoch.fromLong(accepted(db.sessions.claimExistingView(db.viewId, db.bindingHash, replacement))))
+    val resumed = db.bound(replacement, epoch)
+    db.sessions.releaseView(db.viewId, db.bindingHash, db.ownerId, db.ownerEpoch.toLong) shouldBe Left(JdbcAuthError.StaleViewFence)
+    old.save(revision, Counter(99)) shouldBe Left(ViewSnapshotError.StaleOwner)
+    db.restored(resumed) shouldBe (revision -> Counter(41))
+    val updated = accepted(resumed.save(revision, Counter(42)))
+    db.restored(resumed) shouldBe (updated -> Counter(42))
+  }
+
   it should "not disclose another authorized scope and require explicit revision-preserving reset" in {
     val db = new Fixture
     val revision = accepted(db.bound().save(ViewRevision.initial, Counter(37)))
@@ -219,6 +234,31 @@ class JdbcViewSnapshotsSpec extends AsyncFlatSpec with Matchers {
     db.bound().reset(revision, Counter(0)) shouldBe Left(ViewSnapshotError.ResetNotRequired)
     corrupt(new Array[Byte](SnapshotBinaryCodec.maxEncodedBytes(db.limits) + 1))
     db.bound().load() shouldBe Left(ViewSnapshotError.MalformedSnapshot)
+  }
+
+  it should "read explicitly compatible schemas without rewriting the acknowledged projection until the next commit" in {
+    val db = new Fixture
+    val revision = accepted(db.bound().save(ViewRevision.initial, Counter(7)))
+    val next = new SnapshotFormat[Counter](db.format.schemaId, accepted(SchemaVersion.fromInt(2)))
+      .reading(db.format)(old => Right(Counter(old.value + 10)))
+    val upgraded = db.bound(schema = next)
+    db.restored(upgraded) shouldBe (revision -> Counter(17))
+    db.restored() shouldBe (revision -> Counter(7))
+    val saved = accepted(upgraded.save(revision, Counter(18)))
+    saved.toLong shouldBe 2L
+    db.restored(upgraded) shouldBe (saved -> Counter(18))
+    db.bound().load() shouldBe Right(SnapshotLoad.ResetRequired(saved, SnapshotResetReason.SchemaChanged))
+  }
+
+  it should "reject payload metadata disagreement even when both declared schemas have compatible readers" in {
+    val db = new Fixture
+    accepted(db.bound().save(ViewRevision.initial, Counter(7)))
+    val next = new SnapshotFormat[Counter](db.format.schemaId, accepted(SchemaVersion.fromInt(2)))
+      .reading(db.format)(Right(_))
+    db.sql("UPDATE spoonbill_view_snapshot SET schema_version = 2 WHERE realm = ? AND cookie_namespace = ? AND view_id = ?") { statement =>
+      db.scope(statement); statement.executeUpdate()
+    }
+    db.bound(schema = next).load() shouldBe Left(ViewSnapshotError.MalformedSnapshot)
   }
 
   it should "roll back payload replacement if the view revision update fails" in {

@@ -41,7 +41,7 @@ enum SnapshotResetReason {
 
 enum ViewSnapshotError {
   case AccessDenied, StaleOwner, RevisionConflict, RevisionExhausted, MalformedSnapshot
-  case StorageFailure, ResetRequired, ResetNotRequired, InvalidIdentity
+  case StorageFailure, ResetRequired, ResetNotRequired, InvalidIdentity, SchemaIncompatible
   case InvalidState(error: SnapshotError)
 }
 

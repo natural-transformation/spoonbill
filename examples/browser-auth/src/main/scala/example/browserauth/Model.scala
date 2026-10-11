@@ -3,6 +3,7 @@ package example.browserauth
 import java.util.UUID
 import spoonbill.auth.*
 import spoonbill.security.transaction.TransactionFailure
+import spoonbill.snapshot.*
 
 final case class Principal(subject: UUID, name: String)
 final case class Page(
@@ -13,8 +14,37 @@ final case class Page(
   protectedPage: Boolean = false,
   counter: Int = 0,
   mutationUnresolved: Boolean = false,
+  draft: String = "",
+  selectedItem: String = "",
   message: String = ""
 )
+
+/** Deliberately excludes credentials, principals, ceremonies and live authority. */
+final case class DraftPresentation(
+  draft: String,
+  selectedItem: String
+) derives StateSchema
+
+object DraftPresentation {
+  private def versioned(version: Int) = new SnapshotFormat[DraftPresentation](
+      SchemaId.parse("example.workspace").toOption.get,
+      SchemaVersion.fromInt(version).toOption.get,
+      SnapshotLimits.create(maxUtf8Bytes = 32768, maxStringUtf8Bytes = 16384).toOption.get
+    )
+  /** Two explicitly compatible writers for the rolling-version fixture. */
+  def format(version: Int): SnapshotFormat[DraftPresentation] = {
+    require(version >= 1 && version <= 3, "Select synthetic snapshot version 1, 2 or incompatible 3")
+    if (version == 3) versioned(version)
+    else versioned(version).reading(versioned(if (version == 1) 2 else 1))(Right(_))
+  }
+  def project(page: Page): DraftPresentation =
+    DraftPresentation(page.draft, page.selectedItem)
+  def restore(fresh: Page, saved: DraftPresentation): Page =
+    fresh.copy(
+      draft = saved.draft,
+      selectedItem = saved.selectedItem
+    )
+}
 
 enum SignIn {
   case Completed(receipt: CommittedAuthentication)
@@ -32,6 +62,7 @@ trait Accounts[F[_]] {
   def signIn(ceremony: BrowserCeremony, username: String, password: String): F[SignIn]
   def factor(ceremony: BrowserCeremony, factor: String): F[SignIn]
   def increment(view: BrowserView[Principal]): F[Either[TransactionFailure, Int]]
+  def currentCount(principal: Principal): F[Int]
   def initialize(): F[Unit]
   def close(): F[Unit] = browser.close()
 }

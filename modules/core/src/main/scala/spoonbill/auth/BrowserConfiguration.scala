@@ -4,15 +4,23 @@ import java.net.URI
 
 final case class BrowserProviderScope(realm: String, cookieNamespace: String)
 
+/** Authority topology; choosing a mode does not elect or fence a provider. */
+enum BrowserOwnership {
+  case ExclusiveScope, SharedViews
+}
+
 /**
  * A provider must explicitly establish the shared atomic domain and ownership
  * policy. Advertising a capability is a trusted SPI contract, not a substitute
- * for conformance tests against its actual storage engine.
+ * for conformance tests against its actual storage engine. ExclusiveScope
+ * requires one provider for the whole scope. SharedViews instead
+ * requires authoritative per-view takeover, output admission and stale-writer
+ * fencing across every overlapping provider in that scope.
  */
 final case class BrowserProviderCapabilities(
   atomicHostPreparation: Boolean,
   durable: Boolean,
-  exclusiveOwnership: Boolean
+  ownership: BrowserOwnership
 )
 
 /**

@@ -9,7 +9,7 @@ are development fixtures and must not be used for production users.
 
 | Component | Initial v4 target |
 | --- | --- |
-| Spoonbill modules | Matching 4.x versions; this checkout is `4.0.0-SNAPSHOT`, not a publication claim |
+| Spoonbill modules | Matching versions throughout; this checkout is `5.0.0-SNAPSHOT`, not a public release claim |
 | Scala | 3.3.8 |
 | Native Scala 3 Pekko / Pekko HTTP | 1.7.0 / 1.4.0, including testkits on the same `_3` variant |
 | JDBC dialect / validation engine | PostgreSQL 14; PostgreSQL-specific advisory locks, `ON CONFLICT`, and `RETURNING` are required |
@@ -21,8 +21,8 @@ persistence. Additional dependency pairs need that fixture and transport suites
 before being declared supported. Binary exclusions that swap `_2.13` and `_3`
 are not a migration strategy.
 
-**One live owning provider/coordinator instance per database authority scope
-(`realm`, `cookieNamespace`) is required.** `exclusiveAuthorityWriters = true`
+**Exclusive mode requires one live owning provider/coordinator instance per database authority scope
+(`realm`, `cookieNamespace`).** In v5, `ownership = BrowserOwnership.ExclusiveScope`
 asserts this operational fact; it does not elect a leader or fence another
 process. Drain and stop the previous owner before starting its replacement.
 The advisory lock serializes framework transactions but does not make multiple
@@ -30,11 +30,19 @@ independently cached clock writers supported. The durable clock may reuse an
 acknowledged local maximum under this exclusive-owner contract. A fresh owner
 consults storage; an overlapping old owner must not keep using an older cache.
 
+This checkout also supports explicit shared PostgreSQL mode with
+`ownership = BrowserOwnership.SharedViews`, per-view database ownership and durable
+presentation projections. See [shared-store deployment and migration](clustered-browser-authentication.md)
+before enabling it. Released 4.0.0 exclusive writers cannot participate in that
+overlap; drain them before the initial shared-mode cutover. The cutover sequence
+below describes the original major/exclusive migration.
+
 All host authority mutations must obey the documented host/slot/view lock order
 and policy-version contract. No application writer may reset slot generations,
 view epochs, proof use, ceremony outcomes, or clock maxima. Independent services
 that cannot honor this authority domain require a different conforming provider,
-not just the Boolean configuration flag.
+not just a configuration setting. The released v4 constructor used
+`exclusiveAuthorityWriters = true`; see the [v5 source migration](migration-testing-5.0.0-snapshot.md).
 
 ## Explicit schema artifact
 

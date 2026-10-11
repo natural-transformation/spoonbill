@@ -15,6 +15,7 @@ import spoonbill.Qsid
 import spoonbill.auth.*
 import spoonbill.effect.Effect
 import spoonbill.security.Identifiers.ConnectionId
+import spoonbill.security.Versions.ViewOwnershipEpoch
 import spoonbill.security.transaction.*
 import spoonbill.server.BrowserSessionToken
 
@@ -29,7 +30,10 @@ import spoonbill.server.BrowserSessionToken
  * within a realm are serialized by a transaction advisory lock, including
  * capacity checks; callers of transact must acquire host locks only inside its
  * callback. The explicit durable clock uses an independent reserved connection
- * and therefore survives domain rollback and process restart.
+ * and therefore survives domain rollback and process restart. Set
+ * ownership=BrowserOwnership.SharedViews when multiple providers share this scope:
+ * each view is fenced independently, clock observations always consult storage,
+ * and claim admission rejects delayed acquisitions overtaken by another owner.
  */
 final class JdbcBrowserPersistence[F[_], P](
   source: DataSource,
@@ -39,7 +43,7 @@ final class JdbcBrowserPersistence[F[_], P](
   clock: () => Instant,
   host: JdbcHostSessions[P],
   vault: JdbcCredentialVault,
-  exclusiveAuthorityWriters: Boolean,
+  ownership: BrowserOwnership,
   limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
   existingRunner: Option[TransactionExecutor[F, Direct, Connection]] = None,
   clockSource: Option[DataSource] = None,
@@ -64,10 +68,13 @@ final class JdbcBrowserPersistence[F[_], P](
     finally tx.close()
   }
   require(realm.matches("[A-Za-z0-9_.-]{1,96}") && namespace.matches("[A-Za-z0-9_.-]{1,96}"))
-  require(exclusiveAuthorityWriters, "Guarded browser publication requires exclusive coordinated authority writers")
   def scope: BrowserProviderScope = BrowserProviderScope(realm, namespace)
   def capabilities: BrowserProviderCapabilities =
-    BrowserProviderCapabilities(atomicHostPreparation = true, durable = true, exclusiveOwnership = true)
+    BrowserProviderCapabilities(
+      atomicHostPreparation = true,
+      durable = true,
+      ownership = ownership
+    )
   private val issuer = new BrowserCapabilityScope[P]
   private val runner = existingRunner.getOrElse(new JdbcTransactionExecutor[F](source, blockingContext))
   private val durableClock = new JdbcBrowserClock(
@@ -75,7 +82,7 @@ final class JdbcBrowserPersistence[F[_], P](
     realm,
     namespace,
     clock,
-    exclusiveClockWriter = exclusiveAuthorityWriters
+    exclusiveClockWriter = ownership == BrowserOwnership.ExclusiveScope
   )
   private val lifecycle        = new Object
   private var stopped          = false
@@ -277,12 +284,14 @@ final class JdbcBrowserPersistence[F[_], P](
     captureIn(connection, binding, token, activate)
   }
 
-  def claim(
+  private case class ClaimState(identity: BrowserIdentity[P], id: String, previous: Option[(Vector[Byte], Long, Option[UUID])])
+
+  private def claimState(
+    connection: Connection,
     identity: BrowserIdentity[P],
     qsid: Qsid,
-    connectionId: ConnectionId,
     existingOnly: Boolean
-  ): F[Either[BrowserFailure, BrowserView[P]]] = run { connection =>
+  ): ClaimState = {
     if (!issuer.owns(identity)) reject(OperationError.ForeignPermit)
     val fresh = captureIn(connection, identity.binding, identity.token, false, Some(identity.generation))
     if (!identity.sameAuthority(fresh)) reject()
@@ -300,6 +309,55 @@ final class JdbcBrowserPersistence[F[_], P](
     }
     if (existingOnly && previous.isEmpty) reject(OperationError.NotPrepared)
     if (previous.exists(_._1 != key(identity.binding))) reject()
+    ClaimState(fresh, id, previous)
+  }
+
+  /** Reserve a server-generated HTTP bootstrap view without taking ownership. */
+  override def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using Effect[F]): F[Either[BrowserFailure, Unit]] =
+    run { connection =>
+      val state = claimState(connection, identity, qsid, existingOnly = false)
+      if (state.previous.isEmpty) {
+        if (count(connection, "spoonbill_browser_view", "cookie_namespace") >= limits.retainedViews)
+          reject(OperationError.CapacityExceeded)
+        sql(
+          connection,
+          """INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch)
+          VALUES (?,?,?,?,NULL,1)"""
+        ) { query =>
+          scope(query); query.setString(3, state.id); query.setBytes(4, digest(identity.binding).bytes)
+          query.executeUpdate(); ()
+        }
+      }
+    }
+
+  def claim(
+    identity: BrowserIdentity[P],
+    qsid: Qsid,
+    connectionId: ConnectionId,
+    existingOnly: Boolean
+  ): F[Either[BrowserFailure, BrowserView[P]]] = {
+    def acquire(admitted: Option[Option[Long]]): F[Either[BrowserFailure, BrowserView[P]]] = run { connection =>
+      val state = claimState(connection, identity, qsid, existingOnly)
+      if (admitted.exists(_ != state.previous.map(_._2))) reject()
+      claimIn(connection, state, connectionId, qsid)
+    }
+    if (ownership == BrowserOwnership.ExclusiveScope) acquire(None)
+    else
+      F.flatMap(run { connection => claimState(connection, identity, qsid, existingOnly).previous.map(_._2) }) {
+        case Left(error) => F.pure(Left(error))
+        // This read is the durable admission boundary. If a takeover or release
+        // wins before acquisition, a paused request may not steal ownership back.
+        case Right(epoch) => acquire(Some(epoch))
+      }
+  }
+
+  private def claimIn(
+    connection: Connection,
+    state: ClaimState,
+    connectionId: ConnectionId,
+    qsid: Qsid
+  ): BrowserView[P] = {
+    val ClaimState(identity, id, previous) = state
     if (previous.exists(_._2 == Long.MaxValue)) reject(OperationError.CapacityExceeded)
     if (previous.isEmpty && count(connection, "spoonbill_browser_view", "cookie_namespace") >= limits.retainedViews)
       reject(OperationError.CapacityExceeded)
@@ -331,10 +389,25 @@ final class JdbcBrowserPersistence[F[_], P](
       scope(query); query.setString(3, id); query.setBytes(4, digest(identity.binding).bytes);
       query.setObject(5, owner); query.setLong(6, epoch); query.executeUpdate()
     }
-    issuer.view(fresh, qsid, connectionId, owner, epoch)
+    issuer.view(identity, qsid, connectionId, owner, epoch)
   }
 
   def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]] = run(current(_, view))
+
+  /**
+   * Admit one already materialized output under the same authoritative lock as
+   * takeover, logout and host writes. No frame escapes an unknown settlement.
+   * A frame admitted before takeover may still arrive afterward in transport.
+   */
+  override def admitOutput[A](view: BrowserView[P], output: A)(using Effect[F]): F[Either[BrowserFailure, A]] =
+    run { connection => current(connection, view); output }
+
+  override def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(
+    using Effect[F]
+  ): F[Either[BrowserFailure, A]] = run { connection =>
+    if (!allowed(current(connection, view))) reject()
+    output
+  }
 
   /**
    * Protected host writes recheck the exact captured authority inside their own
@@ -345,6 +418,140 @@ final class JdbcBrowserPersistence[F[_], P](
       current(connection, view); withHostTransaction(connection)(body)
     }
   }
+
+  /** Recover explicitly selected, non-sensitive presentation under the current
+   * authenticated view's durable authority and owner fence. Anonymous views
+   * have no snapshot session. project and restore must be pure, nonblocking
+   * transformations; restore overlays presentation onto freshly authorized
+   * state and must not replace its authority or current business results.
+   * Format decoders and compatibility conversions must likewise be pure and
+   * bounded because reading may hold the provider transaction's locks.
+   * An incompatible schema fails without replacing the stored projection.
+   */
+  def projectedSnapshots[S, D](
+    format: spoonbill.snapshot.SnapshotFormat[D],
+    project: S => D,
+    restore: (S, D) => S
+  ): BrowserView[P] => Option[spoonbill.snapshot.ViewSnapshotSession[F, S]] =
+    JdbcBrowserSnapshots.projected(this, format, project, restore)
+
+  /** Explicit administrative observation, never part of request authorization.
+   * Counts share one authoritative transaction; applications control who may
+   * see them. Local in-flight resources are bounded separately by pendingJobs.
+   */
+  def usage(): F[Either[TransactionFailure, BrowserPersistenceUsage]] = owned() {
+    transaction { connection =>
+      def views(active: Boolean): Long = sql(
+        connection,
+        "SELECT count(*) FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace=?" +
+          (if (active) " AND owner_id IS NOT NULL" else "")
+      ) { query =>
+        scope(query)
+        Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+      }
+      def maximum(table: String, namespaceColumn: String, condition: String): Long = sql(
+        connection,
+        s"""SELECT COALESCE(MAX(amount),0) FROM (SELECT count(*) AS amount FROM $table
+        WHERE realm=? AND $namespaceColumn=? $condition GROUP BY binding_hash) AS bindings"""
+      ) { query =>
+        scope(query)
+        Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+      }
+      BrowserPersistenceUsage(
+        count(connection, "spoonbill_browser_slot", "cookie_namespace"),
+        views(active = false),
+        views(active = true),
+        count(connection, "spoonbill_auth_ceremony"),
+        count(connection, "spoonbill_auth_material"),
+        maximum("spoonbill_browser_view", "cookie_namespace", "AND owner_id IS NOT NULL"),
+        maximum("spoonbill_auth_ceremony", "namespace", ""),
+        limits
+      )
+    }
+  }
+
+  /** Bounded administrative discovery; identifiers are lookup metadata only.
+   * A page is current at its transaction boundary, not a lease for later work.
+   */
+  def ownedViewPage(
+    after: Option[String] = None,
+    limit: Int = 100
+  ): F[Either[TransactionFailure, BrowserOwnedViewPage]] = owned() {
+    transaction { connection =>
+      if (limit <= 0 || limit > 1000 || after.exists(value =>
+        value.isEmpty || value.length > 192 || !value.forall(c => c >= ' ' && c <= '~')
+      )) reject(OperationError.InvalidDefinition)
+      val found = sql(
+        connection,
+        """SELECT view_id,owner_id,epoch FROM spoonbill_browser_view
+        WHERE realm=? AND cookie_namespace=? AND owner_id IS NOT NULL AND view_id>?
+        ORDER BY view_id LIMIT ?"""
+      ) { query =>
+        scope(query); query.setString(3, after.getOrElse("")); query.setInt(4, limit + 1)
+        Using.resource(query.executeQuery()) { rows =>
+          val result = Vector.newBuilder[BrowserOwnedView]
+          while (rows.next()) result += BrowserOwnedView(
+            scope,
+            rows.getString(1),
+            rows.getObject(2, classOf[UUID]),
+            ViewOwnershipEpoch.fromLong(rows.getLong(3)).fold(_ => reject(OperationError.StorageFailure), identity)
+          )
+          result.result()
+        }
+      }
+      val page = found.take(limit)
+      BrowserOwnedViewPage(page, Option.when(found.size > limit)(page.last.viewId))
+    }
+  }
+
+  /** Privileged, explicit retirement of one observed owner. The host callback
+   * must authorize the administrator using this transaction (and may audit the
+   * attempt); false or a thrown rejection rolls all writes back. Target metadata
+   * is never sufficient authorization. Returning false means its fence was no
+   * longer current. A successful retirement retains the snapshot and permanent
+   * view row while advancing the epoch; it does not reclaim history capacity.
+   */
+  def retireView(target: BrowserOwnedView)(authorize: Tx => Boolean): F[Either[TransactionFailure, Boolean]] =
+    F.map(owned(cleanup = true) {
+      transaction { connection =>
+        if (target.scope != scope || target.viewId.isEmpty || target.viewId.length > 192 ||
+          !target.viewId.forall(c => c >= ' ' && c <= '~') || target.epoch.toLong <= 0)
+          reject(OperationError.InvalidDefinition)
+        if (!withHostTransaction(connection)(authorize)) reject()
+        val epoch = sql(
+          connection,
+          """SELECT epoch FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace=?
+          AND view_id=? AND owner_id=? AND epoch=? FOR UPDATE"""
+        ) { query =>
+          scope(query); query.setString(3, target.viewId); query.setObject(4, target.ownerId)
+          query.setLong(5, target.epoch.toLong)
+          Using.resource(query.executeQuery()) { rows =>
+            if (rows.next()) Some(rows.getLong(1)) else None
+          }
+        }
+        epoch match {
+          case None => false
+          case Some(Long.MaxValue) => reject(OperationError.CapacityExceeded)
+          case Some(currentEpoch) =>
+            sql(
+              connection,
+              """UPDATE spoonbill_browser_view SET owner_id=NULL,epoch=? WHERE realm=? AND cookie_namespace=?
+              AND view_id=? AND owner_id=? AND epoch=?"""
+            ) { query =>
+              query.setLong(1, currentEpoch + 1); query.setString(2, realm); query.setString(3, namespace)
+              query.setString(4, target.viewId); query.setObject(5, target.ownerId); query.setLong(6, currentEpoch)
+              if (query.executeUpdate() != 1) reject(OperationError.StorageFailure)
+              true
+            }
+        }
+      }
+    }) { result =>
+      if (result == Right(true)) lifecycle.synchronized {
+        val key = target.viewId -> target.ownerId
+        if (ownedViews.get(key).exists(_.epoch == target.epoch.toLong)) ownedViews -= key
+      }
+      result
+    }
 
   def release(view: BrowserView[P]): F[Unit] = F.map(owned(cleanup = true) {
     transaction { connection =>

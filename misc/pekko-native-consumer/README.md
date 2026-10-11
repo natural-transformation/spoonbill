@@ -20,7 +20,7 @@ request through the official Spoonbill adapter. `verifyNativeGraph` rejects
 any Scala 2.13 Pekko artifact anywhere in the resolved graph.
 
 Run serially from the repository root through its Nix environment. First publish
-the v4 dependencies locally and generate the adapter POM:
+the current v5 dependencies locally and generate the adapter POM:
 
 ```sh
 nix develop --no-write-lock-file --command sbt --batch --supershell=false \
@@ -29,7 +29,7 @@ nix develop --no-write-lock-file --command sbt --batch --supershell=false \
   'spoonbill/publishLocal' 'pekko/publishLocal' 'pekko/makePom'
 nix develop --no-write-lock-file --command node \
   misc/pekko-native-consumer/check-pom.mjs \
-  interop/pekko/target/scala-3.3.8/spoonbill-pekko_3-4.0.0-SNAPSHOT.pom
+  interop/pekko/target/scala-3.3.8/spoonbill-pekko_3-5.0.0-SNAPSHOT.pom
 nix develop --no-write-lock-file --command bash -c \
   'cd misc/pekko-native-consumer && sbt --batch --supershell=false verifyNativeGraph compile run'
 ```
