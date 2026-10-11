@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "auditedAt": "2026-10-10",
+  "platform": "aarch64-darwin",
+  "upstreamRevision": "db897909f7c31d9b38793374c66427b6a4cb3dd3",
+  "playwrightVersion": "1.56.1",
+  "webkitRevision": "2215",
+  "sources": [
+    {
+      "path": "Source/JavaScriptCore/heap/Heap.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/Heap.cpp",
+      "nixStorePath": "/nix/store/dvciz462hdp6xnb7sgizxqs7nh7mfqjg-webkit-db897-Heap.cpp",
+      "bytes": 125667,
+      "sha256": "65649f83f244e3c542c196ed12a9db8b527c00ffd8e12a696a8e57eab50c7ae2",
+      "nixFlatHash": "sha256-ZWSfg/JE48VCwZbtEqnbi1J8AP/Y4Sppao5X6rUMeuI="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/LocalAllocator.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/LocalAllocator.cpp",
+      "nixStorePath": "/nix/store/vqjm909i9qizm15x3kikgng7w40srw5i-webkit-db897-LocalAllocator.cpp",
+      "bytes": 9335,
+      "sha256": "cfdf57d8c23330d17a2139001d00734705bf4fa342ce6f036362d1a307c0b078",
+      "nixFlatHash": "sha256-z99X2MIzMNF6ITkAHQBzRwW/T6NCzm8DY2LRowfAsHg="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/MarkedBlock.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/MarkedBlock.cpp",
+      "nixStorePath": "/nix/store/r0yvip02q6wixdlaq3f30wzaw1i27p8i-webkit-db897-MarkedBlock.cpp",
+      "bytes": 25467,
+      "sha256": "d42b20fc2f6251ac1ee28193058261ecba64d6506c1e2808d7e5bcb743d937f7",
+      "nixFlatHash": "sha256-1Csg/C9iUawe4oGTBYJh7Lpk1lBsHigI1+W8t0PZN/c="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/Heap.h",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/Heap.h",
+      "nixStorePath": "/nix/store/krxrgif33qhhppmc884siac2m4ikbh7g-webkit-db897-Heap.h",
+      "bytes": 52677,
+      "sha256": "318663b68a07820d02833c82823dd5075dc2fc3f2e0c45daf8b41cd313c9deac",
+      "nixFlatHash": "sha256-MYZjtooHgg0CgzyCgj3VB13C/D8uDEXa+LQc0xPJ3qw="
+    },
+    {
+      "path": "Source/cmake/OptionsJSCOnly.cmake",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/cmake/OptionsJSCOnly.cmake",
+      "nixStorePath": "/nix/store/n6i0wyk96yisg1nvawfi0zi5pl863fa8-webkit-db897-OptionsJSCOnly.cmake",
+      "bytes": 3577,
+      "sha256": "528a81726958d36c3edf8c5e49e42fc0a86246c11e8b446bddfa73db36697947",
+      "nixFlatHash": "sha256-UoqBcmlY02w+34xeSeQvwKhiRsEei0Rr3fpz2zZpeUc="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/PreciseAllocation.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/PreciseAllocation.cpp",
+      "nixStorePath": "/nix/store/61wpsxqykh6k75r9isihzfsxna5csr5c-webkit-db897-PreciseAllocation.cpp",
+      "bytes": 13586,
+      "sha256": "07c745983f56038621b2d8f7a35be32ed9d498bb318397b8329f30cd6da4dc99",
+      "nixFlatHash": "sha256-B8dFmD9WA4Yhstj3o1vjLtnUmLsxg5e4Mp8wzW2k3Jk="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/CompleteSubspace.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/CompleteSubspace.cpp",
+      "nixStorePath": "/nix/store/j8jxj9flamgjpdvn3mbnfh19b07l1cr2-webkit-db897-CompleteSubspace.cpp",
+      "bytes": 8710,
+      "sha256": "a840daaae0d1b3c9271910c99ed00a3c2fd744d2e4da5ae6fd6f0d9457087e19",
+      "nixFlatHash": "sha256-qEDaquDRs8knGRDJntAKPC/XRNLk2lrm/W8NlFcIfhk="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/IsoSubspace.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/IsoSubspace.cpp",
+      "nixStorePath": "/nix/store/i1zf4944p1dhwknhgn6qqksflfpd4p5b-webkit-db897-IsoSubspace.cpp",
+      "bytes": 5004,
+      "sha256": "72f8d2154c6a29443438c33f49ea822960dbc378c24051ce54430e1f2c984ac0",
+      "nixFlatHash": "sha256-cvjSFUxqKUQ0OMM/SeqCKWDbw3jCQFHOVEMOHyyYSsA="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/HeapInlines.h",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/HeapInlines.h",
+      "nixStorePath": "/nix/store/1xrbykgqk3nj5anmr4648z5g7vllngdl-webkit-db897-HeapInlines.h",
+      "bytes": 8811,
+      "sha256": "4540fe245bba47fd776add343f3186377e36cd3502ada67c83ba8d15e83812ad",
+      "nixFlatHash": "sha256-RUD+JFu6R/13at00PzGGN342zTUCraZ8g7qNFeg4Eq0="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/FreeList.h",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/FreeList.h",
+      "nixStorePath": "/nix/store/9bkki5vri1lpgg2irpw51h0lhpbgbzw7-webkit-db897-FreeList.h",
+      "bytes": 5165,
+      "sha256": "c1b4a5c6b80677f4922fbd3bd50a5ddc20e5333aab170829e5ff37f2822fcc9b",
+      "nixFlatHash": "sha256-wbSlxrgGd/SSL7071Qpd3CDlMzqrFwgp5f838oIvzJs="
+    },
+    {
+      "path": "CMakeLists.txt",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/CMakeLists.txt",
+      "nixStorePath": "/nix/store/c6psl4h76ai18rx1gl7957araw969bym-webkit-db897-CMakeLists.txt",
+      "bytes": 1846,
+      "sha256": "ccee74723c22db6ef25cc82dd9c82301d2999431d60660035e719f4394192301",
+      "nixFlatHash": "sha256-zO50cjwi227yXMgt2cgjAdKZlDHWBmADXnGfQ5QZIwE="
+    },
+    {
+      "path": "Source/cmake/OptionsCommon.cmake",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/cmake/OptionsCommon.cmake",
+      "nixStorePath": "/nix/store/lxdmw24qdp8r3av2nxxqyn9lcpcb2yxf-webkit-db897-OptionsCommon.cmake",
+      "bytes": 13640,
+      "sha256": "0b2308f9fab0020d40c9ed24ae0323b8a6919607eb153913005e6e4ce1c4dc5d",
+      "nixFlatHash": "sha256-CyMI+fqwAg1Aye0krgMjuKaRlgfrFTkTAF5uTOHE3F0="
+    },
+    {
+      "path": "Source/WTF/wtf/PlatformJSCOnly.cmake",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/WTF/wtf/PlatformJSCOnly.cmake",
+      "nixStorePath": "/nix/store/vdgpkb1nn5cvg10skv5jgs2ais2s3jki-webkit-db897-PlatformJSCOnly.cmake",
+      "bytes": 3890,
+      "sha256": "3398e16fd02181deac7a279b029140ccdab78376b28121da664790f70240e1ef",
+      "nixFlatHash": "sha256-M5jhb9Ahgd6seiebApFAzNq3g3aygSHaZkeQ9wJA4e8="
+    },
+    {
+      "path": "Source/JavaScriptCore/heap/MarkedSpace.cpp",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/JavaScriptCore/heap/MarkedSpace.cpp",
+      "nixStorePath": "/nix/store/l73vyjyw5f1j4lirl0kn2k3b8c7i9g26-webkit-db897-MarkedSpace.cpp",
+      "bytes": 20992,
+      "sha256": "37d174a2987db14d2c485177e81f3b854d73ba272393618eef281b48e5e3bb3e",
+      "nixFlatHash": "sha256-N9F0oph9sU0sSFF36B87hU1zuicjk2GO7ygbSOXjuz4="
+    },
+    {
+      "path": "Source/cmake/WebKitCommon.cmake",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/db897909f7c31d9b38793374c66427b6a4cb3dd3/Source/cmake/WebKitCommon.cmake",
+      "nixStorePath": "/nix/store/3i9mj2ckwk9imkqqyiv96vdndgmvslaa-webkit-db897-WebKitCommon.cmake",
+      "bytes": 16528,
+      "sha256": "e8f21e4a61313d1938257b02433defa7609a895873ba103693f92152d3ff0b2c",
+      "nixFlatHash": "sha256-6PIeSmExPRk4JXsCQz3vp2CaiVhzuhA2k/khUtP/Cyw="
+    }
+  ],
+  "totalFetchedSourceBytes": 314895,
+  "playwrightPatchList": {
+    "url": "https://api.github.com/repos/microsoft/playwright/contents/browser_patches/webkit/patches?ref=v1.56.1",
+    "nixStorePath": "/nix/store/76bx9db0mlib17gwy5r7qza8mrlp84q7-playwright-1.56.1-webkit-patch-list.json",
+    "bytes": 1086,
+    "sha256": "a71cef6e4c7eeb679c33d04bfac2ea1a7672ae1ed33c669266ae340ae14e1b07",
+    "nixFlatHash": "sha256-pxzvbkx+62ecM9BL+sLqGnZyrh7TPGaSZq40CuFOGwc=",
+    "listedPatch": "bootstrap.diff",
+    "listedPatchBytes": 980815,
+    "patchContentsAudited": true,
+    "patch": {
+      "url": "https://raw.githubusercontent.com/microsoft/playwright/v1.56.1/browser_patches/webkit/patches/bootstrap.diff",
+      "nixStorePath": "/nix/store/csylxd8z3isqyrnydmjmaw3nc3b3dn97-playwright-1.56.1-webkit-bootstrap.diff",
+      "bytes": 980815,
+      "sha256": "d05405fd6729588aa19dad18953a47a6bf2aa934e565bc4943fa821742cfe5b4",
+      "nixFlatHash": "sha256-0FQF/WcpWIqhna0YlTpHpr8qqTTlZbxJQ/qCF0LP5bQ=",
+      "modifiedFileCount": 351,
+      "modifiedJavaScriptCoreHeapPaths": [],
+      "finding": "The sole pinned patch modifies no JavaScriptCore/heap source, so it does not explain the substantive installed Heap.h mismatch."
+    }
+  },
+  "installedHeapHeader": {
+    "path": "/nix/store/4r06s0cnsdim0hw8czj49qxqbka8c0w4-source/JavaScriptCore.framework/Versions/A/PrivateHeaders/Heap.h",
+    "bytes": 53354,
+    "sha256": "9abb32b979cbd49b984c12ebfff378d7c8224c6e1402129d53d6ee77699e9c1c",
+    "nixFlatHash": "sha256-mrsyuXnL1JuYTBLr//N418giTG4UAhKdU9bud2menBw=",
+    "substantiveParity": false,
+    "differences": {
+      "baseVariableSizedCellSpace": true,
+      "installedVariableSizedCellSpace": false,
+      "baseJSPromiseAllContext": false,
+      "installedJSPromiseAllContext": true
+    }
+  },
+  "installedJscBinary": {
+    "path": "/nix/store/4r06s0cnsdim0hw8czj49qxqbka8c0w4-source/JavaScriptCore.framework/Versions/A/Helpers/jsc",
+    "bytes": 455440,
+    "sha256": "2b3f6f3cefcc4c1efe2d0e3fdd7dac246fe7899988b5907f0d7d02e11478ea49",
+    "nixFlatHash": "sha256-Kz9vPO/MTB7+LQ4/3X2sJG/niZmItZB/DX0C4RR46kk="
+  },
+  "archiveAttempts": [
+    {
+      "url": "https://github.com/WebKit/WebKit/archive/db897909f7c31d9b38793374c66427b6a4cb3dd3.tar.gz",
+      "result": "HTTP422: Content creation is blocked"
+    },
+    {
+      "url": "https://codeload.github.com/WebKit/WebKit/tar.gz/db897909f7c31d9b38793374c66427b6a4cb3dd3",
+      "result": "HTTP422: Content creation is blocked"
+    }
+  ],
+  "findings": [
+    {
+      "id": "partial-free-list",
+      "paths": [
+        "Source/JavaScriptCore/heap/LocalAllocator.cpp:77",
+        "Source/JavaScriptCore/heap/LocalAllocator.cpp:119",
+        "Source/JavaScriptCore/heap/MarkedBlock.cpp:120"
+      ],
+      "finding": "Exhaustion charges original free-list bytes; stopAllocating clears a partially consumed list without charging didAllocate."
+    },
+    {
+      "id": "cycle-reset",
+      "paths": [
+        "Source/JavaScriptCore/heap/Heap.cpp:2515",
+        "Source/JavaScriptCore/heap/Heap.cpp:2588"
+      ],
+      "finding": "GC resets both cycle counters; didAllocate is not a lifetime cumulative ledger."
+    },
+    {
+      "id": "small-extra-memory",
+      "paths": [
+        "Source/JavaScriptCore/heap/HeapInlines.h:220",
+        "Source/JavaScriptCore/heap/Heap.h:656"
+      ],
+      "finding": "Extra-memory reports are conditional on size greater than minExtraMemory=256."
+    },
+    {
+      "id": "estimated-backing-store",
+      "paths": [
+        "Source/JavaScriptCore/heap/Heap.cpp:734"
+      ],
+      "finding": "ArrayBuffer accounting charges gcSizeEstimateInBytes, not a demonstrated exact allocation ledger."
+    },
+    {
+      "id": "precise-reuse",
+      "paths": [
+        "Source/JavaScriptCore/heap/IsoSubspace.cpp:83",
+        "Source/JavaScriptCore/heap/MarkedSpace.cpp:230"
+      ],
+      "finding": "Lower-tier precise cell revival registers isNewAllocation=false; existing didAllocate accounting excludes it."
+    },
+    {
+      "id": "reallocation",
+      "paths": [
+        "Source/JavaScriptCore/heap/CompleteSubspace.cpp:147",
+        "Source/JavaScriptCore/heap/CompleteSubspace.cpp:195"
+      ],
+      "finding": "Successful precise auxiliary reallocation charges only size growth; it is not total successful allocation-request bytes."
+    }
+  ],
+  "boundedCommands": {
+    "environment": [
+      "nix",
+      "develop",
+      ".#profiling",
+      "--no-write-lock-file",
+      "--command"
+    ],
+    "rawPrefetchPerFileSeconds": 25,
+    "rawPrefetchGroupMaximumSeconds": 120,
+    "binaryDiagnosticSeconds": 15
+  },
+  "result": {
+    "exactUpstreamSubsetAudited": true,
+    "installedPatchedSourceParityVerified": false,
+    "fullSourceTreeAvailable": false,
+    "engineBuildPerformed": false,
+    "fullEngineBuildCostMeasured": false,
+    "browserAllocatedBytesPerOperation": null,
+    "browserAggregatePeakRss": null,
+    "acceptance": "unsupported"
+  },
+  "nextDecision": "Obtain the platform-specific WebKit 2215 build/source manifest, using the byte-identical September 23 Heap.h fingerprint to reconcile its source revision and patch/configuration provenance. Only then obtain complete matching source and approve a bounded Mac JSCOnly counter build; no framework replacement or ABI match is authorized or validated.",
+  "playwrightUpstreamConfig": {
+    "url": "https://raw.githubusercontent.com/microsoft/playwright/v1.56.1/browser_patches/webkit/UPSTREAM_CONFIG.sh",
+    "nixStorePath": "/nix/store/b3737vcm19cn7hgbcv5av0ybkdsks7gf-playwright-1.56.1-webkit-upstream-config.sh",
+    "bytes": 126,
+    "sha256": "b21a696b81121672b3ca35f14d8b5afdd05f18241ed1f954accf49aa67c34ada",
+    "nixFlatHash": "sha256-shppa4ESFnKzyjXxTYta/dBfGCQe0flUrM9JqmfDSto=",
+    "confirmedBaseRevision": "db897909f7c31d9b38793374c66427b6a4cb3dd3"
+  },
+  "installedBrowserBinding": {
+    "defaultRevision": "2215",
+    "browserVersion": "26.0",
+    "executableNixPath": "/nix/store/2sf9wavljd1fp5mv9q233ryrz0i2wyp0-playwright-browsers/webkit-2215/pw_run.sh",
+    "resolvedExecutableNixPath": "/nix/store/4r06s0cnsdim0hw8czj49qxqbka8c0w4-source/pw_run.sh",
+    "platformRevisionOverrideApplied": false,
+    "scope": "Selected executable path; this is not proof of binary/private-header source correspondence."
+  },
+  "installedHeaderFollowup": {
+    "source": {
+      "path": "Source/JavaScriptCore/heap/Heap.h",
+      "url": "https://raw.githubusercontent.com/WebKit/WebKit/3f6cca87328330b98da57498acee34179c1cc3b0/Source/JavaScriptCore/heap/Heap.h",
+      "nixStorePath": "/nix/store/jrambrgcjfw7b8r1b54b3sqyr57qm9fp-webkit-september-Heap.h",
+      "bytes": 53354,
+      "sha256": "9abb32b979cbd49b984c12ebfff378d7c8224c6e1402129d53d6ee77699e9c1c",
+      "nixFlatHash": "sha256-mrsyuXnL1JuYTBLr//N418giTG4UAhKdU9bud2menBw=",
+      "revision": "3f6cca87328330b98da57498acee34179c1cc3b0",
+      "commitDate": "2025-09-23T16:11:53Z"
+    },
+    "byteForByteEqual": true,
+    "normalizationApplied": false,
+    "configuredBaseDate": "2025-07-07T11:04:37Z",
+    "installedMetadata": {
+      "frameworkVersion": "623.1.10+",
+      "buildMachineOSBuild": "23H626",
+      "sdk": "macosx14.5",
+      "xcodeBuild": "15F31d"
+    },
+    "headerHistory": {
+      "url": "https://api.github.com/repos/WebKit/WebKit/commits?path=Source%2FJavaScriptCore%2Fheap%2FHeap.h&until=2025-10-20T00%3A00%3A00Z&per_page=20",
+      "nixStorePath": "/nix/store/mmhl438z9y426chqrfys65g9d6xkwnzl-webkit-heap-history.json",
+      "bytes": 127179,
+      "sha256": "e583d896ce1d40c9eaa6d8387dc66a43c0bf97af52d8e5478fad344d7562b8d6",
+      "nixFlatHash": "sha256-5YPYls4dQMnqptg4fcZqQ8C/l69S2OVHj600TXViuNY=",
+      "nextChangeRevision": "a1cb5e087a461a8ff468d49e85897349a175a2dd",
+      "nextChangeDate": "2025-09-29T03:16:07Z"
+    },
+    "newSuccessfulDownloads": 4,
+    "newDownloadedBytes": 186860,
+    "downloadByteBudget": 5242880,
+    "failedMetadataLookups": [
+      {
+        "url": "https://raw.githubusercontent.com/microsoft/playwright/v1.56.1/browser_patches/webkit/BUILD_NUMBER",
+        "result": "HTTP404; not retried"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/microsoft/playwright/v1.56.1/browser_patches/webkit/build.sh",
+        "result": "HTTP404; not retried"
+      }
+    ],
+    "findings": [
+      "Installed Heap.h exactly matches the September 23 upstream header; the mismatch with the configured July 7 base consists of later upstream changes, not platform-only generation.",
+      "The include-style difference also exists upstream after the August modularization change; no normalization is required for the exact match.",
+      "One identical header does not uniquely identify the complete source revision: commits not changing Heap.h share these bytes. The next listed Heap.h change is September 29.",
+      "The pinned Playwright bootstrap.diff modifies no JavaScriptCore/heap path, and inspected bundle metadata supplies version/build-tool metadata but no full upstream commit.",
+      "The exact bundle build revision, applied configuration/patch provenance and compiled binary/header correspondence remain unverified. No ABI match or allocation-counter coverage is inferred.",
+      "The earlier allocator audit of db897 remains an audit of that July source subset, not proof of installed September binary semantics."
+    ],
+    "wholeBinaryRevisionIdentified": false,
+    "abiMatchVerified": false,
+    "engineBuildPerformed": false,
+    "otherMetadata": [
+      {
+        "url": "https://api.github.com/repos/WebKit/WebKit/git/commits/db897909f7c31d9b38793374c66427b6a4cb3dd3",
+        "nixStorePath": "/nix/store/x818amxl7ka5mk5w9mdyp5m6a271n3lp-webkit-base-commit.json",
+        "bytes": 1479,
+        "sha256": "148a04cbd043a08a23865d16bf522fb34c0266abf73a4765159a7644bbb6a935",
+        "nixFlatHash": "sha256-FIoEy9BDoIojhl0Wv1Ivs0wCZqv3OkdlFZp2RLu2qTU="
+      },
+      {
+        "url": "https://api.github.com/repos/microsoft/playwright/contents/browser_patches/webkit?ref=v1.56.1",
+        "nixStorePath": "/nix/store/kc32027x6s13zq8j6jc19i1ci5yc6zbs-playwright-webkit-directory.json",
+        "bytes": 4848,
+        "sha256": "1dc3e103d774612c21d4352e9b1a920d63820fce4a17bb0807d454e7a7552e84",
+        "nixFlatHash": "sha256-HcPhA9d0YSwh1DUumxqSDWOCD85KF7sIB9RU56dVLoQ="
+      }
+    ]
+  }
+}

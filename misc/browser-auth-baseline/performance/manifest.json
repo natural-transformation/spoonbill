@@ -1,0 +1,547 @@
+{
+  "schemaVersion": 1,
+  "status": "awaiting-reference-review",
+  "purpose": "Proposed Phase 0 measurement contract. No observations or measured operation budgets exist in this manifest; it cannot pass the release gate.",
+  "baselines": {
+    "historical": {
+      "gitCommit": "0c6df154a185815d187b4f5d04aad3aab0570f8b",
+      "referenceIntegrationSha256": null
+    },
+    "feature": {
+      "gitCommit": "ab95a4fe65399814931c6ddd7f29dd68f33bbc5c",
+      "referenceIntegrationSha256": null
+    }
+  },
+  "sourceReview": {
+    "referenceReviewed": false,
+    "reviewedBy": null,
+    "reviewedAt": null
+  },
+  "protocol": {
+    "pairsPerMode": 30,
+    "modes": [
+      "comparison",
+      "calibration"
+    ],
+    "passes": [
+      "latency",
+      "memory",
+      "operations"
+    ],
+    "order": "alternating-baseline-first-candidate-first-by-block",
+    "seed": 20261010,
+    "confidenceFamily": 0.95,
+    "familySize": 1247,
+    "bootstrapReplicates": 1995200,
+    "minimumBootstrapTailObservations": 20,
+    "estimator": "mean of paired oriented candidate/baseline-minus-one changes; absolute paired differences whenever any baseline is zero",
+    "comparisonAllowance": 0,
+    "maximumProcessSeconds": 600,
+    "maximumCollectionSeconds": 259200,
+    "maximumAnalysisSeconds": 7200,
+    "calibration": {
+      "maximumAbsoluteMeanRelativeChange": 0.01,
+      "maximumRelativeIntervalWidth": 0.1,
+      "maximumAbsoluteMeanResolutionUnits": 1,
+      "maximumAbsoluteIntervalWidthResolutionUnits": 4
+    },
+    "timingClockResolutionNs": 1,
+    "quiescenceSeconds": 30,
+    "heapDiagnosticsPass": "memory",
+    "latencyProfilingAllowed": false,
+    "retainedHeapProtocol": "Complete measured churn; drain owned work; wait 30 seconds; request two full GCs separated by a completed-work barrier; record live heap after the second GC. Both GCs and profiling are outside latency passes.",
+    "peakHeapProtocol": "JFR allocation/heap and GC records plus 10ms MemoryMXBean sampling in memory passes; retained diagnostic values cannot substitute for peak. Record exact instrument configuration and observed resolution.",
+    "nativeMemoryProtocol": "Memory passes enable NativeMemoryTracking=summary; capture committed native bytes after quiescence and OS process peak RSS separately.",
+    "browserProtocol": "Synthetic real-cookie flows in Chromium and WebKit; memory and browser processing metrics require an actual supported collector in each engine. Unsupported collectors yield null and block the gate.",
+    "workload": {
+      "sessionTtlSeconds": 900,
+      "ceremonyTtlSeconds": 120,
+      "challengeTtlSeconds": 90,
+      "deliveryTtlSeconds": 60,
+      "reconnectTtlSeconds": 30,
+      "bootstrapTtlSeconds": 15,
+      "operationAuthorityTtlSeconds": 30,
+      "maxCeremonies": 1024,
+      "maxCeremoniesPerBrowser": 4,
+      "maxActiveViews": 1024,
+      "maxViewsPerBrowser": 16,
+      "maxDisconnectedViews": 1024,
+      "maxBootstrapEntries": 1024,
+      "maxPendingAcquisitions": 256,
+      "maxRecoveryObservations": 1024,
+      "maxDeliveryMaterials": 1024,
+      "maxRetainedEntriesPerKind": 32768,
+      "maxRetainedViewEpochs": 131072,
+      "maxAuditRecords": 65536,
+      "maxRateScopes": 32768,
+      "maxStoredNodesPerView": 10000,
+      "accountCount": 1000,
+      "sessionsPerAccount": 2,
+      "challengeDigits": 6,
+      "shortProof": {
+        "algorithm": "PBKDF2WithHmacSHA256",
+        "iterations": 1,
+        "keyBits": 256,
+        "saltBytes": 16
+      },
+      "representativeProof": {
+        "algorithm": "PBKDF2WithHmacSHA256",
+        "iterations": 100000,
+        "keyBits": 256,
+        "saltBytes": 16
+      },
+      "rateLimit": {
+        "attempts": 5,
+        "windowSeconds": 60,
+        "scope": "binding-wide window shared across accounts, plus (binding, account) window; each measured login uses a fresh eligible binding"
+      },
+      "expensivePolicy": {
+        "deterministicRounds": 1000,
+        "algorithm": "SHA-256 over fixed synthetic policy bytes"
+      },
+      "contention": {
+        "workers": 8,
+        "contendedAccountCount": 1,
+        "holdLockMilliseconds": 5,
+        "barrier": "all workers admitted before releasing a dedicated lock holder"
+      },
+      "churn": {
+        "cycles": 10000,
+        "durationSeconds": 120,
+        "quiescenceSeconds": 30,
+        "disconnectEveryOperations": 1
+      },
+      "capacity": {
+        "scopes": "exercise every configured global and per-browser limit",
+        "attemptsAtLimit": 1,
+        "attemptsBeyondLimit": 1
+      },
+      "humanFactorEntryDelayIncluded": false,
+      "browserNetwork": {
+        "downloadBitsPerSecond": 100000000,
+        "roundTripMilliseconds": 1,
+        "cache": "cold for download/startup cells, warm for event/login/reconnect cells"
+      }
+    },
+    "coldStartupProtocol": "Each latency observation aggregates 100 separate cold child-server launches; startup timers include launch, HTTP bootstrap and first live frame. The collector process is independent per block/variant.",
+    "clientAccounting": "Require inventory classifications and byte counts for handwritten/generated runtime plus reference application scripts, emitted/minified/gzip/brotli auth and application bundles. No custom auth JavaScript or new domain policy branches; frozen ceilings include every delivered generated output.",
+    "defaultPasses": {
+      "latency": {
+        "warmupOperations": 10000,
+        "measuredOperations": 5000
+      },
+      "memory": {
+        "warmupOperations": 1000,
+        "measuredOperations": 5000
+      },
+      "operations": {
+        "warmupOperations": 0,
+        "measuredOperations": 100
+      }
+    },
+    "intervalFamilies": 2,
+    "diagnostics": {
+      "maximumWarmLatencyCompilationMilliseconds": 0,
+      "maximumColdLatencyCompilationMilliseconds": 10000,
+      "maximumLatencyGcMilliseconds": 5000
+    },
+    "resolutionProtocol": "Collectors must measure sensor granularity with calibration probes, report per-metric observed resolution in the metric's units, and assert the probes completed; nominal clock declarations alone do not qualify. Missing engine/profile support reports null.",
+    "defaultDimensions": {
+      "concurrency": 1,
+      "payloadBytes": 128,
+      "nodeCount": 100,
+      "valueBytes": 64,
+      "browser": "chromium"
+    }
+  },
+  "metricDefinitions": {
+    "latencyP50Ns": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "latencyP95Ns": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "latencyP99Ns": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "operationsPerSecond": {
+      "pass": "latency",
+      "higherIsBetter": true,
+      "resolution": 0.001
+    },
+    "allocatedBytesPerOperation": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "peakHeapBytes": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "retainedHeapBytes": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "processPeakRssBytes": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 4096
+    },
+    "nativeCommittedBytes": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1024
+    },
+    "idleBytesPerConnection": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "idleBytesPerView": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "browserHeapBytes": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "browserProcessingNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "lockWaitNsPerOperation": {
+      "pass": "operations",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "browserDownloadNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "browserStartupNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "browserParseNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "browserCompileNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "browserExecutionNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "browserEventToRenderNs": {
+      "pass": "latency",
+      "higherIsBetter": false,
+      "resolution": 1000
+    },
+    "browserAllocatedBytesPerOperation": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    },
+    "browserRetainedHeapBytes": {
+      "pass": "memory",
+      "higherIsBetter": false,
+      "resolution": 1
+    }
+  },
+  "unresolved": [
+    "Complete equivalent v3 host integration, review and freeze its source hash and immutable artifacts.",
+    "Record measured per-cell operation ceilings and metadata resource ceilings from the reviewed reference.",
+    "Implement and validate collectors for actual PostgreSQL protocol round trips, peak/retained/native memory and both browser engines.",
+    "Link complete work-contract hashes and actual baseline/candidate provenance before collecting evidence.",
+    "Validate calibration precision on controlled hardware without inspecting candidate results; retain any superseded protocol and raw results.",
+    "Review handwritten/generated client inventory; measure both auth and application bundles with fixed gzip level 9 and Brotli quality 11; freeze HTTP/WebSocket exchange ceilings."
+  ],
+  "requiredOperationCounters": {
+    "poolAcquisitionsPerOperation": {
+      "fixedCeiling": null
+    },
+    "transactionsPerOperation": {
+      "fixedCeiling": null
+    },
+    "sqlExecutionsPerOperation": {
+      "fixedCeiling": null
+    },
+    "sqlStatementsPerOperation": {
+      "fixedCeiling": null
+    },
+    "wireRoundTripsPerOperation": {
+      "fixedCeiling": null
+    },
+    "lockAcquisitionsPerOperation": {
+      "fixedCeiling": null
+    },
+    "cleanupOperationsPerOperation": {
+      "fixedCeiling": null
+    },
+    "scheduledTasksPerOperation": {
+      "fixedCeiling": null
+    },
+    "nodeEntriesVisitedPerOperation": {
+      "fixedCeiling": null
+    },
+    "nodeBytesCopiedPerOperation": {
+      "fixedCeiling": null
+    },
+    "httpExchangesPerOperation": {
+      "fixedCeiling": null
+    },
+    "webSocketExchangesPerOperation": {
+      "fixedCeiling": null
+    },
+    "handwrittenAuthClientLines": {
+      "fixedCeiling": null
+    },
+    "handwrittenClientModules": {
+      "fixedCeiling": null
+    },
+    "generatedClientBytes": {
+      "fixedCeiling": null
+    },
+    "emittedAuthBundleBytes": {
+      "fixedCeiling": null
+    },
+    "minifiedAuthBundleBytes": {
+      "fixedCeiling": null
+    },
+    "gzipAuthBundleBytes": {
+      "fixedCeiling": null
+    },
+    "brotliAuthBundleBytes": {
+      "fixedCeiling": null
+    },
+    "emittedApplicationBundleBytes": {
+      "fixedCeiling": null
+    },
+    "minifiedApplicationBundleBytes": {
+      "fixedCeiling": null
+    },
+    "gzipApplicationBundleBytes": {
+      "fixedCeiling": null
+    },
+    "brotliApplicationBundleBytes": {
+      "fixedCeiling": null
+    },
+    "applicationAuthJavaScriptLines": {
+      "fixedCeiling": 0
+    },
+    "newClientDomainPolicyBranches": {
+      "fixedCeiling": 0
+    }
+  },
+  "requiredResources": {
+    "activeConnectionsAfterRelease": {
+      "fixedCeiling": 0
+    },
+    "activeViewsAfterRelease": {
+      "fixedCeiling": 0
+    },
+    "activeTransactionsAfterRelease": {
+      "fixedCeiling": 0
+    },
+    "pendingCallbacksAfterRelease": {
+      "fixedCeiling": 0
+    },
+    "sensitiveOwnersAfterRelease": {
+      "fixedCeiling": 0
+    },
+    "totalMetadataEntriesAtPeak": {
+      "fixedCeiling": null
+    },
+    "retainedMetadataEntriesAfterQuiescence": {
+      "fixedCeiling": null
+    }
+  },
+  "metricSets": {
+    "runtime": [
+      "latencyP50Ns",
+      "latencyP95Ns",
+      "latencyP99Ns",
+      "operationsPerSecond",
+      "allocatedBytesPerOperation",
+      "peakHeapBytes",
+      "retainedHeapBytes",
+      "processPeakRssBytes",
+      "nativeCommittedBytes"
+    ],
+    "idle": [
+      "latencyP50Ns",
+      "latencyP95Ns",
+      "latencyP99Ns",
+      "operationsPerSecond",
+      "allocatedBytesPerOperation",
+      "peakHeapBytes",
+      "retainedHeapBytes",
+      "processPeakRssBytes",
+      "nativeCommittedBytes",
+      "idleBytesPerConnection",
+      "idleBytesPerView"
+    ],
+    "browser": [
+      "latencyP50Ns",
+      "latencyP95Ns",
+      "latencyP99Ns",
+      "operationsPerSecond",
+      "allocatedBytesPerOperation",
+      "peakHeapBytes",
+      "retainedHeapBytes",
+      "processPeakRssBytes",
+      "nativeCommittedBytes",
+      "browserHeapBytes",
+      "browserProcessingNs",
+      "lockWaitNsPerOperation",
+      "browserDownloadNs",
+      "browserStartupNs",
+      "browserParseNs",
+      "browserCompileNs",
+      "browserExecutionNs",
+      "browserEventToRenderNs",
+      "browserAllocatedBytesPerOperation",
+      "browserRetainedHeapBytes"
+    ],
+    "server": [
+      "latencyP50Ns",
+      "latencyP95Ns",
+      "latencyP99Ns",
+      "operationsPerSecond",
+      "allocatedBytesPerOperation",
+      "peakHeapBytes",
+      "retainedHeapBytes",
+      "processPeakRssBytes",
+      "nativeCommittedBytes",
+      "lockWaitNsPerOperation"
+    ],
+    "idle-database": [
+      "latencyP50Ns",
+      "latencyP95Ns",
+      "latencyP99Ns",
+      "operationsPerSecond",
+      "allocatedBytesPerOperation",
+      "peakHeapBytes",
+      "retainedHeapBytes",
+      "processPeakRssBytes",
+      "nativeCommittedBytes",
+      "idleBytesPerConnection",
+      "idleBytesPerView",
+      "lockWaitNsPerOperation"
+    ]
+  },
+  "cells": [
+    {"id":"public-startup","group":"unused-feature","baseline":"feature","dimensions":{"featureEnabled":false,"idlePopulation":0},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"public-events","group":"unused-feature","baseline":"feature","dimensions":{"featureEnabled":false,"idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"public-idle","group":"unused-feature","baseline":"feature","dimensions":{"featureEnabled":false,"idlePopulation":1000},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"idle"},
+    {"id":"public-teardown","group":"unused-feature","baseline":"feature","dimensions":{"featureEnabled":false,"idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"guarded-anonymous-fresh-cold","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"anonymous","view":"fresh","temperature":"cold"},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-anonymous-fresh-warm","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"anonymous","view":"fresh","temperature":"warm"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-anonymous-existing-cold","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"anonymous","view":"existing","temperature":"cold"},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-anonymous-existing-warm","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"anonymous","view":"existing","temperature":"warm"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-anonymous-missing-cold","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"anonymous","view":"missing","temperature":"cold"},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-anonymous-missing-warm","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"anonymous","view":"missing","temperature":"warm"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-authenticated-fresh-cold","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"authenticated","view":"fresh","temperature":"cold"},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-authenticated-fresh-warm","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"authenticated","view":"fresh","temperature":"warm"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-authenticated-existing-cold","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"authenticated","view":"existing","temperature":"cold"},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-authenticated-existing-warm","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"authenticated","view":"existing","temperature":"warm"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-authenticated-missing-cold","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"authenticated","view":"missing","temperature":"cold"},"passes":{"latency":{"warmupOperations":0,"measuredOperations":100},"memory":{"warmupOperations":0,"measuredOperations":1},"operations":{"warmupOperations":0,"measuredOperations":1}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"guarded-authenticated-missing-warm","group":"guarded-setup","baseline":"feature","dimensions":{"auth":"authenticated","view":"missing","temperature":"warm"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-password-short-c1","group":"login","baseline":"feature","dimensions":{"flow":"password","proof":"short"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-password-short-c8","group":"login","baseline":"feature","dimensions":{"concurrency":8,"flow":"password","proof":"short"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-password-representative-c1","group":"login","baseline":"feature","dimensions":{"flow":"password","proof":"representative"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-password-representative-c8","group":"login","baseline":"feature","dimensions":{"concurrency":8,"flow":"password","proof":"representative"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-challenge-short-c1","group":"login","baseline":"feature","dimensions":{"flow":"challenge","proof":"short"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-challenge-short-c8","group":"login","baseline":"feature","dimensions":{"concurrency":8,"flow":"challenge","proof":"short"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-challenge-representative-c1","group":"login","baseline":"feature","dimensions":{"flow":"challenge","proof":"representative"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"login-challenge-representative-c8","group":"login","baseline":"feature","dimensions":{"concurrency":8,"flow":"challenge","proof":"representative"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"protected-event-n1-cheap-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":1,"operation":"event","policy":"cheap","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n1-cheap-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":1,"operation":"event","policy":"cheap","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n1-expensive-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":1,"operation":"event","policy":"expensive","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n1-expensive-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":1,"operation":"event","policy":"expensive","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n10000-cheap-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":10000,"operation":"event","policy":"cheap","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n10000-cheap-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":10000,"operation":"event","policy":"cheap","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n10000-expensive-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":10000,"operation":"event","policy":"expensive","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-event-n10000-expensive-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":10000,"operation":"event","policy":"expensive","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n1-cheap-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":1,"operation":"domain-write","policy":"cheap","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n1-cheap-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":1,"operation":"domain-write","policy":"cheap","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n1-expensive-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":1,"operation":"domain-write","policy":"expensive","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n1-expensive-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":1,"operation":"domain-write","policy":"expensive","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n10000-cheap-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":10000,"operation":"domain-write","policy":"cheap","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n10000-cheap-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":10000,"operation":"domain-write","policy":"cheap","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n10000-expensive-none","group":"protected","baseline":"feature","dimensions":{"nodeCount":10000,"operation":"domain-write","policy":"expensive","contention":"none"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"protected-domain-write-n10000-expensive-controlled","group":"protected","baseline":"feature","dimensions":{"concurrency":8,"nodeCount":10000,"operation":"domain-write","policy":"expensive","contention":"controlled"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"reconnect-retained","group":"reconnect","baseline":"feature","dimensions":{"concurrency":8,"scenario":"retained"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"reconnect-expired","group":"reconnect","baseline":"feature","dimensions":{"concurrency":8,"scenario":"expired"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"reconnect-takeover-old-owner-write","group":"reconnect","baseline":"feature","dimensions":{"concurrency":8,"scenario":"takeover-old-owner-write"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"reconnect-repeated","group":"reconnect","baseline":"feature","dimensions":{"concurrency":8,"scenario":"repeated"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"reconnect-missing","group":"reconnect","baseline":"feature","dimensions":{"concurrency":8,"scenario":"missing"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-logout-active","group":"failure","baseline":"feature","dimensions":{"scenario":"logout-active"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-logout-pending","group":"failure","baseline":"feature","dimensions":{"scenario":"logout-pending"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-revoked-output","group":"failure","baseline":"feature","dimensions":{"scenario":"revoked-output"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-rollback","group":"failure","baseline":"feature","dimensions":{"scenario":"rollback"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-delivery-failure","group":"failure","baseline":"feature","dimensions":{"scenario":"delivery-failure"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-commit-reconcile","group":"failure","baseline":"feature","dimensions":{"scenario":"commit-reconcile"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"failure-cleanup-failure","group":"failure","baseline":"feature","dimensions":{"scenario":"cleanup-failure"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"node-object-n1-v64-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"manager":"object","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n1-v64-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"manager":"object","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n1-v4096-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"valueBytes":4096,"manager":"object","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n1-v4096-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"valueBytes":4096,"manager":"object","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n100-v64-read","group":"node-read","baseline":"feature","dimensions":{"manager":"object","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n100-v64-snapshot","group":"node-read","baseline":"feature","dimensions":{"manager":"object","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n100-v4096-read","group":"node-read","baseline":"feature","dimensions":{"valueBytes":4096,"manager":"object","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n100-v4096-snapshot","group":"node-read","baseline":"feature","dimensions":{"valueBytes":4096,"manager":"object","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n10000-v64-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"manager":"object","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n10000-v64-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"manager":"object","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n10000-v4096-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"valueBytes":4096,"manager":"object","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-object-n10000-v4096-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"valueBytes":4096,"manager":"object","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n1-v64-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"manager":"serialized","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n1-v64-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"manager":"serialized","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n1-v4096-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"valueBytes":4096,"manager":"serialized","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n1-v4096-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":1,"valueBytes":4096,"manager":"serialized","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n100-v64-read","group":"node-read","baseline":"feature","dimensions":{"manager":"serialized","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n100-v64-snapshot","group":"node-read","baseline":"feature","dimensions":{"manager":"serialized","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n100-v4096-read","group":"node-read","baseline":"feature","dimensions":{"valueBytes":4096,"manager":"serialized","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n100-v4096-snapshot","group":"node-read","baseline":"feature","dimensions":{"valueBytes":4096,"manager":"serialized","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n10000-v64-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"manager":"serialized","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n10000-v64-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"manager":"serialized","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n10000-v4096-read","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"valueBytes":4096,"manager":"serialized","operation":"read"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"node-serialized-n10000-v4096-snapshot","group":"node-read","baseline":"feature","dimensions":{"nodeCount":10000,"valueBytes":4096,"manager":"serialized","operation":"snapshot"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"lifetime-idle","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"idle","idlePopulation":1000},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"idle-database"},
+    {"id":"lifetime-churn","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"churn","idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"lifetime-capacity","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"capacity","idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"lifetime-acquisition-cancellation","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"acquisition-cancellation","idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"lifetime-expiry","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"expiry","idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"lifetime-shutdown","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"shutdown","idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"lifetime-restart","group":"lifetime","baseline":"feature","dimensions":{"concurrency":8,"scenario":"restart","idlePopulation":0},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"server"},
+    {"id":"historical-echo-c1-p128","group":"historical-transport","baseline":"historical","dimensions":{},"passes":{"latency":{"warmupOperations":40000,"measuredOperations":10000}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"historical-echo-c1-p4096","group":"historical-transport","baseline":"historical","dimensions":{"payloadBytes":4096},"passes":{"latency":{"warmupOperations":40000,"measuredOperations":10000}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"historical-echo-c8-p128","group":"historical-transport","baseline":"historical","dimensions":{"concurrency":8},"passes":{"latency":{"warmupOperations":40000,"measuredOperations":80000}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"historical-echo-c8-p4096","group":"historical-transport","baseline":"historical","dimensions":{"concurrency":8,"payloadBytes":4096},"passes":{"latency":{"warmupOperations":40000,"measuredOperations":80000}},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"historical-core-lifecycle","group":"historical-core","baseline":"historical","dimensions":{},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"pekko-echo-c1-p128","group":"pekko-transport","baseline":"feature","dimensions":{},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"pekko-echo-c1-p4096","group":"pekko-transport","baseline":"feature","dimensions":{"payloadBytes":4096},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"pekko-echo-c8-p128","group":"pekko-transport","baseline":"feature","dimensions":{"concurrency":8},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"pekko-echo-c8-p4096","group":"pekko-transport","baseline":"feature","dimensions":{"concurrency":8,"payloadBytes":4096},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"runtime"},
+    {"id":"browser-reference-chromium","group":"reference-browser","baseline":"feature","dimensions":{},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"},
+    {"id":"browser-reference-webkit","group":"reference-browser","baseline":"feature","dimensions":{"browser":"webkit"},"operationCeilings":null,"resourceCeilings":null,"completedWorkContractSha256":null,"metricSet":"browser"}
+  ]
+}

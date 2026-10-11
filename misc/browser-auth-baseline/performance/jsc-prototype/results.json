@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 2,
+  "kind": "experimental-jsc-cell-ledger-result",
+  "status": "deferred-final-outcome-unverified",
+  "takeoverDecision": {
+    "date": "2026-10-11",
+    "furtherPerformanceTesting": "deferred-at-maintainer-request",
+    "newBuildsOrProofsStarted": false,
+    "attempt4FinalDisposition": "unverified",
+    "note": "Prior start observations are preserved; no completion or cleanup is inferred from the expired authorization window."
+  },
+  "acceptanceEvidence": false,
+  "platform": "aarch64-linux",
+  "executionScope": "Existing guest; isolated owned process tree and private local Nix store; interpreter-only JSC experiment",
+  "source": {
+    "release": "WebKitGTK 2.50.4",
+    "url": "https://webkitgtk.org/releases/webkitgtk-2.50.4.tar.xz",
+    "expectedArchiveSha256SRI": "sha256-07+kc4Raz6tyY1utpeDRNP2meSxblcXFzRQbRhJb2OQ=",
+    "acquisition": "Nix verified before the original source deadline",
+    "observedChargedPeakBytes": 1127829504,
+    "evidence": "locally inspected Nix receipt, successful controller log and zero exit status",
+    "privateRawLogSha256": "ff651ad323bd81dc34b445b2f73a0af5e049234ff069db8c63163e553f230a2f",
+    "privateExitReceiptSha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "privateNixReceiptSha256": "addd16cd4b867d3bd2ebadd6212516fc015efa070282c2adb9d35c8d1a2c0f92"
+  },
+  "repositorySourceSnapshot": {
+    "scope": "Attempt 4 was last observed building the SubspaceInlines.h include fix. These inputs differ from the failed build patch; no completed binary is established by the retained evidence",
+    "sha256": {
+      "default.nix": "4ab0aba576028270f61b1371efa43f8b437dfc23fa5815dba22f34b8363c568a",
+      "cumulative-allocation.patch": "155ab89fa80e63c2a09f56389aa5ade7852b1825e0be0bcfb819919dd58b2ce5",
+      "oracle.js": "1bdf17d0c17fd243fef766f57e56ad8d9312d286eb55549bfe7532c9309af1cc"
+    }
+  },
+  "approvedEnvelope": {
+    "scope": "original-two-hour-experiment-attempts-1-through-3",
+    "memoryMaxBytes": 16000000000,
+    "memoryHighBytes": 14000000000,
+    "swapMaxBytes": 0,
+    "compilerJobs": 1,
+    "cpuQuotaEquivalents": 2,
+    "totalDurationSeconds": 7200,
+    "additionalDiskMaxBytes": 16106127360,
+    "privateFilesystemCapacityBytes": 15032385536,
+    "memoryMeaning": "cgroup charged memory including file cache; not process RSS, virtual size, or host VM footprint",
+    "deadlinesExtended": false
+  },
+  "separatelyAuthorizedAttempt4": {
+    "approvedAttempts": 1,
+    "approvedDurationSeconds": 2700,
+    "startedAtUtc": "2026-10-11T05:29:40Z",
+    "authorizationEndsAtUtc": "2026-10-11T06:14:40Z",
+    "controllerStopDeadlineUtc": "2026-10-11T06:14:30Z",
+    "runtimeMaxSeconds": 2690,
+    "stopTimeoutSeconds": 10,
+    "memoryMaxBytes": 16000000000,
+    "memoryHighBytes": 14000000000,
+    "swapMaxBytes": 0,
+    "compilerJobs": 1,
+    "cpuQuotaEquivalents": 2,
+    "additionalDiskMaxBytes": 16106127360,
+    "reusedPrivateFilesystemCapacityBytes": 15032385536,
+    "originalBudgetExtended": false,
+    "freshHostPreflight": "passed; audited Nix, shared build-user locks, idle CI and previous cleanup verified",
+    "sourceIdentityEvidence": "locally inspected guest receipt confirms all three input checksum checks passed against repositorySourceSnapshot",
+    "privateInputReceiptSha256": "42a541326c9bc206f27fa5b7519f2c11369842f090e18261e84e279d354d2e4b",
+    "initialTinyProof": "cached result; not fresh body execution in this attempt",
+    "mainBuilderContainment": "controller confirms actual preConfigure non-root, zero-capability and cgroup-namespace assertions passed before compiler probes",
+    "forcedTinyProofRebuild": "Previously queued serial step; execution unverified and no start/retry is part of the takeover",
+    "privatePreflightLogSha256": "2821f643f685f3dba04da367565fc9af83f10ac9e83872550b55ce715b7f9890",
+    "privateStartReceiptSha256": "25888be2848efbd61eae1c587d3378799b2b664b8801e5406d125e4004f2a7df"
+  },
+  "containment": {
+    "scope": "original experiment; attempt 4 containment is described separately",
+    "actualTinyNixBuilder": "passed",
+    "checks": [
+      "Actual builder and child non-root in expected cgroup namespace",
+      "Zero effective builder capabilities",
+      "Actual kernel resource limits and read-only cgroup controls",
+      "Shared build-user lock identity with daemonless private store"
+    ],
+    "evidence": "locally inspected controller log",
+    "privateRawLogSha256": "c7c1863af2be9e4205f204249253c51865fd436613079571d7d3e972ed6ad60e"
+  },
+  "toyOomProof": {
+    "status": "passed",
+    "memoryMaxBytes": 67108864,
+    "memoryHigh": "max",
+    "swapMaxBytes": 0,
+    "requestedAllocationBytes": 134217728,
+    "runtimeMaxSeconds": 30,
+    "requiredResult": "oom-kill",
+    "processGroupReleased": true,
+    "retainedSiblingReleased": true,
+    "observedChargedPeakBytes": 67108864,
+    "evidence": "locally inspected settled controller log and successful verifier JSON",
+    "privateRawLogSha256": "e61ef18bd6a21f79ef21bc5728130d7d76b57e3ea808fcba42f849c739a91aeb",
+    "earlierAttempts": [
+      {"status": "refused-before-allocation", "reason": "Transient unit did not receive trusted PATH"},
+      {"status": "timeout", "reason": "48 MiB memory.high throttled allocation before memory.max", "observedChargedPeakBytes": 59019264, "privateRawLogSha256": "68d037d2ebecee798fb72074a52e799996505415daf241215582af7b699e009a"}
+    ],
+    "scope": "Hard-limit group OOM and process cleanup only; actual engine memory.high remains 14000000000 bytes"
+  },
+  "buildAttempts": [
+    {
+      "attempt": 1,
+      "status": "failed",
+      "stage": "CMake configuration",
+      "reason": "Release compiler flags split across arguments",
+      "observedChargedPeakBytes": 6587342848,
+      "evidence": "locally inspected controller log",
+      "privateRawLogSha256": "8a10ea2c12a553cc4a1f670f7d543ef85cb6d8eae0d3b8632e0a4016e0059223"
+    },
+    {
+      "attempt": 2,
+      "status": "failed",
+      "stage": "Build entry after successful CMake generation",
+      "reason": "Generated Makefiles but invoked Ninja; build.ninja missing",
+      "observedChargedPeakBytes": 1390190592,
+      "evidence": "locally inspected controller log",
+      "privateRawLogSha256": "10586d7cec9cfa52fe9f32d5e6238d9a056ba44ed5f056de78fc8f2195f5218c"
+    },
+    {
+      "attempt": 3,
+      "status": "failed",
+      "stage": "JavaScriptCore shared-library link at reported Ninja step 1660 of 2462",
+      "reason": "Undefined JSC::Subspace::attributes() const referenced by IsoSubspace::tryAllocateLowerTierPrecise",
+      "observedChargedPeakBytes": 3669725184,
+      "failedBuildPatchSha256": "624863b919bf2f6663d56c2df9353235a9731c44401ed52e39bb11d05119f059",
+      "privateRawLogSha256": "6f7d79937f71aa306fa061e27534d2836dc86187919a91be3f08fc6dd9a30ad6",
+      "privateExitReceiptSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "evidence": "locally inspected final build failure and exit status 1"
+    },
+    {
+      "attempt": 4,
+      "authorization": "separatelyAuthorizedAttempt4",
+      "status": "final-disposition-unverified",
+      "lastObservedStatus": "running",
+      "observedChargedPeakBytes": null,
+      "oracleOutcome": null,
+      "processGroupReleased": null,
+      "evidence": "locally inspected historical start receipt; final resource, oracle and cleanup evidence unverified; further experiments deferred"
+    }
+  ],
+  "finalBuildCleanup": {
+    "scope": "original-two-hour-experiment-attempts-1-through-3-only",
+    "processGroupReleased": true,
+    "sharedCiLeftRunning": true,
+    "maximumObservedChargedPeakAcrossExperimentUnitsBytes": 6587342848,
+    "privateControllerLogSha256": "d850980d2dd277a454ddb45998fd3f990ce922e694aa32f6ca3dcddfcd244b61",
+    "privateEvidenceArchiveSha256": "943da32fd5b5ec60900b35a4496cbf7595a6a8ba7a748e5f57ca9261ed0c4894",
+    "currentGuardReverification": {
+      "status": "passed",
+      "publishedEnvelopePreflight": "passed",
+      "actualTinyNixBuilder": "passed",
+      "publishedOomVerifier": "passed",
+      "stepExitStatus": 0,
+      "unitResult": "success",
+      "observedChargedPeakBeforeUnitExitBytes": 68993024,
+      "privateRawLogSha256": "790e073088a4b52233f9c566af6e41f4d3fe67630bf2ad37092c63ffa6f3d06c",
+      "engineBuildPerformed": false
+    },
+    "allExperimentProcessGroupsReleased": true,
+    "ownedLoopDevicesReleased": true,
+    "retainedImageCapacityBytes": 15032385536,
+    "retainedGuestTaskAllocatedKiB": 4548068,
+    "privateAllCleanupLogSha256": "0d88353bcea47605cdef485cc14fdf94d62294d21b0bd0ab5e2a3a400304f261",
+    "fourthEngineBuildRequiredHumanInput": true,
+    "subsequentAuthorization": "separatelyAuthorizedAttempt4"
+  },
+  "validation": {
+    "staticTestsPassed": 9,
+    "staticTestsFailed": 0,
+    "fullNodeTestsPassed": 175,
+    "fullNodeTestsFailed": 0,
+    "compiledOracleExecuted": false,
+    "installedBrowserReplaced": false,
+    "browserAllocationMeasurement": null,
+    "phase0MetricOrBudgetUpdated": false
+  },
+  "privacy": "Raw controller logs remain private. This summary omits host and guest filesystem paths, process IDs, unit identifiers and raw environment values."
+}

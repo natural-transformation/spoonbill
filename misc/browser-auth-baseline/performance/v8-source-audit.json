@@ -1,0 +1,199 @@
+{
+  "schema": "spoonbill-v8-source-audit-v1",
+  "auditedAtUtc": "2026-10-11T05:41:59Z",
+  "toolSource": "mcp__codex_apps__github_fetch_file",
+  "repository": "v8/v8",
+  "ref": "ad8af0fc661d278e87627fcaa3a7cf795ee80dd8",
+  "encoding": "utf-8",
+  "chromiumVersion": "141.0.7390.37",
+  "pinProvenance": {
+    "url": "https://github.com/chromium/chromium/blob/141.0.7390.37/DEPS",
+    "status": "Previously established Chromium DEPS pin; not re-fetched in this six-file audit."
+  },
+  "earlierFetchFailurePreserved": true,
+  "successfulFileFetches": 6,
+  "failedFileFetches": 0,
+  "totalBytes": 475009,
+  "contentVerification": "Nix-managed Node SHA-256 over exact returned UTF-8 bytes, with no normalization; SHA-1 of blob <byteLength> NUL plus bytes matches every connector-provided Git blob identity.",
+  "files": [
+    {
+      "path": "src/profiler/allocation-tracker.cc",
+      "url": "https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.cc",
+      "gitBlobSha1": "7b4ce59798de4408ca3de1b40f8f7284be2603ef",
+      "contentSha256": "c4b29e96e02c95f83c1b041393f1b1be7d3b62980c160fb1d8f5e69b49049db4",
+      "bytes": 10013
+    },
+    {
+      "path": "src/profiler/allocation-tracker.h",
+      "url": "https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.h",
+      "gitBlobSha1": "7189e87769106c44ad45638a2173b0bdd4280ac5",
+      "contentSha256": "904c23f0bf4dd838c604a329c9cf29c1f264c4430a9fb64a446c96a22eab195d",
+      "bytes": 5200
+    },
+    {
+      "path": "src/profiler/heap-snapshot-generator.cc",
+      "url": "https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/heap-snapshot-generator.cc",
+      "gitBlobSha1": "ff0be3558517befcc420e9df813370bb6a2c59e8",
+      "contentSha256": "4ed10255028157b2329e5d8ec0da6322b404501ffe50142c033e6be414dd2ab9",
+      "bytes": 153493
+    },
+    {
+      "path": "src/profiler/heap-profiler.cc",
+      "url": "https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/heap-profiler.cc",
+      "gitBlobSha1": "de33750ce70a3965ea06d568164a69d3772699f9",
+      "contentSha256": "6a9996c2be59cc4ad3806e7ab0e4278f2c5ec9d95f3756c4f859587f18f37eb3",
+      "bytes": 14581
+    },
+    {
+      "path": "src/heap/heap.cc",
+      "url": "https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/heap/heap.cc",
+      "gitBlobSha1": "972eab47d0050f98825ddecbb7dc2226c3fe022e",
+      "contentSha256": "b0d86b430559f79e9c1b8a3ac68b3dcf7678b27a12579aba9db4fc77c488df49",
+      "bytes": 288201
+    },
+    {
+      "path": "src/heap/main-allocator-inl.h",
+      "url": "https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/heap/main-allocator-inl.h",
+      "gitBlobSha1": "f7293b4f6a48a96d175d49b057b641b8c3b671c9",
+      "contentSha256": "69be3e90b529700058ec9289322e101bfa98ffd8b5b77d88b6003bc10462f5f3",
+      "bytes": 3521
+    }
+  ],
+  "findings": [
+    {
+      "id": "cumulative-own-node",
+      "finding": "AllocationEvent charges only the terminal trace node using AddAllocation(size); AddAllocation increments its own size and count. Summing every node once therefore sums recorded allocation events, not inclusive ancestor totals or retained-object sizes.",
+      "evidence": [
+        {
+          "path": "src/profiler/allocation-tracker.cc",
+          "line": 53
+        },
+        {
+          "path": "src/profiler/allocation-tracker.cc",
+          "line": 190
+        }
+      ]
+    },
+    {
+      "id": "tracking-lifetime-and-gc",
+      "finding": "Tracking start creates a fresh AllocationTracker; stop destroys it. Object movement updates address mappings and object-size updates affect the object map, without subtracting trace totals. The reviewed trace tree has no collection-based reset/decrement; script weak callbacks remove script metadata only.",
+      "evidence": [
+        {
+          "path": "src/profiler/heap-profiler.cc",
+          "line": 232
+        },
+        {
+          "path": "src/profiler/heap-profiler.cc",
+          "line": 251
+        },
+        {
+          "path": "src/profiler/heap-profiler.cc",
+          "line": 291
+        },
+        {
+          "path": "src/profiler/heap-profiler.cc",
+          "line": 307
+        },
+        {
+          "path": "src/profiler/allocation-tracker.cc",
+          "line": 246
+        }
+      ]
+    },
+    {
+      "id": "serialized-own-node-counters",
+      "finding": "Snapshot trace_node_fields names count and size; SerializeTraceNode emits allocation_count and allocation_size and recursively emits children. These are distinct from live heap node self_size.",
+      "evidence": [
+        {
+          "path": "src/profiler/heap-snapshot-generator.cc",
+          "line": 3613
+        },
+        {
+          "path": "src/profiler/heap-snapshot-generator.cc",
+          "line": 3650
+        },
+        {
+          "path": "src/profiler/heap-snapshot-generator.cc",
+          "line": 3657
+        }
+      ]
+    },
+    {
+      "id": "unchecked-unsigned-overflow",
+      "finding": "Per-node total_size and allocation_count are unsigned with unchecked addition/increment. On a 32-bit-unsigned target ABI, each silently wraps modulo 2^32. JavaScript safe-integer validation of the serialized result cannot detect prior wrap. This audit does not prove a workload bound preventing overflow or a packaged-binary counter-width measurement.",
+      "evidence": [
+        {
+          "path": "src/profiler/allocation-tracker.h",
+          "line": 53
+        },
+        {
+          "path": "src/profiler/allocation-tracker.cc",
+          "line": 53
+        }
+      ]
+    },
+    {
+      "id": "instrumentation-changes-inline-allocation",
+      "finding": "Adding the first heap allocation tracker disables inline allocation when inline_new is enabled; disabling frees main-thread linear allocation areas. Removing the last tracker re-enables inline allocation. This is evidence of changed allocation machinery, not exhaustive proof of every JIT/slow/large/background/shared-heap path.",
+      "evidence": [
+        {
+          "path": "src/heap/heap.cc",
+          "line": 933
+        },
+        {
+          "path": "src/heap/heap.cc",
+          "line": 944
+        },
+        {
+          "path": "src/heap/heap.cc",
+          "line": 5815
+        }
+      ]
+    },
+    {
+      "id": "allocator-path-audit-boundary",
+      "finding": "The inline allocator aligns requested size and either advances a linear allocation area or delegates failure to AllocateRawSlow. The slow-path implementation, large-object paths and generated JIT allocation code are outside this six-file audit; completeness is unresolved.",
+      "evidence": [
+        {
+          "path": "src/heap/main-allocator-inl.h",
+          "line": 18
+        },
+        {
+          "path": "src/heap/main-allocator-inl.h",
+          "line": 40
+        },
+        {
+          "path": "src/heap/main-allocator-inl.h",
+          "line": 44
+        },
+        {
+          "path": "src/heap/main-allocator-inl.h",
+          "line": 61
+        }
+      ]
+    },
+    {
+      "id": "scope-exclusions-and-unverified-coverage",
+      "finding": "The tracker belongs to one profiler/heap and records addressed heap allocation events. This audit does not establish coverage of external ArrayBuffer/string backing stores, DOM/layout/native allocator traffic, other isolates/workers or all browser processes. Stack capture is bounded to 64 frames, so attribution can be truncated independently of accumulated event sizes.",
+      "evidence": [
+        {
+          "path": "src/profiler/heap-profiler.cc",
+          "line": 300
+        },
+        {
+          "path": "src/profiler/heap-profiler.cc",
+          "line": 334
+        },
+        {
+          "path": "src/profiler/allocation-tracker.cc",
+          "line": 190
+        },
+        {
+          "path": "src/profiler/allocation-tracker.h",
+          "line": 138
+        }
+      ]
+    }
+  ],
+  "conclusion": "Pinned-source mechanism audit completed for these six files only. Cumulative trace events survive collection within one tracking session, subject to unchecked per-node overflow. Packaged-binary identity/coverage, exhaustive allocation hooks, workload bounds, backing stores and whole-browser aggregation remain unresolved. No acceptance metric or ceiling is established."
+}

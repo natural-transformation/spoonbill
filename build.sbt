@@ -248,6 +248,9 @@ lazy val spoonbill = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill",
+    Test / unmanagedSourceDirectories ++= Seq("common", "memory").map(
+      (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
+    ),
     libraryDependencies ++= Seq(
       "com.natural-transformation" %% "avocet-core"   % avocetVersion,
       "com.natural-transformation" %% "avocet-events" % avocetVersion
@@ -267,6 +270,9 @@ lazy val securityJdbc = project
   .settings(
     normalizedName := "spoonbill-security-jdbc",
     Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "performance-support" / "scala",
+    Test / unmanagedSourceDirectories ++= Seq("common", "jdbc").map(
+      (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
+    ),
     // These integration suites bootstrap shared tables in one disposable database.
     Test / parallelExecution := false,
     libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13" % Test
@@ -589,6 +595,19 @@ lazy val extensionExample = project
 
 // Misc
 
+// Isolated v3 consumer integration for the browser-auth comparison. This is
+// deliberately unpublished and never linked into the application runtime.
+lazy val browserAuthBaseline = project
+  .in(misc / "browser-auth-baseline")
+  .disablePlugins(HeaderPlugin)
+  .settings(exampleSettings: _*)
+  .settings(
+    Compile / unmanagedSourceDirectories ++= Seq("common", "app", "memory", "jdbc").map(baseDirectory.value / _),
+    libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13",
+    mainClass                              := Some("spoonbill.browserauthbaseline.JdbcReferenceServer")
+  )
+  .dependsOn(pekko, securityJdbc)
+
 lazy val `integration-tests` = project
   .in(misc / "integration-tests")
   .disablePlugins(HeaderPlugin)
@@ -632,6 +651,7 @@ lazy val root = project
   .aggregate(
     spoonbill,
     securityJdbc,
+    browserAuthBaseline,
     effect,
     web,
     http,

@@ -1,30 +1,55 @@
 package spoonbill.effect
 
-import spoonbill.effect.syntax._
 import org.scalatest.Assertion
+import org.scalatest.concurrent.AsyncTimeLimitedTests
 import org.scalatest.freespec.AsyncFreeSpec
+import org.scalatest.time.{Seconds, Span}
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.control.NonFatal
 
-class QueueSpec extends AsyncFreeSpec {
+class QueueSpec extends AsyncFreeSpec with AsyncTimeLimitedTests {
+
+  override val timeLimit: Span = Span(10, Seconds)
 
   implicit override def executionContext: ExecutionContext =
     scala.concurrent.ExecutionContext.Implicits.global
 
+  // Test Queue independently of Stream.foreach/fold: the legacy Future effect
+  // runs nested callbacks inline and is not stack-safe for long ready streams.
+  private def produce(values: Range)(offer: Int => Future[Unit]): Future[Unit] =
+    values.foldLeft(Future.unit)((previous, value) => previous.flatMap(_ => offer(value)))
+
+  private def consume(queue: Queue[Future, Int]): Future[Int] = {
+    val stream = queue.stream
+    def next(count: Int): Future[Int] = stream.pull().flatMap {
+      case Some(_) => next(count + 1)
+      case None    => Future.successful(count)
+    }
+    next(0)
+  }
+
+  private def finish(queue: Queue[Future, Int], producers: Seq[Future[Unit]]): Future[Unit] =
+    Future.sequence(producers).flatMap(_ => queue.stop()).recoverWith { case NonFatal(error) =>
+      queue.fail(error).flatMap(_ => Future.failed(error))
+    }
+
   "Concurrent offer/pull invocations" in {
-    val queue = Queue[Future, Int]()
+    val queue     = Queue[Future, Int]()
+    val consumed  = consume(queue)
+    val producers = Seq(0 until 100, 100 until 200, 200 until 300).map(values => produce(values)(queue.enqueue))
 
-    for {
-      s1 <- Stream(0 until 100: _*).mat()
-      s2 <- Stream(100 until 200: _*).mat()
-      s3 <- Stream(200 until 300: _*).mat()
-      ss  = Seq(s1, s2, s3)
-      _  <- Future.sequence(ss.map(s => Effect[Future].fork(s.foreach(queue.enqueue))))
-      _  <- queue.stop()
-    } yield ()
+    finish(queue, producers).zip(consumed).map { case (_, count) => assert(count == 300) }
+  }
 
-    queue.stream
-      .fold(0)((x, _) => x + 1)
-      .map(count => assert(count == 300))
+  "A failed producer releases a waiting consumer" in {
+    val queue    = Queue[Future, Int]()
+    val consumed = consume(queue)
+    val failure  = new IllegalStateException("Synthetic producer failure")
+    val produced = finish(queue, Seq(Future.failed(failure)))
+
+    produced.failed.zip(consumed.failed).map { case (producerError, consumerError) =>
+      assert((producerError eq failure) && (consumerError eq failure))
+    }
   }
 
   ".canOffer" - {
@@ -32,33 +57,14 @@ class QueueSpec extends AsyncFreeSpec {
     def checkCanOffer(maxSize: Int): Future[Assertion] = {
       val queue = Queue[Future, Int](maxSize)
 
-      def offeringProcess =
-        for {
-          s1 <- Stream(0 until 1000: _*).mat()
-          s2 <- Stream(1000 until 2000: _*).mat()
-          s3 <- Stream(2000 until 3000: _*).mat()
-          ss  = Seq(s1, s2, s3)
-          fs = ss.map { s =>
-                 Effect[Future].fork {
-                   s.foreach { i =>
-                     def aux(): Future[Unit] = queue.offer(i) flatMap {
-                       case false => queue.canOffer *> aux()
-                       case true  => Future.unit
-                     }
-                     aux()
-                   }
-                 }
-               }
-          _ <- Future.sequence(fs)
-          _ <- queue.stop()
-        } yield ()
+      def offer(value: Int): Future[Unit] = queue.offer(value).flatMap {
+        case false => queue.canOffer.flatMap(_ => offer(value))
+        case true  => Future.unit
+      }
 
-      for {
-        offering <- Effect[Future].start(offeringProcess)
-        count <- queue.stream
-                   .fold(0)((x, _) => x + 1)
-        _ <- offering.join()
-      } yield {
+      val consumed  = consume(queue)
+      val producers = Seq(0 until 1000, 1000 until 2000, 2000 until 3000).map(values => produce(values)(offer))
+      finish(queue, producers).zip(consumed).map { case (_, count) =>
         assert(count == 3000)
       }
     }
