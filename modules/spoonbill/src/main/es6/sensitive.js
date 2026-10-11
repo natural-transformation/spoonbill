@@ -1,3 +1,5 @@
+import { ModifyDomProcedure, domOperandWidths } from './protocol.js';
+
 const REGION_ATTRIBUTE = 'data-sb-region';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAME_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
@@ -228,19 +230,19 @@ export class SensitiveRegions {
 
   beforePatch(commands) {
     if (!this._active.size) return;
-    const widths = [4, 3, 2, 5, 4, 3, 2];
+    const widths = domOperandWidths();
     for (let i = 0; i < commands.length;) {
       const operation = commands[i++];
       const width = widths[operation];
       if (width === undefined || i + width > commands.length) { this.clearAll(); return; }
       const id = commands[i];
-      const child = operation <= 2 ? this._resolveElement(commands[i + 1]) : null;
+      const child = operation <= ModifyDomProcedure.REMOVE ? this._resolveElement(commands[i + 1]) : null;
       const target = this._resolveElement(id);
       for (const record of this._active.values()) {
         const replacing = child && (child === record.host || child.contains(record.host));
-        const writingInside = operation <= 2 && target && (target === record.host || record.host.contains(target));
-        const changingMarker = (operation === 3 || operation === 4) && target === record.host && commands[i + 2] === REGION_ATTRIBUTE;
-        const replacingContents = operation === 3 && commands[i + 4] === true &&
+        const writingInside = operation <= ModifyDomProcedure.REMOVE && target && (target === record.host || record.host.contains(target));
+        const changingMarker = (operation === ModifyDomProcedure.SET_ATTR || operation === ModifyDomProcedure.REMOVE_ATTR) && target === record.host && commands[i + 2] === REGION_ATTRIBUTE;
+        const replacingContents = operation === ModifyDomProcedure.SET_ATTR && commands[i + 4] === true &&
           ['innerHTML', 'outerHTML', 'textContent', 'innerText'].includes(commands[i + 2]) && target &&
           (target === record.host || target.contains(record.host));
         if (replacing || writingInside || changingMarker || replacingContents) this._clearRecord(record, true);

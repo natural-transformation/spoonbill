@@ -1,6 +1,6 @@
 import xerial.sbt.Sonatype._
 
-val scala3Version = "3.3.7"
+val scala3Version = "3.3.8"
 
 val avocetVersion = "1.0.0"
 
@@ -27,7 +27,7 @@ scalaVersion := scala3Version
 
 def releaseVersion: String = sys.env.getOrElse("RELEASE_VERSION", "")
 def isRelease: Boolean     = releaseVersion != ""
-val BaseVersion            = "3.0.0"
+val BaseVersion            = "4.0.0"
 def publishVersion: String = if (isRelease) releaseVersion else s"$BaseVersion-SNAPSHOT"
 
 ThisBuild / version := publishVersion
@@ -192,6 +192,13 @@ val interop  = file("interop")
 val examples = file("examples")
 val misc     = file("misc")
 
+lazy val generateBrowserProtocol = taskKey[File]("Regenerate browser protocol constants from Scala")
+
+lazy val core = project
+  .in(modules / "core")
+  .settings(commonSettings: _*)
+  .settings(normalizedName := "spoonbill-core")
+
 lazy val bytes = project
   .in(modules / "bytes")
 
@@ -248,6 +255,7 @@ lazy val spoonbill = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-conformance",
     Test / unmanagedSourceDirectories ++= Seq("common", "memory").map(
       (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
     ),
@@ -257,18 +265,31 @@ lazy val spoonbill = project
     ),
     Compile / resourceGenerators += Def.task {
       val source = baseDirectory.value / "src" / "main" / "es6"
+      val frontend = baseDirectory.value / "src" / "main" / "scala" / "korolev" / "internal" / "Frontend.scala"
       val target = (Compile / resourceManaged).value / "static"
       val log    = streams.value.log
-      JsUtils.assembleJs(source, target, log)
-    }.taskValue
+      val root   = (LocalRootProject / baseDirectory).value
+      val inputs = (source ** "*.js").get.toSet ++ Set(frontend, root / "project" / "JsUtils.scala",
+        root / "project" / "plugins.sbt", root / "build.sbt")
+      // Repeated compile/test/publish tasks share the verified emitted client.
+      // Hash inputs and outputs so protocol or build changes still regenerate it.
+      FileFunction.cached(streams.value.cacheDirectory / "browser-client", FilesInfo.hash, FilesInfo.hash) { _ =>
+        JsUtils.assembleJs(source, frontend, target, log).toSet
+      }(inputs).toSeq.sortBy(_.getName)
+    }.taskValue,
+    generateBrowserProtocol := JsUtils.writeClientProtocol(
+      baseDirectory.value / "src" / "main" / "scala" / "korolev" / "internal" / "Frontend.scala",
+      baseDirectory.value / "src" / "main" / "es6" / "protocol.js"
+    )
   )
-  .dependsOn(effect, web)
+  .dependsOn(core, effect, web)
 
 lazy val securityJdbc = project
   .in(modules / "security-jdbc")
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill-security-jdbc",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-conformance",
     Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "performance-support" / "scala",
     Test / unmanagedSourceDirectories ++= Seq("common", "jdbc").map(
       (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
@@ -321,11 +342,13 @@ lazy val pekko = project
   .settings(
     normalizedName := "spoonbill-pekko",
     libraryDependencies ++= Seq(
-      ("org.apache.pekko" %% "pekko-actor"          % pekkoVersion).cross(CrossVersion.for3Use2_13),
-      ("org.apache.pekko" %% "pekko-stream"         % pekkoVersion).cross(CrossVersion.for3Use2_13),
-      ("org.apache.pekko" %% "pekko-http"           % pekkoHttpVersion).cross(CrossVersion.for3Use2_13),
-      ("org.apache.pekko" %% "pekko-stream-testkit" % pekkoVersion     % Test).cross(CrossVersion.for3Use2_13),
-      ("org.apache.pekko" %% "pekko-http-testkit"   % pekkoHttpVersion % Test).cross(CrossVersion.for3Use2_13)
+      "org.apache.pekko" %% "pekko-actor"          % pekkoVersion,
+      "org.apache.pekko" %% "pekko-stream"         % pekkoVersion,
+      "org.apache.pekko" %% "pekko-http"           % pekkoHttpVersion,
+      "org.apache.pekko" %% "pekko-stream-testkit"  % pekkoVersion     % Test,
+      "org.apache.pekko" %% "pekko-http-testkit"    % pekkoHttpVersion % Test,
+      "org.apache.pekko" %% "pekko-actor-typed"     % pekkoVersion     % Test,
+      "org.apache.pekko" %% "pekko-persistence"     % pekkoVersion     % Test
     )
   )
   .dependsOn(spoonbill)
@@ -368,7 +391,7 @@ lazy val ce3 = project
     normalizedName                         := "spoonbill-ce3",
     libraryDependencies += "org.typelevel" %% "cats-effect" % ce3Version
   )
-  .dependsOn(effect)
+  .dependsOn(effect, spoonbill % "test->compile")
 
 lazy val monix = project
   .in(interop / "monix")
@@ -593,6 +616,16 @@ lazy val extensionExample = project
   .settings(mainClass := Some("ExtensionExample"))
   .dependsOn(akka)
 
+lazy val browserAuthExample = project
+  .in(examples / "browser-auth")
+  .disablePlugins(HeaderPlugin)
+  .settings(exampleSettings: _*)
+  .settings(
+    libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13",
+    mainClass := Some("example.browserauth.Main")
+  )
+  .dependsOn(pekko, securityJdbc, ce3)
+
 // Misc
 
 // Isolated v3 consumer integration for the browser-auth comparison. This is
@@ -649,9 +682,11 @@ lazy val root = project
   .settings(dontPublishSettings: _*)
   .settings(name := "Spoonbill Project")
   .aggregate(
+    core,
     spoonbill,
     securityJdbc,
     browserAuthBaseline,
+    browserAuthExample,
     effect,
     web,
     http,

@@ -28,7 +28,9 @@ class EventTargetFake {
 
 class ElementFake {
   getAttribute(name) {
-    return name === 'data-spoonbill-action-fields' ? this.fields : null;
+    if (name === 'data-spoonbill-action-fields') return this.fields ?? null;
+    if (name === 'data-spoonbill-native-submit') return this.nativeSubmit ?? null;
+    return null;
   }
 }
 
@@ -97,7 +99,7 @@ function browser(form = null) {
   return { document, window };
 }
 
-function submit(document, form, submitter = null) {
+function submit(document, form, submitter = null, expectedPrevented = true) {
   let prevented = false;
   const event = {
     type: 'submit',
@@ -107,7 +109,7 @@ function submit(document, form, submitter = null) {
     preventDefault: () => { prevented = true; },
   };
   document.dispatchEvent(event);
-  assert.equal(prevented, true);
+  assert.equal(prevented, expectedPrevented);
   return event;
 }
 
@@ -142,14 +144,64 @@ test('redesign client regressions against real source modules', { timeout: 10000
   const directory = await mkdtemp(join(tmpdir(), 'spoonbill-client-regressions-'));
   try {
     await writeFile(join(directory, 'package.json'), '{"type":"module"}\n');
-    for (const name of ['spoonbill.js', 'utils.js', 'connection.js', 'bridge.js', 'sensitive.js']) {
+    for (const name of ['spoonbill.js', 'utils.js', 'connection.js', 'bridge.js', 'sensitive.js', 'protocol.js']) {
       await copyFile(new URL(`../modules/spoonbill/src/main/es6/${name}`, import.meta.url), join(directory, name));
     }
     browser(); // bridge.js reads localStorage when its module is initialized.
-    const { Spoonbill, CallbackType } = await import(pathToFileURL(join(directory, 'spoonbill.js')));
+    const { Spoonbill } = await import(pathToFileURL(join(directory, 'spoonbill.js')));
+    const { CallbackType } = await import(pathToFileURL(join(directory, 'protocol.js')));
     const { Bridge, setProtocolDebugEnabled } = await import(pathToFileURL(join(directory, 'bridge.js')));
     const { Connection, ConnectionType } = await import(pathToFileURL(join(directory, 'connection.js')));
     const { ConnectionLostWidget } = await import(pathToFileURL(join(directory, 'utils.js')));
+
+    await t.test('explicit native form submits without a callback or retained submit event despite named-control shadowing', () => {
+      const form = new FormFake([], {});
+      form.fields = null;
+      form.nativeSubmit = 'true';
+      form.getAttribute = {value: 'named control must not replace prototype lookup'};
+      Object.defineProperty(form, 'elements', {value: {value: 'shadowed native getter'}});
+      const {document} = browser(form);
+      const callbacks = [];
+      const client = new Spoonbill({}, (...args) => callbacks.push(args));
+      submit(document, form, null, false);
+      assert.deepEqual(callbacks, []);
+      assert.deepEqual(client.eventData, {});
+      client.destroy();
+    });
+
+    await t.test('typed submit wins over native opt-in and still extracts prototype-shadowing fields', () => {
+      const form = new FormFake([['getAttribute', 'text'], ['elements', 'text']], {
+        getAttribute: {value: 'first'}, elements: {value: 'second'},
+      });
+      form.nativeSubmit = 'true';
+      form.getAttribute = {value: 'shadowed method'};
+      Object.defineProperty(form, 'elements', {value: {value: 'shadowed getter'}});
+      const {document} = browser(form);
+      const callbacks = [];
+      const client = new Spoonbill({}, (...args) => callbacks.push(args));
+      submit(document, form);
+      assert.deepEqual(callbacks, [[CallbackType.DOM_EVENT, '0:1_1:submit:getAttribute=first&elements=second']]);
+      assert.deepEqual(client.eventData, {});
+      client.destroy();
+    });
+
+    await t.test('native opt-in does not bypass non-submit events, non-form targets or a present empty action descriptor', () => {
+      const form = new FormFake([], {});
+      form.fields = null;
+      form.nativeSubmit = 'true';
+      const {document} = browser(form);
+      const client = new Spoonbill({}, () => {});
+      client.listenRoot('click', true);
+      let prevented = false;
+      document.dispatchEvent({type: 'click', target: form, composedPath: () => [form],
+        preventDefault: () => { prevented = true; }});
+      assert.equal(prevented, true);
+      const nonForm = Object.assign(new ElementFake(), {nodeType: 1, vId: '1_2', nativeSubmit: 'true'});
+      submit(document, nonForm);
+      form.fields = '';
+      submit(document, form);
+      client.destroy();
+    });
 
     await t.test('guarded reconnect carries the current mounted application route without logging query values', () => {
       browser();

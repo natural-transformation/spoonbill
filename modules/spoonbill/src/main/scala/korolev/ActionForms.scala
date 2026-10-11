@@ -11,6 +11,14 @@ import spoonbill.effect.syntax.*
  * a configured guarded runtime in addition to the action's session authority.
  */
 object ActionForms {
+  /** Let the browser submit this ordinary HTML form to its declared action.
+    * Typed onSubmit bindings take precedence if both attributes are present.
+    * Origin/CSRF and destination authorization remain the receiving HTTP
+    * handler's responsibility; this attribute grants no server authority.
+    */
+  def nativeSubmit[F[_], S, M]: Document.Attr[Context.Binding[F, S, M]] =
+    Document.Attr(_.setAttr(XmlNs.html, "data-spoonbill-native-submit", "true"))
+
   def onSubmit[F[_]: Effect, S, M, I](
     action: PublicAction[F, S, I],
     onRejected: ActionRejection => S => S

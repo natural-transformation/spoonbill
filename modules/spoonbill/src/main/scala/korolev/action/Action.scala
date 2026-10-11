@@ -19,7 +19,8 @@ final class InvocationBinding private[spoonbill] (
   val invocationId: InvocationId,
   val connectionId: ConnectionId,
   private[spoonbill] val sensitiveScope: Option[spoonbill.internal.SensitiveDisclosureScope] = None,
-  private[spoonbill] val admission: InvocationAdmission = InvocationAdmission.untracked
+  private[spoonbill] val admission: InvocationAdmission = InvocationAdmission.untracked,
+  private[spoonbill] val expectedAuthority: Option[AnyRef] = None
 ):
   private[spoonbill] val sensitiveOwner = new spoonbill.sensitive.SensitiveDisclosure.Owner
 
@@ -221,7 +222,9 @@ object ActionDispatcher:
     limits: InputLimits = InputLimits.default
   ): F[InvocationResult[S]] =
     val F = Effect[F]
-    F.flatMap(F.delay(action.input.decode(submitted, limits))) { decoded => admit(binding) {
+    if binding.expectedAuthority.exists(expected => !(expected eq authority)) then
+      F.pure(InvocationResult.Rejected(ActionRejection.Access(AccessDenied.StaleAuthority)))
+    else F.flatMap(F.delay(action.input.decode(submitted, limits))) { decoded => admit(binding) {
       decoded match
         case Left(error) => F.pure(InvocationResult.Rejected(ActionRejection.Input(error)))
         case Right(input) =>

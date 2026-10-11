@@ -91,6 +91,8 @@ object Request {
     def param(name: String): Option[String] = applicationPath.param(name)
     def cookie(name: String): Option[String] = current.cookie(name)
     def header(name: String): Option[String] = current.header(name)
+    def headers: Seq[(String, String)] = current.headers
+    def renderedCookie: String = current.renderedCookie
   }
 
   def unapply[Body](method: Request.Method, req: Request[Body]): Option[(Request.Method, PathAndQuery)] =
@@ -100,6 +102,13 @@ object Request {
     Some(req.pq)
 
   sealed trait Head {
+
+    /** Preserve repeated headers/cookies so security adapters can reject
+      * ambiguous transport input instead of authorizing a collapsed value.
+      */
+    def headers: Seq[(String, String)]
+
+    def renderedCookie: String
 
     def method: Method
 

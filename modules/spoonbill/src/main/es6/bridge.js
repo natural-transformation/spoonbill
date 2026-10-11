@@ -1,4 +1,5 @@
-import { Spoonbill, CallbackType, PropertyType } from './spoonbill.js';
+import { Spoonbill } from './spoonbill.js';
+import { Procedure, CallbackType, PropertyType } from './protocol.js';
 import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
 
@@ -133,17 +134,17 @@ export class Bridge {
     let k = this._spoonbill;
     try {
       switch (pCode) {
-        case 0: k.setEventCounter.apply(k, commands); break;
-        case 1:
+        case Procedure.SET_EVENT_COUNTER: k.setEventCounter.apply(k, commands); break;
+        case Procedure.RELOAD:
           this._sensitive.clearAll();
           this._connection.disconnect(false);
           window.location.reload();
           break;
-        case 2: k.listenEvent.apply(k, commands); break;
-        case 3: k.extractProperty.apply(k, commands); break;
-        case 4: this._modifyDom(commands); break;
-        case 5: k.focus.apply(k, commands); break;
-        case 6: {
+        case Procedure.LISTEN_EVENT: k.listenEvent.apply(k, commands); break;
+        case Procedure.EXTRACT_PROPERTY: k.extractProperty.apply(k, commands); break;
+        case Procedure.MODIFY_DOM: this._modifyDom(commands); break;
+        case Procedure.FOCUS: k.focus.apply(k, commands); break;
+        case Procedure.CHANGE_PAGE_URL: {
           // The router may emit an equivalent raw Unicode/space URL on every
           // render. Compare browser-normalized URLs before clearing a region.
           const currentUrl = new URL(window.location.href ||
@@ -152,18 +153,18 @@ export class Bridge {
           k.changePageUrl.apply(k, commands);
           break;
         }
-        case 7: k.uploadForm.apply(k, commands); break;
-        case 8: k.reloadCss.apply(k, commands); break;
-        case 9: break;
-        case 10: k.evalJs.apply(k, commands); break;
-        case 11: k.extractEventData.apply(k, commands); break;
-        case 12: k.listFiles.apply(k, commands); break;
-        case 13: k.uploadFile.apply(k, commands); break;
-        case 14: k.resetForm.apply(k, commands); break;
-        case 15: k.downloadFile.apply(k, commands); break;
-        case 16: this._awaitingHeartbeat -= 1;break;
-        case 17: k.resetEventCounters.apply(k, commands); break;
-        case 18:
+        case Procedure.UPLOAD_FORM: k.uploadForm.apply(k, commands); break;
+        case Procedure.RELOAD_CSS: k.reloadCss.apply(k, commands); break;
+        case Procedure.KEEP_ALIVE: break;
+        case Procedure.EVAL_JS: k.evalJs.apply(k, commands); break;
+        case Procedure.EXTRACT_EVENT_DATA: k.extractEventData.apply(k, commands); break;
+        case Procedure.LIST_FILES: k.listFiles.apply(k, commands); break;
+        case Procedure.UPLOAD_FILE: k.uploadFile.apply(k, commands); break;
+        case Procedure.REST_FORM: k.resetForm.apply(k, commands); break;
+        case Procedure.DOWNLOAD_FILE: k.downloadFile.apply(k, commands); break;
+        case Procedure.HEARTBEAT: this._awaitingHeartbeat -= 1;break;
+        case Procedure.RESET_EVENT_COUNTERS: k.resetEventCounters.apply(k, commands); break;
+        case Procedure.COMPLETE_AUTHENTICATION:
           this._sensitive.clearAll();
           this._connection.commitAuthentication(commands[0]).catch(() => {
             console.error('Authentication handoff failed');
@@ -173,7 +174,7 @@ export class Bridge {
             window.location.reload();
           });
           break;
-        case 19: {
+        case Procedure.RESET_VIEW: {
           const [epoch, connection, revision, dom] = commands;
           if (this._viewConnection !== null || typeof epoch !== 'string' || !/^(0|[1-9][0-9]{0,18})$/.test(epoch) ||
               typeof connection !== 'string' || !/^[0-9a-f-]{36}$/.test(connection) || revision !== '0' ||
@@ -186,7 +187,7 @@ export class Bridge {
           });
           break;
         }
-        case 20: {
+        case Procedure.PATCH_VIEW: {
           const [connection, previous, next, dom] = commands;
           // A replaced connection's output is obsolete, including decoded frames
           // that were queued before its close. Never apply it to a newer view.
@@ -204,23 +205,23 @@ export class Bridge {
           });
           break;
         }
-        case 21:
+        case Procedure.READY_FOR_USER_EVENTS:
           if (typeof commands[0] !== 'boolean' || commands[0] !== (this._viewConnection !== null))
             throw new Error('View baseline is not ready');
           this._callbacksReady = true;
           this._connection.applicationReady();
           break;
-        case 22:
+        case Procedure.PRESENT_SENSITIVE:
           if (this._viewConnection === null || commands[0] === this._viewConnection)
             this._sensitive.show.apply(this._sensitive, commands);
           break;
-        case 23: this._sensitive.clear.apply(this._sensitive, commands); break;
-        case 24:
+        case Procedure.CLEAR_SENSITIVE: this._sensitive.clear.apply(this._sensitive, commands); break;
+        case Procedure.SENSITIVE_NAVIGATION_COMPLETE:
           if (commands.length !== 1 || !Number.isSafeInteger(commands[0]) || commands[0] <= 0)
             throw new Error('Invalid sensitive navigation barrier');
           this._sensitive.completeNavigation(commands[0]);
           break;
-        case 25:
+        case Procedure.SENSITIVE_DEPARTURE_COMPLETE:
           if (commands.length !== 1 || !Number.isSafeInteger(commands[0]) || commands[0] <= 0)
             throw new Error('Invalid sensitive departure barrier');
           this._sensitive.completeDeparture(commands[0]);
@@ -228,12 +229,12 @@ export class Bridge {
         default: console.error(`Procedure ${pCode} is undefined`);
       }
     } catch (error) {
-      if (pCode === 22 || pCode === 23) {
+      if (pCode === Procedure.PRESENT_SENSITIVE || pCode === Procedure.CLEAR_SENSITIVE) {
         this._sensitive.clearAll(false);
         console.error('Sensitive presentation failed');
         return;
       }
-      if (pCode === 19 || pCode === 20 || pCode === 21 || pCode === 24 || pCode === 25) {
+      if (pCode === Procedure.RESET_VIEW || pCode === Procedure.PATCH_VIEW || pCode === Procedure.READY_FOR_USER_EVENTS || pCode === Procedure.SENSITIVE_NAVIGATION_COMPLETE || pCode === Procedure.SENSITIVE_DEPARTURE_COMPLETE) {
         console.error('Spoonbill view recovery failed');
         this._viewRecovering = true;
         this._sensitive.blockNavigation();
@@ -241,14 +242,14 @@ export class Bridge {
         return;
       }
       console.error(`Spoonbill bridge failed for procedure ${pCode}`, error);
-      if (pCode === 3 && commands.length > 0) {
+      if (pCode === Procedure.EXTRACT_PROPERTY && commands.length > 0) {
         // Ensure server-side extractProperty never hangs if the client throws.
         const descriptor = commands[0];
         this._onCallback(
           CallbackType.EXTRACT_PROPERTY_RESPONSE,
           `${descriptor}:${PropertyType.ERROR}:extractProperty failed`
         );
-      } else if (pCode === 11 && commands.length > 0) {
+      } else if (pCode === Procedure.EXTRACT_EVENT_DATA && commands.length > 0) {
         // Ensure server-side extractEventData never hangs if the client throws.
         const descriptor = commands[0];
         this._onCallback(

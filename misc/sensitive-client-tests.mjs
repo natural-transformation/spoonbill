@@ -52,6 +52,7 @@ test('sensitive browser protocol', async t => {
   try {
     await writeFile(join(temporary, 'package.json'), '{"type":"module"}');
     await copyFile(new URL('../modules/spoonbill/src/main/es6/sensitive.js', import.meta.url), join(temporary, 'sensitive.js'));
+    await copyFile(new URL('../modules/spoonbill/src/main/es6/protocol.js', import.meta.url), join(temporary, 'protocol.js'));
     const {SensitiveRegions} = await import(pathToFileURL(join(temporary, 'sensitive.js')));
     const connection = '11111111-1111-4111-8111-111111111111';
     const presentation = number => `22222222-2222-4222-8222-${String(number).padStart(12, '0')}`;

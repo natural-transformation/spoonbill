@@ -1,0 +1,113 @@
+{
+  "schema": "spoonbill-browser-auth-v4-client-comparison-v1",
+  "baseline": {
+    "report": "misc/browser-auth-baseline/reports/v3-client-inventory-final.json",
+    "sourceSha256": "bde05cd3cf1f493045dd991f76d0ec941ff99e95cd7361a87e355bbb7ac1e0af",
+    "sourceTotals": {
+      "files": 6,
+      "bytes": 62107,
+      "nonblankLines": 1651
+    },
+    "emittedClient": {
+      "sha256": "28eb155483d66130e035dfa8ffeb7ec9ef45e8a4a1c6c1e283eeaf2433f2c62c",
+      "emittedBytes": 27365,
+      "gzipBytes": 10055,
+      "brotliBytes": 8845
+    }
+  },
+  "candidate": {
+    "schema": "spoonbill-browser-auth-client-inventory-v1",
+    "sources": {
+      "schema": "spoonbill-browser-auth-inventory-v1",
+      "baselineRevision": "ab95a4fe65399814931c6ddd7f29dd68f33bbc5c",
+      "method": "All nonblank physical lines, including comments, in all declared production integration roots",
+      "sourceSha256": "805e2756e0a8fc6c2befd990bf6220104deffa5a9aac3c945cac213077d2db9e",
+      "files": [
+        {
+          "category": "generatedClient",
+          "file": "protocol.js",
+          "sha256": "5443b7c26358d0dc464e8c36c6214c09c83db40339b49667bcc6469ba641412e",
+          "bytes": 1347,
+          "nonblankLines": 63
+        },
+        {
+          "category": "handwrittenClient",
+          "file": "bridge.js",
+          "sha256": "88fdd6e4deac64218f1922e55232b5ee6fde122e5bf58c281430134b631e2d52",
+          "bytes": 12534,
+          "nonblankLines": 260
+        },
+        {
+          "category": "handwrittenClient",
+          "file": "connection.js",
+          "sha256": "1b0569da3c09b6164fe77814602c1c2746fbc862411400105aefadf25b115399",
+          "bytes": 15986,
+          "nonblankLines": 435
+        },
+        {
+          "category": "handwrittenClient",
+          "file": "launcher.js",
+          "sha256": "6ab7f5d076cb37d407fb4b1770c28ed18f4efbb637ce38786d829f1bd7e65b2e",
+          "bytes": 1852,
+          "nonblankLines": 51
+        },
+        {
+          "category": "handwrittenClient",
+          "file": "sensitive.js",
+          "sha256": "b2b7e4e52d48bf57bbebfb1e15191c0eb6a2571c8bbacd524fb03271b1efe930",
+          "bytes": 12479,
+          "nonblankLines": 255
+        },
+        {
+          "category": "handwrittenClient",
+          "file": "spoonbill.js",
+          "sha256": "6cc782003704ae46538e60a3206f72bba112314d1e1fe03e4b423dbe60c47630",
+          "bytes": 18843,
+          "nonblankLines": 594
+        },
+        {
+          "category": "handwrittenClient",
+          "file": "utils.js",
+          "sha256": "64cdbc111f94a96cc0c0e8bd7b28649a913521fb62c77bbb06b15e7c9004b021",
+          "bytes": 1379,
+          "nonblankLines": 42
+        }
+      ],
+      "totals": {
+        "files": 7,
+        "bytes": 64420,
+        "nonblankLines": 1700
+      }
+    },
+    "sourceKinds": {
+      "handwrittenClient": {
+        "files": 6,
+        "bytes": 63073,
+        "nonblankLines": 1637
+      },
+      "generatedClient": {
+        "files": 1,
+        "bytes": 1347,
+        "nonblankLines": 63
+      }
+    },
+    "emittedClient": {
+      "sha256": "135559855760677f4a3eb9fd4457cfef036b63c50445e7ad5ea6bfd4977a16a7",
+      "emittedBytes": 27514,
+      "gzipBytes": 10090,
+      "brotliBytes": 8882
+    },
+    "compression": {
+      "node": "v24.12.0",
+      "gzipLevel": 9,
+      "brotliQuality": 11
+    },
+    "applicationScripts": [],
+    "embeddedScriptCandidates": [],
+    "scope": "Full framework bundle; no invented authentication-only byte attribution. Script scan requires source review; zero matches alone is not proof of a complete application."
+  },
+  "emittedByteDelta": 149,
+  "gzipByteDelta": 35,
+  "brotliByteDelta": 37,
+  "scope": "Full emitted bundle, including generated protocol. Run after a successful resource build of these sources. Exact byte counts are not latency, allocation, or retention measurements."
+}
