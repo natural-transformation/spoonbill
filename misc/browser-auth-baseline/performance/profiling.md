@@ -1,5 +1,13 @@
 # Profiling capabilities and remaining measurement blockers
 
+As of 2026-10-11, further performance/profiling work is deferred at the
+maintainer's request. The commands and observations below are retained as
+historical reference, not a request to resume testing. Automatic PR CI no longer
+runs these probes; they require a separate explicit manual workflow dispatch.
+The fourth JSC attempt was last observed running, with final build/oracle/cleanup
+outcome unverified. These measurement gaps do not block merging the unpublished
+reference foundation; they do prevent claiming a performance pass.
+
 The repository's `.#profiling` shell is separate from latency collection. It
 combines the pinned JDK/Node/PostgreSQL/browser environments with GNU `time`;
 Linux additionally supplies `heaptrack`, `procps` and `util-linux`. JDK 21 already
@@ -122,8 +130,8 @@ whose objects later die; its snapshot serializer exposes those fields in
 heap-stat fragment sizes. This supplies a concrete **V8 GC-heap allocation**
 candidate, not proof of complete browser allocation coverage.
 [CDP protocol](https://github.com/ChromeDevTools/devtools-protocol/blob/master/json/js_protocol.json),
-[allocation tracker](https://github.com/v8/v8/blob/main/src/profiler/allocation-tracker.cc),
-[trace-tree serialization](https://github.com/v8/v8/blob/main/src/profiler/heap-snapshot-generator.cc).
+[allocation tracker](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.cc),
+[trace-tree serialization](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/heap-snapshot-generator.cc#L3650).
 
 `chromium-allocation.mjs` implements that experimental collector using public
 Playwright CDP. Snapshot bytes, trace nodes/depth and asynchronous collection
@@ -146,13 +154,45 @@ nix develop .#profiling --no-write-lock-file --command node --test \
 ```
 
 Playwright 1.56.1 pins Chromium 141.0.7390.37; that Chromium tag's `DEPS` selects
-V8 `ad8af0fc661d278e87627fcaa3a7cf795ee80dd8`. The reviewed mainline mechanism must
-still be audited at that exact revision and calibrated against the packaged
-binary; the research fetch of the pinned implementation failed, so this document
-does not claim that audit complete.
+V8 `ad8af0fc661d278e87627fcaa3a7cf795ee80dd8`. The earlier research fetch failed;
+a later GitHub connector audit retrieved six files at that exact revision,
+475,009 bytes total, and verified their returned Git blob identities and SHA-256
+content hashes through Nix. The [source audit](v8-source-audit.json) records the
+files, reproducible hash procedure, line references and coverage boundaries.
+This closes the pinned-source retrieval gap, not packaged-binary coverage.
 [Playwright browser manifest](https://github.com/microsoft/playwright/blob/v1.56.1/packages/playwright-core/browsers.json),
 [Chromium dependency pin](https://github.com/chromium/chromium/blob/141.0.7390.37/DEPS),
-[pinned V8 tracker audit target](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.cc).
+[pinned V8 tracker](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.cc).
+
+The pinned tracker charges each event to one terminal trace node, and the
+serializer emits that node's own count and size separately from its children.
+Object movement changes address mappings without subtracting trace totals;
+stopping tracking destroys the tracker. These counters therefore retain recorded
+allocation traffic across collection within a tracking session, subject to their
+numeric limit. They are not live-object `self_size` totals.
+[Tracking lifecycle and move/size events](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/heap-profiler.cc#L232),
+[own-node serialization](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/heap-snapshot-generator.cc#L3657).
+
+**The pinned source has unchecked per-node counter overflow.** Both size and
+allocation count are `unsigned`; `AddAllocation` uses unchecked addition and
+increment. On the standard 32-bit-`unsigned` target ABI, each wraps modulo
+2^32. This source audit does not independently attest the packaged binary's ABI
+or counter width. A JavaScript safe-integer check cannot detect a value that
+already wrapped before serialization. A proven per-node workload bound or a
+validated overflow-aware implementation is still needed; the existing synthetic
+signals do not establish either.
+[Counter fields](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.h#L53),
+[unchecked accumulation](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/profiler/allocation-tracker.cc#L53).
+
+Adding the first allocation tracker explicitly disables inline allocation and
+frees main-thread linear allocation areas; removing the last tracker re-enables
+it. The inspected inline allocator delegates failure to its slow path, but this
+six-file audit does not cover every slow/large/background/shared-heap hook or
+generated JIT allocation path. This explains instrumentation overhead without
+proving exhaustive coverage.
+[Tracker installation](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/heap/heap.cc#L933),
+[inline-area release](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/heap/heap.cc#L5815),
+[inline allocator boundary](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/heap/main-allocator-inl.h#L18).
 
 Calibrate persistent and short-lived objects with GC before observation, then
 check JIT paths, counter width/overflow, control-command overhead and every
@@ -162,7 +202,7 @@ runs. Do not assume these counters include ArrayBuffer/external-string backing
 stores, native DOM/layout allocations or renderer/worker processes. Chromium's
 sampling profiler can retain samples of collected objects, but its Poisson
 estimates are a different sensor and do not establish byte-exact coverage.
-[V8 tracking setup](https://github.com/v8/v8/blob/main/src/heap/heap.cc),
+[V8 tracking setup](https://github.com/v8/v8/blob/ad8af0fc661d278e87627fcaa3a7cf795ee80dd8/src/heap/heap.cc#L933),
 [CDP sampling flags](https://chromedevtools.github.io/devtools-protocol/tot/HeapProfiler/#method-startSampling).
 
 Stock WebKit's Heap protocol emits start/stop snapshots and GC timings, not a

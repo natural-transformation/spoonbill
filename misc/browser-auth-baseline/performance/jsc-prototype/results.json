@@ -1,7 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kind": "experimental-jsc-cell-ledger-result",
-  "status": "failed-linker-no-oracle-execution",
+  "status": "deferred-final-outcome-unverified",
+  "takeoverDecision": {
+    "date": "2026-10-11",
+    "furtherPerformanceTesting": "deferred-at-maintainer-request",
+    "newBuildsOrProofsStarted": false,
+    "attempt4FinalDisposition": "unverified",
+    "note": "Prior start observations are preserved; no completion or cleanup is inferred from the expired authorization window."
+  },
   "acceptanceEvidence": false,
   "platform": "aarch64-linux",
   "executionScope": "Existing guest; isolated owned process tree and private local Nix store; interpreter-only JSC experiment",
@@ -17,7 +24,7 @@
     "privateNixReceiptSha256": "addd16cd4b867d3bd2ebadd6212516fc015efa070282c2adb9d35c8d1a2c0f92"
   },
   "repositorySourceSnapshot": {
-    "scope": "Current repository inputs include an unbuilt SubspaceInlines.h include fix. These differ from the failed build patch and do not correspond to a completed binary",
+    "scope": "Attempt 4 was last observed building the SubspaceInlines.h include fix. These inputs differ from the failed build patch; no completed binary is established by the retained evidence",
     "sha256": {
       "default.nix": "4ab0aba576028270f61b1371efa43f8b437dfc23fa5815dba22f34b8363c568a",
       "cumulative-allocation.patch": "155ab89fa80e63c2a09f56389aa5ade7852b1825e0be0bcfb819919dd58b2ce5",
@@ -25,6 +32,7 @@
     }
   },
   "approvedEnvelope": {
+    "scope": "original-two-hour-experiment-attempts-1-through-3",
     "memoryMaxBytes": 16000000000,
     "memoryHighBytes": 14000000000,
     "swapMaxBytes": 0,
@@ -36,7 +44,33 @@
     "memoryMeaning": "cgroup charged memory including file cache; not process RSS, virtual size, or host VM footprint",
     "deadlinesExtended": false
   },
+  "separatelyAuthorizedAttempt4": {
+    "approvedAttempts": 1,
+    "approvedDurationSeconds": 2700,
+    "startedAtUtc": "2026-10-11T05:29:40Z",
+    "authorizationEndsAtUtc": "2026-10-11T06:14:40Z",
+    "controllerStopDeadlineUtc": "2026-10-11T06:14:30Z",
+    "runtimeMaxSeconds": 2690,
+    "stopTimeoutSeconds": 10,
+    "memoryMaxBytes": 16000000000,
+    "memoryHighBytes": 14000000000,
+    "swapMaxBytes": 0,
+    "compilerJobs": 1,
+    "cpuQuotaEquivalents": 2,
+    "additionalDiskMaxBytes": 16106127360,
+    "reusedPrivateFilesystemCapacityBytes": 15032385536,
+    "originalBudgetExtended": false,
+    "freshHostPreflight": "passed; audited Nix, shared build-user locks, idle CI and previous cleanup verified",
+    "sourceIdentityEvidence": "locally inspected guest receipt confirms all three input checksum checks passed against repositorySourceSnapshot",
+    "privateInputReceiptSha256": "42a541326c9bc206f27fa5b7519f2c11369842f090e18261e84e279d354d2e4b",
+    "initialTinyProof": "cached result; not fresh body execution in this attempt",
+    "mainBuilderContainment": "controller confirms actual preConfigure non-root, zero-capability and cgroup-namespace assertions passed before compiler probes",
+    "forcedTinyProofRebuild": "Previously queued serial step; execution unverified and no start/retry is part of the takeover",
+    "privatePreflightLogSha256": "2821f643f685f3dba04da367565fc9af83f10ac9e83872550b55ce715b7f9890",
+    "privateStartReceiptSha256": "25888be2848efbd61eae1c587d3378799b2b664b8801e5406d125e4004f2a7df"
+  },
   "containment": {
+    "scope": "original experiment; attempt 4 containment is described separately",
     "actualTinyNixBuilder": "passed",
     "checks": [
       "Actual builder and child non-root in expected cgroup namespace",
@@ -95,9 +129,20 @@
       "privateRawLogSha256": "6f7d79937f71aa306fa061e27534d2836dc86187919a91be3f08fc6dd9a30ad6",
       "privateExitReceiptSha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
       "evidence": "locally inspected final build failure and exit status 1"
+    },
+    {
+      "attempt": 4,
+      "authorization": "separatelyAuthorizedAttempt4",
+      "status": "final-disposition-unverified",
+      "lastObservedStatus": "running",
+      "observedChargedPeakBytes": null,
+      "oracleOutcome": null,
+      "processGroupReleased": null,
+      "evidence": "locally inspected historical start receipt; final resource, oracle and cleanup evidence unverified; further experiments deferred"
     }
   ],
   "finalBuildCleanup": {
+    "scope": "original-two-hour-experiment-attempts-1-through-3-only",
     "processGroupReleased": true,
     "sharedCiLeftRunning": true,
     "maximumObservedChargedPeakAcrossExperimentUnitsBytes": 6587342848,
@@ -119,7 +164,8 @@
     "retainedImageCapacityBytes": 15032385536,
     "retainedGuestTaskAllocatedKiB": 4548068,
     "privateAllCleanupLogSha256": "0d88353bcea47605cdef485cc14fdf94d62294d21b0bd0ab5e2a3a400304f261",
-    "fourthEngineBuildRequiresHumanInput": true
+    "fourthEngineBuildRequiredHumanInput": true,
+    "subsequentAuthorization": "separatelyAuthorizedAttempt4"
   },
   "validation": {
     "staticTestsPassed": 9,

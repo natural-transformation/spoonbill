@@ -7,6 +7,14 @@ proposed 4.0 coordinator, pure-core extraction, new providers or release gates.
 See [validation and remaining gates](validation.md) for the current checks,
 captured inventories and why Phase 0 remains open.
 
+As of 2026-10-11, further performance testing and profiling are deferred at the
+maintainer's request. This PR can merge as an unpublished reference foundation
+after correctness CI passes; completion of the original Phase 0 measurement plan
+is no longer a prerequisite for this PR. This does not deliver the proposed v4
+coordinator or establish a latency/memory result. Automatic CI retains Scala and
+browser correctness tests; performance tooling, profiling, and runtime capture
+require a separate manual workflow dispatch with `performance_tooling: true`.
+
 The application, host glue, SQL, ownership storage, completion material and
 transport wrappers are visible here and count toward consumer integration code.
 None is added to the published runtime's compilation sources. The root build
@@ -43,8 +51,8 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false \
   'browserAuthBaseline/compile'
 
 nix develop --no-write-lock-file --command node --test \
-  misc/browser-auth-baseline/*.test.mjs \
-  misc/browser-auth-baseline/performance/*.test.mjs
+  misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+  misc/browser-auth-baseline/*.test.mjs
 
 env -u JAVA_HOME SBT_NATIVE_CLIENT=false \
   nix develop --no-write-lock-file --command bash scripts/test-browser-auth-baseline.sh
@@ -77,9 +85,10 @@ excluded by filename. Emitted and compressed bytes count generated output.
 The script/Scala embedding scan is an aid to source review and does not prove
 application completeness or runtime behavior.
 
-Phase 0 remains open until full reviewed workload equivalence, immutable reference
+The original Phase 0 measurement plan remains open until full reviewed workload equivalence, immutable reference
 artifacts, measured operation/resource budgets
 and all required collectors are complete. The checked-in performance manifest
 deliberately remains `awaiting-reference-review`; its analyzer reports
 `inconclusive`. No synthetic test result can fill a real measurement, and no
-inconclusive cell permits the zero-regression release gate to pass.
+inconclusive cell permits the zero-regression release gate to pass. This deferred
+measurement work is distinct from the correctness gate for merging the reference.

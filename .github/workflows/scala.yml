@@ -5,13 +5,20 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      performance_tooling:
+        description: Run optional performance tooling and profiling checks
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build:
 
     runs-on: ubuntu-latest
     # The cold full-repository build hit the previous 30-minute job cap.
-    # Keep a finite bound while also capturing the validated reference artifact.
+    # Keep a finite bound for the cold correctness build.
     timeout-minutes: 45
 
     steps:
@@ -34,21 +41,28 @@ jobs:
           'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
           compile 'Test / compile' test
 
-    - name: Test browser clients and generic performance regression checks
+    - name: Test browser clients and reference correctness
       run: |
         nix develop --no-write-lock-file --command node --test \
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+          misc/browser-auth-baseline/*.test.mjs
+
+    - name: Test optional performance tooling
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
+      run: |
+        nix develop --no-write-lock-file --command node --test \
           misc/performance-regression-tests.mjs \
-          misc/browser-auth-baseline/*.test.mjs \
           misc/browser-auth-baseline/performance/*.test.mjs \
           misc/browser-auth-baseline/performance/jsc-prototype/*.test.mjs
 
     - name: Validate PostgreSQL wire instrumentation against the physical engine
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       run: |
         nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
           node --test misc/browser-auth-baseline/performance/postgres-wire-proxy.pg-tests.mjs
 
     - name: Capture the validated browser authentication runtime
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       run: |
         env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
           bash scripts/capture-browser-auth-artifact.sh "$RUNNER_TEMP/spoonbill-auth-runtime"
@@ -59,6 +73,7 @@ jobs:
 
     - name: Retain the immutable reference runtime
       id: reference-artifact
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       uses: actions/upload-artifact@v4
       with:
         name: browser-auth-reference-${{ github.sha }}
@@ -68,6 +83,7 @@ jobs:
         retention-days: 90
 
     - name: Link the artifact and its content identities
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       env:
         REFERENCE_ARTIFACT_URL: ${{ steps.reference-artifact.outputs.artifact-url }}
         REFERENCE_ARCHIVE_SHA256: ${{ steps.reference-artifact.outputs.artifact-digest }}
@@ -104,6 +120,7 @@ jobs:
       run: nix develop .#browser --no-write-lock-file --command bash scripts/test-native-browsers.sh
 
     - name: Validate profiling capabilities and owned-process measurements
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       run: |
         nix develop .#profiling --no-write-lock-file --command node --test \
           misc/browser-auth-baseline/performance/native-memory.linux-tests.mjs \

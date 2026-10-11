@@ -1,5 +1,10 @@
 # Experimental JSC allocation ledger
 
+Status as of 2026-10-11: further performance experiments and proof executions
+are deferred at the maintainer's request. The protocol and prior evidence below
+are retained for reference; they are not instructions to resume execution. The
+fourth attempt's final build/oracle/cleanup outcome remains unverified.
+
 This experiment targets the official WebKitGTK 2.50.4 source archive selected by
 the repository's locked nixpkgs revision
 `c0b0e0fddf73fd517c3471e546c0df87a42d53f4`:
@@ -118,15 +123,55 @@ library link, which failed with an undefined reference to
 `JSC::Subspace::attributes() const` from `IsoSubspace::tryAllocateLowerTierPrecise`.
 The new revival hook called that accessor, but `IsoSubspace.cpp` did not include
 `SubspaceInlines.h`, which contains its inline definition. The local patch now
-adds that explicit include and passes an exact-source patch dry-run. This
-linker fix has **not** been compiled or executed. The third attempt never
+adds that explicit include and passes an exact-source patch dry-run. The third attempt never
 produced a runnable shell or ran the allocation oracle, so there is no native
-allocation result and no coverage/acceptance claim. A fourth actual build
-requires new human authorization under the repository recovery policy.
+allocation result from that attempt and no coverage/acceptance claim. Work
+stopped after that failure pending new human authorization.
 
-The approved existing NixOS guest envelope is 16,000,000,000 bytes charged to the
+The user subsequently approved **one additional 45-minute attempt**, with the
+same guest/image, 16 GB memory maximum, 14 GB memory high threshold, no swap,
+one compilation job, at most two CPU equivalents, 15 GiB additional disk and CI
+priority. Attempt four started **2026-10-11 05:29:40 UTC** and has an absolute
+deadline of **06:14:40 UTC**, with the controller stopping ten seconds early.
+Its build and oracle outcome is **unverified** in the retained evidence. The initially reused tiny
+containment-proof output is cached evidence, not fresh execution in this unit;
+its forced `--rebuild` was queued serially after the main build at the last
+observation, but execution is unverified. No queued proof is started or retried
+by this takeover, and no successful cleanup is inferred from the old deadline.
+
+## Installed-artifact proof
+
+The preserved optional `installed-proof.nix` helper can run the installed oracle
+after a successful build in a
+fresh actual Nix builder inside the same capped unit. It checks the non-root UID,
+zero effective capabilities, `0::/`, expected cgroup namespace, one build core,
+non-writable cgroup control and absence of the shared daemon socket. It verifies
+the installed binary, library, CMake cache and exact frozen oracle hash, unsets
+`LD_LIBRARY_PATH` and `LD_PRELOAD`, and runs the installed shell with a 90-second
+timeout. Output is retained as `oracle.json` and printed for the parent's JSON
+validator; a marker alone does not establish semantic success. Use already
+available complete store paths, after the guarded unit's preflight:
+
+```sh
+owned_nix build --offline --impure --no-link --print-out-paths \
+  --file "$JSC_WORK/installed-proof.nix" \
+  --argstr system aarch64-linux \
+  --argstr bash "$BASH_STORE" --argstr coreutils "$COREUTILS_STORE" \
+  --argstr prototypePath "$JSC_PROTOTYPE_STORE" \
+  --argstr expectedNamespace "$JSC_EXPECTED_NAMESPACE"
+```
+
+Confirm actual builder execution in the retained log; reuse of an already valid
+output is not a fresh containment or runtime check. This helper neither compiles
+the engine nor fetches dependencies. Its successful result would validate the
+installed artifact against the same narrow oracle, preserving all coverage
+limits above. The installed proof's attempt-four execution is unverified; this
+takeover does not execute it.
+
+The original approved NixOS guest envelope was 16,000,000,000 bytes charged to the
 actual build/test process tree, no guest swap, one compilation job, at most two
-CPU equivalents, two hours total and 15 GiB additional disk. The parent owns
+CPU equivalents, two hours total and 15 GiB additional disk. Attempt four uses
+the separately approved 45-minute window above with the same resource bounds. The parent owns
 source acquisition, containment verification and launch. See the companion
 envelope files for implementation. Limiting only a Nix client does not constrain
 builders started by a daemon outside its cgroup.

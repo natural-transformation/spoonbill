@@ -6,6 +6,13 @@ The original review and its staged-diff identity are preserved. These fixes
 remain on `codex/browser-auth-integration` and are included in PR #7.
 Phase 0 stays open for the acknowledged workload/measurement gaps.
 
+On 2026-10-11 the maintainer asked to make this PR merge-ready without further
+performance testing. The reference foundation is now gated on correctness CI;
+remaining measurement work is deferred rather than treated as passed. See the
+[merge scope decision](validation.md#merge-scope-decision--2026-10-11). Optional
+profiling/tooling checks require an explicit manual workflow dispatch and are
+not run by ordinary PR updates.
+
 | Finding | Change | Verification |
 | --- | --- | --- |
 | 1. Expiry revived after restart | `JdbcReferenceClock` independently commits the greatest observed instant before exposing it. New instances access storage; exact seconds/nanoseconds avoid timestamp rounding. Guard and host share one clock. Rejected domain work cannot roll back the checkpoint. Existing transaction disposal handles abort, quarantine and acknowledged close failure. Async paths use the blocking executor; snapshots retain their explicit synchronous v3 boundary. | Real PostgreSQL tests reconstruct hosts/adapters after challenge/session/snapshot expiry with an earlier clock. Tests cover rollback, clock write/acknowledgment failure, exact nanoseconds, abort success/failure, quarantine and costs. |
@@ -122,5 +129,6 @@ admission, actor-dispatcher-independent worker settlement, real driver protocol
 cycle probes, browser notification scope, and relocatable runtime artifacts.
 Its final inventories preserve the earlier review-fix reports as history. All
 six review findings are addressed; full workload runners, measured ceilings,
-baseline-only calibration and unsupported memory quantities still prevent Phase 0
-closure. Correctness and sensor checks do not establish a performance pass.
+baseline-only calibration and unsupported memory quantities still prevent closure
+of the original Phase 0 measurement plan. That work is deferred from this PR's
+merge scope. Correctness and sensor checks do not establish a performance pass.

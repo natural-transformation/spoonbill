@@ -2,9 +2,50 @@
 
 This is a working v3 reference/review package, not completion of the 4.0 plan.
 Published runtime sources, public API and release version remain unchanged.
-Phase 0 is open; broad API/core implementation has not begun because the plan's
-Phase 0 exit explicitly requires reviewed equivalent behavior and working
+The original Phase 0 measurement plan is open; broad API/core implementation has
+not begun. Its original exit required reviewed equivalent behavior and working
 measurement/counter contracts.
+
+## Merge scope decision — 2026-10-11
+
+The maintainer requested that PR #7 be made ready to merge without any further
+performance testing. This PR is therefore reviewed as an unpublished reference
+foundation. Correctness, authorization, transaction settlement, resource cleanup,
+and ordinary browser behavior remain merge requirements. Completion of the
+measurement programme below is deferred and is not a blocker for this PR.
+
+No latency or memory pass is inferred from this decision. The acceptance manifest
+and missing measurements remain unchanged/null/inconclusive; the proposed v4
+coordinator is not delivered here. Automatic CI runs Scala, browser-client,
+native lifecycle, and reference-authentication correctness checks. Performance
+tooling tests, physical instrumentation probes, native profiling, and runtime
+artifact capture/upload are opt-in through the default-false manual
+`performance_tooling` workflow input. No optional run was requested for this
+takeover, and no further engine build or oracle execution is part of it.
+
+The checks and experiment records below are historical unless explicitly dated
+otherwise. Pending local artifact verification and source-audit evidence is
+preserved; it is not new performance testing or a performance acceptance result.
+
+### Takeover validation — 2026-10-11
+
+The focused static review of shared policy, callback admission, memory/JDBC
+authority, expiry, and shutdown changes found no new correctness blocker. The
+following correctness-only command passed **73 tests**:
+
+```sh
+nix develop --no-write-lock-file --command node --test \
+  misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+  misc/browser-auth-baseline/*.test.mjs
+```
+
+Read-only checks also validated the changed Markdown links/fences/whitespace,
+JSON evidence syntax, all six manual-only workflow gates, and
+`nix-instantiate --parse performance/jsc-prototype/installed-proof.nix` (from this
+directory). The last command parses the optional helper; it does not run it.
+No performance suite, profiler, engine build, allocation oracle, or calibration
+was executed. Both automatic correctness jobs must pass on the final PR head
+before merge; earlier CI results are historical evidence only.
 
 The complete Scala applications cover password/factor ceremonies, committed
 completion, fresh-handshake activation, protected HTTP/actions, logout and
@@ -136,8 +177,15 @@ The [CI capture summary](reports/ci-runtime-capture.json) records its merge/buil
 revision, content/source/graph identities and distinct tar/upload-ZIP digests.
 Its reference source hash matches the final local inventory; compiled runtime
 and graph hashes identify the separately built Linux artifact. The producing job
-verified the capture/tar. The browser download attempt timed out, so independent
-download verification is not claimed. Source review/freeze remains open.
+verified the capture/tar. The original browser download attempt timed out; that
+diagnostic remains recorded. A later independent GitHub connector download on
+2026-10-11 succeeded on its first attempt: the 28,796,649-byte uploaded ZIP and
+37,263,360-byte contained tar matched the retained digests. After extraction to
+an independent directory, the captured standalone loader verified all members,
+25 classpath entries and the recorded runtime/source/graph identities. The
+captured policy executable ran through Nix and matched both its captured report
+and the checked-in manifest. This closes the download-verification gap;
+source review/freeze and performance acceptance remain open.
 The later [CI run for `7224b35`](https://github.com/natural-transformation/spoonbill/actions/runs/38091860022)
 also passed both jobs, including the added static envelope/OOM tests. This does
 not run the experimental JSC source build or establish allocation acceptance.
@@ -174,7 +222,7 @@ sensor bounds. No nominal nanosecond field was promoted to verified evidence.
 Synchronous owned-process cleanup precedes earlier immediate-exit listeners;
 forced exit can still prevent evidence finalization and SIGKILL is unsupported.
 
-## Required work before Phase 0 closes
+## Deferred work before the original Phase 0 measurement plan closes
 
 1. Durable-clock correctness now has independent acknowledged checkpoints and
    restart/rollback/failure tests. Their additional connection, SQL, commit and
@@ -222,10 +270,12 @@ forced exit can still prevent evidence finalization and SIGKILL is unsupported.
    engine unit peaked at 3,669,725,184 charged bytes and its process group was
    released; shared CI remained active. The highest observed unit peak was
    approximately 6.587 GB during dependency staging, with the actual 16 GB
-   decimal hard cap unchanged. A minimal inline-header fix is being prepared
-   but remains unbuilt. Under the repository recovery rule, a fourth engine
-   attempt requires user input; time remaining before the original
-   2026-10-10 23:02:43 UTC deadline does not authorize it.
+   decimal hard cap unchanged. A minimal inline-header fix was subsequently
+   committed, and a separately authorized fourth attempt was last observed
+   running in the 2026-10-11 05:29:40–06:14:40 UTC window. Its final build,
+   oracle, and cleanup disposition is not established by the retained evidence.
+   Further experiments and queued proof steps are deferred under the 2026-10-11
+   instruction to stop performance testing; no additional attempt is scheduled.
    See the [ledger design](performance/jsc-prototype/design.md),
    [envelope](performance/jsc-prototype/envelope.md),
    [OOM proof](performance/jsc-prototype/oom-proof.md) and

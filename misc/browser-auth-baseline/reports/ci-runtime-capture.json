@@ -16,9 +16,26 @@
   "tarSha256": "468e54230a0e823d1d62a5aa3deb6811db468c84848615c0baaf2d515c837ebd",
   "uploadZipSha256": "17da796f4b716b9773ae353dbfb423dd00be23d5622890acdbc207d00012a2f6",
   "verification": {
-    "source": "authenticated GitHub run summary and artifact listing",
+    "source": "authenticated GitHub run summary, artifact listing and later independent connector download",
     "producingJobVerifiedCaptureAndTar": true,
-    "downloadedBundleIndependentlyVerified": false,
-    "downloadDiagnostic": "browser-download-event-timeout"
+    "downloadedBundleIndependentlyVerified": true,
+    "downloadDiagnostic": "browser-download-event-timeout",
+    "laterIndependentVerification": {
+      "verifiedAtUtc": "2026-10-11T05:34:28Z",
+      "artifactId": 11680330126,
+      "downloadMethod": "GitHub connector download_workflow_artifact",
+      "downloadAttempts": 1,
+      "uploadZipBytes": 28796649,
+      "uploadZipDigestMatched": true,
+      "tarBytes": 37263360,
+      "tarDigestAndMembersVerified": true,
+      "capturedStandaloneLoaderVerified": true,
+      "runtimeSourceAndGraphIdentitiesMatched": true,
+      "classpathEntries": 25,
+      "capturedPolicyExecutedThroughNix": true,
+      "executedPolicyMatchesCapturedReport": true,
+      "executedPolicyMatchesManifest": true,
+      "earlierDownloadDiagnosticPreserved": true
+    }
   }
 }
