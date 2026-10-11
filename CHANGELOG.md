@@ -1,6 +1,6 @@
 # Changelog
 
-## 5.0.0 — Unreleased
+## 5.0.0 — 2026-10-11
 
 This is a breaking release. Update all modules together and recompile consumers
 using the [v5 migration guide](docs/migration-v5.md).

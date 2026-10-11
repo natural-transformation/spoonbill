@@ -4,8 +4,8 @@ Spoonbill 5 adds shared PostgreSQL browser authentication for overlapping web
 processes, recoverable selected presentation, and administrative owner retirement.
 This is a breaking release: update every Spoonbill module together and recompile
 the application and custom integrations. Old compiled 4.x callers are not binary
-compatible. Use the repository's `5.0.0-SNAPSHOT` artifacts until the release is
-published.
+compatible. Select `5.0.0` for every Spoonbill dependency; the development build
+uses `5.0.0-SNAPSHOT` unless an explicit release version is supplied.
 
 ## Select explicit ownership
 
