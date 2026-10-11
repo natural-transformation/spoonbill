@@ -47,6 +47,23 @@ No performance suite, profiler, engine build, allocation oracle, or calibration
 was executed. Both automatic correctness jobs must pass on the final PR head
 before merge; earlier CI results are historical evidence only.
 
+The first takeover CI run, [38120536588](https://github.com/natural-transformation/spoonbill/actions/runs/38120536588),
+passed native-browser correctness but stalled in the full JVM test job. Its
+retained log shows a pre-existing `StackOverflowError` in the legacy
+`FutureEffect`/`Stream.foreach` inline callback chain; the queue fixture could
+then wait indefinitely because producer completion was discarded or awaited
+after the consumer. The stalled job was cancelled to retrieve its log.
+
+`QueueSpec` now exercises queue offer/pull/backpressure through native Future
+composition on its test execution context, joins producer and consumer results,
+propagates producer failure, and gives each asynchronous test a ten-second
+deadline. It retains three producers, the same 300/3,000 item counts, and queue
+sizes 1/5/10. This is a test-harness correction, not a published runtime change.
+The underlying Future stream stack-safety limitation remains a separate runtime
+issue; it has not been hidden by increasing stack size or reducing test work.
+The focused `effect/test` run passed all **27 correctness tests**, including
+the new producer-failure case, through the repository Nix environment.
+
 The complete Scala applications cover password/factor ceremonies, committed
 completion, fresh-handshake activation, protected HTTP/actions, logout and
 reconnect through the official Pekko adapter. JDBC adds real process-loss
