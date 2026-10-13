@@ -60,12 +60,14 @@ class BoundedPresentationStoreSpec extends AnyFlatSpec with Matchers {
     val store = new BoundedPresentationStore[Future, String](Limits(reconnectSeconds = 5), () => clock.get())
     await(store.bootstrap(viewKey, "root"))
     val first = await(store.claim(viewKey, fence(1)))
+    first.resetBrowser shouldBe false
     await(first.publish())
     await(first.release())
     await(first.release())
     rejected(first.manager.read[String](Id.TopLevel), Error.StaleOwner)
     await(store.resources).disconnected shouldBe 1
     val second = await(store.claim(viewKey, fence(2)))
+    second.resetBrowser shouldBe false
     await(second.manager.read[String](Id.TopLevel)) shouldBe Some("root")
     await(second.publish())
     await(second.release())
@@ -76,6 +78,35 @@ class BoundedPresentationStoreSpec extends AnyFlatSpec with Matchers {
     rejected(store.claim(viewKey, fence(2)), Error.StaleOwner)
     val third = await(store.claim(viewKey, fence(3)))
     await(third.manager.read[String](Id.TopLevel)) shouldBe Some("fresh")
+  }
+
+  it should "retain a recovered baseline requirement across failed claim admission and disconnect" in {
+    val store = new BoundedPresentationStore[Future, String](Limits(active = 2, pending = 1), () => start)
+    val other = Qsid("device", "other")
+    await(store.bootstrap(other, "ordinary HTTP baseline"))
+    val pending = await(store.claim(other, fence(1, view = 2)))
+    pending.resetBrowser shouldBe false
+
+    val recovered = await(store.bootstrap(viewKey, "fresh recovery presentation", resetBrowser = true))
+    rejected(store.claim(viewKey, fence(1)), Error.Capacity)
+    await(recovered.read[String](Id.TopLevel)) shouldBe Some("fresh recovery presentation")
+    await(store.resources).bootstrap shouldBe 1
+    await(pending.publish())
+
+    val first = await(store.claim(viewKey, fence(1)))
+    first.resetBrowser shouldBe true
+    await(first.manager.read[String](Id.TopLevel)) shouldBe Some("fresh recovery presentation")
+    await(first.manager.write(child, "authenticated component"))
+    await(first.publish())
+    await(first.release())
+    rejected(first.manager.write(child, "late output"), Error.StaleOwner)
+
+    val resumed = await(store.claim(viewKey, fence(2)))
+    resumed.resetBrowser shouldBe true
+    await(resumed.manager.read[String](Id.TopLevel)) shouldBe Some("fresh recovery presentation")
+    await(resumed.manager.read[String](child)) shouldBe Some("authenticated component")
+    await(resumed.publish())
+    await(store.close())
   }
 
   it should "invalidate retained state without allowing same-epoch resurrection" in {

@@ -29,6 +29,8 @@ object ZioHttpBrowserAuthFixture {
     account: Option[String] = None,
     ceremony: Option[CeremonyId] = None,
     dashboard: Boolean = false,
+    rejected: Boolean = false,
+    disclosures: Int = 0,
     message: String = ""
   )
   private final case class Host(sessions: Map[UUID, Instant] = Map.empty, consumed: Set[UUID] = Set.empty)
@@ -87,7 +89,8 @@ object ZioHttpBrowserAuthFixture {
       .map(value => CeremonyId(UUID.fromString(value)))
 
     private def signIn(ceremony: BrowserCeremony, username: String, password: String): AppTask[UiOutcome[Page]] =
-      if (username != alice.name || password != "password") ZIO.succeed(UiOutcome.update(_.copy(message = "Rejected.")))
+      if (username != alice.name || password != "password")
+        ZIO.succeed(UiOutcome.update(_.copy(rejected = true, message = "Rejected.")))
       else
         BrowserCredentials
           .generate[AppTask]
@@ -137,8 +140,9 @@ object ZioHttpBrowserAuthFixture {
       ActionPolicy[AppTask, Unit, Principal]((_, _) => ZIO.succeed(AccessDecision.Allowed))
     ) { (_, context) =>
       ZIO.succeed(context.presentSensitive[Page](region, purpose, codes, 1.minute) {
-        case DisclosureOutcome.BrowserProcessed => StateUpdate(_.copy(message = "Recovery codes disclosed."))
-        case other                              => StateUpdate(_.copy(message = s"Disclosure outcome: $other"))
+        case DisclosureOutcome.BrowserProcessed =>
+          StateUpdate(page => page.copy(disclosures = page.disclosures + 1, message = "Recovery codes disclosed."))
+        case other => StateUpdate(_.copy(message = s"Disclosure outcome: $other"))
       })
     }
 
@@ -150,22 +154,31 @@ object ZioHttpBrowserAuthFixture {
         page.account match {
           case None =>
             div(
-              page.ceremony.toSeq.map { ceremony =>
-                form(
-                  method := "post",
-                  action := "/no-http-proof-submission",
-                  ActionForms.onSubmit[AppTask, Page, Any, ((CeremonyId, String), Secret)](password, onRejected),
-                  input(`type` := "hidden", avocet.dsl.html.name := "ceremony", value := ceremony.value.toString),
-                  label("Account", input(avocet.dsl.html.name := "username", `type` := "text")),
-                  label("Password", input(avocet.dsl.html.name := "password", `type` := "password")),
-                  button("Sign in")
-                )
-              },
-              form(ActionForms.onSubmit[AppTask, Page, Any, Unit](begin, onRejected), button("Begin sign-in"))
+              id := "anonymous-controls",
+              // Insert a sibling before setup, so the retained browser tree no
+              // longer matches BrowserPresentation.fresh() on authentication.
+              Option.when(page.rejected)(div(id := "anonymous-error", "Invalid password. Try again.")).toSeq,
+              div(
+                id := "anonymous-setup",
+                page.ceremony.toSeq.map { ceremony =>
+                  form(
+                    id := "anonymous-form",
+                    method := "post",
+                    action := "/no-http-proof-submission",
+                    ActionForms.onSubmit[AppTask, Page, Any, ((CeremonyId, String), Secret)](password, onRejected),
+                    input(`type` := "hidden", avocet.dsl.html.name := "ceremony", value := ceremony.value.toString),
+                    label("Account", input(avocet.dsl.html.name := "username", `type` := "text")),
+                    label("Password", input(avocet.dsl.html.name := "password", `type` := "password")),
+                    button("Sign in")
+                  )
+                },
+                form(ActionForms.onSubmit[AppTask, Page, Any, Unit](begin, onRejected), button("Begin sign-in"))
+              )
             )
           case Some(account) =>
             div(
               p(s"Authenticated account: $account"),
+              p(id := "disclosure-count", s"Successful disclosures: ${page.disclosures}"),
               form(
                 ActionForms.onSubmit[AppTask, Page, Any, Unit, Principal](disclose, browser.authority, onRejected),
                 button("Show recovery codes")

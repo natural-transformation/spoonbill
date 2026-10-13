@@ -180,7 +180,8 @@ final class BrowserAuthentication[F[_], S, P](
             if (!exists || changed) {
               // A changed identity cannot inherit any previous presentation nodes.
               if (exists) denied[Unit]
-              else F.delay(presentation.fresh()).flatMap(state => store.bootstrap(qsid, state).map(_ => ()))
+              else F.delay(presentation.fresh()).flatMap(state =>
+                store.bootstrap(qsid, state, resetBrowser = true).map(_ => ()))
             } else F.unit
           }
           prepare
@@ -206,7 +207,7 @@ final class BrowserAuthentication[F[_], S, P](
                     }
                     override val viewSnapshots: Option[ViewSnapshotSession[F, S]] = snapshots(view)
                     override val ownershipEpoch: Option[spoonbill.security.Versions.ViewOwnershipEpoch] =
-                      Option.when(shared)(view.fence.epoch)
+                      Option.when(shared || lease.resetBrowser)(view.fence.epoch)
                     override val outputAdmission: Option[SessionOutputAdmission[F, S]] =
                       Option.when(shared)(new SessionOutputAdmission[F, S] {
                         def apply[A](output: A, produced: S, current: S): F[A] = withView(owner) { actual =>
