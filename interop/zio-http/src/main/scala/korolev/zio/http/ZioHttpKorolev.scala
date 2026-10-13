@@ -350,25 +350,32 @@ class ZioHttpSpoonbill[R] {
     spoonbillServer: SpoonbillService[RIO[R, *]],
     spoonbillRequest: SpoonbillHttpRequest[RIO[R, *]]
   ): ZIO[R, Throwable, Response] =
-    spoonbillServer.http(spoonbillRequest).flatMap { case SpoonbillResponse(status, stream, responseHeaders, contentLength) =>
-      val headers = Headers(responseHeaders.map { case (name, value) => Header.Custom(name, value) })
-      val body: ZStream[R, Throwable, Byte] =
-        stream.toZStream.flatMap { (bytes: Bytes) =>
-          ZStream.fromIterable(bytes.as[Array[Byte]])
-        }
+    // Request processing stays interruptible. Once the response stream is received,
+    // conversion runs masked, so a discarded stream cannot be abandoned on interruption.
+    ZIO.uninterruptibleMask { restore =>
+      restore(spoonbillServer.http(spoonbillRequest)).flatMap {
+        case SpoonbillResponse(status, stream, responseHeaders, contentLength) =>
+          val headers = Headers(responseHeaders.map { case (name, value) => Header.Custom(name, value) })
+          def response(body: Body): Response =
+            Response(
+              status = HttpStatusConverter.fromSpoonbillStatus(status),
+              headers = headers,
+              body = body
+            )
+          lazy val body: ZStream[R, Throwable, Byte] =
+            stream.toZStream.flatMap { (bytes: Bytes) =>
+              ZStream.fromIterable(bytes.as[Array[Byte]])
+            }
 
-      val bodyZio =
-        contentLength match {
-          case Some(length) => Body.fromStreamEnv(body, length)
-          case None         => Body.fromStreamChunkedEnv(body)
-        }
-
-      bodyZio.map { body =>
-        Response(
-          status = HttpStatusConverter.fromSpoonbillStatus(status),
-          headers = headers,
-          body = body
-        )
+          contentLength match {
+            // ZIO HTTP 3.11.x never completes a streamed body declared as zero bytes,
+            // which stalls the next request on a kept-alive connection. Body.empty
+            // completes it. The discarded stream may own a resource, so it is
+            // cancelled (not drained) before the response is returned.
+            case Some(0L)     => ZIO.suspend(stream.cancel()).as(response(Body.empty))
+            case Some(length) => Body.fromStreamEnv(body, length).map(response)
+            case None         => Body.fromStreamChunkedEnv(body).map(response)
+          }
       }
     }
 

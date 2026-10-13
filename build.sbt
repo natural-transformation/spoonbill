@@ -16,7 +16,7 @@ val ce3Version   = "3.3.12"
 
 val zioVersion     = "1.0.18"
 val zio2Version    = "2.1.26"
-val zioHttpVersion = "3.11.4"
+val zioHttpVersion = "3.11.6"
 
 val fs2ce2Version = "2.5.11"
 val fs2ce3Version = "3.2.8"
@@ -565,7 +565,7 @@ lazy val zioHttpExample = project
   .disablePlugins(HeaderPlugin)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("ZioHttpExample"))
-  .dependsOn(zio, zioHttp)
+  .dependsOn(zio2, zioHttp)
 
 lazy val catsEffectExample = project
   .in(examples / "cats")

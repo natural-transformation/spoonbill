@@ -48,6 +48,23 @@ departure fixture also destroys its loopback sockets and closes its server.
 Interrupting the runner signals only its active test process group. It does not
 stop unrelated browsers or services.
 
+## ZIO HTTP transport
+
+`scripts/test-zio-http-browser-auth.sh` serves a synthetic in-memory
+browser-authentication page through `spoonbill-zio-http` and runs
+`misc/zio-http-browser-auth-tests.cjs` in Chromium and WebKit. It covers cookie
+delivery through `/auth/complete`, the authenticated reconnect, a sensitive
+disclosure and then native and programmatic navigation in the same context. Run
+it from the default shell; it starts the `.#browser` shell itself:
+
+```bash
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  bash scripts/test-zio-http-browser-auth.sh
+```
+
+Browsers may open new connections, so the strict same-connection proof is the
+raw-socket `spoonbill.zio.http.ZioHttpKeepAliveSpec` suite.
+
 These fixtures use synthetic data. Most requests are fulfilled in-process; the
 departure fixture opens an ephemeral loopback HTTP/WebSocket listener. Its peer
 models revalidation and does not establish host application authorization.

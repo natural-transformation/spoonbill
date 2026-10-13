@@ -172,6 +172,11 @@ jobs:
         env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
           env SPOONBILL_AUTH_PROVIDER=io bash scripts/test-browser-auth.sh
 
+    - name: Test browser authentication served by ZIO HTTP
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          bash scripts/test-zio-http-browser-auth.sh
+
     - name: Test the public JDBC browser authentication example
       run: |
         env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
