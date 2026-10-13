@@ -51,7 +51,8 @@ final class BoundedPresentationStore[F[_], S](
     fence: Option[ViewFence],
     phase: Phase,
     deadline: Instant,
-    nodes: Map[Id, Any]
+    nodes: Map[Id, Any],
+    resetBrowser: Boolean
   )
   private val monitor  = new Object
   private var entries  = Map.empty[Qsid, Entry]
@@ -107,7 +108,13 @@ final class BoundedPresentationStore[F[_], S](
     }
   }
 
-  def bootstrap(qsid: Qsid, topLevel: S): F[StateManager[F]] = effect { time =>
+  def bootstrap(qsid: Qsid, topLevel: S): F[StateManager[F]] =
+    bootstrap(qsid, topLevel, resetBrowser = false)
+
+  // A reconstructed presentation cannot assume that the browser has this DOM.
+  // Keep that requirement with the entry, including failed claims and reconnects:
+  // there is no browser acknowledgement that makes it safe to clear the flag.
+  private[spoonbill] def bootstrap(qsid: Qsid, topLevel: S, resetBrowser: Boolean): F[StateManager[F]] = effect { time =>
     sweep(time)
     if (entries.contains(qsid)) reject(Error.AlreadyExists)
     if (count(Phase.Bootstrap) >= limits.bootstrap) reject(Error.Capacity)
@@ -117,7 +124,8 @@ final class BoundedPresentationStore[F[_], S](
       None,
       Phase.Bootstrap,
       time.plusSeconds(limits.bootstrapSeconds),
-      Map(Id.TopLevel -> topLevel)
+      Map(Id.TopLevel -> topLevel),
+      resetBrowser
     )
     manager(qsid, token)
   }
@@ -153,13 +161,14 @@ final class BoundedPresentationStore[F[_], S](
       phase = Phase.Pending,
       deadline = time.plusSeconds(limits.pendingSeconds)
     )
-    new Lease(qsid, fence, token)
+    new Lease(qsid, fence, token, previous.resetBrowser)
   }
 
   final class Lease private[BoundedPresentationStore] (
     val qsid: Qsid,
     val fence: ViewFence,
-    private val token: AnyRef
+    private val token: AnyRef,
+    private[spoonbill] val resetBrowser: Boolean
   ) {
     val manager: StateManager[F] = BoundedPresentationStore.this.manager(qsid, token)
     def publish(): F[Unit] = effect { time =>

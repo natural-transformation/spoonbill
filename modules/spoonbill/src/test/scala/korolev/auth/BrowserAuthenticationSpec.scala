@@ -219,9 +219,12 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
 
   it should "keep the old socket anonymous through delivery and replace all nodes on the authenticated handshake" in withFixture {
     f =>
+      await(f.configured.stateStorage.create(qsid.deviceId, qsid.sessionId, Page()))
       val oldOwner     = f.connection()
       val oldGuard     = f.open(oldOwner)
       val staleManager = f.manager
+      oldGuard.ownershipEpoch shouldBe None
+      await(staleManager.write(Id.TopLevel, Page(label = "anonymous setup with an extra error banner")))
       await(staleManager.write(child, "anonymous component must not survive login"))
       val receipt = f.prepare(oldOwner)
       f.browser.complete(receipt) shouldBe UiOutcome.CommitAuthentication(receipt.completionId)
@@ -231,6 +234,8 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       await(oldGuard.close())
       val newOwner = f.connection()
       val newGuard = f.open(newOwner, Some(delivered.value))
+      newGuard.ownershipEpoch shouldBe Some(right(await(f.browser.currentView(f.context(newOwner)))).fence.epoch)
+      newGuard.viewSnapshots shouldBe None
       await(f.manager.read[String](child)) shouldBe None
       await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())
       await(newGuard.connected(Page())).user shouldBe Some("alice")
@@ -240,24 +245,71 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       intercept[BoundedPresentationStore.Rejected](await(staleManager.write(child, "late")))
       await(oldGuard.close())
       await(newGuard.authorize(Page(protectedPage = true)))
-      f.freshPages.get() shouldBe 2
+      f.freshPages.get() shouldBe 1
+      val authenticatedPage = Page(label = "recovery codes", protectedPage = true, user = Some("alice"))
+      await(f.manager.write(Id.TopLevel, authenticatedPage))
+      await(f.manager.write(child, "authenticated component"))
       await(newGuard.close())
+      val resumed = await(f.access.resume(qsid, f.request(Some(delivered.value)), f.connection()).get)
+      resumed.ownershipEpoch should not be empty
+      resumed.ownershipEpoch.get.toLong should be > newGuard.ownershipEpoch.get.toLong
+      await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(authenticatedPage)
+      await(f.manager.read[String](child)) shouldBe Some("authenticated component")
+      await(resumed.authorize(authenticatedPage))
+      f.freshPages.get() shouldBe 1
+      await(resumed.close())
   }
 
   it should "retain component nodes for an ordinary same-identity reconnect and fence old ownership" in withFixture {
     f =>
+      await(f.configured.stateStorage.create(qsid.deviceId, qsid.sessionId, Page()))
       val firstOwner = f.connection()
       val first      = f.open(firstOwner)
       val old        = f.manager
+      first.ownershipEpoch shouldBe None
       await(old.write(child, "retained component"))
       await(first.close())
       val second = await(f.access.resume(qsid, f.request(), f.connection()).get)
+      second.ownershipEpoch shouldBe None
       await(f.manager.read[String](child)) shouldBe Some("retained component")
       intercept[BoundedPresentationStore.Rejected](await(old.read[String](child)))
       await(first.close())
       await(second.authorize(Page()))
-      f.freshPages.get() shouldBe 1
+      f.freshPages.get() shouldBe 0
       await(second.close())
+  }
+
+  it should "require a baseline when a handshake has no HTTP presentation to adopt" in withFixture { f =>
+    val owner = f.connection()
+    val guard = f.open(owner)
+    guard.ownershipEpoch shouldBe Some(right(await(f.browser.currentView(f.context(owner)))).fence.epoch)
+    await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())
+    f.freshPages.get() shouldBe 1
+    await(guard.close())
+    val resumed = await(f.access.resume(qsid, f.request(), f.connection()).get)
+    resumed.ownershipEpoch should not be empty
+    f.freshPages.get() shouldBe 1
+    await(resumed.close())
+  }
+
+  it should "require a new baseline after same-authority disconnected presentation expires" in withFixture { f =>
+    await(f.configured.stateStorage.create(qsid.deviceId, qsid.sessionId, Page()))
+    val first = f.open(f.connection())
+    first.ownershipEpoch shouldBe None
+    await(f.manager.write(Id.TopLevel, Page(label = "anonymous setup with an extra error banner")))
+    await(f.manager.write(child, "expired component"))
+    await(first.close())
+    f.time.set(start.plusSeconds(BoundedPresentationStore.Limits().reconnectSeconds + 1))
+    val resumed = await(f.access.resume(qsid, f.request(), f.connection()).get)
+    resumed.ownershipEpoch should not be empty
+    await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())
+    await(f.manager.read[String](child)) shouldBe None
+    f.freshPages.get() shouldBe 1
+    await(resumed.close())
+    val retry = await(f.access.resume(qsid, f.request(), f.connection()).get)
+    retry.ownershipEpoch should not be empty
+    f.freshPages.get() shouldBe 1
+    await(retry.close())
   }
 
   it should "suppress authenticated output when logout occurs during an awaited handler" in withFixture { f =>
@@ -320,6 +372,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       intercept[BoundedPresentationStore.Rejected](await(old.read[String](child)))
       await(authenticated.close())
       val next = f.open(f.connection())
+      next.ownershipEpoch should not be empty
       await(next.connected(Page())).user shouldBe None
       await(f.manager.read[String](child)) shouldBe None
       await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())

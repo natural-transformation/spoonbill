@@ -1,5 +1,22 @@
 # Changelog
 
+## 5.0.2 — 2026-10-13
+
+- Fixed authentication reconnect rendering in memory and JDBC exclusive mode:
+  when the server rebuilds a presentation after an authority change, the browser
+  receives a complete authorized DOM baseline before incremental patches and
+  user-event readiness. An invalid-code retry can no longer leave old setup
+  controls mixed into the recovery-code screen.
+- The reset requirement stays with the reconstructed presentation through failed
+  setup and later reconnects. Same-identity reconnects retain authorized server
+  state and component nodes; ordinary HTTP bootstraps keep their existing path.
+- Regression coverage includes credential delivery, logout, presentation expiry,
+  JDBC coordinator restart, failed claim admission, and invalid-then-valid browser
+  authentication in Chromium and WebKit.
+
+No public API migration is required. Consumers using a forced-page-reload
+workaround for this rendering issue can remove it after validating this release.
+
 ## 5.0.1 — 2026-10-13
 
 - `spoonbill-zio-http` now uses ZIO HTTP **3.11.6** (from 3.11.4). ZIO 2 core,

@@ -1,5 +1,8 @@
 package spoonbill.security.jdbc
 
+import avocet.Id
+import avocet.dsl.*
+import avocet.dsl.html.*
 import java.io.PrintWriter
 import java.security.SecureRandom
 import java.sql.{Connection, SQLException, SQLFeatureNotSupportedException, Timestamp}
@@ -9,16 +12,21 @@ import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
 import scala.util.Using
 import spoonbill.Qsid
+import spoonbill.action.*
 import spoonbill.auth.*
-import spoonbill.effect.Effect
-import spoonbill.security.Identifiers.ConnectionId
+import spoonbill.data.Bytes
+import spoonbill.effect.{Effect, Stream}
+import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
 import spoonbill.security.transaction.*
-import spoonbill.server.BrowserSessionToken
+import spoonbill.server.*
 import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotFormat, ViewSnapshotException}
+import spoonbill.state.BoundedPresentationStore
+import spoonbill.state.javaSerialization.*
+import spoonbill.web.{PathAndQuery, Request}
 
 class JdbcBrowserPersistenceSpec extends BrowserPersistenceConformance {
   private given Effect[Future]              = new Effect.FutureEffect
@@ -206,6 +214,120 @@ class JdbcBrowserPersistenceSpec extends BrowserPersistenceConformance {
     val identity = accepted(await(provider.capture(binding, None, activate = false)))
     accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existing)))
   }
+
+  "The JDBC exclusive browser coordinator" should "retain ordinary reconnects and require an authorized baseline after credential delivery" in Using
+    .resource(new Fixture) { db =>
+      val origin = "https://app.example"
+      val freshPages = new AtomicInteger()
+      def coordinator(provider: JdbcBrowserPersistence[Future, String]) = new BrowserAuthentication[Future, String, String](
+        provider,
+        BrowserPresentation(
+          () => { freshPages.incrementAndGet(); "fresh" },
+          (page, principal) => page != "recovery codes" || principal.nonEmpty,
+          (page, principal, _) => if (principal.nonEmpty) "recovery codes" else page
+        ),
+        BrowserConfiguration(provider.scope, Set(origin)),
+        clock = () => db.clock.get()
+      )
+      val browser = coordinator(db.persistence)
+      val base = SpoonbillServiceConfig[Future, String, Any](
+        stateLoader = StateLoader.default("fresh"),
+        document = page => Html(body(div(page)))
+      )
+      val configured = browser.configure(base)
+      val access = configured.sessionAccessControl.get
+      def owner(): ConnectionId = ConnectionId.fromUuid(UUID.randomUUID())
+      def request(token: Option[String] = None): HttpRequest[Future] = {
+        val cookies = Seq(browser.configuration.bindingCookieName + "=" + binding) ++
+          token.toSeq.map(browser.configuration.sessionCookieName + "=" + _)
+        Request(Request.Method.Get, PathAndQuery.Root, Seq("Origin" -> origin), None,
+          Stream.empty[Future, Bytes], cookies.mkString("; "))
+      }
+      def manager = await(configured.stateStorage.get(qsid.deviceId, qsid.sessionId))
+      def invocation(connection: ConnectionId): InvocationBinding =
+        new InvocationBinding(InvocationId.fromUuid(UUID.randomUUID()), connection, expectedAuthority = Some(browser.authority))
+      def context(connection: ConnectionId): PublicActionContext = {
+        val captured = Promise[PublicActionContext]()
+        val action = new Actions[Future, String, String].public(
+          accepted(ActionName.parse("test.jdbc-reconnect")), InputSchema.empty, PublicPolicy.allow[Future, Unit]
+        ) { (_, context) =>
+          captured.success(context)
+          Future.successful(UiOutcome.unchanged[String])
+        }
+        await(ActionDispatcher.public(action, Vector.empty, invocation(connection))) match {
+          case InvocationResult.Completed(UiOutcome.Updated(_)) => ()
+          case other => fail(s"The public action did not dispatch: $other")
+        }
+        await(captured.future)
+      }
+      try {
+        db.persistence.capabilities.ownership shouldBe BrowserOwnership.ExclusiveScope
+        await(configured.stateStorage.create(qsid.deviceId, qsid.sessionId, "fresh"))
+        val first = await(access.open(qsid, request(), owner()))
+        first.ownershipEpoch shouldBe None
+        val anonymous = manager
+        val child = Id("1_2")
+        await(anonymous.write(Id.TopLevel, "anonymous setup with an extra error banner"))
+        await(anonymous.write(child, "anonymous component"))
+        await(first.close())
+        val anonymousOwner = owner()
+        val sameAnonymous = await(access.resume(qsid, request(), anonymousOwner).get)
+        sameAnonymous.ownershipEpoch shouldBe None
+        await(manager.read[String](Id.TopLevel)) shouldBe Some("anonymous setup with an extra error banner")
+        await(manager.read[String](child)) shouldBe Some("anonymous component")
+        freshPages.get() shouldBe 0
+
+        val ceremony = accepted(await(browser.begin(context(anonymousOwner))))
+        val receipt = accepted(await(db.prepare(ceremony)))
+        browser.complete(receipt) shouldBe UiOutcome.CommitAuthentication(receipt.completionId)
+        val credential = await(configured.authenticationCompletion.get.deliver(receipt.completionId, binding)).get
+        await(browser.authority.resolve(invocation(anonymousOwner))) shouldBe Left(AccessDenied.Unauthenticated)
+        val staleManager = manager
+        await(sameAnonymous.close())
+        val authenticatedOwner = owner()
+        val authenticated = await(access.resume(qsid, request(Some(credential.value)), authenticatedOwner).get)
+        val activeView = accepted(await(browser.currentView(context(authenticatedOwner))))
+        authenticated.ownershipEpoch shouldBe Some(activeView.fence.epoch)
+        authenticated.viewSnapshots shouldBe None
+        await(manager.read[String](Id.TopLevel)) shouldBe Some("fresh")
+        await(manager.read[String](child)) shouldBe None
+        await(authenticated.connected("fresh")) shouldBe "recovery codes"
+        await(authenticated.authorize("recovery codes"))
+        await(browser.authority.resolve(invocation(authenticatedOwner))) shouldBe Right("subject")
+        intercept[BoundedPresentationStore.Rejected](await(staleManager.write(child, "late anonymous component")))
+        freshPages.get() shouldBe 1
+
+        // No client baseline has been acknowledged before this socket closes.
+        await(manager.write(Id.TopLevel, "recovery codes"))
+        await(manager.write(child, "authenticated component"))
+        await(authenticated.close())
+        val resumed = await(access.resume(qsid, request(Some(credential.value)), owner()).get)
+        resumed.ownershipEpoch should not be empty
+        resumed.ownershipEpoch.get.toLong should be > authenticated.ownershipEpoch.get.toLong
+        await(manager.read[String](Id.TopLevel)) shouldBe Some("recovery codes")
+        await(manager.read[String](child)) shouldBe Some("authenticated component")
+        await(resumed.authorize("recovery codes"))
+        freshPages.get() shouldBe 1
+        await(resumed.close())
+
+        await(browser.close())
+        val restarted = coordinator(db.fresh())
+        try {
+          val nextConfig = restarted.configure(base)
+          val nextAccess = nextConfig.sessionAccessControl.get
+          val next = await(nextAccess.resume(qsid, request(Some(credential.value)), owner()).get)
+          next.ownershipEpoch should not be empty
+          next.ownershipEpoch.get.toLong should be > resumed.ownershipEpoch.get.toLong
+          val nextManager = await(nextConfig.stateStorage.get(qsid.deviceId, qsid.sessionId))
+          await(nextManager.read[String](Id.TopLevel)) shouldBe Some("fresh")
+          await(nextManager.read[String](child)) shouldBe None
+          await(next.connected("fresh")) shouldBe "recovery codes"
+          await(next.authorize("recovery codes"))
+          freshPages.get() shouldBe 2
+          await(next.close())
+        } finally await(restarted.close())
+      } finally await(browser.close())
+    }
 
   "The JDBC browser provider" should "recover a committed attempt after restart without creating another host session" in Using
     .resource(new Fixture) { db =>

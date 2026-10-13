@@ -62,6 +62,15 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --comm
   bash scripts/test-zio-http-browser-auth.sh
 ```
 
+The fixture submits an invalid password before the valid one, inserting an error
+banner before the setup controls. It checks that the authentication reconnect
+receives a full view reset before patches/readiness, that all old anonymous
+controls are gone when `SpoonbillReady` fires, and that sensitive disclosure works.
+A further same-identity reconnect must preserve authorized server presentation
+and support another disclosure before both navigation modes are exercised.
+Coordinator tests separately cover the same reset requirement with the real
+JDBC exclusive provider, including restart and retained presentation.
+
 Browsers may open new connections, so the strict same-connection proof is the
 raw-socket `spoonbill.zio.http.ZioHttpKeepAliveSpec` suite.
 
