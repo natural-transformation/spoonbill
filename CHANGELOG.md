@@ -1,5 +1,23 @@
 # Changelog
 
+## 5.0.1 — 2026-10-13
+
+- `spoonbill-zio-http` now uses ZIO HTTP **3.11.6** (from 3.11.4). ZIO 2 core,
+  streams and test libraries stay at **2.1.26**; the legacy `spoonbill-zio` and
+  `spoonbill-zio-streams` adapters stay on ZIO **1.0.18**.
+- Fixed: ordinary HTTP responses with a known length of zero (for example the
+  204/403/303 authentication completion, rejection and logout responses) no
+  longer stall the next request on a kept-alive ZIO HTTP connection. ZIO HTTP
+  3.11.4 and 3.11.6 never complete a streamed body declared as zero bytes; the
+  adapter now sends `Body.empty` and cancels the unused response stream, so
+  resource-owning streams are released. Status, headers, chunked and nonempty
+  responses, and WebSocket upgrades are unchanged.
+- The ZIO HTTP example now depends on the ZIO 2 adapter instead of the legacy
+  ZIO 1 adapter.
+
+Consumers that added their own zero-length `Body.empty` middleware as a
+workaround can remove it after validating against this release.
+
 ## 5.0.0 — 2026-10-11
 
 This is a breaking release. Update all modules together and recompile consumers
