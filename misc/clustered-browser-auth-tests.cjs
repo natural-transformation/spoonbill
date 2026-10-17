@@ -18,6 +18,10 @@ assert.ok(classpath.startsWith('/') && !classpath.includes('\n'), 'Expected one 
 const database = new URL(process.env.SPOONBILL_JDBC_TEST_URL.replace(/^jdbc:/, ''));
 assert.ok(['localhost', '127.0.0.1', '::1', '[::1]'].includes(database.hostname), 'Disposable loopback database required');
 const engines = (process.env.SPOONBILL_AUTH_ENGINES ?? 'chromium,webkit').split(',');
+const scenarios = (process.env.SPOONBILL_CLUSTER_SCENARIOS ?? 'anonymous-peer,chained-replacement,cluster').split(',');
+assert.ok(scenarios.length && new Set(scenarios).size === scenarios.length &&
+  scenarios.every(scenario => ['anonymous-peer', 'chained-replacement', 'cluster'].includes(scenario)),
+  'Select anonymous-peer, chained-replacement, cluster, or a comma-separated combination');
 assert.ok(engines.length && new Set(engines).size === engines.length &&
   engines.every(engine => ['chromium', 'webkit'].includes(engine)), 'Select chromium, webkit, or both');
 const browsers = require(process.env.PLAYWRIGHT_DRIVER_PATH);
@@ -50,7 +54,7 @@ async function stop(child, signal = 'SIGTERM') {
     if (signal === 'SIGTERM') throw error;
   } finally { owned.delete(child); }
 }
-async function exercise(engine) {
+async function exercise(engine, scenario) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'spoonbill-cluster-browser-'));
   const schema = 'cluster_' + randomUUID().replaceAll('-', '');
   const ports = {a: await freePort(), b: await freePort()};
@@ -132,35 +136,39 @@ async function exercise(engine) {
     browser = await browsers[engine].launch({headless: true, env, timeout: 15000});
     context = await browser.newContext();
     page = await context.newPage();
-    page.setDefaultTimeout(25000); page.setDefaultNavigationTimeout(25000);
-    page.on('pageerror', error => errors.push(error.name));
     let socketCount = 0;
-    page.on('response', response => {
-      const path = new URL(response.url()).pathname;
-      requests.push({phase, method: response.request().method(), status: response.status(),
-        kind: path === '/auth/complete' ? 'complete' : path === '/auth/logout' ? 'logout' :
-          path.includes('/form-data') ? 'form-data' : 'resource'});
-      if (requests.length > 32) requests.shift();
-    });
-    page.on('websocket', socket => {
-      socketCount++;
-      const observation = {phase, url: socket.url(), ready: false, closed: false, frames: []};
-      sockets.push(observation);
-      function frame(direction, event) {
-        try {
-          const text = Buffer.isBuffer(event.payload) ? event.payload.toString('utf8') : event.payload;
-          const code = JSON.parse(text)[0];
-          if (Number.isInteger(code)) {
-            observation.frames.push({direction, code});
-            if (observation.frames.length > 32) observation.frames.shift();
-          }
-          if (direction === 'received' && code === 21) observation.ready = true;
-        } catch (_) { /* Observe only the documented VIEW_READY marker. */ }
-      }
-      socket.on('framereceived', event => frame('received', event));
-      socket.on('framesent', event => frame('sent', event));
-      socket.on('close', () => { observation.closed = true; });
-    });
+    function observePage(page) {
+      page.setDefaultTimeout(25000); page.setDefaultNavigationTimeout(25000);
+      page.on('pageerror', error => errors.push(error.name));
+      page.on('response', response => {
+        const path = new URL(response.url()).pathname;
+        requests.push({phase, method: response.request().method(), status: response.status(),
+          kind: path === '/auth/complete' ? 'complete' : path === '/auth/logout' ? 'logout' :
+            path === '/auth/recover' ? 'recover' :
+            path.includes('/form-data') ? 'form-data' : 'resource'});
+        if (requests.length > 32) requests.shift();
+      });
+      page.on('websocket', socket => {
+        socketCount++;
+        const observation = {phase, url: socket.url(), ready: false, closed: false, frames: []};
+        sockets.push(observation);
+        function frame(direction, event) {
+          try {
+            const text = Buffer.isBuffer(event.payload) ? event.payload.toString('utf8') : event.payload;
+            const code = JSON.parse(text)[0];
+            if (Number.isInteger(code)) {
+              observation.frames.push({direction, code});
+              if (observation.frames.length > 32) observation.frames.shift();
+            }
+            if (direction === 'received' && code === 21) observation.ready = true;
+          } catch (_) { /* Observe only the documented VIEW_READY marker. */ }
+        }
+        socket.on('framereceived', event => frame('received', event));
+        socket.on('framesent', event => frame('sent', event));
+        socket.on('close', () => { observation.closed = true; });
+      });
+    }
+    observePage(page);
     async function ready(after = 0) {
       await until(() => socketCount > after && sockets.at(-1).ready && !sockets.at(-1).closed,
         'Browser did not reach VIEW_READY on a new physical socket');
@@ -179,6 +187,178 @@ async function exercise(engine) {
       await page.getByRole('button', {name: 'Save draft', exact: true}).click();
       await until(async () => await page.locator('#saved-draft').textContent() === 'Saved draft: ' + draft,
         'The server did not acknowledge the saved draft');
+    }
+    if (scenario === 'anonymous-peer') {
+      for (const [httpNode, socketNode, routeName] of [
+        ['a', 'b', 'login'], ['b', 'a', 'login'], ['a', 'b', 'public'], ['a', 'a', 'login'],
+      ]) {
+        phase = `anonymous-${routeName}-http-${httpNode}-websocket-${socketNode}`;
+        routeTo(httpNode);
+        const continuation = 'public-return-' + routeName;
+        const requested = origin + '/' + routeName + '?continue=' + continuation;
+        const heading = routeName === 'login' ? 'Public login page' : 'Public information page';
+        let releaseBundle;
+        const bundleHeld = new Promise(resolve => { releaseBundle = resolve; });
+        let intercepted = false;
+        await page.route(origin + '/static/spoonbill-client.min.js', async route => {
+          const response = await route.fetch();
+          intercepted = true;
+          await bundleHeld;
+          await route.fulfill({response});
+        });
+        const before = socketCount;
+        try {
+          const response = await page.goto(requested, {waitUntil: 'commit'});
+          assert.equal(response.status(), 200);
+          await page.getByRole('heading', {name: heading, exact: true}).waitFor({state: 'attached'});
+          await page.locator('#public-route-form').waitFor({state: 'attached'});
+          assert.equal(await page.locator('input[name="continuation"]').inputValue(), continuation);
+          assert.equal(socketCount, before, 'The HTTP presentation must be observed before any WebSocket');
+          await until(() => intercepted, 'The real browser bundle was not intercepted');
+          routeTo(socketNode);
+        } finally { releaseBundle(); }
+        await ready(before);
+        await page.unroute(origin + '/static/spoonbill-client.min.js');
+        await page.getByRole('heading', {name: heading, exact: true}).waitFor();
+        assert.equal(new URL(page.url()).pathname, '/' + routeName);
+        assert.equal(new URL(page.url()).searchParams.get('continue'), continuation);
+        assert.equal(await page.locator('input[name="continuation"]').inputValue(), continuation);
+        const changed = continuation + '-edited';
+        await page.locator('input[name="continuation"]').fill(changed);
+        await page.getByRole('button', {name: 'Keep continuation', exact: true}).click();
+        await page.getByText('Public continuation accepted.', {exact: true}).waitFor();
+        const reconnect = socketCount;
+        routeTo(socketNode);
+        await ready(reconnect);
+        assert.equal(await page.locator('input[name="continuation"]').inputValue(), changed,
+          'Retained anonymous reconnect must keep presentation edits');
+        assert.equal(new URL(page.url()).searchParams.get('continue'), changed);
+        if (httpNode === 'a' && socketNode === 'b' && routeName === 'login') {
+          phase = 'registered-anonymous-local-presentation-loss';
+          const lost = socketCount;
+          const originalView = new URL(sockets.at(-1).url).pathname;
+          await stop(b, 'SIGKILL'); b = undefined;
+          b = await start('b');
+          await ready(lost);
+          assert.equal(new URL(sockets.at(-1).url).pathname, originalView);
+          await page.getByRole('heading', {name: heading, exact: true}).waitFor();
+          assert.equal(await page.locator('input[name="continuation"]').inputValue(), changed);
+          assert.equal(new URL(page.url()).searchParams.get('continue'), changed);
+        }
+        if (routeName === 'login') {
+          await page.getByRole('button', {name: 'Begin sign-in', exact: true}).click();
+          await page.locator('input[name="username"]').waitFor();
+          await page.locator('input[name="password"]').waitFor();
+          await page.locator('input[name="username"]').fill('alice');
+          await page.locator('input[name="password"]').fill('password');
+          const signingIn = socketCount;
+          await page.getByRole('button', {name: 'Sign in', exact: true}).click();
+          await ready(signingIn);
+          await page.getByText('Authenticated account: alice', {exact: true}).waitFor();
+          assert.ok((await context.cookies()).find(cookie => cookie.name === 'spoonbill_session')?.httpOnly);
+        }
+        await page.close();
+        await context.close();
+        context = await browser.newContext();
+        page = await context.newPage();
+        observePage(page);
+      }
+      assert.deepEqual(errors, []);
+      console.log(JSON.stringify({engine, scenario, separateJvms: true, requestedPublicRoutesPreserved: true,
+        bothNodeOrders: true, sameNodeInitial: true, retainedAnonymousReconnect: true,
+        continuationAndUrlPreserved: true, typedActionsAfterReady: true}));
+      return;
+    }
+    if (scenario === 'chained-replacement') {
+      async function effects() {
+        return JSON.parse(await sql(`SELECT json_build_object(
+          'sessions',(SELECT count(*) FROM ${schema}.example_session),
+          'proofs',(SELECT count(*) FROM ${schema}.example_consumed_proof),
+          'mutations',(SELECT count(*) FROM ${schema}.example_audit WHERE kind='regenerate-recovery'),
+          'acknowledged',(SELECT count(*) FROM ${schema}.example_session WHERE acknowledged),
+          'history',(SELECT count(*) FROM ${schema}.spoonbill_browser_replacement WHERE successor_session_id IS NOT NULL))`));
+      }
+      async function sessionCookie() {
+        return (await context.cookies()).find(cookie => cookie.name === 'spoonbill_session');
+      }
+      async function activated(before, predecessor, expected) {
+        await ready(before);
+        await page.getByText('Authenticated account: alice', {exact: true}).waitFor();
+        const successor = await sessionCookie();
+        assert.ok(successor?.httpOnly && successor.value !== predecessor?.value,
+          'Activation must replace the HttpOnly session cookie');
+        await until(async () => (await effects()).acknowledged === expected,
+          'The successor must receive authoritative host acknowledgment');
+      }
+      phase = 'chain-initial-authentication';
+      assert.equal((await page.goto(origin + '/')).status(), 200);
+      await ready();
+      await page.getByRole('button', {name: 'Begin sign-in', exact: true}).click();
+      await page.locator('input[name="username"]').fill('alice');
+      await page.locator('input[name="password"]').fill('password');
+      let before = socketCount;
+      await page.getByRole('button', {name: 'Sign in', exact: true}).click();
+      await activated(before, undefined, 1);
+      for (let replacement = 1; replacement <= 3; replacement++) {
+        phase = `replacement-${replacement}-commit`;
+        const initial = await effects();
+        const predecessorCookies = await context.cookies();
+        const predecessor = await sessionCookie();
+        await page.locator('select[name="securityChange"]').selectOption('regenerate-recovery');
+        await page.locator('input[name="replacementPassword"]').fill('password');
+        before = socketCount;
+        if (replacement > 1) dropResponses = true;
+        await page.getByRole('button', {name: 'Apply security change', exact: true}).click();
+        await until(async () => (await effects()).mutations === initial.mutations + 1,
+          'The replacement transaction did not commit');
+        const committedSuccessor = await sql(`SELECT id FROM ${schema}.example_session WHERE enabled`);
+        assert.match(committedSuccessor, /^[0-9a-f-]{36}$/);
+        if (replacement > 1) {
+          assert.equal((await sessionCookie()).value, predecessor.value,
+            'Response loss must retain the actual predecessor cookie');
+          const committed = await effects();
+          assert.equal(committed.sessions, initial.sessions + 1);
+          assert.equal(committed.history, replacement, 'Earlier replacement lineage must remain retained');
+          // Stop reconnect before probing the peer so only this raw request can discover the reservation.
+          await page.close();
+          routeTo(target === 'a' ? 'b' : 'a');
+          phase = `replacement-${replacement}-restricted-bootstrap`;
+          const bootstrap = await context.request.get(origin + '/', {maxRedirects: 0});
+          assert.equal(bootstrap.status(), 200, 'The peer must discover the pending replacement without a handle');
+          assert.equal(bootstrap.headers()['set-cookie'], undefined, 'GET discovery must not deliver credentials');
+          const html = await bootstrap.text();
+          assert.match(html, /id="spoonbill-recovery-status"/);
+          assert.match(html, /auth\/replacement-bootstrap\.js/);
+          assert.doesNotMatch(html, /Authenticated account:|public-route-form|spoonbill-client\.min\.js/);
+          assert.deepEqual(await effects(), committed, 'Raw bootstrap GET must not mutate or activate the session');
+          phase = `replacement-${replacement}-checked-recovery`;
+          page = await context.newPage();
+          observePage(page);
+          before = socketCount;
+          await page.goto(origin + '/');
+        }
+        await activated(before, predecessor, initial.acknowledged + 1);
+        if (replacement > 1) assert.ok(requests.some(request => request.phase === phase &&
+          request.kind === 'recover' && request.method === 'POST' && request.status === 204),
+          'The restricted bootstrap must complete a checked recovery POST');
+        assert.equal(await sql(`SELECT current_session_id FROM ${schema}.spoonbill_browser_slot`), committedSuccessor,
+          'Checked recovery must activate the exact successor committed before response loss');
+        const completed = await effects();
+        assert.equal(completed.sessions, initial.sessions + 1, 'Recovery must reuse the committed successor');
+        assert.equal(completed.proofs, initial.proofs + 1, 'Recovery must consume the replacement proof only once');
+        assert.equal(completed.mutations, initial.mutations + 1, 'Recovery must not replay the host mutation');
+        assert.equal(completed.history, replacement, 'Do not prune lineage to make discovery unambiguous');
+        const obsolete = await browser.newContext();
+        try {
+          await obsolete.addCookies(predecessorCookies);
+          assert.equal((await obsolete.request.get(origin + '/protected')).status(), 403);
+        } finally { await obsolete.close(); }
+      }
+      assert.deepEqual(errors, []);
+      console.log(JSON.stringify({engine, scenario, separateJvms: true, activatedReplacements: 3,
+        retainedHistory: true, responseLossAfterPriorActivation: true, restrictedPeerBootstrap: true,
+        checkedRecovery: true, hostAcknowledged: true, effectsNotReplayed: true, predecessorsDenied: true}));
+      return;
     }
     phase = 'http-a-first-websocket-b';
     let firstScript = true;
@@ -418,7 +598,7 @@ async function exercise(engine) {
       ]);
     } catch (_) { /* A terminated browser still has protocol metadata. */ }
     finally { clearTimeout(timer); }
-    console.error(JSON.stringify({kind: 'clustered-browser-failure', engine, phase, error: error.message,
+    console.error(JSON.stringify({kind: 'clustered-browser-failure', engine, scenario, phase, error: error.message,
       ui, pageErrors: errors, sockets: sockets.slice(-8).map(({url, ...socket}) => socket), requests}));
     for (const node of ['a', 'b']) {
       const file = path.join(directory, node + '.log');
@@ -440,8 +620,8 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   process.exit(signal === 'SIGINT' ? 130 : 143);
 });
 (async () => {
-  for (const engine of engines) await exercise(engine);
-  console.log(`PASS: clustered browser authentication in ${engines.join(', ')}`);
+  for (const engine of engines) for (const scenario of scenarios) await exercise(engine, scenario);
+  console.log(`PASS: clustered browser authentication (${scenarios.join(', ')}) in ${engines.join(', ')}`);
 })().catch(error => {
   for (const child of owned) { child.kill('SIGCONT'); child.kill('SIGKILL'); }
   console.error(error.message); process.exitCode = 1;

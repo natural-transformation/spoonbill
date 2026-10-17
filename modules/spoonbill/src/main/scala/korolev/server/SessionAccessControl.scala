@@ -41,6 +41,12 @@ trait SessionOutputAdmission[F[_], S] {
 }
 
 trait SessionGuard[F[_], S] {
+  // This acquisition created a placeholder instead of adopting HTTP or retained
+  // presentation. Reload its application route independently of durable snapshots.
+  private[spoonbill] def requiresApplicationState: Boolean = false
+  // A failed reconstruction must not turn its placeholder into retained state.
+  private[spoonbill] def applicationStateInitialized: Option[F[Unit]] = None
+
   private[spoonbill] def replacementCompletion
     : Option[(spoonbill.auth.CommittedReplacement, spoonbill.action.InvocationBinding) => F[
       spoonbill.auth.BrowserReplacementControl

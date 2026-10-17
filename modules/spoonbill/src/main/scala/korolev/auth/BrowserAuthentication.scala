@@ -197,15 +197,16 @@ final class BrowserAuthentication[F[_], S, P](
           }.flatMap(_ => store.storage.exists(qsid.deviceId, qsid.sessionId)).flatMap { exists =>
             if (!exists || changed) {
               // A changed identity cannot inherit any previous presentation nodes.
-              if (exists) denied[Unit]
+              if (exists) denied[Boolean]
               else
                 F.delay(presentation.fresh())
-                  .flatMap(state => store.bootstrap(qsid, state, resetBrowser = true).map(_ => ()))
-            } else F.unit
+                  .flatMap(state => store.bootstrap(qsid, state, resetBrowser = true).map(_ => true))
+            } else F.pure(false)
           }
           prepare
-            .flatMap(_ => store.claim(qsid, view.fence))
-            .flatMap { lease =>
+            .flatMap(reconstructed => store.claim(qsid, view.fence).map(lease => (reconstructed, lease)))
+            .flatMap { case (reconstructed, lease) =>
+              val applicationInitialized = new AtomicBoolean(!reconstructed)
               value.lease = Some(lease)
               old
                 .fold(F.unit)(previous => detach(previous))
@@ -216,6 +217,9 @@ final class BrowserAuthentication[F[_], S, P](
                 }
                 .map { _ =>
                   val guard = new SessionGuard[F, S] {
+                    override private[spoonbill] val requiresApplicationState = reconstructed
+                    override private[spoonbill] def applicationStateInitialized =
+                      Some(F.delay { applicationInitialized.set(true); () })
                     override private[spoonbill] val replacementCompletion = replacementSupport.map {
                       provider => (handoff: CommittedReplacement, binding: InvocationBinding) =>
                         withView(owner) { actual =>
@@ -282,7 +286,7 @@ final class BrowserAuthentication[F[_], S, P](
                         gate.cleanup {
                           owned.get(owner) match {
                             case Some(current) if current eq value =>
-                              detach(value, retain = !value.retiring)
+                              detach(value, retain = !value.retiring && applicationInitialized.get())
                             case _ => F.unit
                           }
                         }.recoverF { case error => F.delay(released.set(false)).flatMap(_ => F.fail(error)) }

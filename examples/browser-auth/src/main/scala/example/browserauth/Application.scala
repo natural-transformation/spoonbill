@@ -41,6 +41,13 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     .zip(InputSchema.secret(field("replacementPassword"), 256))
   private val onRejected: ActionRejection => Page => Page = _ =>
     _.copy(message = "This request was rejected. Recover this attempt or begin a new sign-in.")
+  private val continuePublic = actions.public(
+    name("example.continue-public"),
+    InputSchema.text(field("continuation"), 256),
+    PublicPolicy.allow[F, String]
+  ) { (continuation, _) =>
+    F.pure(UiOutcome.update[Page](_.copy(continuation = continuation, message = "Public continuation accepted.")))
+  }
   private def result(value: SignIn): UiOutcome[Page] = value match {
     case SignIn.Completed(receipt) => browser.complete(receipt)
     case SignIn.Challenge(id, reference) =>
@@ -230,7 +237,22 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
   private def document(page: Page): Document.Node[Binding] = Html(
     head(title("Spoonbill browser authentication")),
     body(
-      h1(if (page.protectedPage) "Protected page" else "Browser authentication"),
+      h1(
+        if (page.protectedPage) "Protected page"
+        else if (page.publicRoute == "login") "Public login page"
+        else if (page.publicRoute == "public") "Public information page"
+        else "Browser authentication"
+      ),
+      Option
+        .when(page.publicRoute.nonEmpty)(
+          form(
+            id := "public-route-form",
+            ActionForms.onSubmit[F, Page, Any, String](continuePublic, onRejected),
+            input(avocet.dsl.html.name := "continuation", value := page.continuation),
+            button("Keep continuation")
+          )
+        )
+        .toSeq,
       p(page.message),
       page.account match {
         case None => signIn(page)
@@ -298,6 +320,12 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
               Page(
                 account = current.map(_.name),
                 protectedPage = request.pq.asPath == Root / "protected",
+                publicRoute = request.pq.asPath match {
+                  case Root / "login"  => "login"
+                  case Root / "public" => "public"
+                  case _               => ""
+                },
+                continuation = request.pq.param("continue").getOrElse(""),
                 counter = count
               )
             }
@@ -306,10 +334,26 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
       },
       document = document,
       router = Router[F, Page](
-        fromState = { case page => if (page.protectedPage) Root / "protected" else Root },
+        fromState = { case page =>
+          val path =
+            if (page.protectedPage) Root / "protected"
+            else if (page.publicRoute.nonEmpty) Root / page.publicRoute
+            else Root
+          if (page.continuation.nonEmpty) path.withParam("continue", page.continuation) else path
+        },
         toState = {
-          case Root               => page => F.pure(page.copy(protectedPage = false))
-          case Root / "protected" => page => F.pure(page.copy(protectedPage = true))
+          case Root => page => F.pure(page.copy(protectedPage = false, publicRoute = "", continuation = ""))
+          case Root / "protected" =>
+            page => F.pure(page.copy(protectedPage = true, publicRoute = "", continuation = ""))
+          case pq if pq.asPath == Root / "login" || pq.asPath == Root / "public" =>
+            page =>
+              F.pure(
+                page.copy(
+                  protectedPage = false,
+                  publicRoute = if (pq.asPath == Root / "login") "login" else "public",
+                  continuation = pq.param("continue").getOrElse("")
+                )
+              )
         }
       )
     )

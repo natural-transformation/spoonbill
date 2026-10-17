@@ -13,6 +13,8 @@ final case class Page(
   challenge: Option[String] = None,
   recoveryPending: Boolean = false,
   protectedPage: Boolean = false,
+  publicRoute: String = "",
+  continuation: String = "",
   counter: Int = 0,
   mutationUnresolved: Boolean = false,
   draft: String = "",

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Two independent JVMs, one disposable PostgreSQL database and real browsers.
+# SPOONBILL_CLUSTER_SCENARIOS selects anonymous-peer, chained-replacement, cluster,
+# or a comma-separated combination (default: all). Each runs with a fresh database schema.
 set -euo pipefail
 if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   printf '%s\n' 'Run through the repository nix develop environment.' >&2
@@ -35,4 +37,4 @@ export SPOONBILL_CLUSTER_CLASSPATH_FILE="$test_root/classpath"
 export SPOONBILL_AUTH_JAVA="$(command -v java)"
 export SPOONBILL_AUTH_PSQL="$(command -v psql)"
 nix develop .#browser --no-write-lock-file --command \
-  timeout --kill-after=15s 350s node misc/clustered-browser-auth-tests.cjs
+  timeout --kill-after=15s 600s node misc/clustered-browser-auth-tests.cjs
