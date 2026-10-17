@@ -1,12 +1,12 @@
 package spoonbill.server.internal.services
 
+import avocet.{Id, RenderContext, StatefulRenderContext, XmlNs}
 import spoonbill.Context.Binding
 import spoonbill.Qsid
 import spoonbill.effect.Effect
 import spoonbill.server.SpoonbillServiceConfig
 import spoonbill.server.internal.Html5RenderContext
 import spoonbill.server.internal.services.PageService.UpgradeHeadRenderContextProxy
-import avocet.{Id, RenderContext, StatefulRenderContext, XmlNs}
 
 final class PageService[F[_]: Effect, S, M](config: SpoonbillServiceConfig[F, S, M]) {
 
@@ -30,13 +30,15 @@ final class PageService[F[_]: Effect, S, M](config: SpoonbillServiceConfig[F, S,
           s"{interval:$interval}"
       }
     }
-    val presetIds = if (config.presetIds) ",kid:true" else ""
-    val wsFlag = if (config.webSocketEnabled) "" else ",ws:false"
-    val wsProtocolsFlag = if (config.webSocketProtocolsEnabled) "" else ",wsp:false"
+    val presetIds         = if (config.presetIds) ",kid:true" else ""
+    val wsFlag            = if (config.webSocketEnabled) "" else ",ws:false"
+    val wsProtocolsFlag   = if (config.webSocketProtocolsEnabled) "" else ",wsp:false"
     val wsCompressionFlag = if (config.webSocketCompressionEnabled) ",wsc:true" else ""
-    val authFlag = if (config.sessionAccessControl.nonEmpty) ",auth:true" else ""
+    val authFlag          = if (config.sessionAccessControl.nonEmpty) ",auth:true" else ""
+    val replacementFlag =
+      if (config.authenticationCompletion.exists(_.replacement.nonEmpty)) ",replacement:true" else ""
     val kfg =
-      s"window['kfg']={sid:'${qsid.sessionId}',r:'${(rp / "").mkString}',clw:'$clw',heartbeat:$heartbeat$presetIds$wsFlag$wsProtocolsFlag$wsCompressionFlag$authFlag}"
+      s"window['kfg']={sid:'${qsid.sessionId}',r:'${(rp / "").mkString}',clw:'$clw',heartbeat:$heartbeat$presetIds$wsFlag$wsProtocolsFlag$wsCompressionFlag$authFlag$replacementFlag}"
 
     rc.openNode(XmlNs.html, "script")
     rc.addTextNode(kfg)

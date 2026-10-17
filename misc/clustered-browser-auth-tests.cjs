@@ -339,6 +339,49 @@ async function exercise(engine) {
     } finally { if (rejected) await rejected.close(); await extra.close(); }
     await until(async () => await activeViews() === 1, 'Closing a current view must release its active capacity');
 
+    phase = 'replacement-commit-loss-cross-node-recovery';
+    const replacementBefore = Number(await sql(`SELECT count(*) FROM ${schema}.example_audit e
+      JOIN ${schema}.example_account a ON a.id=e.subject WHERE a.name='alice' AND e.kind='regenerate-recovery'`));
+    const predecessorCookies = await context.cookies();
+    const predecessorCookie = predecessorCookies.find(cookie => cookie.name === 'spoonbill_session');
+    await page.locator('select[name="securityChange"]').selectOption('regenerate-recovery');
+    await page.locator('input[name="replacementPassword"]').fill('password');
+    dropResponses = true;
+    await page.getByRole('button', {name: 'Apply security change', exact: true}).click();
+    await until(async () => Number(await sql(`SELECT count(*) FROM ${schema}.example_audit e
+      JOIN ${schema}.example_account a ON a.id=e.subject WHERE a.name='alice' AND e.kind='regenerate-recovery'`)) === replacementBefore + 1,
+      'Replacement host mutation did not commit before transport loss');
+    assert.ok((await context.cookies()).find(cookie => cookie.name === 'spoonbill_session')?.value === predecessorCookie.value,
+      'Dropping the fixed command must leave the browser holding its predecessor cookie');
+    before = socketCount;
+    await stop(b, 'SIGKILL'); b = null;
+    routeTo('a');
+    await ready(before);
+    await page.getByText('Authenticated account: alice', {exact: true}).waitFor();
+    const successorCookie = (await context.cookies()).find(cookie => cookie.name === 'spoonbill_session');
+    assert.ok(successorCookie?.httpOnly && successorCookie.value !== predecessorCookie.value,
+      'Other-node recovery must install and activate the original successor');
+    const obsolete = await browser.newContext();
+    try {
+      await obsolete.addCookies(predecessorCookies);
+      assert.equal((await obsolete.request.get(origin + '/protected')).status(), 403,
+        'The committed predecessor cannot regain protected HTTP authority');
+    } finally { await obsolete.close(); }
+    assert.equal(Number(await sql(`SELECT count(*) FROM ${schema}.example_audit e
+      JOIN ${schema}.example_account a ON a.id=e.subject WHERE a.name='alice' AND e.kind='regenerate-recovery'`)), replacementBefore + 1,
+      'Recovery must not replay the security mutation');
+    await page.getByRole('button', {name: 'Reveal recovery codes once', exact: true}).click();
+    await page.getByText('Recovery codes disclosed once. Store them safely.', {exact: true}).waitFor();
+    await page.getByRole('button', {name: 'Reveal recovery codes once', exact: true}).click();
+    await page.getByText('No unused recovery codes remain. Regenerate to obtain new codes.', {exact: true}).waitFor();
+    assert.equal(Number(await sql(`SELECT count(*) FROM ${schema}.example_recovery_result r
+      JOIN ${schema}.example_session s ON s.id=r.session JOIN ${schema}.example_account a ON a.id=s.subject WHERE a.name='alice'`)), 0);
+    b = await start('b');
+    before = socketCount; routeTo('b');
+    await ready(before);
+    assert.ok((await context.cookies()).find(cookie => cookie.name === 'spoonbill_session')?.value === successorCookie.value,
+      'A compatible restarted node must preserve the activated successor');
+
     phase = 'revocation-during-takeover';
     await sql(`UPDATE ${schema}.example_session SET enabled=FALSE WHERE subject=(SELECT id FROM ${schema}.example_account WHERE name='alice')`);
     before = socketCount; routeTo('a');
@@ -361,6 +404,7 @@ async function exercise(engine) {
       activeViewCapacityRefused: true, revokedTakeoverDenied: true,
       mutuallyReadableSnapshotVersions: [1, 2],
       delayedOldOwnerCleanup: true, gracefulHandoff: true, abruptLoss: true,
+      replacementCommitLossCrossNodeRecovery: true, predecessorDenied: true, successorOneUseDisclosure: true,
       acknowledgedDraftRestored: true, lostBusinessResponseNotReplayed: true, currentSessionRetained: true, logout: true}));
   } catch (error) {
     let ui = {unavailable: true}, timer;

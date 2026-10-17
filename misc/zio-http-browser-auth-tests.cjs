@@ -1,5 +1,6 @@
 // ZIO HTTP transport check: real cookie delivery, authenticated reconnect,
-// sensitive disclosure and then navigation in the same browser context.
+// authenticated replacement, sensitive disclosure and then navigation in the
+// same browser context, including lost-response bootstrap through ZIO HTTP.
 // The raw-socket ZioHttpKeepAliveSpec is the strict same-connection proof;
 // browsers may choose different connections.
 const assert = require('node:assert/strict');
@@ -29,8 +30,10 @@ async function exercise(browser, engine, first) {
   const context = await browser.newContext();
   let phase = 'create-page', page;
   const errors = [], sockets = [], responses = [];
-  const known = new Set(['/', '/dashboard', '/auth/complete']);
+  const known = new Set(['/', '/dashboard', '/auth/complete', '/auth/recover', '/auth/activate']);
   try {
+    const initialReplacements = Number(await (await context.request.get(origin + '/fixture/replacements')).text());
+    assert.ok(Number.isSafeInteger(initialReplacements) && initialReplacements >= 0);
     await context.addInitScript(() => {
       window.fixtureReadyViews = [];
       window.addEventListener('SpoonbillReady', () => {
@@ -77,11 +80,15 @@ async function exercise(browser, engine, first) {
         if ([0, 1, 3, 7].includes(frameCode(event)) && !observation.readySeen) observation.earlyUserEvents++;
       });
       socket.on('close', () => { observation.closed = true; });
-      observation.ready = socket.waitForEvent('framereceived', {predicate: event => frameCode(event) === 21, timeout: 15000})
-        .then(() => null, error => error);
+      observation.ready = new URL(socket.url()).pathname === '/auth/activate' ? Promise.resolve(null) :
+        socket.waitForEvent('framereceived', {predicate: event => frameCode(event) === 21, timeout: 15000})
+          .then(() => null, error => error);
       sockets.push(observation);
     });
-    const nextSocket = () => { const pending = page.waitForEvent('websocket'); pending.catch(() => {}); return pending; };
+    const nextSocket = () => {
+      const pending = page.waitForEvent('websocket', {predicate: socket => new URL(socket.url()).pathname.startsWith('/bridge/web-socket/')});
+      pending.catch(() => {}); return pending;
+    };
     function authorizedBaseline(socket) {
       const changes = socket.startup.filter(code => [4, 19, 20, 21].includes(code));
       assert.equal(changes[0], 19, 'Authentication reconnect must reset the DOM before patches or event readiness');
@@ -176,6 +183,105 @@ async function exercise(browser, engine, first) {
     // proving a new callback, disclosure and successful acknowledgement.
     await page.locator('#disclosure-count').getByText('Successful disclosures: 2', {exact: true}).waitFor({state: 'visible'});
 
+    phase = 'authenticated-replacement';
+    const predecessorCookies = await context.cookies();
+    const oldSensitiveHost = await page.locator('sb-secret').elementHandle();
+    const oldSocket = sockets.at(-1);
+    const replacementCompletion = page.waitForResponse(response => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === '/auth/complete');
+    replacementCompletion.catch(() => {});
+    const successorSocket = nextSocket();
+    await page.locator('#replacement-form input[name="replacement-password"]').fill('password');
+    await page.getByRole('button', {name: 'Replace session', exact: true}).click();
+    assert.equal((await replacementCompletion).status(), 204);
+    await successorSocket;
+    await ready();
+    assert.ok(oldSocket.codes.includes(18), 'Replacement must use the fixed completion command after predecessor revocation');
+    assert.equal(new URL(sockets.at(-1).url).pathname, firstView, 'Replacement must reconnect the same view');
+    authorizedBaseline(sockets.at(-1));
+    await authorizedView(false);
+    assert.equal(await oldSensitiveHost.evaluate(element => element.isConnected), false,
+      'Replacement must retire the old sensitive presentation host with its old DOM');
+    await oldSensitiveHost.dispose();
+    const successorCookie = (await context.cookies()).find(cookie => cookie.name === 'spoonbill_session');
+    assert.ok(successorCookie?.httpOnly && successorCookie.value !== session.value,
+      'Replacement must install a fresh HttpOnly credential');
+    const stale = await browser.newContext();
+    try {
+      await stale.addCookies(predecessorCookies);
+      const denied = await stale.request.get(origin + '/dashboard');
+      // ZIO HTTP currently maps service effect failures through fromThrowable
+      // (500); adapters with explicit access-denied mapping return 403.
+      assert.ok([403, 500].includes(denied.status()),
+        'The predecessor cookie must remain denied after successor activation');
+      assert.equal((await denied.text()).includes('Authenticated account: alice'), false,
+        'A denied predecessor must never receive protected application content');
+    } finally { await stale.close(); }
+    assert.equal(await (await context.request.get(origin + '/fixture/replacements')).text(), String(initialReplacements + 1),
+      'The password proof and replacement mutation must commit once');
+
+    phase = 'rolled-back-replacement-observer';
+    const beforeRollback = (await context.cookies()).find(cookie => cookie.name === 'spoonbill_session').value;
+    const rollbackSocket = sockets.at(-1);
+    const negativeResponse = page.waitForResponse(response => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === '/auth/recover' && response.request().postData()?.length === 36);
+    negativeResponse.catch(() => {});
+    const unchangedSessionSocket = nextSocket();
+    await page.locator('#rolled-back-replacement-form input[name="replacement-password"]').fill('password');
+    await page.getByRole('button', {name: 'Recover rolled-back replacement', exact: true}).click();
+    const negative = await negativeResponse;
+    assert.equal(negative.status(), 204, 'An uncertain rolled-back attempt must reach checked negative reconciliation');
+    assert.equal(negative.headers()['set-cookie'], undefined, 'Negative reconciliation must not replace the old credential');
+    await unchangedSessionSocket;
+    await ready();
+    await authorizedView(false);
+    assert.ok(rollbackSocket.codes.includes(26), 'A current predecessor must receive only the ordinary-authorized recovery instruction');
+    assert.equal((await context.cookies()).find(cookie => cookie.name === 'spoonbill_session').value, beforeRollback);
+    assert.equal(await (await context.request.get(origin + '/fixture/replacements')).text(), String(initialReplacements + 1),
+      'Negative reconciliation must not replay rolled-back host work');
+
+    phase = 'lost-replacement-observer';
+    const recoveredObserver = page.waitForResponse(response => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === '/auth/recover' && response.status() === 204);
+    recoveredObserver.catch(() => {});
+    const observerSuccessor = nextSocket();
+    await page.locator('#interrupted-replacement-form input[name="replacement-password"]').fill('password');
+    await page.getByRole('button', {name: 'Replace with lost observer', exact: true}).click();
+    await recoveredObserver;
+    await observerSuccessor;
+    await ready();
+    authorizedBaseline(sockets.at(-1));
+    await authorizedView(false);
+    assert.equal(await (await context.request.get(origin + '/fixture/replacements')).text(), String(initialReplacements + 2),
+      'A thrown observer must trigger recovery without repeating the committed mutation');
+
+    let recoveredReplacement = false;
+    if (first === 'programmatic') {
+      phase = 'lost-replacement-response';
+      let dropped = 0;
+      const dropCompletion = async route => { dropped++; await route.abort('failed'); };
+      await page.route(origin + '/auth/complete', dropCompletion);
+      const recovered = page.waitForResponse(response => response.request().method() === 'POST' &&
+        new URL(response.url()).pathname === '/auth/recover' && response.status() === 204);
+      recovered.catch(() => {});
+      const activation = page.waitForEvent('websocket', {predicate: socket => new URL(socket.url()).pathname === '/auth/activate'});
+      activation.catch(() => {});
+      const restoredApplication = nextSocket();
+      try {
+        await page.locator('#replacement-form input[name="replacement-password"]').fill('password');
+        await page.getByRole('button', {name: 'Replace session', exact: true}).click();
+        await recovered;
+        await activation;
+        await restoredApplication;
+        await ready();
+        await authorizedView(false);
+        assert.equal(dropped, 3, 'Lost delivery retries must remain bounded before framework bootstrap');
+        assert.equal(await (await context.request.get(origin + '/fixture/replacements')).text(), String(initialReplacements + 3),
+          'Recovery must not re-run the replacement mutation or consume another proof');
+        recoveredReplacement = true;
+      } finally { await page.unroute(origin + '/auth/complete', dropCompletion); }
+    }
+
     // No context reset between completion and either navigation.
     await navigate(first);
     phase = 'return-home';
@@ -187,7 +293,8 @@ async function exercise(browser, engine, first) {
     await navigate(second);
     assert.deepEqual(errors, [], `${engine}: browser runtime errors`);
     console.log(JSON.stringify({engine, order: [first, second], completion: 204, reconnect: true,
-      disclosure: true, authorizedBaseline: true, sameIdentityReconnect: true, dashboardNavigations: 2}));
+      disclosure: true, authorizedBaseline: true, sameIdentityReconnect: true, replacement: true,
+      predecessorDenied: true, recoveredObserver: true, reconciledRollback: true, recoveredReplacement, dashboardNavigations: 2}));
   } catch (error) {
     const failure = error.name === 'TimeoutError' ? 'timeout' : error.name === 'AssertionError' ? 'assertion' : 'runtime-error';
     // Paths, statuses and frame codes only: never cookies, handles or payloads.

@@ -16,6 +16,16 @@
 
 package spoonbill.internal
 
+import avocet.Id
+import avocet.StatefulRenderContext
+import avocet.events.EventId
+import avocet.events.EventPhase
+import scala.collection.AbstractMapView
+import scala.collection.MapView
+import scala.collection.concurrent.TrieMap
+import scala.collection.mutable
+import scala.concurrent.ExecutionContext
+import scala.util.control.NonFatal
 import spoonbill.*
 import spoonbill.Context.*
 import spoonbill.data.Bytes
@@ -28,16 +38,6 @@ import spoonbill.state.StateSerializer
 import spoonbill.util.JsCode
 import spoonbill.util.Lens
 import spoonbill.web.FormData
-import avocet.Id
-import avocet.StatefulRenderContext
-import avocet.events.EventId
-import avocet.events.EventPhase
-import scala.collection.AbstractMapView
-import scala.collection.MapView
-import scala.collection.concurrent.TrieMap
-import scala.collection.mutable
-import scala.concurrent.ExecutionContext
-import scala.util.control.NonFatal
 
 /**
  * Component state holder and effects performer
@@ -96,7 +96,8 @@ final class ComponentInstance[
 
   @volatile private var eventSubscription = Option.empty[E => _]
 
-  private[spoonbill] case class BrowserAccess(dem: DomEventMessage, departure: Option[Long]) extends BaseAccessDefault[F, CS, E] {
+  private[spoonbill] case class BrowserAccess(dem: DomEventMessage, departure: Option[Long])
+      extends BaseAccessDefault[F, CS, E] {
 
     private def getId(elementId: ElementId): F[Id] = Effect[F].delay {
       unsafeGetId(elementId)
@@ -236,9 +237,22 @@ final class ComponentInstance[
 
     override private[spoonbill] def completeAuthentication(completionId: java.util.UUID): F[Unit] =
       frontend.completeAuthentication(completionId)
+    override private[spoonbill] def completeReplacement(
+      handoff: spoonbill.auth.CommittedReplacement,
+      binding: spoonbill.action.InvocationBinding
+    ): F[Unit] =
+      frontend.completeReplacement(handoff, binding)
+    override private[spoonbill] def retireReplacement(binding: spoonbill.action.InvocationBinding): F[Unit] =
+      frontend.retireReplacement(binding)
+    override private[spoonbill] def recoverReplacement(id: spoonbill.auth.CeremonyId): F[Unit] =
+      frontend.recoverReplacement(id)
 
-    override def presentSensitive(region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
-      payload: spoonbill.sensitive.SensitivePayload, lifetime: scala.concurrent.duration.FiniteDuration): F[spoonbill.sensitive.DisclosureOutcome] =
+    override def presentSensitive(
+      region: spoonbill.sensitive.RegionId,
+      purpose: spoonbill.sensitive.Purpose,
+      payload: spoonbill.sensitive.SensitivePayload,
+      lifetime: scala.concurrent.duration.FiniteDuration
+    ): F[spoonbill.sensitive.DisclosureOutcome] =
       frontend.presentSensitive(region, purpose, payload, lifetime)
     override def clearSensitive(region: spoonbill.sensitive.RegionId): F[Unit] = frontend.clearSensitive(region)
 
@@ -365,7 +379,7 @@ final class ComponentInstance[
     val effect = () =>
       (for {
         newState <- applyTransitionEffect(transition)
-        _ <- stateQueue.enqueue(nodeId, newState, Some(cb))
+        _        <- stateQueue.enqueue(nodeId, newState, Some(cb))
       } yield ()).recover { case error => cb(Left(error)) }
     pendingEffects.enqueue(effect)
   }

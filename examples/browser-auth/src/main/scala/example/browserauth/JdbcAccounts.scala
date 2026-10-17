@@ -9,9 +9,13 @@ import javax.sql.DataSource
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.Using
 import scala.util.control.NonFatal
+import spoonbill.action.{AuthenticatedActionContext, UiOutcome}
 import spoonbill.auth.*
+import spoonbill.effect.Effect
 import spoonbill.security.jdbc.*
 import spoonbill.security.transaction.*
+import spoonbill.sensitive.{Audience, Purpose, SensitiveAccess}
+import spoonbill.server.SessionAccessDenied
 import spoonbill.snapshot.{ViewSnapshotError, ViewSnapshotException, ViewSnapshotSession}
 
 /**
@@ -28,7 +32,8 @@ final class JdbcAccounts(
   clustered: Boolean = false,
   snapshotVersion: Int = 1,
   activeViewLimit: Int = 16,
-  fixtureDiagnostics: Boolean = false
+  fixtureDiagnostics: Boolean = false,
+  deliveryLimit: Int = 3
 )(using ec: ExecutionContext)
     extends Accounts[Future] {
   private case class Account(
@@ -41,6 +46,7 @@ final class JdbcAccounts(
   )
   private val names           = DomainPolicy.accounts.map(value => value.name -> value.id).toMap
   private val rate            = new DomainPolicy.RateLimit(clock)
+  private val recoveryResults = new RecoveryResults(vault, clock)
   private val jobs            = new AtomicInteger()
   private val stopped         = new AtomicBoolean()
   private val drained         = Promise[Unit]()
@@ -114,25 +120,29 @@ final class JdbcAccounts(
     host,
     vault,
     ownership = if (clustered) BrowserOwnership.SharedViews else BrowserOwnership.ExclusiveScope,
-    limits = BrowserPersistenceLimits(activeViewsPerBinding = activeViewLimit)
+    limits = BrowserPersistenceLimits(activeViewsPerBinding = activeViewLimit, maxDeliveries = deliveryLimit)
   )
   private val projected = persistence.projectedSnapshots(
-    DraftPresentation.format(snapshotVersion), DraftPresentation.project, DraftPresentation.restore
+    DraftPresentation.format(snapshotVersion),
+    DraftPresentation.project,
+    DraftPresentation.restore
   )
   private def snapshots(view: BrowserView[Principal]): Option[ViewSnapshotSession[Future, Page]] =
     if (!clustered) None
-    else projected(view).map { session =>
-      if (!fixtureDiagnostics) session
-      else new ViewSnapshotSession[Future, Page] {
-        def ownerEpoch = session.ownerEpoch
-        def initialize(fresh: Page): Future[Page] = session.initialize(fresh).recoverWith {
-          case error: ViewSnapshotException if error.error == ViewSnapshotError.SchemaIncompatible =>
-            System.err.println("SPOONBILL_FIXTURE_SCHEMA_INCOMPATIBLE")
-            Future.failed(error)
-        }
-        def commit(candidate: Page): Future[Unit] = session.commit(candidate)
+    else
+      projected(view).map { session =>
+        if (!fixtureDiagnostics) session
+        else
+          new ViewSnapshotSession[Future, Page] {
+            def ownerEpoch = session.ownerEpoch
+            def initialize(fresh: Page): Future[Page] = session.initialize(fresh).recoverWith {
+              case error: ViewSnapshotException if error.error == ViewSnapshotError.SchemaIncompatible =>
+                System.err.println("SPOONBILL_FIXTURE_SCHEMA_INCOMPATIBLE")
+                Future.failed(error)
+            }
+            def commit(candidate: Page): Future[Unit] = session.commit(candidate)
+          }
       }
-    }
   val browser = new BrowserAuthentication[Future, Page, Principal](
     persistence,
     Presentation.policy,
@@ -142,33 +152,49 @@ final class JdbcAccounts(
       secureCookies = origin.startsWith("https://")
     ),
     clock = clock,
-    snapshots = snapshots
+    snapshots = snapshots,
+    sensitiveAccess = view =>
+      view.identity.sessionId.map { session =>
+        new SensitiveAccess[Future, Page] {
+          def authorize(purpose: Purpose, page: Page): Future[Audience] =
+            persistence.authorize(view).flatMap {
+              case Right(current) if purpose == RecoveryResults.purpose && current.sessionId.contains(session) =>
+                Future.successful(Audience.fromUuid(session))
+              case _ => Future.failed(new SessionAccessDenied)
+            }
+        }
+      }
   )
 
   /**
    * Bounded before any proof-worker/database dispatch, including failed work.
    */
-  private def submitted(ceremony: BrowserCeremony)(body: => Future[SignIn]): Future[SignIn] = {
-    @scala.annotation.tailrec
-    def reserve(): Boolean = {
-      val current = jobs.get()
-      if (stopped.get() || current >= 256) false
-      else if (jobs.compareAndSet(current, current + 1)) {
-        if (stopped.get()) { if (jobs.decrementAndGet() == 0) drained.trySuccess(()); false }
-        else true
-      } else reserve()
-    }
-    if (!reserve()) Future.successful(SignIn.Rejected("Too many pending requests."))
+  @scala.annotation.tailrec
+  private def reserve(): Boolean = {
+    val current = jobs.get()
+    if (stopped.get() || current >= 256) false
+    else if (jobs.compareAndSet(current, current + 1)) {
+      if (stopped.get()) { releaseJob(); false }
+      else true
+    } else reserve()
+  }
+  private def releaseJob(): Unit = {
+    if (jobs.decrementAndGet() == 0 && stopped.get()) drained.trySuccess(())
+    ()
+  }
+  private def bounded[A](rejected: => A, unresolved: => A)(body: => Future[A]): Future[A] =
+    if (!reserve()) Future.successful(rejected)
     else {
       val work =
         try body
         catch { case NonFatal(error) => Future.failed(error) }
       work.transform { result =>
-        if (jobs.decrementAndGet() == 0 && stopped.get()) drained.trySuccess(())
-        scala.util.Success(result.getOrElse(SignIn.Unresolved(ceremony.id)))
+        releaseJob()
+        scala.util.Success(result.getOrElse(unresolved))
       }(ExecutionContext.parasitic)
     }
-  }
+  private def submitted(ceremony: BrowserCeremony)(body: => Future[SignIn]): Future[SignIn] =
+    bounded(SignIn.Rejected("Too many pending requests."), SignIn.Unresolved(ceremony.id))(body)
   private def result(ceremony: BrowserCeremony, value: Either[TransactionFailure, CommittedAuthentication]): SignIn =
     value match {
       case Right(receipt)                                                             => SignIn.Completed(receipt)
@@ -288,6 +314,216 @@ final class JdbcAccounts(
         }
     }
   }
+  def replace(
+    ceremony: BrowserReplacementCeremony,
+    invocation: BrowserReplacementInvocation,
+    password: String
+  ): Future[SessionReplacement] =
+    bounded[SessionReplacement](
+      SessionReplacement.Rejected("Too many pending requests."),
+      SessionReplacement.Unresolved(ceremony.id)
+    ) {
+      val change  = SecurityChange.values.find(_.purpose == ceremony.purpose)
+      val subject = invocation.authority.host.flatMap(stamp => scala.util.Try(UUID.fromString(stamp.subject)).toOption)
+      if (
+        change.isEmpty || subject.isEmpty || invocation.authority.sessionId.isEmpty ||
+        !rate.admit(ceremony.browserKey, subject.get.toString)
+      )
+        Future.successful(SessionReplacement.Rejected("Security change was not accepted."))
+      else
+        Future {
+          val observed =
+            Using.resource(source.getConnection)(connection => account(connection, subject.get, lock = false))
+          val stamp = invocation.authority.host.get
+          if (!observed.enabled || observed.version != stamp.securityVersion || observed.version != stamp.policyVersion)
+            deny()
+          observed
+        }(blockingContext).flatMap { observed =>
+          val challenge = BrowserChallenge(
+            observed.id.toString,
+            observed.version,
+            observed.version,
+            DomainPolicy.challengeReference(clock(), ceremony.expiresAt)
+          )
+          persistence.bindReplacementChallenge(ceremony, challenge).flatMap {
+            case Left(_) =>
+              Future.successful(SessionReplacement.Rejected("This security change expired or was revoked."))
+            case Right(bound) =>
+              Future(DomainPolicy.same(DomainPolicy.passwordHash(password), observed.password))(
+                blockingContext
+              ).flatMap { verified =>
+                if (!verified) Future.successful(SessionReplacement.Rejected("Password was not accepted."))
+                else
+                  BrowserCredentials.generate[Future].flatMap { credential =>
+                    val session    = UUID.randomUUID()
+                    val completion = UUID.randomUUID()
+                    val generated = Option.when(change.get != SecurityChange.DisableFactor)(
+                      recoveryResults.create(completion, session, clock())
+                    )
+                    persistence
+                      .prepareReplacement(bound, invocation) { tx =>
+                        val connection = tx.connection
+                        val current    = account(connection, observed.id, lock = true)
+                        val time       = tx.now
+                        if (
+                          !current.enabled || current.version != observed.version || current.password != observed.password ||
+                          current.version == Long.MaxValue || bound.challenge != Some(challenge) ||
+                          !DomainPolicy.challengeDeadline(challenge.reference).exists(time.isBefore) ||
+                          generated.exists(value => !time.isBefore(value.record.expiresAt))
+                        ) deny()
+                        val factor = change.get match {
+                          case SecurityChange.RegenerateRecovery => current.factor
+                          case SecurityChange.EnableFactor if current.factor.isEmpty =>
+                            Some(DomainPolicy.factorHash("123456"))
+                          case SecurityChange.ReplaceFactor if current.factor.nonEmpty =>
+                            Some(DomainPolicy.factorHash("654321"))
+                          case SecurityChange.DisableFactor if current.factor.nonEmpty => None
+                          case _                                                       => deny()
+                        }
+                        sql(
+                          connection,
+                          "INSERT INTO example_consumed_proof(ceremony,subject,challenge_reference) VALUES (?,?,?)"
+                        ) { query =>
+                          query.setObject(1, bound.id.value); query.setObject(2, current.id);
+                          query.setString(3, challenge.reference)
+                          query.executeUpdate()
+                        }
+                        sql(
+                          connection,
+                          "UPDATE example_account SET version=version+1,factor_hash=? WHERE id=? AND version=?"
+                        ) { query =>
+                          query.setBytes(1, factor.map(_.toArray).orNull); query.setObject(2, current.id);
+                          query.setLong(3, current.version)
+                          if (query.executeUpdate() != 1) deny()
+                        }
+                        sql(
+                          connection,
+                          "UPDATE example_session SET enabled=FALSE WHERE id=? AND subject=? AND enabled=TRUE"
+                        ) { query =>
+                          query.setObject(1, invocation.authority.sessionId.get); query.setObject(2, current.id)
+                          if (query.executeUpdate() != 1) deny()
+                        }
+                        val expires = time
+                          .plusSeconds(DomainPolicy.sessionSeconds)
+                          .truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+                        sql(
+                          connection,
+                          "INSERT INTO example_session(id,completion,subject,version,enabled,expires_at) VALUES (?,?,?,?,TRUE,?)"
+                        ) { query =>
+                          query.setObject(1, session); query.setObject(2, completion); query.setObject(3, current.id)
+                          query.setLong(4, current.version + 1L); query.setTimestamp(5, Timestamp.from(expires));
+                          query.executeUpdate()
+                        }
+                        sql(connection, "DELETE FROM example_recovery_code WHERE subject=?") { query =>
+                          query.setObject(1, current.id); query.executeUpdate()
+                        }
+                        sql(
+                          connection,
+                          "DELETE FROM example_recovery_result WHERE expires_at<=? OR session IN (SELECT id FROM example_session WHERE subject=?)"
+                        ) { query =>
+                          query.setTimestamp(1, Timestamp.from(time)); query.setObject(2, current.id);
+                          query.executeUpdate()
+                        }
+                        generated.foreach { value =>
+                          val count = sql(connection, "SELECT count(*) FROM example_recovery_result") { query =>
+                            Using.resource(query.executeQuery()) { rows =>
+                              rows.next(); rows.getLong(1)
+                            }
+                          }
+                          if (count >= DomainPolicy.retainedEntries)
+                            throw new OperationProtocolException(OperationError.CapacityExceeded)
+                          value.hashes.foreach { hash =>
+                            sql(connection, "INSERT INTO example_recovery_code(subject,digest) VALUES (?,?)") { query =>
+                              query.setObject(1, current.id); query.setBytes(2, hash.toArray); query.executeUpdate()
+                            }
+                          }
+                          sql(
+                            connection,
+                            "INSERT INTO example_recovery_result(completion,session,expires_at,encrypted) VALUES (?,?,?,?)"
+                          ) { query =>
+                            query.setObject(1, completion); query.setObject(2, session)
+                            query.setTimestamp(3, Timestamp.from(value.record.expiresAt));
+                            query.setBytes(4, value.record.ciphertext.toArray)
+                            query.executeUpdate()
+                          }
+                        }
+                        audit(connection, current.id, change.get.purpose)
+                        new HostSessionPrepared(session, completion, expires, credential)
+                      }
+                      .map {
+                        case Right(handoff) => SessionReplacement.Completed(handoff)
+                        case Left(TransactionFailure.CommitUnknown | TransactionFailure.StorageFailure) =>
+                          SessionReplacement.Unresolved(bound.id)
+                        case Left(
+                              TransactionFailure.Rejected(OperationError.PermitUsed | OperationError.EvidenceUsed)
+                            ) =>
+                          SessionReplacement.Unresolved(bound.id)
+                        case Left(_) =>
+                          SessionReplacement.Rejected("Security change was not accepted. Begin a new attempt.")
+                      }
+                  }
+              }
+          }
+        }
+    }
+
+  def consumeRecovery(
+    view: BrowserView[Principal],
+    invocation: BrowserReplacementInvocation
+  ): Future[Either[TransactionFailure, Option[RecoveryResults.Consumed]]] =
+    if (!invocation.matchesView(view))
+      Future.successful(Left(TransactionFailure.Rejected(OperationError.ForeignPermit)))
+    else
+      persistence
+        .withSuccessorCompletion(view) { (tx, completion) =>
+          sql(
+            tx.connection,
+            "DELETE FROM example_recovery_result WHERE completion=? AND session=? AND expires_at>? RETURNING expires_at,encrypted"
+          ) { query =>
+            query.setObject(1, completion.hostCompletionId); query.setObject(2, completion.successorSessionId)
+            query.setTimestamp(3, Timestamp.from(tx.now))
+            Using.resource(query.executeQuery()) { rows =>
+              if (!rows.next()) None
+              else {
+                val expires = rows.getTimestamp(1).toInstant
+                if (!tx.now.isBefore(expires)) throw new OperationProtocolException(OperationError.Expired)
+                Some(
+                  RecoveryResults.Record(
+                    completion.hostCompletionId,
+                    completion.successorSessionId,
+                    expires,
+                    rows.getBytes(2).toVector
+                  )
+                )
+              }
+            }
+          }
+        }
+        .map(_.map(_.map(record => RecoveryResults.consumed(record, invocation))))
+  def presentRecovery(
+    record: RecoveryResults.Consumed,
+    context: AuthenticatedActionContext[Principal]
+  ): Future[UiOutcome[Page]] =
+    Effect[Future].delay(recoveryResults.present(record, context))
+
+  override def maintenance(): Future[Unit] =
+    if (!reserve()) Future.unit
+    else {
+      val work =
+        try
+          Future {
+            Using.resource(source.getConnection) { connection =>
+              sql(connection, "DELETE FROM example_recovery_result WHERE expires_at<=?") { query =>
+                query.setTimestamp(1, Timestamp.from(clock())); query.executeUpdate(); ()
+              }
+            }
+          }(blockingContext).flatMap(_ => browser.maintenance())
+        catch { case NonFatal(error) => Future.failed(error) }
+      work.transform { result =>
+        releaseJob(); result
+      }(ExecutionContext.parasitic)
+    }
+
   def increment(view: BrowserView[Principal]): Future[Either[TransactionFailure, Int]] = persistence.transact(view) {
     tx =>
       val subject = view.principal.map(_.value.subject).getOrElse(deny())
@@ -352,6 +588,9 @@ final class JdbcAccounts(
       version BIGINT NOT NULL,enabled BOOLEAN NOT NULL,expires_at TIMESTAMP WITH TIME ZONE NOT NULL,acknowledged BOOLEAN NOT NULL DEFAULT FALSE)""",
     """CREATE TABLE IF NOT EXISTS example_consumed_proof(ceremony UUID PRIMARY KEY,subject UUID NOT NULL REFERENCES example_account(id),challenge_reference TEXT UNIQUE)""",
     """CREATE TABLE IF NOT EXISTS example_counter(subject UUID PRIMARY KEY REFERENCES example_account(id),value INTEGER NOT NULL CHECK(value>=0))""",
+    """CREATE TABLE IF NOT EXISTS example_recovery_code(subject UUID NOT NULL REFERENCES example_account(id),digest BYTEA NOT NULL,PRIMARY KEY(subject,digest))""",
+    """CREATE TABLE IF NOT EXISTS example_recovery_result(completion UUID PRIMARY KEY,session UUID UNIQUE NOT NULL REFERENCES example_session(id),
+      expires_at TIMESTAMP WITH TIME ZONE NOT NULL,encrypted BYTEA NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS example_audit(id UUID PRIMARY KEY,subject UUID NOT NULL REFERENCES example_account(id),kind TEXT NOT NULL,created_at TIMESTAMP WITH TIME ZONE NOT NULL)"""
   )
 }

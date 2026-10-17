@@ -16,6 +16,8 @@
 
 package spoonbill
 
+import java.nio.charset.StandardCharsets
+import scala.concurrent.ExecutionContext
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Stream}
 import spoonbill.effect.syntax.*
@@ -24,8 +26,6 @@ import spoonbill.server.internal.services.*
 import spoonbill.state.{DeviceId, StateDeserializer, StateSerializer}
 import spoonbill.web.{Headers, MimeTypes, Request, Response}
 import spoonbill.web.Request.Head
-import scala.concurrent.ExecutionContext
-import java.nio.charset.StandardCharsets
 
 package object server {
 
@@ -36,7 +36,7 @@ package object server {
 
     final val defaultHeaders = Seq(Headers.ContentType -> MimeTypes.`text/plain`)
 
-    def apply[F[_]: Effect](status: Response.Status, headers: Seq[(String, String)]): F[HttpResponse[F]] = {
+    def apply[F[_]: Effect](status: Response.Status, headers: Seq[(String, String)]): F[HttpResponse[F]] =
       Effect[F].pure(
         Response(
           status = status,
@@ -45,9 +45,12 @@ package object server {
           contentLength = None
         )
       )
-    }
 
-    def apply[F[_]: Effect](status: Response.Status, bodyBytes: Array[Byte], headers: Seq[(String, String)]): F[HttpResponse[F]] = {
+    def apply[F[_]: Effect](
+      status: Response.Status,
+      bodyBytes: Array[Byte],
+      headers: Seq[(String, String)]
+    ): F[HttpResponse[F]] =
       Stream(Bytes.wrap(bodyBytes))
         .mat[F]()
         .map { stream =>
@@ -58,20 +61,21 @@ package object server {
             contentLength = Some(bodyBytes.length.toLong)
           )
         }
-    }
 
-    def apply[F[_]: Effect](status: Response.Status, text: String, headers: Seq[(String, String)] = defaultHeaders): F[HttpResponse[F]] = {
+    def apply[F[_]: Effect](
+      status: Response.Status,
+      text: String,
+      headers: Seq[(String, String)] = defaultHeaders
+    ): F[HttpResponse[F]] = {
       val bodyBytes = text.getBytes(StandardCharsets.UTF_8)
       apply(status, bodyBytes, headers)
     }
 
-    def ok[F[_]: Effect](text: String, headers: Seq[(String, String)] = defaultHeaders): F[HttpResponse[F]] = {
-      apply(Response.Status.Ok,  text, headers)
-    }
+    def ok[F[_]: Effect](text: String, headers: Seq[(String, String)] = defaultHeaders): F[HttpResponse[F]] =
+      apply(Response.Status.Ok, text, headers)
 
-    def badRequest[F[_]: Effect](text: String, headers: Seq[(String, String)] = defaultHeaders): F[HttpResponse[F]] = {
+    def badRequest[F[_]: Effect](text: String, headers: Seq[(String, String)] = defaultHeaders): F[HttpResponse[F]] =
       apply(Response.Status.BadRequest, text, headers)
-    }
 
     def seeOther[F[_]: Effect](location: String): F[HttpResponse[F]] =
       apply(Response.Status.SeeOther, headers = Seq(Headers.Location -> location))
@@ -91,10 +95,14 @@ package object server {
       installation.validate(config)
     }
 
-    require(config.authenticationCompletion.isEmpty || config.sessionAccessControl.nonEmpty,
-      "Authentication completion requires mandatory session access control")
-    require(config.sessionAccessControl.isEmpty || (config.webSocketEnabled && !config.webSocketCompressionEnabled),
-      "Guarded sessions require uncompressed WebSocket transport")
+    require(
+      config.authenticationCompletion.isEmpty || config.sessionAccessControl.nonEmpty,
+      "Authentication completion requires mandatory session access control"
+    )
+    require(
+      config.sessionAccessControl.isEmpty || (config.webSocketEnabled && !config.webSocketCompressionEnabled),
+      "Guarded sessions require uncompressed WebSocket transport"
+    )
 
     implicit val exeContext: ExecutionContext = config.executionContext
 
@@ -114,7 +122,9 @@ package object server {
     val formDataCodec = new FormDataCodec
     val postService   = new PostService[F](config.reporter, sessionsService, commonService, formDataCodec)
     val ssrService    = new ServerSideRenderingService[F, S, M](sessionsService, pageService, config)
-    val authenticationService = config.authenticationCompletion.map(new AuthenticationCompletionService[F](_))
+    val authenticationService = config.authenticationCompletion.map(value =>
+      new AuthenticationCompletionService[F](value, config.rootPath.mkString.stripSuffix("/") + "/")
+    )
 
     new SpoonbillServiceImpl[F](
       config.http,

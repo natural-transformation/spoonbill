@@ -41,6 +41,10 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
         authenticationService.fold(commonService.notFoundResponseF)(_.complete(request))
       case (_, Root / "auth" / "logout") if authenticationService.nonEmpty =>
         authenticationService.fold(commonService.notFoundResponseF)(_.logout(request))
+      case (_, Root / "auth" / "recover") if authenticationService.nonEmpty =>
+        authenticationService.fold(commonService.notFoundResponseF)(_.recoverReplacement(request))
+      case (_, Root / "auth" / "replacement-bootstrap.js") if authenticationService.nonEmpty =>
+        authenticationService.fold(commonService.notFoundResponseF)(_.replacementBootstrapScript(request))
 
       // Legacy attachment and long-polling routes have no per-request session
       // binding. Fail closed until those transports participate in the guard.
@@ -72,8 +76,12 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
       // Server side rendering
       case (_, path) if path == Root || ssrService.canBeRendered(request.pq) =>
         for {
-          initial <- authenticationService.fold(Effect[F].pure(request -> Seq.empty[(String, String)]))(_.prepareInitial(request))
-          response <- ssrService.serverSideRenderedPage(initial._1)
+          initial <- authenticationService
+                       .fold(Effect[F].pure(request -> Seq.empty[(String, String)]))(_.prepareInitial(request))
+          bootstrap <- authenticationService.fold(Effect[F].pure(Option.empty[HttpResponse[F]]))(
+                         _.replacementBootstrap(initial._1)
+                       )
+          response <- bootstrap.fold(ssrService.serverSideRenderedPage(initial._1))(Effect[F].pure)
         } yield response.copy(headers = response.headers ++ initial._2)
 
       // Not found
@@ -83,17 +91,20 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
   def ws(wsRequest: WebSocketRequest[F]): F[WebSocketResponse[F]] =
     if (guardedSessions && !authenticationService.exists(_.acceptsOrigin(wsRequest.httpRequest)))
       Effect[F].fail(BadRequestException("WebSocket origin rejected"))
-    else (wsRequest.httpRequest.cookie(Cookies.DeviceId), wsRequest.httpRequest.pq) match {
-      case (Some(deviceId), Root / "bridge" / "web-socket" / sessionId) =>
-        messagingService.webSocketMessaging(
-          Qsid(deviceId, sessionId),
-          wsRequest.httpRequest,
-          wsRequest.httpRequest.body,
-          wsRequest.protocols
-        )
-      case _ =>
-        webSocketBadRequestF
-    }
+    else
+      (wsRequest.httpRequest.cookie(Cookies.DeviceId), wsRequest.httpRequest.pq) match {
+        case (_, Root / "auth" / "activate") if authenticationService.nonEmpty =>
+          authenticationService.get.activateReplacement(wsRequest)
+        case (Some(deviceId), Root / "bridge" / "web-socket" / sessionId) =>
+          messagingService.webSocketMessaging(
+            Qsid(deviceId, sessionId),
+            wsRequest.httpRequest,
+            wsRequest.httpRequest.body,
+            wsRequest.protocols
+          )
+        case _ =>
+          webSocketBadRequestF
+      }
 
   private val webSocketBadRequestF = {
     val error = BadRequestException(

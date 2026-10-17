@@ -129,6 +129,106 @@ executes the host write. The application still checks operation-specific
 permissions. This convenience does not replace the one-use operation protocol
 when a business operation requires an independently retained idempotency key.
 
+## Authenticated session replacement
+
+Use the explicit replacement API for factor enrollment, factor replacement,
+disabling, or recovery-code regeneration that revokes the current host session.
+Ordinary `prepare` does not acquire that permission from its purpose string.
+Both built-in providers implement `ReplacementBrowserPersistence`; a third-party
+provider must implement this extension explicitly. The coordinator discovers its
+transport operations through `BrowserReplacementSupport` and does not fall back
+to ordinary preparation.
+
+The [shared application](../examples/browser-auth/src/main/scala/example/browserauth/Application.scala)
+demonstrates the public sequence inside an authenticated action:
+
+1. Call `browser.beginReplacement(context, purpose)` before verifying the proof.
+2. Capture `browser.replacementInvocation(context)` for the action that will
+   prepare the replacement. It is distinct from the ceremony's earlier begin or
+   challenge invocation. Public IDs cannot reconstruct this association. This
+   method also marks replacement intent so a suppressed or failed observer can
+   retire its transport and discover the stored outcome.
+3. Bind the original proof metadata with `provider.bindReplacementChallenge`.
+   Check the proof and its captured account versions again in the transaction.
+4. Call `provider.prepareReplacement(ceremony, invocation)`. On its supplied
+   transaction, consume proof, change the host credentials, revoke the exact
+   predecessor, create a fresh same-subject session, and store audit/outbox work.
+   Return `HostSessionPrepared` for that successor. Security/policy versions may
+   advance but cannot decrease. External notifications belong in an outbox.
+5. Return `browser.completeReplacement(handoff)` only for the acknowledged
+   committed result. Its fixed completion command carries no application update,
+   sensitive result, callback or reusable ordinary authority.
+
+For an unresolved preparation result, return
+`browser.recoverReplacementOutcome(ceremony.id)`. It requests the checked HTTP
+recovery operation without replaying the action. This matters when an unknown
+commit actually rolled back and the predecessor is still current: recovery must
+still fence that attempt negative. If the predecessor was revoked, ordinary
+output stays suppressed and the marked replacement invocation retires its
+transport so binding-based recovery can discover the committed successor.
+
+The provider atomically reserves the browser slot for the successor while
+retaining the captured generation. The predecessor is revoked immediately.
+Pending successor cookies cannot render an anonymous or authenticated app;
+activation advances the generation once. An expired reservation remains a fence
+against competing older completions. Logout is the explicit reset boundary.
+First replacement activation also retires obsolete logical view owners on that
+binding, retaining their epochs and history, so a fresh page can attach even
+when a crashed predecessor occupied the configured view capacity.
+
+There are two checked HTTP delivery paths. The live fixed command uses
+`POST /auth/complete` with the provider completion UUID and HttpOnly binding
+cookie. The provider recognizes replacement material and rechecks the stored
+reservation, successor, generation, deadline and delivery budget. Recovery uses
+`POST /auth/recover`; its `BrowserReplacementDelivery` is bound to that exact
+validated HTTP request before delivery. Both paths consume the same stored
+delivery budget and enforce origin/input/cookie checks. The live path does not
+consume the recovery request's capability wrapper. Restricted output refers to
+the predecessor socket's fixed-frame exception, not to a single HTTP channel.
+
+The framework's checked `POST /auth/recover` uses the HttpOnly binding and an
+optional ceremony lookup. It can discover the unique pending replacement after
+a lost command, without loading the application or rerunning proof. A fresh
+page receives only a minimal recovery bootstrap while replacement is pending.
+That page uses a fresh `/auth/activate` WebSocket handshake before ordinary
+application loading. If the browser already holds the valid successor cookie,
+activation does not require another delivery or remaining delivery budget.
+The original completion deadline still applies. With exhausted delivery and no
+successor cookie, fresh authentication/reset is required; the committed security
+change is never undone or automatically repeated.
+
+For a one-use result, capture `browser.currentInvocation(context)` in the
+disclosure action. Unlike `replacementInvocation`, this captures identity
+without marking replacement intent. It proves neither activated-successor
+status nor permission to disclose. Call the concrete provider's
+`withSuccessorCompletion(view)` under the freshly activated successor. It
+provides the verified **host** completion ID inside the same transaction as the
+host callback; do not equate it with the provider completion ID. The examples
+atomically delete an encrypted, expiring host result and expose only a one-shot
+ciphertext holder after known commit. The holder checks the exact successor and
+actual disclosure invocation, rejects copied public invocation IDs, and checks
+expiry again before decryption. Decryption transfers directly into
+`context.presentSensitive` and the existing invocation-owned disclosure runtime.
+Snapshots and ordinary presentation never contain the recovery codes.
+
+This guarantees at-most-once **consumption**, not human receipt. Lost output or
+unknown consumption commit can leave the codes unavailable. Regenerate through
+a new authorized ceremony instead of replaying disclosure. The memory example's
+encryption key and results are process-local. The JDBC example keeps encrypted
+results in host tables and uses deployment-owned vault keys. Applications must
+bound and expire their own results; the reference `Accounts.maintenance` does so.
+
+This is local, unreleased work. Rebuild consumers against the updated APIs;
+binary compatibility with already-compiled clients is not promised. Refresh
+browser pages onto the updated client bundle before enabling replacement. The
+new fixed recovery procedure is generated with that bundle; there is no claim
+that an older live tab understands it and no wire-version negotiation. Existing
+ordinary procedure numbers are unchanged. The
+[implementation and validation record](authenticated-session-replacement-plan.md)
+tracks the feature gates and the
+[performance protocol](authenticated-session-replacement-performance.md) separates
+measured evidence from limits.
+
 ## Providers and transaction ownership
 
 | Provider | Atomic domain | Restart behavior |
@@ -137,6 +237,8 @@ when a business operation requires an independently retained idempotency key.
 | `JdbcBrowserPersistence[F, P]` | Host SQL, browser session, ceremony outcome and encrypted delivery share one PostgreSQL transaction. | Durable records allow the original attempt to be recovered after process loss. |
 
 The memory host implements pure `Host.resolve` and `Host.acknowledge` over `H`.
+Its optional pure `Host.maintenance` expires host-owned material in the same
+immutable publication as browser maintenance.
 It must not hide mutable references or external effects inside that state.
 `JdbcHostSessions[P]` resolves a fresh immutable `HostPrincipal[P]` and
 acknowledges activation using the supplied connection. Resolve host account

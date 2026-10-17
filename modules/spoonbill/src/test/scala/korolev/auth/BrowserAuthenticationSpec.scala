@@ -439,4 +439,157 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       await(f.provider.resources).bindings shouldBe 1
       await(f.access.authorizeHttp(f.request(), Page()))
   }
+
+  "Replacement transport" should "capture disclosure invocations without a retirement hint while marking replacement intent" in withFixture {
+    f =>
+      val anonymousOwner = f.connection()
+      val anonymous      = f.open(anonymousOwner)
+      val signedIn       = f.prepare(anonymousOwner)
+      await(f.provider.deliver(signedIn.completionId, browserBinding)).nonEmpty shouldBe true
+      await(anonymous.close())
+      val owner = f.connection()
+      val guard = f.open(owner, Some("t" * 43))
+
+      def suppressed(
+        binding: InvocationBinding,
+        capture: AuthenticatedActionContext[String] => Future[Either[BrowserFailure, BrowserReplacementInvocation]]
+      ): BrowserReplacementInvocation = {
+        val checks   = new AtomicInteger()
+        val captured = Promise[BrowserReplacementInvocation]()
+        val action = new Actions[Future, Page, String].authenticated(
+          right(ActionName.parse("test.capture-invocation")),
+          InputSchema.empty,
+          ActionPolicy[Future, Unit, String]((_, _) =>
+            Future.successful(
+              if (checks.incrementAndGet() == 1) AccessDecision.Allowed
+              else AccessDecision.Denied(AccessDenied.Forbidden)
+            )
+          )
+        ) { (_, context) =>
+          for {
+            invocation <- capture(context)
+            same       <- f.browser.currentInvocation(context)
+          } yield {
+            val value = right(invocation)
+            value.belongsTo(context) shouldBe true
+            value.sameInvocation(right(same)) shouldBe true
+            captured.success(value)
+            UiOutcome.unchanged[Page]
+          }
+        }
+        await(ActionDispatcher.authenticated(action, Vector.empty, binding, f.browser.authority)) shouldBe
+          InvocationResult.OutputSuppressed(AccessDenied.Forbidden)
+        await(captured.future)
+      }
+
+      val plainBinding = f.binding(owner)
+      val plain        = suppressed(plainBinding, f.browser.currentInvocation)
+      plainBinding.replacementAttempted.get() shouldBe false
+      await(guard.authorize(Page(protectedPage = true)))
+
+      // Copying public identifiers does not copy the private invocation identity.
+      val replacementBinding = new InvocationBinding(
+        plainBinding.invocationId,
+        plainBinding.connectionId,
+        expectedAuthority = Some(f.browser.authority)
+      )
+      val replacement = suppressed(replacementBinding, f.browser.replacementInvocation)
+      replacementBinding.replacementAttempted.get() shouldBe true
+      plain.sameInvocation(replacement) shouldBe false
+      await(guard.close())
+  }
+
+  it should "complete through the real dispatcher and bootstrap without loading the old application" in withFixture {
+    f =>
+      val anonymousOwner = f.connection()
+      val anonymous      = f.open(anonymousOwner)
+      val signedIn       = f.prepare(anonymousOwner)
+      await(f.provider.deliver(signedIn.completionId, browserBinding)).nonEmpty shouldBe true
+      await(anonymous.close())
+      val owner            = f.connection()
+      val predecessorToken = "t" * 43
+      val successorToken   = "r" * 43
+      val guard            = f.open(owner, Some(predecessorToken))
+      val predecessor =
+        right(await(f.provider.capture(browserBinding, Some(predecessorToken), activate = false))).sessionId.get
+      val binding   = f.binding(owner)
+      val mutations = new AtomicInteger()
+      val action = new Actions[Future, Page, String].authenticated(
+        right(ActionName.parse("replace.factor")),
+        InputSchema.empty,
+        ActionPolicy[Future, Unit, String]((_, _) => Future.successful(AccessDecision.Allowed))
+      ) { (_, context) =>
+        for {
+          started  <- f.browser.beginReplacement(context, "regenerate-recovery")
+          captured <- f.browser.replacementInvocation(context)
+          prepared <- f.provider.prepareReplacement(right(started), right(captured)) { transaction =>
+                        mutations.incrementAndGet()
+                        val successor = f.id()
+                        val expiry    = f.time.get().plusSeconds(3600)
+                        transaction.modify(sessions =>
+                          sessions.removed(predecessor) +
+                            (successor -> HostPrincipal("alice", "alice", 1L, 1L, expiry))
+                        )
+                        new HostSessionPrepared(
+                          successor,
+                          f.id(),
+                          expiry,
+                          right(BrowserSessionToken.fromString(successorToken))
+                        )
+                      }
+        } yield f.browser.completeReplacement(right(prepared))
+      }
+      val handoff = await(ActionDispatcher.authenticated(action, Vector.empty, binding, f.browser.authority)) match {
+        case InvocationResult.Completed(UiOutcome.CommitReplacement(value)) => value
+        case other                                                          => fail(s"Replacement failed: $other")
+      }
+      val control = await(guard.replacementCompletion.get(handoff, binding))
+      control.completionId shouldBe handoff.completionId
+      await(f.browser.currentPrincipal(f.request(Some(predecessorToken)))).isLeft shouldBe true
+
+      val loads = new AtomicInteger()
+      val service = spoonbillService(f.configured.copy(stateLoader = (_, _) => {
+        loads.incrementAndGet(); Future.successful(Page())
+      }))
+      def responseText(response: HttpResponse[Future]): String =
+        await(response.body.fold(Bytes.empty)(_ ++ _).map(_.asUtf8String))
+      val page = await(service.http(f.request(Some(predecessorToken))))
+      responseText(page) should include("replacement-bootstrap.js")
+      loads.get() shouldBe 0
+      val recover = f
+        .request(
+          Some(predecessorToken),
+          method = Request.Method.Post,
+          headers = Seq("Origin" -> origin, "Content-Type" -> "text/plain")
+        )
+        .copy(pq = PathAndQuery.fromString("/auth/recover"))
+      val delivered = await(service.http(recover))
+      delivered.status.code shouldBe 204
+      delivered.header("Set-Cookie").get should include(successorToken)
+      // Exhaust delivery while retaining the already accepted cookie. Bootstrap
+      // must still reach activation without requiring another delivery allowance.
+      (1 until BrowserPersistenceLimits().maxDeliveries).foreach { _ =>
+        await(f.provider.deliver(handoff.completionId, browserBinding)).nonEmpty shouldBe true
+      }
+      await(f.provider.deliver(handoff.completionId, browserBinding)) shouldBe None
+      responseText(await(service.http(f.request(Some(successorToken))))) should include("replacement-bootstrap.js")
+      loads.get() shouldBe 0
+      val recovered = await(service.http(recover.copy(renderedCookie = f.request(Some(successorToken)).renderedCookie)))
+      recovered.status.code shouldBe 204
+      recovered.header("Set-Cookie") shouldBe None
+      val activated = await(
+        service.ws(
+          WebSocketRequest(f.request(Some(successorToken)).copy(pq = PathAndQuery.fromString("/auth/activate")), Nil)
+        )
+      )
+      await(activated.output.fold(Bytes.empty)(_ ++ _).map(_.asUtf8String)) shouldBe "activated"
+      await(activated.release())
+      loads.get() shouldBe 0
+      val restored = await(service.http(f.request(Some(successorToken))))
+      restored.status.code shouldBe 200
+      loads.get() shouldBe 1
+      mutations.get() shouldBe 1
+      right(await(f.provider.inspectHost)).size shouldBe 1
+      await(guard.close())
+  }
 }

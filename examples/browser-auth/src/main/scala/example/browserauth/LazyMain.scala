@@ -57,7 +57,8 @@ object LazyMain extends IOApp {
                   IO.blocking(
                     new MemoryAccounts[IO](
                       origin = s"http://localhost:$port",
-                      proofContext = ExecutionContext.fromExecutor(workers)
+                      proofContext = ExecutionContext.fromExecutor(workers),
+                      deliveryLimit = sys.env.get("SPOONBILL_AUTH_DELIVERY_LIMIT").fold(3)(_.toInt)
                     )(using effect, system.dispatcher)
                   )
                 )(_.close())
@@ -103,7 +104,7 @@ object LazyMain extends IOApp {
   }.flatMap { port =>
     server(port).use { accounts =>
       IO.println(s"Synthetic native IO browser-auth example ready at http://localhost:$port") *>
-        (IO.sleep(1.second) *> accounts.browser.maintenance()).foreverM
+        (IO.sleep(1.second) *> accounts.maintenance()).foreverM
     }.as(ExitCode.Success)
   }
 }

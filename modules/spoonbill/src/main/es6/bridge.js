@@ -165,11 +165,21 @@ export class Bridge {
         case Procedure.HEARTBEAT: this._awaitingHeartbeat -= 1;break;
         case Procedure.RESET_EVENT_COUNTERS: k.resetEventCounters.apply(k, commands); break;
         case Procedure.COMPLETE_AUTHENTICATION:
+          this._callbacksReady = false;
           this._sensitive.clearAll();
           this._connection.commitAuthentication(commands[0]).catch(() => {
             console.error('Authentication handoff failed');
             // A lost reply may already have installed the cookie. A clean
             // bootstrap validates it; credentials and submit events are not replayed.
+            this._connection.disconnect(false);
+            window.location.reload();
+          });
+          break;
+        case Procedure.RECOVER_AUTHENTICATION:
+          this._callbacksReady = false;
+          this._sensitive.clearAll();
+          this._connection.recoverAuthentication(commands[0]).catch(() => {
+            console.error('Authentication recovery unavailable');
             this._connection.disconnect(false);
             window.location.reload();
           });

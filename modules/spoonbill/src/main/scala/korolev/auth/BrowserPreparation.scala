@@ -34,14 +34,26 @@ final class BrowserPreparation[F[_], G[_], Tx, P](
         F.flatMap(F.delayAsync(admit(ceremony))) {
           case Left(error) => F.pure(Left(error))
           case Right(_) =>
-            val entered = new AtomicBoolean()
-            F.map(executor.transact { transaction =>
-              executor.program.defer {
-                if (!entered.compareAndSet(false, true))
-                  throw new OperationProtocolException(OperationError.PermitUsed)
-                stage(transaction)
-              }
-            })(_.map(issuer.committed))
+            F.map(BrowserPreparationSettlement.once(executor)(stage))(_.map(issuer.committed))
         }
     }
+}
+
+/**
+ * Shared execution guard only: ordinary and replacement admission and receipt
+ * promotion remain distinct. The transaction executor still owns settlement.
+ */
+private[auth] object BrowserPreparationSettlement {
+  def once[F[_], G[_], Tx, A](executor: TransactionExecutor[F, G, Tx])(
+    stage: Tx => G[A]
+  ): F[Either[TransactionFailure, A]] = {
+    val entered = new AtomicBoolean()
+    executor.transact { transaction =>
+      executor.program.defer {
+        if (!entered.compareAndSet(false, true))
+          throw new OperationProtocolException(OperationError.PermitUsed)
+        stage(transaction)
+      }
+    }
+  }
 }

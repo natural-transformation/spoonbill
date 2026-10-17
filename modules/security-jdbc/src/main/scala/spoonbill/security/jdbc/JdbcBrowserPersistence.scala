@@ -14,8 +14,9 @@ import scala.util.control.NonFatal
 import spoonbill.Qsid
 import spoonbill.auth.*
 import spoonbill.effect.Effect
-import spoonbill.security.Identifiers.ConnectionId
+import spoonbill.security.Identifiers.{ConnectionId, ViewOwnerId, ViewSessionId}
 import spoonbill.security.Versions.ViewOwnershipEpoch
+import spoonbill.security.ViewFence
 import spoonbill.security.transaction.*
 import spoonbill.server.BrowserSessionToken
 
@@ -31,9 +32,10 @@ import spoonbill.server.BrowserSessionToken
  * capacity checks; callers of transact must acquire host locks only inside its
  * callback. The explicit durable clock uses an independent reserved connection
  * and therefore survives domain rollback and process restart. Set
- * ownership=BrowserOwnership.SharedViews when multiple providers share this scope:
- * each view is fenced independently, clock observations always consult storage,
- * and claim admission rejects delayed acquisitions overtaken by another owner.
+ * ownership=BrowserOwnership.SharedViews when multiple providers share this
+ * scope: each view is fenced independently, clock observations always consult
+ * storage, and claim admission rejects delayed acquisitions overtaken by
+ * another owner.
  */
 final class JdbcBrowserPersistence[F[_], P](
   source: DataSource,
@@ -49,7 +51,7 @@ final class JdbcBrowserPersistence[F[_], P](
   clockSource: Option[DataSource] = None,
   newId: () => UUID = () => UUID.randomUUID()
 )(using F: Effect[F])
-    extends TransactionalBrowserPersistence[F, Direct, P] {
+    extends ReplacementBrowserPersistence[F, Direct, P] {
   final class Transaction private[JdbcBrowserPersistence] (raw: Connection) {
     private val thread = Thread.currentThread()
     private var active = true
@@ -186,6 +188,13 @@ final class JdbcBrowserPersistence[F[_], P](
   private val hooks = new HostSessionHooks {
     def isCurrent(connection: Connection, sessionId: UUID, time: Instant): Boolean =
       authorization.authorize(connection, sessionId, time).nonEmpty
+    override def isReplacementCurrent(
+      connection: Connection,
+      sessionId: UUID,
+      expected: HostPrincipalStamp,
+      time: Instant
+    ): Boolean =
+      authorization.authorize(connection, sessionId, time).exists(_.stamp == expected)
     def acknowledge(connection: Connection, completionId: UUID, sessionId: UUID, time: Instant): Unit = {
       host.acknowledge(connection, completionId, sessionId, time)
       sql(
@@ -284,7 +293,11 @@ final class JdbcBrowserPersistence[F[_], P](
     captureIn(connection, binding, token, activate)
   }
 
-  private case class ClaimState(identity: BrowserIdentity[P], id: String, previous: Option[(Vector[Byte], Long, Option[UUID])])
+  private case class ClaimState(
+    identity: BrowserIdentity[P],
+    id: String,
+    previous: Option[(Vector[Byte], Long, Option[UUID])]
+  )
 
   private def claimState(
     connection: Connection,
@@ -312,8 +325,12 @@ final class JdbcBrowserPersistence[F[_], P](
     ClaimState(fresh, id, previous)
   }
 
-  /** Reserve a server-generated HTTP bootstrap view without taking ownership. */
-  override def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using Effect[F]): F[Either[BrowserFailure, Unit]] =
+  /**
+   * Reserve a server-generated HTTP bootstrap view without taking ownership.
+   */
+  override def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using
+    Effect[F]
+  ): F[Either[BrowserFailure, Unit]] =
     run { connection =>
       val state = claimState(connection, identity, qsid, existingOnly = false)
       if (state.previous.isEmpty) {
@@ -343,7 +360,7 @@ final class JdbcBrowserPersistence[F[_], P](
     }
     if (ownership == BrowserOwnership.ExclusiveScope) acquire(None)
     else
-      F.flatMap(run { connection => claimState(connection, identity, qsid, existingOnly).previous.map(_._2) }) {
+      F.flatMap(run(connection => claimState(connection, identity, qsid, existingOnly).previous.map(_._2))) {
         case Left(error) => F.pure(Left(error))
         // This read is the durable admission boundary. If a takeover or release
         // wins before acquisition, a paused request may not steal ownership back.
@@ -396,14 +413,16 @@ final class JdbcBrowserPersistence[F[_], P](
 
   /**
    * Admit one already materialized output under the same authoritative lock as
-   * takeover, logout and host writes. No frame escapes an unknown settlement.
-   * A frame admitted before takeover may still arrive afterward in transport.
+   * takeover, logout and host writes. No frame escapes an unknown settlement. A
+   * frame admitted before takeover may still arrive afterward in transport.
    */
   override def admitOutput[A](view: BrowserView[P], output: A)(using Effect[F]): F[Either[BrowserFailure, A]] =
-    run { connection => current(connection, view); output }
+    run { connection =>
+      current(connection, view); output
+    }
 
-  override def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(
-    using Effect[F]
+  override def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(using
+    Effect[F]
   ): F[Either[BrowserFailure, A]] = run { connection =>
     if (!allowed(current(connection, view))) reject()
     output
@@ -419,14 +438,15 @@ final class JdbcBrowserPersistence[F[_], P](
     }
   }
 
-  /** Recover explicitly selected, non-sensitive presentation under the current
+  /**
+   * Recover explicitly selected, non-sensitive presentation under the current
    * authenticated view's durable authority and owner fence. Anonymous views
    * have no snapshot session. project and restore must be pure, nonblocking
    * transformations; restore overlays presentation onto freshly authorized
    * state and must not replace its authority or current business results.
    * Format decoders and compatibility conversions must likewise be pure and
-   * bounded because reading may hold the provider transaction's locks.
-   * An incompatible schema fails without replacing the stored projection.
+   * bounded because reading may hold the provider transaction's locks. An
+   * incompatible schema fails without replacing the stored projection.
    */
   def projectedSnapshots[S, D](
     format: spoonbill.snapshot.SnapshotFormat[D],
@@ -435,7 +455,8 @@ final class JdbcBrowserPersistence[F[_], P](
   ): BrowserView[P] => Option[spoonbill.snapshot.ViewSnapshotSession[F, S]] =
     JdbcBrowserSnapshots.projected(this, format, project, restore)
 
-  /** Explicit administrative observation, never part of request authorization.
+  /**
+   * Explicit administrative observation, never part of request authorization.
    * Counts share one authoritative transaction; applications control who may
    * see them. Local in-flight resources are bounded separately by pendingJobs.
    */
@@ -447,7 +468,9 @@ final class JdbcBrowserPersistence[F[_], P](
           (if (active) " AND owner_id IS NOT NULL" else "")
       ) { query =>
         scope(query)
-        Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+        Using.resource(query.executeQuery()) { rows =>
+          rows.next(); rows.getLong(1)
+        }
       }
       def maximum(table: String, namespaceColumn: String, condition: String): Long = sql(
         connection,
@@ -455,7 +478,9 @@ final class JdbcBrowserPersistence[F[_], P](
         WHERE realm=? AND $namespaceColumn=? $condition GROUP BY binding_hash) AS bindings"""
       ) { query =>
         scope(query)
-        Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+        Using.resource(query.executeQuery()) { rows =>
+          rows.next(); rows.getLong(1)
+        }
       }
       BrowserPersistenceUsage(
         count(connection, "spoonbill_browser_slot", "cookie_namespace"),
@@ -470,17 +495,19 @@ final class JdbcBrowserPersistence[F[_], P](
     }
   }
 
-  /** Bounded administrative discovery; identifiers are lookup metadata only.
-   * A page is current at its transaction boundary, not a lease for later work.
+  /**
+   * Bounded administrative discovery; identifiers are lookup metadata only. A
+   * page is current at its transaction boundary, not a lease for later work.
    */
   def ownedViewPage(
     after: Option[String] = None,
     limit: Int = 100
   ): F[Either[TransactionFailure, BrowserOwnedViewPage]] = owned() {
     transaction { connection =>
-      if (limit <= 0 || limit > 1000 || after.exists(value =>
-        value.isEmpty || value.length > 192 || !value.forall(c => c >= ' ' && c <= '~')
-      )) reject(OperationError.InvalidDefinition)
+      if (
+        limit <= 0 || limit > 1000 || after
+          .exists(value => value.isEmpty || value.length > 192 || !value.forall(c => c >= ' ' && c <= '~'))
+      ) reject(OperationError.InvalidDefinition)
       val found = sql(
         connection,
         """SELECT view_id,owner_id,epoch FROM spoonbill_browser_view
@@ -490,12 +517,13 @@ final class JdbcBrowserPersistence[F[_], P](
         scope(query); query.setString(3, after.getOrElse("")); query.setInt(4, limit + 1)
         Using.resource(query.executeQuery()) { rows =>
           val result = Vector.newBuilder[BrowserOwnedView]
-          while (rows.next()) result += BrowserOwnedView(
-            scope,
-            rows.getString(1),
-            rows.getObject(2, classOf[UUID]),
-            ViewOwnershipEpoch.fromLong(rows.getLong(3)).fold(_ => reject(OperationError.StorageFailure), identity)
-          )
+          while (rows.next())
+            result += BrowserOwnedView(
+              scope,
+              rows.getString(1),
+              rows.getObject(2, classOf[UUID]),
+              ViewOwnershipEpoch.fromLong(rows.getLong(3)).fold(_ => reject(OperationError.StorageFailure), identity)
+            )
           result.result()
         }
       }
@@ -504,18 +532,22 @@ final class JdbcBrowserPersistence[F[_], P](
     }
   }
 
-  /** Privileged, explicit retirement of one observed owner. The host callback
+  /**
+   * Privileged, explicit retirement of one observed owner. The host callback
    * must authorize the administrator using this transaction (and may audit the
-   * attempt); false or a thrown rejection rolls all writes back. Target metadata
-   * is never sufficient authorization. Returning false means its fence was no
-   * longer current. A successful retirement retains the snapshot and permanent
-   * view row while advancing the epoch; it does not reclaim history capacity.
+   * attempt); false or a thrown rejection rolls all writes back. Target
+   * metadata is never sufficient authorization. Returning false means its fence
+   * was no longer current. A successful retirement retains the snapshot and
+   * permanent view row while advancing the epoch; it does not reclaim history
+   * capacity.
    */
   def retireView(target: BrowserOwnedView)(authorize: Tx => Boolean): F[Either[TransactionFailure, Boolean]] =
     F.map(owned(cleanup = true) {
       transaction { connection =>
-        if (target.scope != scope || target.viewId.isEmpty || target.viewId.length > 192 ||
-          !target.viewId.forall(c => c >= ' ' && c <= '~') || target.epoch.toLong <= 0)
+        if (
+          target.scope != scope || target.viewId.isEmpty || target.viewId.length > 192 ||
+          !target.viewId.forall(c => c >= ' ' && c <= '~') || target.epoch.toLong <= 0
+        )
           reject(OperationError.InvalidDefinition)
         if (!withHostTransaction(connection)(authorize)) reject()
         val epoch = sql(
@@ -530,7 +562,7 @@ final class JdbcBrowserPersistence[F[_], P](
           }
         }
         epoch match {
-          case None => false
+          case None                => false
           case Some(Long.MaxValue) => reject(OperationError.CapacityExceeded)
           case Some(currentEpoch) =>
             sql(
@@ -625,7 +657,11 @@ final class JdbcBrowserPersistence[F[_], P](
     value.view.asInstanceOf[BrowserView[P]]
   }
 
-  def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = run { connection =>
+  def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = run(
+    beginIn(_, view, purpose)
+  )
+
+  private def beginIn(connection: Connection, view: BrowserView[P], purpose: String): BrowserCeremony = {
     if (purpose.isEmpty || purpose.length > 96) reject()
     current(connection, view)
     if (count(connection, "spoonbill_auth_ceremony") >= limits.retainedCeremonies)
@@ -665,6 +701,7 @@ final class JdbcBrowserPersistence[F[_], P](
   ): F[Either[BrowserFailure, BrowserCeremony]] = run { connection =>
     val view   = ceremonyView(ceremony)
     val record = readCeremony(connection, ceremony.id)
+    requireOrdinary(connection, record.id)
     current(connection, view); validate(record, view, ceremony.purpose)
     val next = pureRequired(record.bind(challenge))
     save(connection, next); capability(view, next)
@@ -672,6 +709,7 @@ final class JdbcBrowserPersistence[F[_], P](
   def resume(view: BrowserView[P], id: CeremonyId, purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = run {
     connection =>
       val record = readCeremony(connection, id)
+      requireOrdinary(connection, id)
       current(connection, view); validate(record, view, purpose)
       if (record.phase != BrowserCeremonyPhase.Begun && record.phase != BrowserCeremonyPhase.Challenged)
         reject(OperationError.PermitUsed)
@@ -685,6 +723,7 @@ final class JdbcBrowserPersistence[F[_], P](
       connection,
       """SELECT c.id FROM spoonbill_auth_ceremony c
       WHERE c.realm=? AND c.namespace=? AND c.binding_hash=? AND c.generation=? AND c.expires_at>?
+      AND NOT EXISTS (SELECT 1 FROM spoonbill_browser_replacement r WHERE r.realm=c.realm AND r.namespace=c.namespace AND r.ceremony_id=c.id)
       AND (c.phase IN ('Challenged','Admitted') OR (c.phase='Committed' AND EXISTS (
         SELECT 1 FROM spoonbill_auth_material m WHERE m.realm=c.realm AND m.namespace=c.namespace
           AND m.attempt=c.attempt AND m.expires_at>? AND m.deliveries<?)))
@@ -722,11 +761,519 @@ final class JdbcBrowserPersistence[F[_], P](
       transaction { connection =>
         val view   = ceremonyView(ceremony)
         val record = readCeremony(connection, ceremony.id)
+        requireOrdinary(connection, record.id)
         current(connection, view); validate(record, view, ceremony.purpose)
         if (record.challenge != ceremony.challenge) reject()
         save(connection, pureRequired(record.admit))
       }
   )
+
+  // Captured host-stamp expiries are lossless ISO Instant text in the linkage
+  // table. PostgreSQL timestamp rounding must not change identity equality;
+  // operational session/completion deadlines retain their timestamp columns.
+  private case class Replacement(
+    id: CeremonyId,
+    binding: Vector[Byte],
+    generation: Long,
+    predecessor: UUID,
+    credential: Vector[Byte],
+    principal: HostPrincipalStamp,
+    view: String,
+    owner: UUID,
+    epoch: Long,
+    connection: UUID,
+    successor: Option[UUID],
+    successorPrincipal: Option[HostPrincipalStamp],
+    deadline: Option[Instant]
+  ) {
+    def fence: ViewFence = ViewFence(
+      ViewSessionId.fromUuid(UUID.nameUUIDFromBytes(view.getBytes(UTF_8))),
+      ViewOwnerId.fromUuid(owner),
+      ViewOwnershipEpoch.fromLong(epoch).toOption.get
+    )
+    def authority: BrowserAuthorityStamp =
+      BrowserAuthorityStamp(binding, generation, Some(predecessor), Some(principal))
+    def captured: BrowserReplacementPredecessor = BrowserReplacementPredecessor(scope, authority, credential, fence)
+  }
+
+  private def replacement(connection: Connection, id: CeremonyId): Option[Replacement] = sql(
+    connection,
+    """SELECT binding_hash,generation,predecessor_session_id,predecessor_token_hash,subject_key,security_version,
+      policy_version,predecessor_expires_at,view_id,owner_id,owner_epoch,connection_id,successor_session_id,
+      successor_security_version,successor_policy_version,successor_expires_at,completion_expires_at
+      FROM spoonbill_browser_replacement WHERE realm=? AND namespace=? AND ceremony_id=?"""
+  ) { query =>
+    scope(query); query.setObject(3, id.value)
+    Using.resource(query.executeQuery()) { rows =>
+      if (!rows.next()) None
+      else {
+        val successor = Option(rows.getObject(13, classOf[UUID]))
+        Some(
+          Replacement(
+            id,
+            rows.getBytes(1).toVector,
+            rows.getLong(2),
+            rows.getObject(3, classOf[UUID]),
+            rows.getBytes(4).toVector,
+            HostPrincipalStamp(rows.getString(5), rows.getLong(6), rows.getLong(7), Instant.parse(rows.getString(8))),
+            rows.getString(9),
+            rows.getObject(10, classOf[UUID]),
+            rows.getLong(11),
+            rows.getObject(12, classOf[UUID]),
+            successor,
+            successor.map(_ =>
+              HostPrincipalStamp(
+                rows.getString(5),
+                rows.getLong(14),
+                rows.getLong(15),
+                Instant.parse(rows.getString(16))
+              )
+            ),
+            Option(rows.getTimestamp(17)).map(_.toInstant)
+          )
+        )
+      }
+    }
+  }
+  private def requireOrdinary(connection: Connection, id: CeremonyId): Unit =
+    if (replacement(connection, id).nonEmpty) reject()
+  private def requiredReplacement(connection: Connection, id: CeremonyId): Replacement =
+    replacement(connection, id).getOrElse(reject())
+  private def replacementView(ceremony: BrowserReplacementCeremony): BrowserView[P] = {
+    if (!issuer.owns(ceremony)) reject(OperationError.ForeignPermit)
+    ceremony.view.asInstanceOf[BrowserView[P]]
+  }
+  private def matchReplacement(value: Replacement, view: BrowserView[P]): Unit =
+    if (
+      !issuer.owns(view) || value.authority != view.identity.authorityStamp ||
+      value.credential != view.identity.token.map(key).getOrElse(Vector.empty) || value.view != BrowserView.key(
+        view.qsid
+      ) ||
+      value.owner != view.ownerId || value.epoch != view.epoch || value.connection.toString != view.connectionId.toString
+    ) reject()
+  private def replacementStructure(connection: Connection, value: Replacement, checkOwner: Boolean): Unit = {
+    sql(
+      connection,
+      """SELECT generation,current_session_id FROM spoonbill_browser_slot
+      WHERE realm=? AND cookie_namespace=? AND binding_hash=? FOR UPDATE"""
+    ) { query =>
+      scope(query); query.setBytes(3, value.binding.toArray)
+      Using.resource(query.executeQuery()) { rows =>
+        if (
+          !rows.next() || rows.getLong(1) != value.generation ||
+          rows.getObject(2, classOf[UUID]) != value.predecessor
+        ) reject()
+      }
+    }
+    if (checkOwner)
+      sql(
+        connection,
+        """SELECT binding_hash,owner_id,epoch FROM spoonbill_browser_view
+      WHERE realm=? AND cookie_namespace=? AND view_id=? FOR UPDATE"""
+      ) { query =>
+        scope(query); query.setString(3, value.view)
+        Using.resource(query.executeQuery()) { rows =>
+          if (
+            !rows.next() || rows
+              .getBytes(1)
+              .toVector != value.binding || rows.getObject(2, classOf[UUID]) != value.owner ||
+            rows.getLong(3) != value.epoch
+          ) reject()
+        }
+      }
+  }
+
+  def beginReplacement(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserReplacementCeremony]] =
+    run { connection =>
+      if (view.identity.host.isEmpty || view.identity.sessionId.isEmpty || view.identity.token.isEmpty) reject()
+      val ceremony  = beginIn(connection, view, purpose)
+      val principal = view.identity.host.get.stamp
+      sql(
+        connection,
+        """INSERT INTO spoonbill_browser_replacement(realm,namespace,ceremony_id,binding_hash,generation,
+      predecessor_session_id,predecessor_token_hash,subject_key,security_version,policy_version,predecessor_expires_at,
+      view_id,owner_id,owner_epoch,connection_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+      ) { query =>
+        scope(query); query.setObject(3, ceremony.id.value); query.setBytes(4, digest(view.identity.binding).bytes)
+        query.setLong(5, view.identity.generation); query.setObject(6, view.identity.sessionId.get)
+        query.setBytes(7, digest(view.identity.token.get).bytes); query.setString(8, principal.subject)
+        query.setLong(9, principal.securityVersion); query.setLong(10, principal.policyVersion)
+        query.setString(11, principal.expiresAt.toString); query.setString(12, BrowserView.key(view.qsid))
+        query.setObject(13, view.ownerId); query.setLong(14, view.epoch);
+        query.setObject(15, UUID.fromString(view.connectionId.toString))
+        query.executeUpdate()
+      }
+      issuer.replacementCeremony(view, ceremony.id, purpose, ceremony.expiresAt, None)
+    }
+  def bindReplacementChallenge(
+    ceremony: BrowserReplacementCeremony,
+    challenge: BrowserChallenge
+  ): F[Either[BrowserFailure, BrowserReplacementCeremony]] = run { connection =>
+    val view     = replacementView(ceremony)
+    val record   = readCeremony(connection, ceremony.id)
+    val captured = requiredReplacement(connection, record.id)
+    matchReplacement(captured, view); current(connection, view); validate(record, view, ceremony.purpose)
+    val next = pureRequired(record.bind(challenge))
+    if (challenge.subject != captured.principal.subject || challenge.policyVersion != captured.principal.policyVersion)
+      reject()
+    save(connection, next)
+    issuer.replacementCeremony(view, next.id, next.purpose, next.expiresAt, next.challenge)
+  }
+  def resumeReplacement(
+    view: BrowserView[P],
+    id: CeremonyId,
+    purpose: String
+  ): F[Either[BrowserFailure, BrowserReplacementCeremony]] = run { connection =>
+    val record   = readCeremony(connection, id)
+    val captured = requiredReplacement(connection, id)
+    current(connection, view); validate(record, view, purpose)
+    if (
+      captured.authority != view.identity.authorityStamp || captured.credential != view.identity.token
+        .map(key)
+        .getOrElse(Vector.empty) ||
+      captured.view != BrowserView.key(view.qsid)
+    ) reject()
+    if (record.phase != BrowserCeremonyPhase.Begun && record.phase != BrowserCeremonyPhase.Challenged)
+      reject(OperationError.PermitUsed)
+    sql(
+      connection,
+      """UPDATE spoonbill_browser_replacement SET owner_id=?,owner_epoch=?,connection_id=?
+      WHERE realm=? AND namespace=? AND ceremony_id=?"""
+    ) { query =>
+      query.setObject(1, view.ownerId); query.setLong(2, view.epoch);
+      query.setObject(3, UUID.fromString(view.connectionId.toString))
+      query.setString(4, realm); query.setString(5, namespace); query.setObject(6, id.value); query.executeUpdate()
+    }
+    issuer.replacementCeremony(view, id, purpose, record.expiresAt, record.challenge)
+  }
+
+  private val replacementPreparation = new BrowserReplacementPreparation[F, Direct, Connection, P](
+    issuer,
+    new TransactionExecutor[F, Direct, Connection] {
+      val program                                                              = runner.program
+      val scopePolicy                                                          = runner.scopePolicy
+      def transact[A](body: Connection => A): F[Either[TransactionFailure, A]] = transaction(body)
+    },
+    (ceremony, _) =>
+      transaction { connection =>
+        val view   = replacementView(ceremony)
+        val record = readCeremony(connection, ceremony.id)
+        matchReplacement(requiredReplacement(connection, record.id), view)
+        current(connection, view); validate(record, view, ceremony.purpose)
+        if (record.challenge != ceremony.challenge) reject()
+        save(connection, pureRequired(record.admit))
+      }
+  )
+
+  def prepareReplacement(ceremony: BrowserReplacementCeremony, invocation: BrowserReplacementInvocation)(
+    consume: Tx => HostSessionPrepared
+  ): F[Either[TransactionFailure, CommittedReplacement]] = owned() {
+    replacementPreparation.prepare(ceremony, invocation) { connection =>
+      val view     = replacementView(ceremony)
+      val record   = readCeremony(connection, ceremony.id)
+      val captured = requiredReplacement(connection, record.id)
+      matchReplacement(captured, view); validate(record, view, ceremony.purpose)
+      if (
+        record.phase != BrowserCeremonyPhase.Admitted || record.challenge != ceremony.challenge || captured.successor.nonEmpty
+      )
+        reject(OperationError.PermitUsed)
+      if (record.generation == Long.MaxValue) reject(OperationError.CapacityExceeded)
+      // resolve must lock the host authority against independent administrative revocation.
+      val before = host.resolve(connection, captured.predecessor, now()).getOrElse(reject())
+      if (before.stamp != captured.principal || !now().isBefore(before.expiresAt)) reject()
+      sql(
+        connection,
+        """SELECT active_generation,revoked FROM spoonbill_browser_session
+        WHERE realm=? AND cookie_namespace=? AND host_session_id=? AND token_hash=?"""
+      ) { query =>
+        scope(query); query.setObject(3, captured.predecessor); query.setBytes(4, captured.credential.toArray)
+        Using.resource(query.executeQuery()) { rows =>
+          if (!rows.next() || rows.getBoolean(2) || rows.getLong(1) != captured.generation) reject()
+        }
+      }
+      val prepared              = withHostTransaction(connection)(consume)
+      val successor             = host.resolve(connection, prepared.sessionId, now()).getOrElse(reject())
+      val predecessorAuthorized = host.resolve(connection, captured.predecessor, now()).nonEmpty
+      val time                  = now()
+      val sessionExpiry         = prepared.expiresAt.truncatedTo(ChronoUnit.MICROS)
+      val deadline = Vector(record.expiresAt, sessionExpiry, time.plusSeconds(limits.deliverySeconds)).min
+        .truncatedTo(ChronoUnit.MICROS)
+      pureRequired(
+        BrowserReplacementAttempt(record, captured.captured).prepare(
+          BrowserReplacementSuccessor(
+            prepared.sessionId,
+            key(prepared.credential.value),
+            successor.stamp,
+            sessionExpiry
+          ),
+          predecessorAuthorized,
+          deadline,
+          time
+        )
+      )
+      replacementStructure(connection, captured, checkOwner = true)
+      retire(connection, time)
+      if (count(connection, "spoonbill_auth_material") >= limits.deliveryMaterials)
+        reject(OperationError.CapacityExceeded)
+      browser.prepareNew(
+        connection,
+        PreparedBrowserSession(
+          record.completionId,
+          prepared.completionId,
+          prepared.sessionId,
+          digest(view.identity.binding),
+          digest(prepared.credential.value),
+          record.generation,
+          sessionExpiry,
+          deadline
+        )
+      )
+      sql(
+        connection,
+        """UPDATE spoonbill_browser_session SET revoked=TRUE
+        WHERE realm=? AND cookie_namespace=? AND host_session_id=? AND token_hash=? AND NOT revoked"""
+      ) { query =>
+        scope(query); query.setObject(3, captured.predecessor); query.setBytes(4, captured.credential.toArray)
+        if (query.executeUpdate() != 1) reject()
+      }
+      sql(
+        connection,
+        """UPDATE spoonbill_browser_replacement SET successor_session_id=?,successor_security_version=?,
+        successor_policy_version=?,successor_expires_at=?,completion_expires_at=? WHERE realm=? AND namespace=? AND ceremony_id=?"""
+      ) { query =>
+        query.setObject(1, prepared.sessionId); query.setLong(2, successor.securityVersion);
+        query.setLong(3, successor.policyVersion)
+        query.setString(4, successor.expiresAt.toString); query.setTimestamp(5, Timestamp.from(deadline))
+        query.setString(6, realm); query.setString(7, namespace); query.setObject(8, record.id.value);
+        query.executeUpdate()
+      }
+      val plaintext = prepared.credential.value.getBytes(UTF_8)
+      val encrypted =
+        try
+          Array(1.toByte) ++ vault.seal(
+            plaintext,
+            replacementAssociated(record.completionId, captured.binding, prepared.sessionId)
+          )
+        finally java.util.Arrays.fill(plaintext, 0.toByte)
+      sql(
+        connection,
+        "INSERT INTO spoonbill_auth_material(realm,namespace,attempt,payload,deliveries,expires_at) VALUES (?,?,?,?,0,?)"
+      ) { query =>
+        scope(query); query.setObject(3, record.completionId); query.setBytes(4, encrypted);
+        query.setTimestamp(5, Timestamp.from(deadline)); query.executeUpdate()
+      }
+      validate(record, view, ceremony.purpose)
+      if (!now().isBefore(deadline)) reject(OperationError.Expired)
+      save(connection, pureRequired(record.committed)); record.completionId
+    }
+  }
+
+  private def replacementAssociated(attempt: UUID, binding: Vector[Byte], successor: UUID): Array[Byte] =
+    "replacement:v1:".getBytes(UTF_8) ++ associated(attempt, binding) ++ successor.toString.getBytes(UTF_8)
+
+  private def replacementRequestRecord(
+    connection: Connection,
+    request: BrowserReplacementRequest
+  ): (BrowserCeremonyRecord, Replacement) = {
+    if (!validSecret(request.binding) || request.token.exists(token => !validSecret(token))) reject()
+    val id = request.ceremonyId.getOrElse(
+      sql(
+        connection,
+        """SELECT r.ceremony_id FROM spoonbill_browser_replacement r
+      JOIN spoonbill_browser_slot s ON s.realm=r.realm AND s.cookie_namespace=r.namespace AND s.binding_hash=r.binding_hash
+      WHERE r.realm=? AND r.namespace=? AND r.binding_hash=? AND r.successor_session_id IS NOT NULL AND
+      ((r.generation=s.generation AND r.predecessor_session_id=s.current_session_id) OR
+       (r.successor_session_id=s.current_session_id AND EXISTS (SELECT 1 FROM spoonbill_browser_session b
+         WHERE b.realm=r.realm AND b.cookie_namespace=r.namespace AND b.host_session_id=r.successor_session_id
+         AND b.active_generation=s.generation AND b.token_hash=?)))"""
+      ) { query =>
+        scope(query); query.setBytes(3, digest(request.binding).bytes)
+        query.setBytes(4, request.token.map(token => digest(token).bytes).orNull)
+        Using.resource(query.executeQuery()) { rows =>
+          if (!rows.next()) reject(OperationError.NotPrepared)
+          val found = CeremonyId(rows.getObject(1, classOf[UUID]))
+          if (rows.next()) reject()
+          found
+        }
+      }
+    )
+    val record   = readCeremony(connection, id)
+    val captured = requiredReplacement(connection, id)
+    if (captured.binding != key(request.binding)) reject()
+    (record, captured)
+  }
+
+  private def replacementSession(
+    connection: Connection,
+    successor: UUID
+  ): (Vector[Byte], Option[Long], Boolean, Instant) =
+    sql(
+      connection,
+      """SELECT token_hash,active_generation,revoked,expires_at FROM spoonbill_browser_session
+        WHERE realm=? AND cookie_namespace=? AND host_session_id=?"""
+    ) { query =>
+      scope(query); query.setObject(3, successor)
+      Using.resource(query.executeQuery()) { rows =>
+        if (!rows.next()) reject()
+        (
+          rows.getBytes(1).toVector,
+          Option(rows.getObject(2, classOf[java.lang.Long])).map(_.longValue),
+          rows.getBoolean(3),
+          rows.getTimestamp(4).toInstant
+        )
+      }
+    }
+
+  private def replacementRecoveryIn(
+    connection: Connection,
+    request: BrowserReplacementRequest,
+    reconcile: Boolean
+  ): (BrowserReplacementRecovery, Boolean) = {
+    val (record, captured) = replacementRequestRecord(connection, request)
+    val successorRow       = captured.successor.map(replacementSession(connection, _))
+    val supplied           = request.token.map(key)
+    if (supplied.exists(hash => hash != captured.credential && !successorRow.exists(_._1 == hash))) reject()
+    if (record.phase != BrowserCeremonyPhase.Committed) {
+      // Negative recovery is still bound to the captured slot generation and
+      // predecessor. Logout cannot authorize a stale request to reconcile it.
+      // No host authorization or physical-owner grant is needed for this fence.
+      replacementStructure(connection, captured, checkOwner = false)
+      if (reconcile) save(connection, record.reconciled)
+      (BrowserReplacementRecovery.NotCommitted, false)
+    } else {
+      val successor = captured.successor.getOrElse(reject())
+      host.resolve(connection, successor, now()) // Acquire host locks before the slot.
+      val slot = sql(
+        connection,
+        """SELECT generation,current_session_id FROM spoonbill_browser_slot
+        WHERE realm=? AND cookie_namespace=? AND binding_hash=? FOR UPDATE"""
+      ) { query =>
+        scope(query); query.setBytes(3, captured.binding.toArray)
+        Using.resource(query.executeQuery()) { rows =>
+          if (!rows.next()) reject()
+          (rows.getLong(1), Option(rows.getObject(2, classOf[UUID])))
+        }
+      }
+      // Direct session-adapter activation/revocation also owns the slot lock.
+      // Observe its winner after that lock, rather than retaining a stale row.
+      val row       = replacementSession(connection, successor)
+      val principal = host.resolve(connection, successor, now())
+      val time      = now()
+      val hostCurrent = !row._3 && time.isBefore(row._4) && principal.exists(value =>
+        captured.successorPrincipal.contains(value.stamp) && time.isBefore(value.expiresAt)
+      )
+      val held = supplied.contains(row._1)
+      if (hostCurrent && held && row._2.contains(slot._1) && slot._2.contains(successor))
+        (BrowserReplacementRecovery.ActivateExistingCookie, false)
+      else {
+        val pending = hostCurrent && slot._1 == captured.generation && slot._2.contains(captured.predecessor) &&
+          row._2.isEmpty && time.isBefore(record.expiresAt) && captured.deadline.exists(time.isBefore)
+        if (!pending) (BrowserReplacementRecovery.CommittedUnavailable, false)
+        else if (held) (BrowserReplacementRecovery.ActivateExistingCookie, true)
+        else {
+          val available = sql(
+            connection,
+            """SELECT deliveries,expires_at FROM spoonbill_auth_material
+            WHERE realm=? AND namespace=? AND attempt=?"""
+          ) { query =>
+            scope(query); query.setObject(3, record.completionId)
+            Using.resource(query.executeQuery()) { rows =>
+              rows.next() && rows.getInt(1) < limits.maxDeliveries && time.isBefore(rows.getTimestamp(2).toInstant)
+            }
+          }
+          if (available)
+            (BrowserReplacementRecovery.Deliver(issuer.replacementDelivery(request, record.completionId)), true)
+          else (BrowserReplacementRecovery.CommittedUnavailable, false)
+        }
+      }
+    }
+  }
+  def recoverReplacement(request: BrowserReplacementRequest): F[Either[BrowserFailure, BrowserReplacementRecovery]] =
+    run(connection => replacementRecoveryIn(connection, request, reconcile = true)._1)
+  def replacementPending(request: BrowserReplacementRequest): F[Either[BrowserFailure, Boolean]] =
+    run { connection =>
+      try replacementRecoveryIn(connection, request, reconcile = false)._2
+      catch { case error: OperationProtocolException if error.error == OperationError.NotPrepared => false }
+    }
+
+  def deliverReplacement(
+    request: BrowserReplacementRequest,
+    delivery: BrowserReplacementDelivery
+  ): F[Either[BrowserFailure, BrowserSessionToken]] = run { connection =>
+    if (!issuer.consumeReplacementDelivery(delivery, request)) reject()
+    replacementRecoveryIn(connection, request, reconcile = false)._1 match {
+      case BrowserReplacementRecovery.Deliver(current) if current.completionId == delivery.completionId =>
+        deliverIn(connection, delivery.completionId, request.binding, replacementOnly = true)
+      case _ => reject()
+    }
+  }
+  def admitReplacementCompletion(
+    handoff: CommittedReplacement,
+    invocation: BrowserReplacementInvocation
+  ): F[Either[BrowserFailure, BrowserReplacementControl]] = run { connection =>
+    if (!issuer.owns(handoff) || !issuer.owns(invocation)) reject(OperationError.ForeignPermit)
+    val record   = readCeremony(connection, handoff.ceremonyId)
+    val captured = requiredReplacement(connection, record.id)
+    if (
+      record.phase != BrowserCeremonyPhase.Committed || record.completionId != handoff.completionId ||
+      captured.authority != handoff.authority || captured.fence != handoff.fence || captured.connection.toString != handoff.connectionId.toString
+    ) reject()
+    val principal = captured.successor.flatMap(host.resolve(connection, _, now()))
+    if (
+      !principal.exists(value => captured.successorPrincipal.contains(value.stamp) && now().isBefore(value.expiresAt))
+    ) reject()
+    replacementStructure(connection, captured, checkOwner = true)
+    if (
+      !captured.successor
+        .flatMap(host.resolve(connection, _, now()))
+        .exists(value => captured.successorPrincipal.contains(value.stamp) && now().isBefore(value.expiresAt))
+    ) reject()
+    sql(
+      connection,
+      """SELECT 1 FROM spoonbill_browser_session WHERE realm=? AND cookie_namespace=?
+      AND host_session_id=? AND NOT revoked AND active_generation IS NULL AND expires_at>?"""
+    ) { query =>
+      scope(query); query.setObject(3, captured.successor.getOrElse(reject()));
+      query.setTimestamp(4, Timestamp.from(now()))
+      Using.resource(query.executeQuery())(rows => if (!rows.next()) reject())
+    }
+    if (!captured.deadline.exists(now().isBefore)) reject(OperationError.Expired)
+    issuer.replacementControl(handoff, invocation).getOrElse(reject())
+  }
+  def withSuccessorCompletion[A](
+    view: BrowserView[P]
+  )(body: (Tx, VerifiedSuccessorCompletion) => A): F[Either[TransactionFailure, A]] = {
+    // Capture outside owned's deferred body: evaluating the same lazy outer
+    // effect again must not create a fresh callback execution allowance.
+    val entered = new AtomicBoolean()
+    owned() {
+      transaction { connection =>
+        if (!entered.compareAndSet(false, true)) reject(OperationError.PermitUsed)
+        val identity  = current(connection, view)
+        val successor = identity.sessionId.getOrElse(reject())
+        val completion = sql(
+          connection,
+          """SELECT c.host_completion_id,r.subject_key,r.successor_security_version,
+      r.successor_policy_version,r.successor_expires_at FROM spoonbill_browser_replacement r
+      JOIN spoonbill_auth_ceremony a ON a.realm=r.realm AND a.namespace=r.namespace AND a.id=r.ceremony_id
+      JOIN spoonbill_browser_completion c ON c.realm=a.realm AND c.cookie_namespace=a.namespace AND c.completion_id=a.attempt
+      WHERE r.realm=? AND r.namespace=? AND r.successor_session_id=? AND a.phase='Committed' AND c.acknowledged_at IS NOT NULL"""
+        ) { query =>
+          scope(query); query.setObject(3, successor)
+          Using.resource(query.executeQuery()) { rows =>
+            if (!rows.next()) reject()
+            val expected =
+              HostPrincipalStamp(rows.getString(2), rows.getLong(3), rows.getLong(4), Instant.parse(rows.getString(5)))
+            if (!identity.host.exists(_.stamp == expected)) reject()
+            rows.getObject(1, classOf[UUID])
+          }
+        }
+        val result = withHostTransaction(connection)(tx => body(tx, issuer.successorCompletion(completion, successor)))
+        current(connection, view)
+        result
+      }
+    }
+  }
 
   def prepare(
     ceremony: BrowserCeremony
@@ -734,6 +1281,7 @@ final class JdbcBrowserPersistence[F[_], P](
     preparation.prepare(ceremony) { connection =>
       val view   = ceremonyView(ceremony)
       val record = readCeremony(connection, ceremony.id)
+      requireOrdinary(connection, record.id)
       validate(record, view, ceremony.purpose)
       if (record.phase != BrowserCeremonyPhase.Admitted || record.challenge != ceremony.challenge)
         reject(OperationError.PermitUsed)
@@ -787,6 +1335,7 @@ final class JdbcBrowserPersistence[F[_], P](
 
   def recover(view: BrowserView[P], id: CeremonyId): F[Either[BrowserFailure, BrowserRecovery]] = run { connection =>
     val record = readCeremony(connection, id)
+    requireOrdinary(connection, id)
     if (record.phase == BrowserCeremonyPhase.Committed) {
       val prepared = sql(
         connection,
@@ -826,6 +1375,33 @@ final class JdbcBrowserPersistence[F[_], P](
     s"${realm.length}:$realm${namespace.length}:$namespace$attempt:".getBytes(UTF_8) ++ binding.toArray
 
   def deliver(completionId: UUID, binding: String): F[Option[BrowserSessionToken]] = F.map(run { connection =>
+    val replacementId = sql(
+      connection,
+      """SELECT r.ceremony_id FROM spoonbill_browser_replacement r
+      JOIN spoonbill_auth_ceremony c ON c.realm=r.realm AND c.namespace=r.namespace AND c.id=r.ceremony_id
+      WHERE c.realm=? AND c.namespace=? AND c.attempt=?"""
+    ) { query =>
+      scope(query); query.setObject(3, completionId)
+      Using.resource(query.executeQuery()) { rows =>
+        if (rows.next()) Some(CeremonyId(rows.getObject(1, classOf[UUID]))) else None
+      }
+    }
+    replacementId.foreach { id =>
+      val request = new BrowserReplacementRequest(binding, None, Some(id))
+      replacementRecoveryIn(connection, request, reconcile = false)._1 match {
+        case BrowserReplacementRecovery.Deliver(value) if value.completionId == completionId => ()
+        case _                                                                               => reject()
+      }
+    }
+    deliverIn(connection, completionId, binding, replacementOnly = replacementId.nonEmpty)
+  })(_.toOption)
+
+  private def deliverIn(
+    connection: Connection,
+    completionId: UUID,
+    binding: String,
+    replacementOnly: Boolean
+  ): BrowserSessionToken = {
     if (!validSecret(binding)) reject()
     val recordId =
       sql(connection, "SELECT id FROM spoonbill_auth_ceremony WHERE realm=? AND namespace=? AND attempt=?") { query =>
@@ -834,7 +1410,9 @@ final class JdbcBrowserPersistence[F[_], P](
           if (!rows.next()) reject(OperationError.NotPrepared); CeremonyId(rows.getObject(1, classOf[UUID]))
         }
       }
-    val record = readCeremony(connection, recordId)
+    val record            = readCeremony(connection, recordId)
+    val replacementRecord = replacement(connection, recordId)
+    if (replacementOnly != replacementRecord.nonEmpty) reject()
     if (record.bindingKey != key(binding) || record.phase != BrowserCeremonyPhase.Committed) reject()
     val tokenRow = sql(
       connection,
@@ -866,6 +1444,7 @@ final class JdbcBrowserPersistence[F[_], P](
       }
     }
     val time = now()
+    if (browser.pendingReplacement(connection, digest(binding), generation).exists(_ != tokenRow._1)) reject()
     pureRequired(record.validate(key(binding), generation, record.purpose, time))
     if (
       tokenRow._5 || !time.isBefore(tokenRow._3) || !time.isBefore(tokenRow._4) || !time.isBefore(principal.expiresAt)
@@ -882,7 +1461,15 @@ final class JdbcBrowserPersistence[F[_], P](
         rows.getBytes(1) -> (rows.getInt(2) + 1)
       }
     }
-    val plaintext = vault.open(encrypted._1, associated(completionId, record.bindingKey))
+    val plaintext = replacementRecord match {
+      case None => vault.open(encrypted._1, associated(completionId, record.bindingKey))
+      case Some(value) =>
+        if (encrypted._1.headOption != Some(1.toByte)) reject()
+        vault.open(
+          encrypted._1.drop(1),
+          replacementAssociated(completionId, record.bindingKey, value.successor.getOrElse(reject()))
+        )
+    }
     val credential =
       try {
         val value = new String(plaintext, UTF_8)
@@ -900,7 +1487,7 @@ final class JdbcBrowserPersistence[F[_], P](
           query.setObject(4, completionId); query.executeUpdate()
       }
     credential
-  })(_.toOption)
+  }
 
   def logout(binding: String, token: Option[String]): F[Either[BrowserFailure, Unit]] = run { connection =>
     if (!validSecret(binding)) reject()
