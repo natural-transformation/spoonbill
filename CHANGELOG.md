@@ -1,5 +1,29 @@
 # Changelog
 
+## 5.1.0 — 2026-10-17
+
+- Added explicit authenticated session replacement for factor enrollment,
+  replacement, disabling, and recovery-code regeneration. Host proof use,
+  predecessor revocation, successor creation, audit, and browser reservation
+  settle together. The old session loses ordinary application authority.
+- Added bounded recovery after lost completion or delivery. A valid successor
+  cookie can activate on a fresh socket after the final delivery budget is used,
+  without replaying the security change. The memory and JDBC providers support
+  the new operation; JDBC supports recovery on another compatible node.
+- Added verified successor metadata and one-use encrypted recovery results.
+  Consumption is at most once; response loss does not permit redisclosure.
+- Authenticated-action calls to ordinary `begin`, `resume`, and `recover` are
+  deprecated in favor of the replacement API. Ordinary sign-in and its provider
+  SPI remain supported.
+
+Upgrade all Spoonbill modules together and refresh browser pages onto the new
+client bundle. Drain older serving binaries, apply the explicit V5 PostgreSQL
+migration, and enable replacement only after compatible nodes are running.
+Previously applied V4 migration bytes remain unchanged. Mixed-version
+replacement serving is unsupported. See the
+[API and review guide](docs/authenticated-session-replacement-review-guide.md)
+and [deployment procedure](docs/browser-auth-v4-deployment.md).
+
 ## 5.0.2 — 2026-10-13
 
 - Fixed authentication reconnect rendering in memory and JDBC exclusive mode:

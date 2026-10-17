@@ -135,7 +135,7 @@ Use the explicit replacement API for factor enrollment, factor replacement,
 disabling, or recovery-code regeneration that revokes the current host session.
 Ordinary `prepare` does not acquire that permission from its purpose string.
 Calls to `browser.begin`, `browser.resume`, or `browser.recover` from an
-`AuthenticatedActionContext` are deprecated in 5.0.0 to direct those flows to
+`AuthenticatedActionContext` are deprecated in 5.1.0 to direct those flows to
 `beginReplacement`, `resumeReplacement`, and the checked replacement recovery
 outcome. The ordinary methods and `provider.prepare` remain supported for
 anonymous sign-in; deprecating them globally would warn valid sign-in callers.
@@ -226,8 +226,8 @@ encryption key and results are process-local. The JDBC example keeps encrypted
 results in host tables and uses deployment-owned vault keys. Applications must
 bound and expire their own results; the reference `Accounts.maintenance` does so.
 
-This is local, unreleased work. Rebuild consumers against the updated APIs;
-binary compatibility with already-compiled clients is not promised. Refresh
+For 5.1.0, rebuild consumers against the updated APIs; binary compatibility
+with already-compiled clients is not promised. Refresh
 browser pages onto the updated client bundle before enabling replacement. The
 new fixed recovery procedure is generated with that bundle; there is no claim
 that an older live tab understands it and no wire-version negotiation. Existing

@@ -8,14 +8,15 @@ new epoch, validates current host authority and restores the application's
 explicit presentation projection. No actor system or remote authority service
 is required by core.
 
-This is local `5.0.0-SNAPSHOT` functionality, not a published release or a performance
-acceptance claim. Existing single-owner applications keep their explicit exclusive mode and
-do not acquire the clustered snapshot cost unless they opt into it.
+Shared-store mode is available in 5.0.0 and later; these measurements are not
+a performance acceptance claim. Existing single-owner applications keep their
+explicit exclusive mode and do not acquire the clustered snapshot cost unless
+they opt into it.
 
-For application testing, start with the
+For application testing, start with the historical
 [5.0.0-SNAPSHOT migration and testing guide](migration-testing-5.0.0-snapshot.md).
-The [v5 validation report](browser-auth-v5-validation.md) records the current
-snapshot's checks and bounded output-admission measurements.
+The [v5 validation report](browser-auth-v5-validation.md) records its checks
+and bounded output-admission measurements.
 The [4.1 snapshot validation report](clustered-browser-authentication-validation.md)
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
 records; the major version explicitly permits the identified ABI change.

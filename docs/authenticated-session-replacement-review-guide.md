@@ -122,8 +122,8 @@ follow-ups. The final validation record must state the resulting source boundary
 
 The schema-export regressions also prove that both `--check` and `--write`
 reject edited V4 bytes or unreviewed runtime DDL without rewriting migration
-files. V5 is currently unreleased; once applied permanently it must also be
-frozen, with later changes introduced by a new migration version.
+files. Once V5 is applied permanently it must also remain frozen; later schema
+changes require a new migration version.
 
 ## Invariants and risk questions
 

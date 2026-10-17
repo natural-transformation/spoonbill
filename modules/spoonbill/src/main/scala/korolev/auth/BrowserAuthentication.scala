@@ -379,7 +379,7 @@ final class BrowserAuthentication[F[_], S, P](
    * Ordinary sign-in stays supported; authenticated security changes use
    * beginReplacement.
    */
-  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.0.0")
+  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.1.0")
   def begin(context: AuthenticatedActionContext[P]): F[Either[BrowserFailure, BrowserCeremony]] =
     begin(context: PublicActionContext, "sign-in")
 
@@ -387,7 +387,7 @@ final class BrowserAuthentication[F[_], S, P](
    * Ordinary sign-in stays supported; authenticated security changes use
    * beginReplacement.
    */
-  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.0.0")
+  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.1.0")
   def begin(context: AuthenticatedActionContext[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] =
     begin(context: PublicActionContext, purpose)
 
@@ -404,7 +404,7 @@ final class BrowserAuthentication[F[_], S, P](
    * Resume a replacement through resumeReplacement instead of an ordinary
    * ceremony.
    */
-  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.0.0")
+  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.1.0")
   def resume(context: AuthenticatedActionContext[P], id: CeremonyId): F[Either[BrowserFailure, BrowserCeremony]] =
     resume(context: PublicActionContext, id, "sign-in")
 
@@ -412,7 +412,7 @@ final class BrowserAuthentication[F[_], S, P](
    * Resume a replacement through resumeReplacement instead of an ordinary
    * ceremony.
    */
-  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.0.0")
+  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.1.0")
   def resume(
     context: AuthenticatedActionContext[P],
     id: CeremonyId,
@@ -429,7 +429,7 @@ final class BrowserAuthentication[F[_], S, P](
    * Replacement reconciliation uses the fixed recovery outcome and transport
    * boundary.
    */
-  @deprecated("Use recoverReplacementOutcome for authenticated replacement; recover is for ordinary sign-in", "5.0.0")
+  @deprecated("Use recoverReplacementOutcome for authenticated replacement; recover is for ordinary sign-in", "5.1.0")
   def recover(context: AuthenticatedActionContext[P], id: CeremonyId): F[Either[BrowserFailure, BrowserRecovery]] =
     recover(context: PublicActionContext, id)
 
