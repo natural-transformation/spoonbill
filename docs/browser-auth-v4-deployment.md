@@ -7,9 +7,9 @@ are development fixtures and must not be used for production users.
 
 ## Supported boundary
 
-| Component | Initial v4 target |
+| Component | Supported boundary |
 | --- | --- |
-| Spoonbill modules | Matching versions throughout; this checkout is `5.0.0-SNAPSHOT`, not a public release claim |
+| Spoonbill modules | Matching versions throughout; use 5.1.0 for replacement deployments |
 | Scala | 3.3.8 |
 | Native Scala 3 Pekko / Pekko HTTP | 1.7.0 / 1.4.0, including testkits on the same `_3` variant |
 | JDBC dialect / validation engine | PostgreSQL 14; PostgreSQL-specific advisory locks, `ON CONFLICT`, and `RETURNING` are required |
@@ -111,9 +111,9 @@ execute a migration:
 nix develop --no-write-lock-file --command node scripts/export-browser-auth-schema.mjs --check
 ```
 
-`--write` regenerates only the currently unreleased V5 delta and refuses a
-changed V4. Once a migration is applied to a permanent environment, freeze it
-too; later schema changes need a new version and an updated drift guard. Do not
+`--write` regenerates only the V5 delta and refuses a changed V4. V5 is
+published with 5.1.0; preserve its applied bytes and use a new migration
+version and updated drift guard for later schema changes. Do not
 repair checksum history to accommodate an edited migration. Runtime `initialize`
 remains an explicit convenience for owned setup; no HTTP/WebSocket path invokes
 it automatically.
