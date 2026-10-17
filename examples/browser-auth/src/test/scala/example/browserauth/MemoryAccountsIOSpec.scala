@@ -12,6 +12,7 @@ import org.scalatest.matchers.should.Matchers
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import spoonbill.Qsid
+import spoonbill.action.UiOutcome
 import spoonbill.auth.*
 import spoonbill.cats.IO3Effect
 import spoonbill.data.Bytes
@@ -47,9 +48,11 @@ class MemoryAccountsIOSpec extends AnyFlatSpec with Matchers {
         .map(accepted)
     ceremony <- accounts.browser.persistence.begin(view, "sign-in").map(accepted)
   } yield view -> ceremony
-  private def cookie(accounts: MemoryAccounts[IO], receipt: CommittedAuthentication): IO[String] = {
+  private def cookie(accounts: MemoryAccounts[IO], receipt: CommittedAuthentication): IO[String] =
+    cookie(accounts, receipt.completionId)
+  private def cookie(accounts: MemoryAccounts[IO], completionId: UUID): IO[String] = {
     val service = spoonbillService(new Application[IO](accounts).config)
-    Stream(Bytes.wrap(receipt.completionId.toString.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+    Stream(Bytes.wrap(completionId.toString.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
       .mat[IO]()
       .flatMap { body =>
         service.http(
@@ -161,5 +164,74 @@ class MemoryAccountsIOSpec extends AnyFlatSpec with Matchers {
                } yield ()
              }
     } yield ()).timeout(15.seconds).unsafeRunSync()
+  }
+
+  it should "replace in native IO, defer recovery presentation and prevent repeated disclosure" in {
+    accounts.use { accounts =>
+      val provider = accounts.browser.persistence
+      val support  = provider.asInstanceOf[BrowserReplacementSupport[IO, Principal]]
+      for {
+        context  <- open(accounts)
+        signedIn <- accounts.signIn(context._2, "alice", "password").map(receipt)
+        oldToken <- cookie(accounts, signedIn)
+        identity <- provider.capture(binding, Some(oldToken), activate = true).map(accepted)
+        predecessor <-
+          provider
+            .claim(identity, context._1.qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)
+            .map(accepted)
+        ceremony <- support.beginReplacement(predecessor, SecurityChange.EnableFactor.purpose).map(accepted)
+        call      = MemoryReplacementTestAccess.invocation(predecessor)
+        // Constructed programs must not spend admission/rate budget or proof.
+        unexecuted = Vector.fill(8)(accounts.replace(ceremony, call, "incorrect"))
+        outcome   <- accounts.replace(ceremony, call, "password")
+        handoff <- IO(outcome match {
+                     case SessionReplacement.Completed(value) => value
+                     case other                               => fail(s"Replacement did not complete: $other")
+                   })
+        denied   <- accounts.consumeRecovery(predecessor, MemoryReplacementTestAccess.invocation(predecessor))
+        _        <- IO { unexecuted.size shouldBe 8; denied.isLeft shouldBe true }
+        newToken <- cookie(accounts, handoff.completionId)
+        active   <- provider.capture(binding, Some(newToken), activate = true).map(accepted)
+        successor <- provider
+                       .claim(active, context._1.qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)
+                       .map(accepted)
+        _ <- Resource
+               .make(IO.fromFuture(IO(MemoryReplacementTestAccess.context(successor))))(owner => IO(owner.close()))
+               .use { owner =>
+                 val consume = accounts.consumeRecovery(successor, owner.invocation)
+                 for {
+                   record <- consume.map(accepted).map(_.get)
+                   // Every program is constructed against the same live one-shot
+                   // holder. Construction must neither claim it nor decrypt it.
+                   unexecutedPresentations = Vector.fill(8)(accounts.presentRecovery(record, owner.context))
+                   presentation            = accounts.presentRecovery(record, owner.context)
+                   first                  <- presentation
+                   repeated               <- presentation
+                   formerlyUnexecuted     <- unexecutedPresentations.head
+                   replayed               <- consume
+                   consumed <- accounts
+                                 .consumeRecovery(successor, MemoryReplacementTestAccess.invocation(successor))
+                                 .map(accepted)
+                   _ <- IO {
+                          record.completionId should not be handoff.completionId
+                          first shouldBe a[UiOutcome.PresentSensitive[?]]
+                          repeated shouldBe a[UiOutcome.Updated[?]]
+                          formerlyUnexecuted shouldBe a[UiOutcome.Updated[?]]
+                          record.claim(owner.invocation, java.time.Instant.now()) shouldBe None
+                          replayed.isLeft shouldBe true
+                          consumed shouldBe None
+                        }
+                 } yield ()
+               }
+        _     <- provider.logout(binding, Some(newToken)).map(accepted)
+        fresh <- provider.capture(binding, None, activate = false).map(accepted)
+        anonymous <- provider
+                       .claim(fresh, context._1.qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)
+                       .map(accepted)
+        login           <- provider.begin(anonymous, "sign-in").map(accepted)
+        factorChallenge <- accounts.signIn(login, "alice", "password")
+        _               <- IO(factorChallenge shouldBe a[SignIn.Challenge])
+      } yield ()
+    }.timeout(15.seconds).unsafeRunSync()
   }
 }

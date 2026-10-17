@@ -22,7 +22,10 @@ final class InvocationBinding private[spoonbill] (
   private[spoonbill] val admission: InvocationAdmission = InvocationAdmission.untracked,
   private[spoonbill] val expectedAuthority: Option[AnyRef] = None
 ):
-  private[spoonbill] val sensitiveOwner = new spoonbill.sensitive.SensitiveDisclosure.Owner
+  private[spoonbill] val sensitiveOwner           = new spoonbill.sensitive.SensitiveDisclosure.Owner
+  private[spoonbill] lazy val replacementIdentity = new Object
+  // A retirement hint only: never authorizes output, delivery or host work.
+  private[spoonbill] lazy val replacementAttempted = new java.util.concurrent.atomic.AtomicBoolean()
 
 enum AccessDenied:
   case Unauthenticated, Forbidden, StepUpRequired, StaleAuthority
@@ -40,6 +43,8 @@ enum AccessDecision:
 trait SessionAuthority[F[_], P]:
   def resolve(binding: InvocationBinding): F[Either[AccessDenied, P]]
   def revalidate(binding: InvocationBinding, principal: P): F[AccessDecision]
+  private[spoonbill] def replacement
+    : Option[(InvocationBinding, spoonbill.auth.CommittedReplacement) => F[AccessDecision]] = None
 
 /** Policies are read-only checks: do not consume operation grants here. */
 final class PublicPolicy[F[_], I] private (val evaluate: I => F[AccessDecision])
@@ -55,14 +60,21 @@ object ActionPolicy:
     new ActionPolicy(evaluate)
 
 sealed trait PublicActionContext:
+  private[spoonbill] def invocationBinding: InvocationBinding
   def invocationId: InvocationId
   def connectionId: ConnectionId
-  /** A bounded connection-owned handoff, not permission to disclose. The
-    * dedicated sensitive policy still authorizes the payload at delivery.
-    * onResult must capture non-sensitive metadata only.
-    */
-  def presentSensitive[S](region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
-    payload: spoonbill.sensitive.SensitivePayload, lifetime: scala.concurrent.duration.FiniteDuration)(
+
+  /**
+   * A bounded connection-owned handoff, not permission to disclose. The
+   * dedicated sensitive policy still authorizes the payload at delivery.
+   * onResult must capture non-sensitive metadata only.
+   */
+  def presentSensitive[S](
+    region: spoonbill.sensitive.RegionId,
+    purpose: spoonbill.sensitive.Purpose,
+    payload: spoonbill.sensitive.SensitivePayload,
+    lifetime: scala.concurrent.duration.FiniteDuration
+  )(
     onResult: spoonbill.sensitive.DisclosureOutcome => StateUpdate[S]
   ): UiOutcome[S]
 
@@ -86,12 +98,31 @@ object StateUpdate:
 enum UiOutcome[S]:
   case Updated(update: StateUpdate[S])
   case Invalid(error: InputError)
-  /** Opaque delivery handle; never a session credential or authentication proof. */
+
+  /**
+   * Opaque delivery handle; never a session credential or authentication proof.
+   */
   case CommitAuthentication(completionId: java.util.UUID)
+
+  /**
+   * Restricted provider-issued completion, never ordinary application output.
+   */
+  case CommitReplacement(handoff: spoonbill.auth.CommittedReplacement)
+
+  /**
+   * Non-bearer lookup for checked transport reconciliation. Ordinary output
+   * authorization still applies; uncertainty never grants a handoff.
+   */
+  case RecoverReplacement(ceremonyId: spoonbill.auth.CeremonyId)
+
   /** One-shot handoff; cached results retain no payload after transfer. */
-  case PresentSensitive(region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
-    disclosure: spoonbill.sensitive.SensitiveDisclosure, lifetime: scala.concurrent.duration.FiniteDuration,
-    onResult: spoonbill.sensitive.DisclosureOutcome => StateUpdate[S])
+  case PresentSensitive(
+    region: spoonbill.sensitive.RegionId,
+    purpose: spoonbill.sensitive.Purpose,
+    disclosure: spoonbill.sensitive.SensitiveDisclosure,
+    lifetime: scala.concurrent.duration.FiniteDuration,
+    onResult: spoonbill.sensitive.DisclosureOutcome => StateUpdate[S]
+  )
 
 object UiOutcome:
   def update[S](reduce: S => S): UiOutcome[S] = Updated(StateUpdate(reduce))
@@ -134,9 +165,11 @@ enum ActionRejection:
 enum InvocationResult[S]:
   /** The handler was not started. */
   case Rejected(reason: ActionRejection)
-  /** The browser invocation became obsolete before its handler started. No UI
-    * update or rejection callback is applied and the action is never replayed.
-    */
+
+  /**
+   * The browser invocation became obsolete before its handler started. No UI
+   * update or rejection callback is applied and the action is never replayed.
+   */
   case Superseded()
   case Completed(outcome: UiOutcome[S])
 
@@ -154,10 +187,15 @@ enum InvocationResult[S]:
  */
 object ActionDispatcher:
   private abstract class BoundContext(binding: InvocationBinding) extends PublicActionContext:
-    def invocationId: InvocationId = binding.invocationId
-    def connectionId: ConnectionId = binding.connectionId
-    def presentSensitive[S](region: spoonbill.sensitive.RegionId, purpose: spoonbill.sensitive.Purpose,
-      payload: spoonbill.sensitive.SensitivePayload, lifetime: scala.concurrent.duration.FiniteDuration)(
+    private[spoonbill] def invocationBinding: InvocationBinding = binding
+    def invocationId: InvocationId                              = binding.invocationId
+    def connectionId: ConnectionId                              = binding.connectionId
+    def presentSensitive[S](
+      region: spoonbill.sensitive.RegionId,
+      purpose: spoonbill.sensitive.Purpose,
+      payload: spoonbill.sensitive.SensitivePayload,
+      lifetime: scala.concurrent.duration.FiniteDuration
+    )(
       onResult: spoonbill.sensitive.DisclosureOutcome => StateUpdate[S]
     ): UiOutcome[S] =
       val scope = binding.sensitiveScope.getOrElse(throw new spoonbill.server.SessionAccessDenied)
@@ -165,26 +203,32 @@ object ActionDispatcher:
 
   private final class PublicContext(binding: InvocationBinding) extends BoundContext(binding)
   private final class AuthenticatedContext[P](binding: InvocationBinding, val principal: P)
-      extends BoundContext(binding) with AuthenticatedActionContext[P]
+      extends BoundContext(binding)
+      with AuthenticatedActionContext[P]
 
   private def discard[S](outcome: UiOutcome[S]): Unit = outcome match
     case UiOutcome.PresentSensitive(_, _, disclosure, _, _) => disclosure.discard()
-    case _ => ()
+    case _                                                  => ()
 
-  private def checkedOutcome[F[_]: Effect, S](outcome: UiOutcome[S], binding: InvocationBinding,
-    check: => F[AccessDecision]): F[InvocationResult[S]] =
+  private def checkedOutcome[F[_]: Effect, S](
+    outcome: UiOutcome[S],
+    binding: InvocationBinding,
+    check: => F[AccessDecision]
+  ): F[InvocationResult[S]] =
     val F = Effect[F]
     val foreign = outcome match
       case UiOutcome.PresentSensitive(_, _, disclosure, _, _) => !disclosure.belongsTo(binding.sensitiveOwner)
-      case _ => false
+      case _                                                  => false
     if foreign then F.pure(InvocationResult.OutputSuppressed(AccessDenied.StaleAuthority))
-    else F.recoverF(F.flatMap(F.delayAsync(check)) {
-      case AccessDecision.Allowed => F.pure[InvocationResult[S]](InvocationResult.Completed(outcome))
-      case AccessDecision.Denied(reason) => F.delay[InvocationResult[S]] {
-        discard(outcome)
-        InvocationResult.OutputSuppressed(reason)
-      }
-    }) { case error => F.flatMap(F.delay(discard(outcome)))(_ => F.fail[InvocationResult[S]](error)) }
+    else
+      F.recoverF(F.flatMap(F.delayAsync(check)) {
+        case AccessDecision.Allowed => F.pure[InvocationResult[S]](InvocationResult.Completed(outcome))
+        case AccessDecision.Denied(reason) =>
+          F.delay[InvocationResult[S]] {
+            discard(outcome)
+            InvocationResult.OutputSuppressed(reason)
+          }
+      }) { case error => F.flatMap(F.delay(discard(outcome)))(_ => F.fail[InvocationResult[S]](error)) }
 
   private def admit[F[_]: Effect, S](binding: InvocationBinding)(
     operation: => F[InvocationResult[S]]
@@ -198,21 +242,29 @@ object ActionDispatcher:
     limits: InputLimits = InputLimits.default
   ): F[InvocationResult[S]] =
     val F = Effect[F]
-    F.flatMap(F.delay(action.input.decode(submitted, limits))) { decoded => admit(binding) {
-      decoded match
-        case Left(error) => F.pure(InvocationResult.Rejected(ActionRejection.Input(error)))
-        case Right(input) =>
-          F.flatMap(F.delayAsync(action.policy.evaluate(input))) { decision => admit(binding) {
-            decision match
-              case AccessDecision.Denied(reason) => F.pure(InvocationResult.Rejected(ActionRejection.Access(reason)))
-              case AccessDecision.Allowed =>
-                // admit's thunk already catches synchronous throws. Construct the
-                // application effect here, without another suspension after it.
-                F.flatMap(action.run(input, new PublicContext(binding))) { outcome =>
-                  checkedOutcome(outcome, binding, action.policy.evaluate(input))
-                }
-          }}
-    }}
+    F.flatMap(F.delay(action.input.decode(submitted, limits))) { decoded =>
+      admit(binding) {
+        decoded match
+          case Left(error) => F.pure(InvocationResult.Rejected(ActionRejection.Input(error)))
+          case Right(input) =>
+            F.flatMap(F.delayAsync(action.policy.evaluate(input))) { decision =>
+              admit(binding) {
+                decision match
+                  case AccessDecision.Denied(reason) =>
+                    F.pure(InvocationResult.Rejected(ActionRejection.Access(reason)))
+                  case AccessDecision.Allowed =>
+                    // admit's thunk already catches synchronous throws. Construct the
+                    // application effect here, without another suspension after it.
+                    F.flatMap(action.run(input, new PublicContext(binding))) { outcome =>
+                      outcome match
+                        case UiOutcome.CommitReplacement(_) =>
+                          F.pure(InvocationResult.OutputSuppressed(AccessDenied.StaleAuthority))
+                        case _ => checkedOutcome(outcome, binding, action.policy.evaluate(input))
+                    }
+              }
+            }
+      }
+    }
 
   def authenticated[F[_]: Effect, S, I, P](
     action: AuthenticatedAction[F, S, I, P],
@@ -224,25 +276,40 @@ object ActionDispatcher:
     val F = Effect[F]
     if binding.expectedAuthority.exists(expected => !(expected eq authority)) then
       F.pure(InvocationResult.Rejected(ActionRejection.Access(AccessDenied.StaleAuthority)))
-    else F.flatMap(F.delay(action.input.decode(submitted, limits))) { decoded => admit(binding) {
-      decoded match
-        case Left(error) => F.pure(InvocationResult.Rejected(ActionRejection.Input(error)))
-        case Right(input) =>
-          F.flatMap(F.delayAsync(authority.resolve(binding))) { resolved => admit(binding) {
-            resolved match
-              case Left(reason) => F.pure(InvocationResult.Rejected(ActionRejection.Access(reason)))
-              case Right(principal) =>
-                def check: F[AccessDecision] = F.flatMap(F.delayAsync(action.policy.evaluate(input, principal))) {
-                  case AccessDecision.Allowed => F.delayAsync(authority.revalidate(binding, principal))
-                  case denied                 => F.pure(denied)
-                }
-                F.flatMap(check) { decision => admit(binding) {
-                  decision match
-                    case AccessDecision.Denied(reason) => F.pure(InvocationResult.Rejected(ActionRejection.Access(reason)))
-                    case AccessDecision.Allowed =>
-                      F.flatMap(action.run(input, new AuthenticatedContext(binding, principal))) { outcome =>
-                        checkedOutcome(outcome, binding, check)
+    else
+      F.flatMap(F.delay(action.input.decode(submitted, limits))) { decoded =>
+        admit(binding) {
+          decoded match
+            case Left(error) => F.pure(InvocationResult.Rejected(ActionRejection.Input(error)))
+            case Right(input) =>
+              F.flatMap(F.delayAsync(authority.resolve(binding))) { resolved =>
+                admit(binding) {
+                  resolved match
+                    case Left(reason) => F.pure(InvocationResult.Rejected(ActionRejection.Access(reason)))
+                    case Right(principal) =>
+                      def check: F[AccessDecision] = F.flatMap(F.delayAsync(action.policy.evaluate(input, principal))) {
+                        case AccessDecision.Allowed => F.delayAsync(authority.revalidate(binding, principal))
+                        case denied                 => F.pure(denied)
                       }
-                }}
-          }}
-    }}
+                      F.flatMap(check) { decision =>
+                        admit(binding) {
+                          decision match
+                            case AccessDecision.Denied(reason) =>
+                              F.pure(InvocationResult.Rejected(ActionRejection.Access(reason)))
+                            case AccessDecision.Allowed =>
+                              F.flatMap(action.run(input, new AuthenticatedContext(binding, principal))) { outcome =>
+                                outcome match
+                                  case UiOutcome.CommitReplacement(handoff) =>
+                                    authority.replacement match
+                                      case Some(validate) =>
+                                        checkedOutcome(outcome, binding, validate(binding, handoff))
+                                      case None =>
+                                        F.pure(InvocationResult.OutputSuppressed(AccessDenied.StaleAuthority))
+                                  case _ => checkedOutcome(outcome, binding, check)
+                              }
+                        }
+                      }
+                }
+              }
+        }
+      }

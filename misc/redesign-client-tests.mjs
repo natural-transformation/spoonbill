@@ -54,6 +54,7 @@ class FormFake extends ElementFake {
 }
 
 class WebSocketFake extends EventTargetFake {
+  static CONNECTING = 0;
   static OPEN = 1;
   static CLOSED = 3;
   static instances = [];
@@ -804,6 +805,269 @@ test('redesign client regressions against real source modules', { timeout: 10000
       assert.deepEqual(connection._webSocket.protocols, ['json', 'json-deflate']);
     });
 
+    await t.test('a lost replacement command discovers its committed outcome without replaying application sends', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      connection._connectUsingWebSocket();
+      const socket = connection._webSocket;
+      const requests = [];
+      let reloads = 0;
+      let reconnects = 0;
+      window.location.reload = () => { reloads++; };
+      connection.connect = () => { reconnects++; };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, options) => { requests.push({url, options}); return {status: 204}; };
+      try {
+        await connection._onClose();
+        assert.equal(reloads, 0);
+        assert.equal(reconnects, 1);
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].url, 'https://example.invalid/auth/recover');
+        assert.equal(requests[0].options.body, '');
+        assert.equal(requests[0].options.method, 'POST');
+        assert.equal(requests[0].options.redirect, 'error');
+        assert.equal(socket.sent.length, 0);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+
+    await t.test('replacement discovery is bounded across failed reconnects and resets only after readiness', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      let requests = 0;
+      let reconnects = 0;
+      connection.connect = () => { reconnects++; };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => { requests++; return {status: 403}; };
+      try {
+        for (let attempt = 0; attempt < 5; attempt++) await connection._onClose();
+        assert.equal(requests, 3);
+        assert.equal(reconnects, 5);
+        connection.applicationReady();
+        await connection._onClose();
+        assert.equal(requests, 4);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+
+    await t.test('late replacement discovery cannot revive a canceled or superseded connection', async () => {
+      for (const cancel of [true, false]) {
+        const { window } = browser();
+        const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+        const response = deferred();
+        let reconnects = 0;
+        connection.connect = () => { reconnects++; };
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = () => response.promise;
+        try {
+          const closing = connection._onClose();
+          if (cancel) await connection.disconnect(false);
+          else connection._webSocket = {};
+          response.resolve({status: 204});
+          await closing;
+          assert.equal(reconnects, 0);
+        } finally { globalThis.fetch = originalFetch; }
+      }
+    });
+
+    await t.test('departed documents never start replacement discovery and cancel an in-flight probe', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      let requests = 0;
+      let aborted = 0;
+      let reconnects = 0;
+      connection.connect = () => { reconnects++; };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (_url, options) => {
+        requests++;
+        return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+          aborted++;
+          reject(new Error('Synthetic document departure'));
+        }));
+      };
+      try {
+        window.dispatchEvent({type: 'pagehide'});
+        await connection._onClose();
+        assert.equal(requests, 0, 'unload must not start a request in a departed WebKit document');
+        assert.equal(reconnects, 0);
+        window.dispatchEvent({type: 'pageshow'});
+        const closing = connection._onClose();
+        assert.equal(requests, 1);
+        window.dispatchEvent({type: 'pagehide'});
+        await closing;
+        assert.equal(aborted, 1);
+        assert.equal(reconnects, 0, 'a departed document must not reconnect after the probe settles');
+        assert.equal(connection._replacementAbort, null);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+
+    await t.test('early navigation blocks discovery before pagehide and a fresh ready view restores it after cancellation', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      let requests = 0;
+      let reconnects = 0;
+      connection.connect = () => { reconnects++; };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => { requests++; return {status: 403}; };
+      try {
+        window.dispatchEvent({type: 'beforeunload'});
+        await connection._onClose();
+        assert.equal(requests, 0, 'early WebKit unload must not initiate discovery');
+        assert.equal(reconnects, 1, 'canceled departure keeps the existing ordinary reconnect path');
+        connection.applicationReady();
+        await connection._onClose();
+        assert.equal(requests, 1, 'fresh authority after cancellation permits later discovery');
+        assert.equal(reconnects, 2);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+
+    await t.test('trusted interaction after canceled departure restores recovery even before old authority can become ready', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      let requests = 0;
+      connection.connect = () => {};
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => { requests++; return {status: 204}; };
+      try {
+        window.dispatchEvent({type: 'beforeunload'});
+        await connection._onClose();
+        window.dispatchEvent({type: 'pointerdown', isTrusted: false});
+        await connection._onClose();
+        assert.equal(requests, 0);
+        window.dispatchEvent({type: 'keydown', isTrusted: true});
+        await connection._onClose();
+        assert.equal(requests, 1, 'recovery cannot depend on already-revoked authority reaching readiness');
+        connection._replacementRecoveryAttempts = 0;
+        window.dispatchEvent({type: 'pagehide'});
+        window.dispatchEvent({type: 'pointerdown', isTrusted: true});
+        await connection._onClose();
+        assert.equal(requests, 1, 'interaction never reopens an actually departed document');
+      } finally { globalThis.fetch = originalFetch; }
+    });
+
+    await t.test('a lost recovery response permits a second bounded probe after the old-cookie socket is denied', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      let requests = 0;
+      let reconnects = 0;
+      let successorCookieAccepted = false;
+      connection.connect = () => {
+        reconnects++;
+        if (successorCookieAccepted) connection.applicationReady();
+      };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (_url, options) => {
+        assert.equal(options.body, '', 'discovery never repeats the application proof');
+        requests++;
+        if (requests === 1) throw new Error('Synthetic lost old-node response');
+        successorCookieAccepted = true;
+        return {status: 204};
+      };
+      try {
+        await connection._onClose();
+        assert.equal(connection._replacementRecoveryAttempts, 1);
+        // The first fresh socket still carries the old cookie and is denied.
+        await connection._onClose();
+        assert.equal(requests, 2);
+        assert.equal(reconnects, 2);
+        assert.equal(connection._wasReady, true);
+        assert.equal(connection._replacementRecoveryAttempts, 0, 'only authorized readiness resets the period');
+      } finally { globalThis.fetch = originalFetch; }
+    });
+
+    await t.test('BFCache restoration reschedules one canceled reconnect without duplicating live sockets or reviving explicit stop', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      const timers = [];
+      let sockets = 0;
+      let closes = 0;
+      connection._webSocket = {readyState: WebSocketFake.CLOSED, close() { this.readyState = WebSocketFake.CLOSED; }};
+      connection._wasConnected = true;
+      connection.dispatcher.addEventListener('close', () => { closes++; });
+      connection._connectUsingConnectionType = () => {
+        sockets++;
+        connection._webSocket = {readyState: WebSocketFake.OPEN, close() { this.readyState = WebSocketFake.CLOSED; }};
+      };
+      const originalSetTimeout = globalThis.setTimeout;
+      const originalClearTimeout = globalThis.clearTimeout;
+      globalThis.setTimeout = (callback, delay) => {
+        const timer = {callback, delay, canceled: false}; timers.push(timer); return timer;
+      };
+      globalThis.clearTimeout = timer => { timer.canceled = true; };
+      try {
+        connection.connect();
+        window.dispatchEvent({type: 'pagehide'});
+        assert.equal(timers[0].canceled, true);
+        window.dispatchEvent({type: 'pageshow', persisted: true});
+        window.dispatchEvent({type: 'pageshow', persisted: true});
+        assert.equal(timers.length, 2);
+        assert.equal(closes, 1, 'the old bridge retires before opening a restored transport');
+        timers[1].callback();
+        assert.equal(sockets, 1);
+        window.dispatchEvent({type: 'pagehide'});
+        window.dispatchEvent({type: 'pageshow', persisted: true});
+        assert.equal(timers.length, 2, 'a restored live socket retires before any fresh connection is scheduled');
+        assert.equal(connection._webSocket.readyState, WebSocketFake.CLOSED);
+        await connection.disconnect(false);
+        window.dispatchEvent({type: 'pagehide'});
+        window.dispatchEvent({type: 'pageshow', persisted: true});
+        assert.equal(timers.length, 2, 'explicit disconnect remains stopped after restore');
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.clearTimeout = originalClearTimeout;
+      }
+    });
+
+    await t.test('a restored live socket retires its terminal Bridge and accepts fresh callbacks only after new readiness', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      const bridges = [];
+      const sent = [];
+      const reconnect = deferred();
+      let retired = 0;
+      let reconnects = 0;
+      connection.send = value => sent.push(JSON.parse(value));
+      connection.connect = () => { reconnects++; reconnect.resolve(); };
+      connection.dispatcher.addEventListener('open', () => {
+        bridges.push(new Bridge({auth: true, heartbeat: {interval: '0'}}, connection));
+      });
+      connection.dispatcher.addEventListener('close', () => { bridges.at(-1)?.destroy(); });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({status: 403});
+      try {
+        connection._connectUsingWebSocket();
+        const previous = connection._webSocket;
+        previous.dispatchEvent({type: 'open'});
+        connection._onMessage('[21,false]');
+        const oldBridge = bridges[0];
+        previous.close = () => {
+          retired++;
+          previous.readyState = WebSocketFake.CLOSED;
+          previous.dispatchEvent({type: 'close'});
+        };
+        window.dispatchEvent({type: 'pagehide'});
+        assert.equal(oldBridge._sensitive.terminal, true);
+        oldBridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'old:blocked');
+        window.dispatchEvent({type: 'pageshow', persisted: true});
+        window.dispatchEvent({type: 'pageshow', persisted: true});
+        await reconnect.promise;
+        assert.equal(retired, 1);
+        assert.equal(reconnects, 1);
+        assert.equal(previous.readyState, WebSocketFake.CLOSED);
+        assert.equal(sent.length, 0);
+        connection._connectUsingWebSocket();
+        connection._webSocket.dispatchEvent({type: 'open'});
+        const fresh = bridges.at(-1);
+        assert.notEqual(fresh, oldBridge);
+        fresh._onCallback(CallbackType.CUSTOM_CALLBACK, 'early:blocked');
+        assert.equal(sent.length, 0);
+        connection._onMessage('[21,false]');
+        fresh._onCallback(CallbackType.CUSTOM_CALLBACK, 'fresh:allowed');
+        assert.deepEqual(sent, [[CallbackType.CUSTOM_CALLBACK, 'fresh:allowed']]);
+      } finally {
+        globalThis.fetch = originalFetch;
+        bridges.forEach(bridge => bridge.destroy());
+      }
+    });
+
     await t.test('authentication completion sends only its handle over HTTP and reconnects the guarded socket', async () => {
       const { window } = browser();
       const completionId = '123e4567-e89b-12d3-a456-426614174000';
@@ -857,6 +1121,52 @@ test('redesign client regressions against real source modules', { timeout: 10000
       }
     });
 
+    for (const pendingProcessing of [false, true]) {
+      await t.test(`successful HTTP handoff skips discovery with ${pendingProcessing ? 'delayed message processing' : 'a delayed socket close'}`, async () => {
+        const { window } = browser();
+        const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+        connection._connectUsingWebSocket();
+        const socket = connection._webSocket;
+        const delivery = deferred();
+        const processing = deferred();
+        const requests = [];
+        let reconnects = 0;
+        let closing;
+        connection.connect = () => { reconnects++; connection._connectUsingWebSocket(); };
+        connection._onClose = () => { closing = Connection.prototype._onClose.call(connection); return closing; };
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (url, options) => {
+          requests.push({url, body: options.body});
+          return requests.length === 1 ? delivery.promise : Promise.resolve({status: 204});
+        };
+        try {
+          const committing = connection.commitAuthentication('123e4567-e89b-12d3-a456-426614174000');
+          if (pendingProcessing) {
+            connection._processing = processing.promise;
+            socket.dispatchEvent({type: 'close'});
+          }
+          delivery.resolve({status: 204});
+          await committing;
+          assert.equal(connection.authenticationPending, false);
+          assert.equal(reconnects, 0);
+          if (pendingProcessing) processing.resolve();
+          else socket.dispatchEvent({type: 'close'});
+          await closing;
+          assert.equal(reconnects, 1);
+          assert.deepEqual(requests, [{url: 'https://example.invalid/auth/complete', body: '123e4567-e89b-12d3-a456-426614174000'}]);
+          assert.equal(connection._replacementRecoveryAttempts, 0, 'intentional delivery preserves the discovery budget');
+          const freshSocket = connection._webSocket;
+          assert.notEqual(freshSocket, socket);
+          assert.equal(freshSocket.sent.length, 0);
+          freshSocket.dispatchEvent({type: 'close'});
+          await closing;
+          assert.equal(reconnects, 2);
+          assert.deepEqual(requests[1], {url: 'https://example.invalid/auth/recover', body: ''});
+          assert.equal(connection._replacementRecoveryAttempts, 1, 'an unexpected fresh-socket close still discovers');
+        } finally { globalThis.fetch = originalFetch; }
+      });
+    }
+
     await t.test('lost completion responses retry only the same UUID handle', async () => {
       const { window } = browser();
       const completionId = '123e4567-e89b-12d3-a456-426614174000';
@@ -879,6 +1189,31 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+
+    await t.test('explicit uncertain replacement recovery posts only its ceremony lookup and reconnects without replay', async () => {
+      const { window } = browser();
+      const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
+      connection._connectUsingWebSocket();
+      const ceremonyId = '123e4567-e89b-12d3-a456-426614174000';
+      const requests = [];
+      let reconnects = 0;
+      connection.disconnect = async reconnect => { assert.equal(reconnect, true); reconnects++; };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, options) => {
+        requests.push({url, options});
+        connection.send('never-replay-this-proof');
+        return {status: 204}; // NotCommitted, with no replacement cookie.
+      };
+      try {
+        await connection.recoverAuthentication(ceremonyId);
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].url, 'https://example.invalid/auth/recover');
+        assert.equal(requests[0].options.body, ceremonyId);
+        assert.equal(requests[0].options.credentials, 'same-origin');
+        assert.equal(connection._webSocket.sent.length, 0);
+        assert.equal(reconnects, 1);
+      } finally { globalThis.fetch = originalFetch; }
     });
 
     await t.test('a completion response from a replaced socket is rejected', async () => {

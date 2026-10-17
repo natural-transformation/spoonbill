@@ -124,10 +124,14 @@ trait BrowserPersistence[F[_], P] {
   def capabilities: BrowserProviderCapabilities
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
-  /** Register a server-generated HTTP bootstrap for first attachment on another
-    * serving node. Unknown client view IDs must still be rejected by resume.
-    */
-  def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, Unit]] =
+
+  /**
+   * Register a server-generated HTTP bootstrap for first attachment on another
+   * serving node. Unknown client view IDs must still be rejected by resume.
+   */
+  def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using
+    F: spoonbill.effect.Effect[F]
+  ): F[Either[BrowserFailure, Unit]] =
     F.pure(Left(BrowserFailure.Denied))
   def claim(
     identity: BrowserIdentity[P],
@@ -136,23 +140,34 @@ trait BrowserPersistence[F[_], P] {
     existingOnly: Boolean
   ): F[Either[BrowserFailure, BrowserView[P]]]
   def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]]
-  /** Admit one already materialized immutable output at the ownership boundary.
-    * A successful result applies only to this value, never to future rendering,
-    * callbacks, streams or subsequent frames. Shared providers serialize this
-    * check with takeover and expose success only after known settlement. Bytes
-    * admitted before takeover may subsequently arrive over the network.
-    */
-  def admitOutput[A](view: BrowserView[P], output: A)(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, A]] =
+
+  /**
+   * Admit one already materialized immutable output at the ownership boundary.
+   * A successful result applies only to this value, never to future rendering,
+   * callbacks, streams or subsequent frames. Shared providers serialize this
+   * check with takeover and expose success only after known settlement. Bytes
+   * admitted before takeover may subsequently arrive over the network.
+   */
+  def admitOutput[A](view: BrowserView[P], output: A)(using
+    F: spoonbill.effect.Effect[F]
+  ): F[Either[BrowserFailure, A]] =
     F.map(authorize(view))(_.map(_ => output))
-  /** Admit a fixed output and a pure, bounded presentation predicate against
-    * the same fresh authority observation. The predicate must not perform I/O,
-    * retain authority or grant permission for a later output.
-    */
-  def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(
-    using F: spoonbill.effect.Effect[F]
+
+  /**
+   * Admit a fixed output and a pure, bounded presentation predicate against the
+   * same fresh authority observation. The predicate must not perform I/O,
+   * retain authority or grant permission for a later output.
+   */
+  def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(using
+    F: spoonbill.effect.Effect[F]
   ): F[Either[BrowserFailure, A]] =
     F.map(authorize(view))(_.flatMap(identity => Either.cond(allowed(identity), output, BrowserFailure.Denied)))
   def release(view: BrowserView[P]): F[Unit]
+
+  /**
+   * Ordinary sign-in ceremony. Authenticated session changes use
+   * BrowserReplacementSupport.beginReplacement.
+   */
   def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]]
   def bindChallenge(ceremony: BrowserCeremony, challenge: BrowserChallenge): F[Either[BrowserFailure, BrowserCeremony]]
   def resume(view: BrowserView[P], id: CeremonyId, purpose: String): F[Either[BrowserFailure, BrowserCeremony]]
@@ -168,6 +183,10 @@ trait TransactionalBrowserPersistence[F[_], G[_], P] extends BrowserPersistence[
   type Tx
 
   /**
+   * Ordinary sign-in only. Authenticated session changes must use
+   * ReplacementBrowserPersistence.prepareReplacement; this method cannot
+   * replace its own predecessor.
+   *
    * Consume host proof, create the host session and write its audit on the same
    * transaction as browser preparation. Rejection must fail G/throw, never
    * return an ordinary Left that permits the enclosing transaction to commit.
@@ -222,4 +241,101 @@ final class BrowserCapabilityScope[P] {
   }
   def admit(value: BrowserCeremony): Boolean                 = owns(value) && value.admitted.compareAndSet(false, true)
   def committed(completionId: UUID): CommittedAuthentication = new CommittedAuthentication(owner, completionId)
+
+  def owns(value: BrowserReplacementCeremony): Boolean   = !isClosed && (value.issuer eq owner)
+  def owns(value: BrowserReplacementInvocation): Boolean = !isClosed && (value.issuer eq owner)
+  def owns(value: CommittedReplacement): Boolean         = !isClosed && (value.issuer eq owner)
+  def owns(value: BrowserReplacementDelivery): Boolean   = !isClosed && (value.issuer eq owner)
+
+  def replacementCeremony(
+    view: BrowserView[P],
+    id: CeremonyId,
+    purpose: String,
+    expiresAt: Instant,
+    challenge: Option[BrowserChallenge]
+  ): BrowserReplacementCeremony = {
+    require(
+      owns(view) && view.identity.host.nonEmpty && view.identity.sessionId.nonEmpty,
+      "Replacement requires an owned authenticated view"
+    )
+    new BrowserReplacementCeremony(owner, view, id, purpose, expiresAt, challenge)
+  }
+
+  private[spoonbill] def replacementInvocation(
+    view: BrowserView[P],
+    binding: spoonbill.action.InvocationBinding
+  ): BrowserReplacementInvocation = {
+    require(owns(view), "Replacement invocation requires an owned view")
+    BrowserReplacementInvocation.capture(view, binding)
+  }
+
+  private def matches(ceremony: BrowserReplacementCeremony, invocation: BrowserReplacementInvocation): Boolean =
+    owns(ceremony) && owns(invocation) &&
+      ceremony.view.identity.authorityStamp == invocation.authority && ceremony.view.fence == invocation.fence &&
+      ceremony.view.connectionId == invocation.connectionId
+
+  def admitReplacement(ceremony: BrowserReplacementCeremony, invocation: BrowserReplacementInvocation): Boolean =
+    matches(ceremony, invocation) && ceremony.admitted.compareAndSet(None, Some(invocation.invocationKey))
+
+  /**
+   * Trusted provider factory; call only after acknowledged outermost commit.
+   */
+  def committedReplacement(
+    ceremony: BrowserReplacementCeremony,
+    invocation: BrowserReplacementInvocation,
+    completionId: UUID
+  ): CommittedReplacement = {
+    require(
+      matches(ceremony, invocation) && ceremony.admitted.get().exists(_ eq invocation.invocationKey),
+      "Replacement was not locally admitted for this invocation"
+    )
+    new CommittedReplacement(
+      owner,
+      invocation.invocationKey,
+      invocation.authority,
+      invocation.fence,
+      invocation.connectionId,
+      ceremony.id,
+      completionId,
+      ceremony.expiresAt
+    )
+  }
+
+  /**
+   * Local provenance and one-use check only. The provider must first perform
+   * authoritative fixed-frame admission; no callbacks or general output attach.
+   */
+  def replacementControl(
+    handoff: CommittedReplacement,
+    invocation: BrowserReplacementInvocation
+  ): Option[BrowserReplacementControl] =
+    Option.when(
+      owns(handoff) && owns(invocation) && (handoff.invocationKey eq invocation.invocationKey) &&
+        handoff.authority == invocation.authority && handoff.fence == invocation.fence &&
+        handoff.connectionId == invocation.connectionId && handoff.completed.compareAndSet(false, true)
+    )(new BrowserReplacementControl(handoff.completionId))
+
+  /**
+   * Trusted provider factory following authoritative recovery of this request.
+   */
+  def replacementDelivery(request: BrowserReplacementRequest, completionId: UUID): BrowserReplacementDelivery = {
+    require(!isClosed, "Browser capability scope is closed")
+    new BrowserReplacementDelivery(owner, request.requestKey, completionId)
+  }
+
+  /**
+   * Local request association only; does not replace transactional delivery
+   * checks.
+   */
+  def consumeReplacementDelivery(delivery: BrowserReplacementDelivery, request: BrowserReplacementRequest): Boolean =
+    owns(delivery) && (delivery.requestKey eq request.requestKey) && delivery.consumed.compareAndSet(false, true)
+
+  /**
+   * Issue metadata only inside the transaction that verified the active
+   * successor.
+   */
+  def successorCompletion(hostCompletionId: UUID, successorSessionId: UUID): VerifiedSuccessorCompletion = {
+    require(!isClosed, "Browser capability scope is closed")
+    new VerifiedSuccessorCompletion(hostCompletionId, successorSessionId)
+  }
 }

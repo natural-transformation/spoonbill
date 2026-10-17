@@ -8,14 +8,15 @@ new epoch, validates current host authority and restores the application's
 explicit presentation projection. No actor system or remote authority service
 is required by core.
 
-This is local `5.0.0-SNAPSHOT` functionality, not a published release or a performance
-acceptance claim. Existing single-owner applications keep their explicit exclusive mode and
-do not acquire the clustered snapshot cost unless they opt into it.
+Shared-store mode is available in 5.0.0 and later; these measurements are not
+a performance acceptance claim. Existing single-owner applications keep their
+explicit exclusive mode and do not acquire the clustered snapshot cost unless
+they opt into it.
 
-For application testing, start with the
+For application testing, start with the historical
 [5.0.0-SNAPSHOT migration and testing guide](migration-testing-5.0.0-snapshot.md).
-The [v5 validation report](browser-auth-v5-validation.md) records the current
-snapshot's checks and bounded output-admission measurements.
+The [v5 validation report](browser-auth-v5-validation.md) records its checks
+and bounded output-admission measurements.
 The [4.1 snapshot validation report](clustered-browser-authentication-validation.md)
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
 records; the major version explicitly permits the identified ABI change.
@@ -189,7 +190,46 @@ running. Its browser fixture allows 25 seconds for recovery under its disposable
 local database; production recovery budgets must include the configured lock,
 transaction, pool and reconnect limits.
 
+Replacement-enabled rendered GETs with a valid binding perform a pending-state
+probe. JDBC currently serializes it through the realm-and-namespace advisory
+lock; an empty lookup stops before ceremony/slot row locks, while matching
+state requires authoritative checks. The local coordinator also serializes
+these operations. This is a capacity consideration for simultaneous reloads or
+node-restart reconnects, not a measured throughput guarantee.
+
+An eligible unexpected socket close awaits one recovery probe with a five-second
+client timeout before reconnect backoff. The cap of three probes spans failed
+reconnect cycles and resets on application readiness. Successful intentional
+handoffs and departing pages skip this discovery. Aborting the client request
+does not imply admitted database work was canceled. Reconnect is deliberately
+ordered after the probe to avoid racing its cookie delivery. A cheaper lookup
+or parallel reconnect would need separate race/authority tests; the sequential
+performance evidence does not establish burst capacity.
+
 ## Migration from released 4.0.0
+
+Authenticated replacement adds an additional compatibility boundary. Every
+serving node must understand `spoonbill_browser_replacement` before this feature
+is enabled. Drain older binaries and apply the explicit
+[V5 forward upgrade](browser-auth-v4-deployment.md#upgrade-an-existing-browser-authentication-deployment);
+ordinary snapshot-format compatibility alone does not make mixed replacement
+binaries safe.
+
+A committed replacement can be recovered by another compatible node from the
+HttpOnly binding and retained reservation, even after its predecessor has been
+revoked and the initiating process has died. HTTP recovery grants no application
+owner. Its fresh activation handshake validates the same successor and advances
+the slot once; subsequent application attachment acquires its own current view
+owner. Stale cleanup remains bound to the old physical owner and cannot release
+the successor. Credentials and sensitive recovery results never enter shared
+presentation snapshots.
+
+When delivery is exhausted or expired and the browser has no valid successor
+cookie, show an access-denied page with the existing checked logout/reset path.
+Do not re-execute the committed factor change. The reference application exposes
+that reset form, and the multi-node fixture additionally drops the replacement
+command after commit, kills its serving JVM, recovers on the other node, and
+consumes the successor's encrypted result once.
 
 The released 4.0.0 provider assumes one exclusive coordinator. Do not overlap
 that implementation with shared mode. Drain every old exclusive writer before

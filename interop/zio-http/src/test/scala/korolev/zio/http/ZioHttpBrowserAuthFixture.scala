@@ -33,7 +33,11 @@ object ZioHttpBrowserAuthFixture {
     disclosures: Int = 0,
     message: String = ""
   )
-  private final case class Host(sessions: Map[UUID, Instant] = Map.empty, consumed: Set[UUID] = Set.empty)
+  private final case class Host(
+    sessions: Map[UUID, Instant] = Map.empty,
+    consumed: Set[UUID] = Set.empty,
+    replacements: Int = 0
+  )
 
   private type Binding = Context.Binding[AppTask, Page, Any]
   private val alice   = Principal(UUID.fromString("00000000-0000-4000-8000-00000000a11c"), "alice")
@@ -146,6 +150,78 @@ object ZioHttpBrowserAuthFixture {
       })
     }
 
+    private def replacementAction(interruptObserver: Boolean, rollbackObserver: Boolean = false) =
+      actions.authenticated(
+        name(
+          if (rollbackObserver) "fixture.replace-rolled-back"
+          else if (interruptObserver) "fixture.replace-interrupted"
+          else "fixture.replace"
+        ),
+        InputSchema.secret(field("replacement-password"), 256),
+        ActionPolicy[AppTask, Secret, Principal]((_, _) => ZIO.succeed(AccessDecision.Allowed))
+      ) { (secret, context) =>
+        // Capture the predecessor before checking this synthetic password proof.
+        // This fixture tests the atomic boundary, not a production verifier.
+        browser.beginReplacement(context, "fixture-session-replacement").flatMap {
+          case Left(_) => ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Replacement could not begin.")))
+          case Right(ceremony) =>
+            secret.withValue { value =>
+              if (value != "password") ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Replacement rejected.")))
+              else
+                for {
+                  challenged <- provider.bindReplacementChallenge(
+                                  ceremony,
+                                  BrowserChallenge(alice.subject.toString, 1L, 1L, ceremony.id.value.toString)
+                                )
+                  invocation <- browser.replacementInvocation(context)
+                  credential <- BrowserCredentials.generate[AppTask]
+                  outcome <- (challenged, invocation) match {
+                               case (Right(proof), Right(owner)) =>
+                                 provider
+                                   .prepareReplacement(proof, owner) { tx =>
+                                     val predecessor = owner.authority.sessionId
+                                       .getOrElse(throw new OperationProtocolException(OperationError.HostDenied))
+                                     if (
+                                       tx.hostState.consumed.contains(proof.id.value) ||
+                                       !tx.hostState.sessions.get(predecessor).exists(tx.now.isBefore)
+                                     )
+                                       throw new OperationProtocolException(OperationError.HostDenied)
+                                     val successor = UUID.randomUUID()
+                                     val expires   = tx.now.plusSeconds(600)
+                                     tx.modify(state =>
+                                       state.copy(
+                                         sessions = state.sessions.removed(predecessor).updated(successor, expires),
+                                         consumed = state.consumed + proof.id.value,
+                                         replacements = state.replacements + 1
+                                       )
+                                     )
+                                     if (rollbackObserver)
+                                       throw new OperationProtocolException(OperationError.HostDenied)
+                                     new HostSessionPrepared(successor, UUID.randomUUID(), expires, credential)
+                                   }
+                                   .flatMap {
+                                     case Right(_) if interruptObserver =>
+                                       ZIO.fail(new IllegalStateException("Synthetic replacement observer lost"))
+                                     case Right(handoff) => ZIO.succeed(browser.completeReplacement(handoff))
+                                     // Model an observer that cannot establish whether its rolled-back
+                                     // transaction committed. The transport must reconcile explicitly.
+                                     case Left(_) if rollbackObserver =>
+                                       ZIO.succeed(browser.recoverReplacementOutcome(proof.id))
+                                     case Left(_) =>
+                                       ZIO.succeed(
+                                         UiOutcome.update[Page](_.copy(message = "Replacement was not accepted."))
+                                       )
+                                   }
+                               case _ => ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Replacement expired.")))
+                             }
+                } yield outcome
+            }
+        }
+      }
+    private val replace            = replacementAction(interruptObserver = false)
+    private val interruptedReplace = replacementAction(interruptObserver = true)
+    private val rolledBackReplace  = replacementAction(interruptObserver = false, rollbackObserver = true)
+
     private def document(page: Page): Document.Node[Binding] = Html(
       head(title("ZIO HTTP browser authentication")),
       body(
@@ -162,7 +238,7 @@ object ZioHttpBrowserAuthFixture {
                 id := "anonymous-setup",
                 page.ceremony.toSeq.map { ceremony =>
                   form(
-                    id := "anonymous-form",
+                    id     := "anonymous-form",
                     method := "post",
                     action := "/no-http-proof-submission",
                     ActionForms.onSubmit[AppTask, Page, Any, ((CeremonyId, String), Secret)](password, onRejected),
@@ -184,6 +260,38 @@ object ZioHttpBrowserAuthFixture {
                 button("Show recovery codes")
               ),
               SensitiveRegion[Binding](region),
+              form(
+                id := "replacement-form",
+                ActionForms.onSubmit[AppTask, Page, Any, Secret, Principal](replace, browser.authority, onRejected),
+                label("Confirm password", input(avocet.dsl.html.name := "replacement-password", `type` := "password")),
+                button("Replace session")
+              ),
+              form(
+                id := "interrupted-replacement-form",
+                ActionForms.onSubmit[AppTask, Page, Any, Secret, Principal](
+                  interruptedReplace,
+                  browser.authority,
+                  onRejected
+                ),
+                label(
+                  "Confirm password for synthetic interrupted observer",
+                  input(avocet.dsl.html.name := "replacement-password", `type` := "password")
+                ),
+                button("Replace with lost observer")
+              ),
+              form(
+                id := "rolled-back-replacement-form",
+                ActionForms.onSubmit[AppTask, Page, Any, Secret, Principal](
+                  rolledBackReplace,
+                  browser.authority,
+                  onRejected
+                ),
+                label(
+                  "Confirm password for synthetic rollback",
+                  input(avocet.dsl.html.name := "replacement-password", `type` := "password")
+                ),
+                button("Recover rolled-back replacement")
+              ),
               // A native GET submission is a real HTTP navigation, never client-side routing.
               form(
                 ActionForms.nativeSubmit[AppTask, Page, Any],
@@ -213,7 +321,14 @@ object ZioHttpBrowserAuthFixture {
             case Root / "dashboard" => page => ZIO.succeed(page.copy(dashboard = true))
           }
         ),
-        http = { case request if request.pq.asPath == Root / "health" => HttpResponse.ok[AppTask]("ready") },
+        http = {
+          case request if request.pq.asPath == Root / "health" => HttpResponse.ok[AppTask]("ready")
+          case request if request.pq.asPath == Root / "fixture" / "replacements" =>
+            provider.inspectHost.flatMap {
+              case Right(state) => HttpResponse.ok[AppTask](state.replacements.toString)
+              case Left(_)      => ZIO.fail(new SessionAccessDenied)
+            }
+        },
         reporter = ZioHttpKeepAliveFixture.silentReporter
       )
     )

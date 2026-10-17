@@ -1,6 +1,7 @@
 package example.browserauth
 
 import java.util.UUID
+import spoonbill.action.{AuthenticatedActionContext, UiOutcome}
 import spoonbill.auth.*
 import spoonbill.security.transaction.TransactionFailure
 import spoonbill.snapshot.*
@@ -19,7 +20,9 @@ final case class Page(
   message: String = ""
 )
 
-/** Deliberately excludes credentials, principals, ceremonies and live authority. */
+/**
+ * Deliberately excludes credentials, principals, ceremonies and live authority.
+ */
 final case class DraftPresentation(
   draft: String,
   selectedItem: String
@@ -27,10 +30,11 @@ final case class DraftPresentation(
 
 object DraftPresentation {
   private def versioned(version: Int) = new SnapshotFormat[DraftPresentation](
-      SchemaId.parse("example.workspace").toOption.get,
-      SchemaVersion.fromInt(version).toOption.get,
-      SnapshotLimits.create(maxUtf8Bytes = 32768, maxStringUtf8Bytes = 16384).toOption.get
-    )
+    SchemaId.parse("example.workspace").toOption.get,
+    SchemaVersion.fromInt(version).toOption.get,
+    SnapshotLimits.create(maxUtf8Bytes = 32768, maxStringUtf8Bytes = 16384).toOption.get
+  )
+
   /** Two explicitly compatible writers for the rolling-version fixture. */
   def format(version: Int): SnapshotFormat[DraftPresentation] = {
     require(version >= 1 && version <= 3, "Select synthetic snapshot version 1, 2 or incompatible 3")
@@ -53,6 +57,19 @@ enum SignIn {
   case Rejected(message: String)
 }
 
+enum SecurityChange(val purpose: String) {
+  case RegenerateRecovery extends SecurityChange("regenerate-recovery")
+  case EnableFactor extends SecurityChange("enable-factor")
+  case ReplaceFactor extends SecurityChange("replace-factor")
+  case DisableFactor extends SecurityChange("disable-factor")
+}
+
+enum SessionReplacement {
+  case Completed(handoff: CommittedReplacement)
+  case Unresolved(ceremony: CeremonyId)
+  case Rejected(message: String)
+}
+
 /**
  * Domain integration only. Browser/view/credential-delivery mechanics belong to
  * the library. Both implementations use the exact same Scala UI.
@@ -61,10 +78,30 @@ trait Accounts[F[_]] {
   def browser: BrowserAuthentication[F, Page, Principal]
   def signIn(ceremony: BrowserCeremony, username: String, password: String): F[SignIn]
   def factor(ceremony: BrowserCeremony, factor: String): F[SignIn]
+  def replace(
+    ceremony: BrowserReplacementCeremony,
+    invocation: BrowserReplacementInvocation,
+    password: String
+  ): F[SessionReplacement]
+  def consumeRecovery(
+    view: BrowserView[Principal],
+    invocation: BrowserReplacementInvocation
+  ): F[Either[TransactionFailure, Option[RecoveryResults.Consumed]]]
+
+  /**
+   * Claim and decrypt a consumed result inside F, then transfer it to the
+   * invocation's one-shot disclosure. Constructing a lazy effect must not claim
+   * the holder; evaluating it again must not disclose the result again.
+   */
+  def presentRecovery(
+    record: RecoveryResults.Consumed,
+    context: AuthenticatedActionContext[Principal]
+  ): F[UiOutcome[Page]]
   def increment(view: BrowserView[Principal]): F[Either[TransactionFailure, Int]]
   def currentCount(principal: Principal): F[Int]
   def initialize(): F[Unit]
-  def close(): F[Unit] = browser.close()
+  def maintenance(): F[Unit] = browser.maintenance()
+  def close(): F[Unit]       = browser.close()
 }
 
 object Presentation {

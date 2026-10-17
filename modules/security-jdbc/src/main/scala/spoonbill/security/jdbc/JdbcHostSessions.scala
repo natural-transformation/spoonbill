@@ -13,6 +13,12 @@ import spoonbill.auth.HostPrincipal
  * transaction, lock host rows before framework slots/views, and never settle
  * the connection. resolve must revalidate expiry and revocation each time.
  * Subject/session identity is immutable; policy changes advance its versions.
+ * Authenticated replacement requires resolve to serialize with independent host
+ * revocation and account-version changes (for example, by locking the relevant
+ * host rows until transaction settlement). A plain stale snapshot lookup is
+ * insufficient. The host preparation callback verifies its proof against
+ * pre-transition credential versions, then stages the successor and predecessor
+ * revocation on this same connection; it must not settle or retry.
  */
 trait JdbcHostSessions[P] {
   def resolve(connection: Connection, sessionId: UUID, now: Instant): Option[HostPrincipal[P]]

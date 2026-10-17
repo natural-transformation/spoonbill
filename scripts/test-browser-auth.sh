@@ -60,6 +60,7 @@ NODE
 fi
 port="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { console.log(server.address().port); server.close(); });')"
 export SPOONBILL_AUTH_ORIGIN="http://localhost:$port"
+export SPOONBILL_AUTH_DELIVERY_LIMIT=1
 server_args=("$port")
 if [[ "${SPOONBILL_AUTH_PROVIDER:-memory}" == jdbc ]]; then
   # A fresh owned namespace in the caller's disposable PostgreSQL instance.
@@ -83,4 +84,4 @@ const {setTimeout: pause} = require('node:timers/promises');
 })().catch(error => { console.error(error.message); process.exitCode = 1; });
 NODE
 nix develop .#browser --no-write-lock-file --command \
-  timeout --kill-after=10s 250s node misc/browser-auth-native-tests.cjs
+  timeout --kill-after=10s 390s node misc/browser-auth-native-tests.cjs

@@ -46,6 +46,8 @@ jobs:
         nix develop --no-write-lock-file --command node --test \
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
           misc/browser-protocol-tests.mjs \
+          misc/browser-auth-schema-tests.mjs \
+          misc/replacement-bootstrap-tests.mjs \
           misc/core-purity-tests.mjs \
           misc/browser-auth-baseline/*.test.mjs
 

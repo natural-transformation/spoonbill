@@ -7,9 +7,9 @@ are development fixtures and must not be used for production users.
 
 ## Supported boundary
 
-| Component | Initial v4 target |
+| Component | Supported boundary |
 | --- | --- |
-| Spoonbill modules | Matching versions throughout; this checkout is `5.0.0-SNAPSHOT`, not a public release claim |
+| Spoonbill modules | Matching versions throughout; use 5.1.0 for replacement deployments |
 | Scala | 3.3.8 |
 | Native Scala 3 Pekko / Pekko HTTP | 1.7.0 / 1.4.0, including testkits on the same `_3` variant |
 | JDBC dialect / validation engine | PostgreSQL 14; PostgreSQL-specific advisory locks, `ON CONFLICT`, and `RETURNING` are required |
@@ -46,18 +46,22 @@ not just a configuration setting. The released v4 constructor used
 
 ## Explicit schema artifact
 
-The JDBC artifact includes
-[V4__browser_auth.sql](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V4__browser_auth.sql).
-Its non-default resource directory deliberately avoids automatic discovery by
-Flyway's `db/migration` convention. Include it explicitly in the application's
-reviewed deployment migrations.
+The JDBC artifact includes the frozen
+[V4__browser_auth.sql](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V4__browser_auth.sql)
+and the forward
+[V5__authenticated_session_replacement.sql](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V5__authenticated_session_replacement.sql).
+Their non-default resource directory deliberately avoids automatic discovery by
+Flyway's `db/migration` convention. Include them explicitly in the application's
+reviewed deployment migrations, in version order. Existing V4 deployments apply
+only V5; fresh installations apply V4 followed by V5.
 
-It contains exactly the same 11 DDL statements as the three runtime initialization
-methods, in dependency order: durable clock, browser authority/snapshots, then
-ceremony and delivery material. It creates eight framework tables, two indexes,
-and adds the existing snapshot-revision column when absent. It does not create
-host accounts, factors, sessions, proof-use records, audit tables or an outbox.
-Those remain application migrations participating in the same host transaction.
+V4 remains byte-for-byte unchanged: 11 DDL statements, eight framework tables,
+two indexes and the existing snapshot-revision alteration. V5 adds the replacement
+table, reservation uniqueness index and successor lookup index. Together the
+14 statements create the same nine framework tables and four explicit indexes
+as runtime initialization. Host accounts, factors, sessions, proof-use records,
+audit tables and outboxes remain application migrations participating in the
+same host transaction.
 
 | Tables | Security role / retention |
 | --- | --- |
@@ -67,6 +71,7 @@ Those remain application migrations participating in the same host transaction.
 | `spoonbill_browser_view`, `spoonbill_view_snapshot` | Ownership/revision fences and optional presentation snapshots |
 | `spoonbill_auth_ceremony` | Original ceremony, captured generation, fixed attempt, challenge association and positive/negative settlement |
 | `spoonbill_auth_material` | Encrypted, bounded, expiring delivery material; disposable after authoritative retirement |
+| `spoonbill_browser_replacement` | Explicit replacement kind, exact predecessor/owner linkage, successor reservation and terminal fence; ordinary rows never infer replacement from purpose |
 
 `CREATE TABLE IF NOT EXISTS` is idempotent installation, **not** validation of an
 arbitrary existing schema. Before applying it, compare any existing framework
@@ -88,8 +93,9 @@ not authorize executing it against any database:
 ```sh
 PGOPTIONS='-c search_path=auth_v4' nix develop --no-write-lock-file --command \
   psql "$MIGRATION_DATABASE_URL" --no-psqlrc --set=ON_ERROR_STOP=1 \
-  --single-transaction --file \
-  modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V4__browser_auth.sql
+  --single-transaction \
+  --file modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V4__browser_auth.sql \
+  --file modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V5__authenticated_session_replacement.sql
 ```
 
 `MIGRATION_DATABASE_URL` is a PostgreSQL/psql connection URI, not a JDBC URL.
@@ -97,17 +103,49 @@ Use the deployment's established credential mechanism and avoid storing it in
 logs or command transcripts. An application migration tool may execute the same
 SQL under its own transaction and version bookkeeping instead.
 
-The checked-in drift guard reads the literal runtime DDL; it does not contact a
-database or execute a migration:
+The checked-in drift guard verifies V4's frozen checksum and the combined
+V4/V5 coverage against literal runtime DDL; it does not contact a database or
+execute a migration:
 
 ```sh
 nix develop --no-write-lock-file --command node scripts/export-browser-auth-schema.mjs --check
 ```
 
-After a reviewed schema change, `--write` regenerates the artifact. Keep its
-diff and the application deployment migration together. Runtime `initialize`
+`--write` regenerates only the V5 delta and refuses a changed V4. V5 is
+published with 5.1.0; preserve its applied bytes and use a new migration
+version and updated drift guard for later schema changes. Do not
+repair checksum history to accommodate an edited migration. Runtime `initialize`
 remains an explicit convenience for owned setup; no HTTP/WebSocket path invokes
 it automatically.
+
+### Upgrade an existing browser-authentication deployment
+
+Use the separate generated
+[V5__authenticated_session_replacement.sql](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V5__authenticated_session_replacement.sql)
+as the forward upgrade. V4 is preserved unchanged; do not replace an
+already-applied migration or rewrite its checksum/history.
+V5 adds replacement linkage, its reservation uniqueness index and a partial
+`(realm, namespace, successor_session_id)` lookup index while preserving
+ordinary ceremonies, outstanding ordinary ciphertext, clock checkpoints,
+generations, owner epochs and replay history. Apply V5 in a single migration
+transaction under the existing chosen schema. Request-time initialization is
+not a schema-upgrade mechanism.
+
+Drain **all** old serving binaries, settle admitted work, apply V5, start only
+compatible binaries, and then enable replacement UI. Old binaries do not check
+the new reservation fence; a mixed-version rollout with replacement enabled is
+unsupported. Refresh browser pages onto the updated client bundle before enabling
+the UI; old tabs do not understand the new fixed recovery procedure and the wire
+protocol has no version negotiation. Existing ordinary delivery ciphertext remains readable. New
+replacement ciphertext uses a separate versioned associated-data encoding bound
+to realm, namespace, binding, attempt, transition kind and successor. Keep the
+vault keys needed by both forms until their delivery retention has ended.
+
+Do not downgrade by deleting replacement rows: expired or exhausted reservations
+still fence competing completions, and committed outcomes are not rollback
+evidence. Recovery or an explicit logout/reset must settle each pending browser
+transition. Any later downgrade needs a separately reviewed procedure that
+preserves these fences; this feature does not promise an automatic downgrade.
 
 ## Cutover sequence
 
@@ -169,6 +207,15 @@ binding can obtain its own history, but old binding/session/view history still
 counts against global limits. Expiring a browser cookie does not delete its
 durable records, and applications must not clear it automatically to bypass
 their own rate limits.
+
+Each replacement has one retained ceremony and shares those same limits:
+`retainedCeremonies` defaults to **32,768 per realm/namespace**, and the
+per-binding limit also includes replacements. Replacement linkage is retained
+with the history; the successor index changes lookup access, not retention.
+Do not prune a row merely because its generation is below the slot's current
+generation: activation advances that generation while the live successor still
+needs its linkage for `withSuccessorCompletion`. Ceremony expiry is not a proof
+that host-owned results or successor metadata are no longer needed.
 
 Monitor global history and owned-resource limits. Size them explicitly for the
 deployment and plan a drained namespace cutover or separately proved retirement

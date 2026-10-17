@@ -16,9 +16,9 @@ import spoonbill.web.Request
 /**
  * Application functions operate on immutable ordinary presentation. Neither a
  * state field nor an opaque continuation lookup can establish authorization.
- * These functions must be pure, bounded and repeatable. In shared mode `allowed`
- * can run inside the authoritative output-admission transaction; it must never
- * perform I/O, block or mutate application state.
+ * These functions must be pure, bounded and repeatable. In shared mode
+ * `allowed` can run inside the authoritative output-admission transaction; it
+ * must never perform I/O, block or mutate application state.
  */
 final case class BrowserPresentation[S, P](
   fresh: () => S,
@@ -53,6 +53,10 @@ final class BrowserAuthentication[F[_], S, P](
   require(configuration.scope == persistence.scope, "Browser/provider scope mismatch")
   require(persistence.capabilities.atomicHostPreparation, "Provider cannot atomically prepare with the host store")
   private val shared = persistence.capabilities.ownership == BrowserOwnership.SharedViews
+  private val replacementSupport = persistence match {
+    case value: BrowserReplacementSupport[F, P] @unchecked => Some(value)
+    case _                                                 => None
+  }
 
   private val gate  = new BrowserCoordinatorGate[F](configuration.maxPendingOperations)
   private val store = new BoundedPresentationStore[F, S](storageLimits, clock)
@@ -123,6 +127,20 @@ final class BrowserAuthentication[F[_], S, P](
   }
 
   val authority: SessionAuthority[F, P] = new SessionAuthority[F, P] {
+    override private[spoonbill] val replacement = replacementSupport.map {
+      _ => (binding: InvocationBinding, handoff: CommittedReplacement) =>
+        gate {
+          F.delay {
+            val valid = attached.get(binding.connectionId).exists { actual =>
+              !actual.retiring && (handoff.issuer eq actual.view.issuer) &&
+              (handoff.invocationKey eq binding.replacementIdentity) &&
+              handoff.connectionId == binding.connectionId && handoff.fence == actual.view.fence &&
+              handoff.authority == actual.view.identity.authorityStamp && clock().isBefore(handoff.expiresAt)
+            }
+            if (valid) AccessDecision.Allowed else AccessDecision.Denied(AccessDenied.StaleAuthority)
+          }
+        }
+    }
     def resolve(binding: InvocationBinding): F[Either[AccessDenied, P]] =
       withView(binding.connectionId)(check)
         .map(identity => principal(identity).toRight(AccessDenied.Unauthenticated))
@@ -180,8 +198,9 @@ final class BrowserAuthentication[F[_], S, P](
             if (!exists || changed) {
               // A changed identity cannot inherit any previous presentation nodes.
               if (exists) denied[Unit]
-              else F.delay(presentation.fresh()).flatMap(state =>
-                store.bootstrap(qsid, state, resetBrowser = true).map(_ => ()))
+              else
+                F.delay(presentation.fresh())
+                  .flatMap(state => store.bootstrap(qsid, state, resetBrowser = true).map(_ => ()))
             } else F.unit
           }
           prepare
@@ -197,6 +216,23 @@ final class BrowserAuthentication[F[_], S, P](
                 }
                 .map { _ =>
                   val guard = new SessionGuard[F, S] {
+                    override private[spoonbill] val replacementCompletion = replacementSupport.map {
+                      provider => (handoff: CommittedReplacement, binding: InvocationBinding) =>
+                        withView(owner) { actual =>
+                          if (binding.connectionId != owner || actual.retiring) denied[BrowserReplacementControl]
+                          else
+                            provider
+                              .admitReplacementCompletion(
+                                handoff,
+                                BrowserReplacementInvocation.capture(actual.view, binding)
+                              )
+                              .flatMap(requireResult)
+                              .map { control =>
+                                actual.retiring = true
+                                control
+                              }
+                        }
+                    }
                     private val released                                         = new AtomicBoolean()
                     override val actionAuthority: Option[SessionAuthority[F, ?]] = Some(authority)
                     override val sensitive: Option[SensitiveAccess[F, S]] = sensitiveAccess(view).map { policy =>
@@ -211,13 +247,16 @@ final class BrowserAuthentication[F[_], S, P](
                     override val outputAdmission: Option[SessionOutputAdmission[F, S]] =
                       Option.when(shared)(new SessionOutputAdmission[F, S] {
                         def apply[A](output: A, produced: S, current: S): F[A] = withView(owner) { actual =>
-                          persistence.admitOutputIf(actual.view, output) { identity =>
-                            val who = principal(identity)
-                            actual.view.identity.sameAuthority(identity) &&
+                          persistence
+                            .admitOutputIf(actual.view, output) { identity =>
+                              val who = principal(identity)
+                              actual.view.identity.sameAuthority(identity) &&
                               presentation.allowed(produced, who) && presentation.allowed(current, who)
-                          }.flatMap(requireResult).recoverF { case error =>
-                            detach(actual).recover { case _ => () }.flatMap(_ => F.fail(error))
-                          }
+                            }
+                            .flatMap(requireResult)
+                            .recoverF { case error =>
+                              detach(actual).recover { case _ => () }.flatMap(_ => F.fail(error))
+                            }
                         }
                       })
                     def authorize(state: S): F[Unit] = withView(owner) { actual =>
@@ -278,7 +317,32 @@ final class BrowserAuthentication[F[_], S, P](
           revoked.foldLeft(F.unit)((done, value) => done.flatMap(_ => detach(value)))
         }
       },
-    logoutRedirect = Some(configuration.logoutRedirect)
+    logoutRedirect = Some(configuration.logoutRedirect),
+    replacement = replacementSupport.map { provider =>
+      AuthenticationReplacementConfig[F](
+        request => gate(provider.replacementPending(request).flatMap(requireResult)),
+        request =>
+          gate {
+            provider.recoverReplacement(request).flatMap {
+              case Right(BrowserReplacementRecovery.ActivateExistingCookie) =>
+                F.pure(AuthenticationReplacementRecovery.ActivateExistingCookie)
+              case Right(BrowserReplacementRecovery.NotCommitted) =>
+                F.pure(AuthenticationReplacementRecovery.NotCommitted)
+              case Right(BrowserReplacementRecovery.Deliver(delivery)) =>
+                provider.deliverReplacement(request, delivery).map {
+                  case Right(token) => AuthenticationReplacementRecovery.Deliver(token)
+                  case _            => AuthenticationReplacementRecovery.Unavailable
+                }
+              case _ => F.pure(AuthenticationReplacementRecovery.Unavailable)
+            }
+          },
+        (binding, token) =>
+          gate {
+            if (token.isEmpty) F.pure(false)
+            else persistence.capture(binding, token, activate = true).map(_.exists(_.host.nonEmpty))
+          }
+      )
+    }
   )
   private val installation = new BrowserSecurityInstallation[F, S] {
     def validate[M](config: SpoonbillServiceConfig[F, S, M]): Unit = {
@@ -310,6 +374,23 @@ final class BrowserAuthentication[F[_], S, P](
     withView(context.connectionId)(value => check(value).flatMap(_ => persistence.begin(value.view, purpose))).recover {
       case _: SessionAccessDenied => Left(BrowserFailure.Denied)
     }
+
+  /**
+   * Ordinary sign-in stays supported; authenticated security changes use
+   * beginReplacement.
+   */
+  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.1.0")
+  def begin(context: AuthenticatedActionContext[P]): F[Either[BrowserFailure, BrowserCeremony]] =
+    begin(context: PublicActionContext, "sign-in")
+
+  /**
+   * Ordinary sign-in stays supported; authenticated security changes use
+   * beginReplacement.
+   */
+  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.1.0")
+  def begin(context: AuthenticatedActionContext[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] =
+    begin(context: PublicActionContext, purpose)
+
   def resume(
     context: PublicActionContext,
     id: CeremonyId,
@@ -318,10 +399,39 @@ final class BrowserAuthentication[F[_], S, P](
     withView(context.connectionId)(value =>
       check(value).flatMap(_ => persistence.resume(value.view, id, purpose))
     ).recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
+
+  /**
+   * Resume a replacement through resumeReplacement instead of an ordinary
+   * ceremony.
+   */
+  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.1.0")
+  def resume(context: AuthenticatedActionContext[P], id: CeremonyId): F[Either[BrowserFailure, BrowserCeremony]] =
+    resume(context: PublicActionContext, id, "sign-in")
+
+  /**
+   * Resume a replacement through resumeReplacement instead of an ordinary
+   * ceremony.
+   */
+  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.1.0")
+  def resume(
+    context: AuthenticatedActionContext[P],
+    id: CeremonyId,
+    purpose: String
+  ): F[Either[BrowserFailure, BrowserCeremony]] =
+    resume(context: PublicActionContext, id, purpose)
+
   def recover(context: PublicActionContext, id: CeremonyId): F[Either[BrowserFailure, BrowserRecovery]] =
     withView(context.connectionId)(value => check(value).flatMap(_ => persistence.recover(value.view, id))).recover {
       case _: SessionAccessDenied => Left(BrowserFailure.Denied)
     }
+
+  /**
+   * Replacement reconciliation uses the fixed recovery outcome and transport
+   * boundary.
+   */
+  @deprecated("Use recoverReplacementOutcome for authenticated replacement; recover is for ordinary sign-in", "5.1.0")
+  def recover(context: AuthenticatedActionContext[P], id: CeremonyId): F[Either[BrowserFailure, BrowserRecovery]] =
+    recover(context: PublicActionContext, id)
 
   /**
    * Resolve a server-owned view for a host transaction. The provider must
@@ -345,6 +455,61 @@ final class BrowserAuthentication[F[_], S, P](
   def complete(receipt: CommittedAuthentication): UiOutcome[S] = {
     require(persistence.accepts(receipt), "Completion receipt belongs to another or closed provider")
     UiOutcome.CommitAuthentication(receipt.completionId)
+  }
+  def beginReplacement(
+    context: AuthenticatedActionContext[P],
+    purpose: String
+  ): F[Either[BrowserFailure, BrowserReplacementCeremony]] =
+    replacementSupport.fold(F.pure[Either[BrowserFailure, BrowserReplacementCeremony]](Left(BrowserFailure.Denied))) {
+      provider =>
+        withView(context.connectionId)(value =>
+          check(value).flatMap(_ => provider.beginReplacement(value.view, purpose))
+        ).recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
+    }
+  def resumeReplacement(
+    context: AuthenticatedActionContext[P],
+    id: CeremonyId,
+    purpose: String
+  ): F[Either[BrowserFailure, BrowserReplacementCeremony]] =
+    replacementSupport.fold(F.pure[Either[BrowserFailure, BrowserReplacementCeremony]](Left(BrowserFailure.Denied))) {
+      provider =>
+        withView(context.connectionId)(value =>
+          check(value).flatMap(_ => provider.resumeReplacement(value.view, id, purpose))
+        ).recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
+    }
+
+  /**
+   * Capture the checked current invocation without marking replacement intent.
+   * This association is not proof of an activated successor or permission to
+   * disclose; withSuccessorCompletion must verify that inside its transaction.
+   */
+  def currentInvocation(
+    context: AuthenticatedActionContext[P]
+  ): F[Either[BrowserFailure, BrowserReplacementInvocation]] =
+    if (replacementSupport.isEmpty) F.pure(Left(BrowserFailure.Denied))
+    else
+      withView(context.connectionId)(value =>
+        check(value).map { _ =>
+          Right(BrowserReplacementInvocation.capture(value.view, context.invocationBinding))
+        }
+      ).recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
+
+  /**
+   * Capture the invocation that intends to prepare a replacement and mark its
+   * transport for retirement if that action's output is suppressed or fails.
+   * Disclosure-only callers use currentInvocation instead.
+   */
+  def replacementInvocation(
+    context: AuthenticatedActionContext[P]
+  ): F[Either[BrowserFailure, BrowserReplacementInvocation]] =
+    currentInvocation(context).map(_.map { invocation =>
+      context.invocationBinding.replacementAttempted.set(true)
+      invocation
+    })
+  def completeReplacement(handoff: CommittedReplacement): UiOutcome[S] = UiOutcome.CommitReplacement(handoff)
+  def recoverReplacementOutcome(id: CeremonyId): UiOutcome[S] = {
+    require(replacementSupport.nonEmpty, "Provider does not support replacement recovery")
+    UiOutcome.RecoverReplacement(id)
   }
   def maintenance(): F[Unit] = gate {
     val retiring = owned.valuesIterator.filter(_.retiring).toVector

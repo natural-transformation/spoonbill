@@ -70,15 +70,19 @@ object Main {
     require(port > 0 && port <= 65535, "Port must be between 1 and 65535")
     val provider = sys.env.getOrElse("SPOONBILL_AUTH_PROVIDER", "memory")
     require(Set("memory", "jdbc").contains(provider), "SPOONBILL_AUTH_PROVIDER must be memory or jdbc")
-    val clustered = sys.env.get("SPOONBILL_AUTH_CLUSTERED").contains("true")
-    val snapshotVersion = sys.env.get("SPOONBILL_AUTH_SNAPSHOT_VERSION").fold(1)(_.toInt)
+    val clustered          = sys.env.get("SPOONBILL_AUTH_CLUSTERED").contains("true")
+    val snapshotVersion    = sys.env.get("SPOONBILL_AUTH_SNAPSHOT_VERSION").fold(1)(_.toInt)
     val fixtureDiagnostics = sys.env.get("SPOONBILL_AUTH_TEST_FIXTURES").contains("true")
-    require(snapshotVersion == 1 || snapshotVersion == 2 || (fixtureDiagnostics && snapshotVersion == 3),
-      "Select synthetic snapshot version 1 or 2; incompatible 3 requires explicit test fixtures")
+    require(
+      snapshotVersion == 1 || snapshotVersion == 2 || (fixtureDiagnostics && snapshotVersion == 3),
+      "Select synthetic snapshot version 1 or 2; incompatible 3 requires explicit test fixtures"
+    )
     val activeViewLimit = sys.env.get("SPOONBILL_AUTH_MAX_ACTIVE_VIEWS").fold(16)(_.toInt)
     require(activeViewLimit > 0 && activeViewLimit <= 32, "Synthetic active view limit must be between 1 and 32")
+    val deliveryLimit = sys.env.get("SPOONBILL_AUTH_DELIVERY_LIMIT").fold(3)(_.toInt)
+    require(deliveryLimit > 0 && deliveryLimit <= 16, "Synthetic delivery limit must be between 1 and 16")
     require(!clustered || provider == "jdbc", "Clustered mode requires the shared JDBC provider")
-    val origin = sys.env.getOrElse("SPOONBILL_AUTH_ORIGIN", s"http://localhost:$port")
+    val origin    = sys.env.getOrElse("SPOONBILL_AUTH_ORIGIN", s"http://localhost:$port")
     val publicUri = URI.create(origin)
     require(
       publicUri.getScheme == "http" && Set("localhost", "127.0.0.1").contains(publicUri.getHost) &&
@@ -138,7 +142,8 @@ object Main {
     }
     try {
       val accounts: Accounts[Future] = source match {
-        case None => new MemoryAccounts[Future](origin = origin, proofContext = workerContext)
+        case None =>
+          new MemoryAccounts[Future](origin = origin, proofContext = workerContext, deliveryLimit = deliveryLimit)
         case Some((database, _)) =>
           val publicTestKey =
             MessageDigest.getInstance("SHA-256").digest("public-synthetic-spoonbill-example-key-v1".getBytes(UTF_8))
@@ -150,7 +155,8 @@ object Main {
             clustered = clustered,
             snapshotVersion = snapshotVersion,
             activeViewLimit = activeViewLimit,
-            fixtureDiagnostics = fixtureDiagnostics
+            fixtureDiagnostics = fixtureDiagnostics,
+            deliveryLimit = deliveryLimit
           )
       }
       owned.set(Some(accounts))
@@ -202,7 +208,7 @@ object Main {
           val stopped = new AtomicBoolean()
           val maintenance = summon[ActorSystem].scheduler.scheduleWithFixedDelay(1.second, 1.second) { () =>
             if (!stopped.get() && active.compareAndSet(false, true))
-              accounts.browser.maintenance().onComplete {
+              accounts.maintenance().onComplete {
                 case Success(_) => active.set(false)
                 case Failure(_) => active.set(false); shutdown.run(CoordinatedShutdown.UnknownReason)
               }
