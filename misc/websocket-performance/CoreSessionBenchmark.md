@@ -1,7 +1,8 @@
 # Core guarded-session lifecycle benchmark
 
 `CoreGuardedSessionBenchmark.scala` is compiled unchanged against baseline and
-candidate, with exactly one version of `CoreResponseAccess.scala`. Every operation
+candidate, with exactly one version of `CoreResponseAccess.scala` adapting the
+response and guard APIs. Every operation
 initializes ephemeral state, creates a real guarded session through
 `SessionsService` and `MessagingService`, consumes its first live output frame,
 and completes disposal. Baseline closes application input; candidate executes the

@@ -548,9 +548,14 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         intercept[BoundedPresentationStore.Rejected](await(staleManager.write(child, "late anonymous component")))
         freshPages.get() shouldBe 1
 
-        // No client baseline has been acknowledged before this socket closes.
+        // Adopt the authorized server baseline as SessionsService does. No
+        // client DOM acknowledgment has arrived before this socket closes.
         await(manager.write(Id.TopLevel, "recovery codes"))
         await(manager.write(child, "authenticated component"))
+        authenticated.applicationStateInitialization match {
+          case ApplicationStateInitialization.Reconstructed(acknowledge) => await(acknowledge())
+          case ApplicationStateInitialization.Retained() => fail("Credential delivery must reconstruct presentation")
+        }
         await(authenticated.close())
         val resumed = await(access.resume(qsid, request(Some(credential.value)), owner()).get)
         resumed.ownershipEpoch should not be empty
@@ -1374,6 +1379,73 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         ).sessionId should not be view.identity.sessionId
         db.committedSessions shouldBe 2
       } finally await(next.close())
+    }
+
+  it should "discover chained replacements on a peer with retained lineage and an exhausted final delivery budget" in Using
+    .resource(new Fixture(exclusive = false)) { db =>
+      val limits   = BrowserPersistenceLimits(maxDeliveries = 1)
+      val original = db.withLimits(limits)
+      val peer     = db.withLimits(limits)
+      try {
+        val (initial, initialToken) = signedIn(db, original)
+        var view                    = initial
+        var token                   = initialToken
+        var previousToken           = Option.empty[BrowserSessionToken]
+        for (index <- 1 to 3) {
+          val predecessor = view
+          val ceremony    = accepted(await(original.beginReplacement(view, "replace-factor")))
+          val handoff = accepted(
+            await(db.replaceWith(original, ceremony, replacementInvocation(view), view.identity.sessionId.get))
+          )
+          db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe index
+          db.committedSessions shouldBe index + 1
+          db.replacementCallbacks.get() shouldBe index
+          val request = new BrowserReplacementRequest(binding, Some(token.value), None)
+          accepted(await(peer.replacementPending(request))) shouldBe true
+          accepted(await(peer.replacementPending(request))) shouldBe true
+          await(peer.capture(binding, Some(token.value), activate = true)).isLeft shouldBe true
+          await(
+            peer.replacementPending(new BrowserReplacementRequest(binding, Some("z" * 43), None))
+          ).isLeft shouldBe true
+          previousToken.foreach { stale =>
+            await(
+              peer.recoverReplacement(new BrowserReplacementRequest(binding, Some(stale.value), None))
+            ).isLeft shouldBe true
+          }
+          val delivery = accepted(await(peer.recoverReplacement(request))) match {
+            case BrowserReplacementRecovery.Deliver(value) => value
+            case other                                     => fail(s"Expected peer replacement delivery: $other")
+          }
+          delivery.completionId shouldBe handoff.completionId
+          previousToken = Some(token)
+          token = accepted(await(peer.deliverReplacement(request, delivery)))
+          await(original.deliver(handoff.completionId, binding)) shouldBe None
+          accepted(await(peer.recoverReplacement(request))) shouldBe BrowserReplacementRecovery.CommittedUnavailable
+          val held = new BrowserReplacementRequest(binding, Some(token.value), None)
+          accepted(await(peer.replacementPending(held))) shouldBe true
+          accepted(await(peer.recoverReplacement(held))) shouldBe BrowserReplacementRecovery.ActivateExistingCookie
+          val active = accepted(await(peer.capture(binding, Some(token.value), activate = true)))
+          active.sessionId should not be predecessor.identity.sessionId
+          val local = accepted(await(original.capture(binding, Some(token.value), activate = false)))
+          local.sessionId shouldBe active.sessionId
+          view = accepted(
+            await(original.claim(local, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true))
+          )
+          accepted(
+            await(original.withSuccessorCompletion(view)((_, completion) => completion))
+          ).successorSessionId shouldBe active.sessionId.get
+          accepted(await(peer.replacementPending(held))) shouldBe false
+          accepted(await(peer.recoverReplacement(held))) shouldBe BrowserReplacementRecovery.ActivateExistingCookie
+          await(original.release(predecessor))
+          await(original.authorize(view)).isRight shouldBe true
+          db.committedSessions shouldBe index + 1
+          db.replacementCallbacks.get() shouldBe index
+          db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe index
+        }
+      } finally {
+        await(original.close())
+        await(peer.close())
+      }
     }
 
   it should "preserve exact nanosecond host stamps through preparation, restart, activation and successor lookup" in Using

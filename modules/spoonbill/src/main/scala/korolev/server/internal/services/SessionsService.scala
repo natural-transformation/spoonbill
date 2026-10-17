@@ -25,7 +25,13 @@ import spoonbill.effect.{AsyncTable, Effect, Hub, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, Frontend, SensitiveAuthorization}
 import spoonbill.security.Identifiers.ConnectionId
-import spoonbill.server.{SessionAccessControl, SessionAccessDenied, SessionGuard, SpoonbillServiceConfig}
+import spoonbill.server.{
+  ApplicationStateInitialization,
+  SessionAccessControl,
+  SessionAccessDenied,
+  SessionGuard,
+  SpoonbillServiceConfig
+}
 import spoonbill.server.internal.{BadRequestException, Cookies}
 import spoonbill.state.{GuardedStateManager, StateDeserializer, StateManager, StateSerializer, StateStorage}
 import spoonbill.web.{PathAndQuery, Request}
@@ -284,29 +290,48 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                  else control.resume(qsid, rh, connectionId).getOrElse(Effect[F].fail(MissingLocalView)),
                  Some((value: SessionGuard[F, S]) => value.close())
                )
-      _        <- Effect[F].delay(guardRef.set(Some(guard)))
-      snapshots = guard.viewSnapshots
-      _        <- if (snapshots.nonEmpty && localExists) Effect[F].delay(rawStateAcquired.set(true)) else Effect[F].unit
-      restoredManager <- snapshots match {
-                           case Some(session) =>
-                             // Restore only presentation onto fresh authority. A prior process's
-                             // arbitrary state/DOM cache is never the durable bootstrap baseline.
-                             for {
-                               application <- Effect[F].delay(applicationRequest(qsid, rh))
-                               loaded      <- config.stateLoader(qsid.deviceId, application)
-                               routed <-
-                                 config.router.toState.lift(application.pq).fold(Effect[F].pure(loaded))(f => f(loaded))
-                               fresh    <- required(guard.connected(routed))
-                               _        <- authorize(guard, fresh)
-                               restored <- required(session.initialize(fresh))
-                               _        <- authorize(guard, restored)
-                               manager   = StateManager.cached[F](Map(avocet.Id.TopLevel -> restored))
-                             } yield manager
-                           case None =>
-                             stateStorage.exists(qsid.deviceId, qsid.sessionId).flatMap {
-                               case true  => stateStorage.get(qsid.deviceId, qsid.sessionId)
-                               case false => Effect[F].fail(MissingLocalView)
-                             }
+      _             <- Effect[F].delay(guardRef.set(Some(guard)))
+      snapshots      = guard.viewSnapshots
+      initialization = guard.applicationStateInitialization
+      initializeApplication = initialization match {
+                                case ApplicationStateInitialization.Retained()       => snapshots.nonEmpty
+                                case ApplicationStateInitialization.Reconstructed(_) => true
+                              }
+      _ <- if (snapshots.nonEmpty && localExists) Effect[F].delay(rawStateAcquired.set(true)) else Effect[F].unit
+      restoredManager <- if (initializeApplication) {
+                           // Restore only presentation onto fresh authority. A prior process's
+                           // arbitrary state/DOM cache is never the durable bootstrap baseline.
+                           for {
+                             application <- Effect[F].delay(applicationRequest(qsid, rh))
+                             loaded      <- config.stateLoader(qsid.deviceId, application)
+                             routed <-
+                               config.router.toState.lift(application.pq).fold(Effect[F].pure(loaded))(f => f(loaded))
+                             fresh <- required(guard.connected(routed))
+                             _     <- authorize(guard, fresh)
+                             restored <-
+                               snapshots.fold(Effect[F].pure(fresh))(session => required(session.initialize(fresh)))
+                             _ <- authorize(guard, restored)
+                             manager <- snapshots match {
+                                          case Some(_) =>
+                                            Effect[F].pure(StateManager.cached[F](Map(avocet.Id.TopLevel -> restored)))
+                                          case None =>
+                                            for {
+                                              local <- stateStorage.get(qsid.deviceId, qsid.sessionId)
+                                              _     <- Effect[F].delay(rawStateAcquired.set(true))
+                                              _     <- local.write(avocet.Id.TopLevel, restored)
+                                            } yield local
+                                        }
+                             _ <- initialization match {
+                                    case ApplicationStateInitialization.Retained() => Effect[F].unit
+                                    case ApplicationStateInitialization.Reconstructed(acknowledge) =>
+                                      required(acknowledge())
+                                  }
+                           } yield manager
+                         } else {
+                           stateStorage.exists(qsid.deviceId, qsid.sessionId).flatMap {
+                             case true  => stateStorage.get(qsid.deviceId, qsid.sessionId)
+                             case false => Effect[F].fail(MissingLocalView)
+                           }
                          }
       rawManager <- Effect[F].delay {
                       // get may promote a soft-closed snapshot before restoration is allowed.
@@ -403,9 +428,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
       state     <- rawManager.read[S](avocet.Id.TopLevel).map(_.getOrElse(initial))
-      connected <- if (snapshots.nonEmpty) Effect[F].pure(state) else required(guard.connected(state))
+      connected <- if (initializeApplication) Effect[F].pure(state) else required(guard.connected(state))
       _         <- authorize(guard, connected)
-      _ <- if (snapshots.nonEmpty) Effect[F].unit
+      _ <- if (initializeApplication) Effect[F].unit
            else required(app.topLevelComponentInstance.browserAccess.transitionForce(_ => connected))
       handlers <- config.extensions.map { extension =>
                     required(

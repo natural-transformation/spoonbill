@@ -150,6 +150,56 @@ trait BrowserReplacementConformance extends BrowserPersistenceConformance {
     db.committedSessions shouldBe 2
   }
 
+  it should "discover consecutive replacements without a handle while retaining the same committed successor" in Using
+    .resource(fixture()) { db =>
+      val (initial, initialToken) = login(db)
+      var view                    = initial
+      var token                   = initialToken
+      for (index <- 1 to 3) {
+        val predecessor = view
+        val ceremony    = accepted(await(db.replacementPersistence.beginReplacement(view, "replace-factor")))
+        val handoff = accepted(
+          await(db.prepareReplacement(ceremony, invocation(view, 100L + index), view.identity.sessionId.get))
+        )
+        val request = new BrowserReplacementRequest(binding, Some(token), None)
+        // Discovery must remain read-only, and prior activated lineage must not
+        // turn the current reservation into an ambiguous recovery request.
+        accepted(await(db.replacementPersistence.replacementPending(request))) shouldBe true
+        accepted(await(db.replacementPersistence.replacementPending(request))) shouldBe true
+        db.committedSessions shouldBe index + 1
+        await(db.persistence.authorize(predecessor)).isLeft shouldBe true
+        val delivery = accepted(await(db.replacementPersistence.recoverReplacement(request))) match {
+          case BrowserReplacementRecovery.Deliver(value) => value
+          case other                                     => fail(s"Expected chained replacement delivery: $other")
+        }
+        delivery.completionId shouldBe handoff.completionId
+        token = accepted(await(db.replacementPersistence.deliverReplacement(request, delivery))).value
+        val held = new BrowserReplacementRequest(binding, Some(token), None)
+        if (index == 3) {
+          var deliveries = 1
+          while (deliveries <= 16 && await(db.persistence.deliver(handoff.completionId, binding)).nonEmpty)
+            deliveries += 1
+          deliveries should be <= 16
+          await(db.persistence.deliver(handoff.completionId, binding)) shouldBe None
+          accepted(await(db.replacementPersistence.recoverReplacement(request))) shouldBe
+            BrowserReplacementRecovery.CommittedUnavailable
+        }
+        accepted(await(db.replacementPersistence.replacementPending(held))) shouldBe true
+        accepted(await(db.replacementPersistence.recoverReplacement(held))) shouldBe
+          BrowserReplacementRecovery.ActivateExistingCookie
+        val active = accepted(await(db.persistence.capture(binding, Some(token), activate = true)))
+        active.sessionId should not be predecessor.identity.sessionId
+        view = accepted(await(db.persistence.claim(active, viewId, connection(10L + index), existingOnly = true)))
+        accepted(await(db.successorCompletion(view))).successorSessionId shouldBe active.sessionId.get
+        accepted(await(db.replacementPersistence.replacementPending(held))) shouldBe false
+        accepted(await(db.persistence.capture(binding, Some(token), activate = true)))
+          .sameAuthority(active) shouldBe true
+        await(db.persistence.release(predecessor))
+        await(db.persistence.authorize(view)).isRight shouldBe true
+        db.committedSessions shouldBe index + 1
+      }
+    }
+
   it should "retain committed disposition after expiry or logout without reviving old prepared completions" in Using
     .resource(fixture()) { db =>
       val (view, oldToken) = login(db)

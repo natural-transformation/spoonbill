@@ -1085,7 +1085,7 @@ final class JdbcBrowserPersistence[F[_], P](
       ((r.generation=s.generation AND r.predecessor_session_id=s.current_session_id) OR
        (r.successor_session_id=s.current_session_id AND EXISTS (SELECT 1 FROM spoonbill_browser_session b
          WHERE b.realm=r.realm AND b.cookie_namespace=r.namespace AND b.host_session_id=r.successor_session_id
-         AND b.active_generation=s.generation AND b.token_hash=?)))"""
+         AND NOT b.revoked AND b.active_generation=s.generation AND b.token_hash=?)))"""
       ) { query =>
         scope(query); query.setBytes(3, digest(request.binding).bytes)
         query.setBytes(4, request.token.map(token => digest(token).bytes).orNull)

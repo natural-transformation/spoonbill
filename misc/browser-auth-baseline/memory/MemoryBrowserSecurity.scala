@@ -214,6 +214,7 @@ final class MemoryBrowserSecurity[F[_], S](
       connections += id -> qsid
       val lease = acquired.lease
       new SessionGuard[F, S] {
+        val applicationStateInitialization = spoonbill.server.ApplicationStateInitialization.Retained[F]()
         def authorize(state: S): F[Unit] = atomic(authorizeState(entry(qsid, lease), state))
         def connected(state: S): F[S] = atomic {
           val current = entry(qsid, lease)

@@ -34,6 +34,7 @@ class DurableRestoreSpec extends AsyncFlatSpec with Matchers {
       def authorizeHttp(request: Request.Head, state: State) = Future.unit
       override def resume(id: Qsid, request: Request.Head, connection: ConnectionId) = Some(open(id, request, connection))
       def open(id: Qsid, request: Request.Head, connection: ConnectionId) = Future.successful(new SessionGuard[Future, State] {
+        val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
         override val viewSnapshots = Some(ViewSnapshotSession.projected[Future, State, Int](store, _.counter,
           (fresh, count) => fresh.copy(counter = count)))
         def authorize(state: State) = if (state.subject == "fresh") Future.unit else Future.failed(new SessionAccessDenied)

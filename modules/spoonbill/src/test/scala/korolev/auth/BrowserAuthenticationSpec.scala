@@ -44,8 +44,12 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
   private val child                               = Id("1_2")
   private def await[A](value: Future[A]): A       = Await.result(value, 5.seconds)
   private def right[E, A](value: Either[E, A]): A = value.fold(error => fail(s"Expected success, got $error"), identity)
+  private def acknowledge(guard: SessionGuard[Future, Page]): Unit = guard.applicationStateInitialization match {
+    case ApplicationStateInitialization.Retained()              => ()
+    case ApplicationStateInitialization.Reconstructed(complete) => await(complete())
+  }
 
-  private final class Fixture {
+  private final class Fixture(reconnectSeconds: Long = BoundedPresentationStore.Limits().reconnectSeconds) {
     private val ids                = new AtomicLong()
     def id(): UUID                 = new UUID(0L, ids.incrementAndGet())
     def connection(): ConnectionId = ConnectionId.fromUuid(id())
@@ -74,6 +78,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
         (page, principal, continuation) => page.copy(user = principal, continuation = continuation)
       ),
       configuration,
+      storageLimits = BoundedPresentationStore.Limits(reconnectSeconds = reconnectSeconds),
       clock = () => time.get()
     )
     val base = SpoonbillServiceConfig[Future, Page, Any](
@@ -93,8 +98,13 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
         token.toSeq.map(configuration.sessionCookieName + "=" + _)
       Request(method, PathAndQuery.Root, headers, None, Stream.empty[Future, Bytes], cookies.mkString("; "))
     }
-    def open(owner: ConnectionId, token: Option[String] = None): SessionGuard[Future, Page] =
-      await(access.open(qsid, request(token), owner))
+    def open(owner: ConnectionId, token: Option[String] = None): SessionGuard[Future, Page] = {
+      val guard = await(access.open(qsid, request(token), owner))
+      // These coordinator-only tests adopt the prepared state directly, without
+      // SessionsService's loader/router initialization.
+      acknowledge(guard)
+      guard
+    }
     def manager = await(configured.stateStorage.get(qsid.deviceId, qsid.sessionId))
     def binding(owner: ConnectionId, expected: AnyRef = browser.authority): InvocationBinding =
       new InvocationBinding(InvocationId.fromUuid(id()), owner, expectedAuthority = Some(expected))
@@ -224,6 +234,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       val oldGuard     = f.open(oldOwner)
       val staleManager = f.manager
       oldGuard.ownershipEpoch shouldBe None
+      oldGuard.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
       await(staleManager.write(Id.TopLevel, Page(label = "anonymous setup with an extra error banner")))
       await(staleManager.write(child, "anonymous component must not survive login"))
       val receipt = f.prepare(oldOwner)
@@ -236,6 +247,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       val newGuard = f.open(newOwner, Some(delivered.value))
       newGuard.ownershipEpoch shouldBe Some(right(await(f.browser.currentView(f.context(newOwner)))).fence.epoch)
       newGuard.viewSnapshots shouldBe None
+      newGuard.applicationStateInitialization shouldBe a[ApplicationStateInitialization.Reconstructed[Future]]
       await(f.manager.read[String](child)) shouldBe None
       await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())
       await(newGuard.connected(Page())).user shouldBe Some("alice")
@@ -252,6 +264,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       await(newGuard.close())
       val resumed = await(f.access.resume(qsid, f.request(Some(delivered.value)), f.connection()).get)
       resumed.ownershipEpoch should not be empty
+      resumed.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
       resumed.ownershipEpoch.get.toLong should be > newGuard.ownershipEpoch.get.toLong
       await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(authenticatedPage)
       await(f.manager.read[String](child)) shouldBe Some("authenticated component")
@@ -267,10 +280,12 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       val first      = f.open(firstOwner)
       val old        = f.manager
       first.ownershipEpoch shouldBe None
+      first.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
       await(old.write(child, "retained component"))
       await(first.close())
       val second = await(f.access.resume(qsid, f.request(), f.connection()).get)
       second.ownershipEpoch shouldBe None
+      second.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
       await(f.manager.read[String](child)) shouldBe Some("retained component")
       intercept[BoundedPresentationStore.Rejected](await(old.read[String](child)))
       await(first.close())
@@ -283,13 +298,37 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
     val owner = f.connection()
     val guard = f.open(owner)
     guard.ownershipEpoch shouldBe Some(right(await(f.browser.currentView(f.context(owner)))).fence.epoch)
+    guard.applicationStateInitialization shouldBe a[ApplicationStateInitialization.Reconstructed[Future]]
     await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())
     f.freshPages.get() shouldBe 1
     await(guard.close())
     val resumed = await(f.access.resume(qsid, f.request(), f.connection()).get)
     resumed.ownershipEpoch should not be empty
+    resumed.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
     f.freshPages.get() shouldBe 1
     await(resumed.close())
+  }
+
+  it should "discard an unacknowledged reconstructed baseline without eagerly completing its Future acknowledgement" in withFixture {
+    f =>
+      val first = await(f.access.open(qsid, f.request(), f.connection()))
+      first.applicationStateInitialization shouldBe a[ApplicationStateInitialization.Reconstructed[Future]]
+      await(first.close())
+      await(f.configured.stateStorage.exists(qsid.deviceId, qsid.sessionId)) shouldBe false
+      await(f.provider.resources).ownedViews shouldBe 0
+
+      val retry = await(f.access.resume(qsid, f.request(), f.connection()).get)
+      retry.applicationStateInitialization shouldBe a[ApplicationStateInitialization.Reconstructed[Future]]
+      val initialized = await(retry.connected(Page(label = "authorized application baseline")))
+      await(retry.authorize(initialized))
+      await(f.manager.write(Id.TopLevel, initialized))
+      acknowledge(retry)
+      await(retry.close())
+
+      val retained = await(f.access.resume(qsid, f.request(), f.connection()).get)
+      retained.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
+      await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(initialized)
+      await(retained.close())
   }
 
   it should "require a new baseline after same-authority disconnected presentation expires" in withFixture { f =>
@@ -302,14 +341,39 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
     f.time.set(start.plusSeconds(BoundedPresentationStore.Limits().reconnectSeconds + 1))
     val resumed = await(f.access.resume(qsid, f.request(), f.connection()).get)
     resumed.ownershipEpoch should not be empty
+    resumed.applicationStateInitialization shouldBe a[ApplicationStateInitialization.Reconstructed[Future]]
     await(f.manager.read[Page](Id.TopLevel)) shouldBe Some(Page())
     await(f.manager.read[String](child)) shouldBe None
     f.freshPages.get() shouldBe 1
+    acknowledge(resumed)
     await(resumed.close())
     val retry = await(f.access.resume(qsid, f.request(), f.connection()).get)
     retry.ownershipEpoch should not be empty
+    retry.applicationStateInitialization shouldBe ApplicationStateInitialization.Retained[Future]()
     f.freshPages.get() shouldBe 1
     await(retry.close())
+  }
+
+  it should "preserve an anonymous pending ceremony when connected presentation is reconstructed" in {
+    val f = new Fixture(reconnectSeconds = 1)
+    try {
+      val owner     = f.connection()
+      val first     = f.open(owner)
+      val ceremony  = right(await(f.browser.begin(f.context(owner))))
+      val challenge = BrowserChallenge("alice", 0L, 0L, "synthetic-challenge")
+      right(await(f.provider.bindChallenge(ceremony, challenge)))
+      await(first.close())
+      f.time.set(start.plusSeconds(2))
+      val resumed = await(f.access.resume(qsid, f.request(), f.connection()).get)
+      resumed.applicationStateInitialization shouldBe a[ApplicationStateInitialization.Reconstructed[Future]]
+      resumed.viewSnapshots shouldBe None
+      val connected = await(resumed.connected(Page(label = "requested public route")))
+      connected.label shouldBe "requested public route"
+      connected.continuation.map(_.id) shouldBe Some(ceremony.id)
+      connected.continuation.flatMap(_.challenge) shouldBe Some(challenge)
+      await(resumed.authorize(connected))
+      await(resumed.close())
+    } finally f.close()
   }
 
   it should "suppress authenticated output when logout occurs during an awaited handler" in withFixture { f =>

@@ -17,7 +17,7 @@ import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
 
 /** Serial in-process guarded-session startup and disposal. The same source is
-  * compiled against both trees; CoreResponseAccess isolates the response API.
+  * compiled against both trees; CoreResponseAccess isolates the response and guard APIs.
   * Every measured operation validates completed cleanup, not merely its start.
   */
 object CoreGuardedSessionBenchmark {
@@ -73,7 +73,7 @@ object CoreGuardedSessionBenchmark {
         activeGuards.incrementAndGet()
         val done = closedSignal
         val released = new AtomicBoolean(false)
-        Future.successful(new SessionGuard[Future, String] {
+        Future.successful(new CoreBenchmarkGuard {
           def authorize(state: String): Future[Unit] = Future.unit
           def connected(state: String): Future[String] = Future.successful(state)
           def close(): Future[Unit] = effect.delay {

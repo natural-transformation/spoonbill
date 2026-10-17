@@ -12,7 +12,6 @@ import spoonbill.effect.Effect
 import spoonbill.effect.syntax.*
 import spoonbill.security.transaction.TransactionFailure
 import spoonbill.server.{SessionAccessDenied, SpoonbillServiceConfig, StateLoader}
-import spoonbill.web.PathAndQuery.{/, Root}
 
 /**
  * Complete shared Scala UI; there is no application authentication JavaScript.
@@ -41,6 +40,17 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     .zip(InputSchema.secret(field("replacementPassword"), 256))
   private val onRejected: ActionRejection => Page => Page = _ =>
     _.copy(message = "This request was rejected. Recover this attempt or begin a new sign-in.")
+  private val continuePublic = actions.public(
+    name("example.continue-public"),
+    InputSchema.text(field("continuation"), 256).map(PublicContinuation.fromText),
+    PublicPolicy.allow[F, PublicContinuation]
+  ) { (continuation, _) =>
+    F.pure(
+      UiOutcome.update[Page](page =>
+        page.copy(route = page.route.withContinuation(continuation), message = "Public continuation accepted.")
+      )
+    )
+  }
   private def result(value: SignIn): UiOutcome[Page] = value match {
     case SignIn.Completed(receipt) => browser.complete(receipt)
     case SignIn.Challenge(id, reference) =>
@@ -230,7 +240,20 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
   private def document(page: Page): Document.Node[Binding] = Html(
     head(title("Spoonbill browser authentication")),
     body(
-      h1(if (page.protectedPage) "Protected page" else "Browser authentication"),
+      h1(page.route match {
+        case PageRoute.Landing        => "Browser authentication"
+        case PageRoute.Protected      => "Protected page"
+        case PageRoute.Login(_)       => "Public login page"
+        case PageRoute.Information(_) => "Public information page"
+      }),
+      page.route.continuation.toSeq.map { continuation =>
+        form(
+          id := "public-route-form",
+          ActionForms.onSubmit[F, Page, Any, PublicContinuation](continuePublic, onRejected),
+          input(avocet.dsl.html.name := "continuation", value := continuation.text),
+          button("Keep continuation")
+        )
+      },
       p(page.message),
       page.account match {
         case None => signIn(page)
@@ -292,25 +315,26 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
   val config: SpoonbillServiceConfig[F, Page, Any] = browser.configure(
     SpoonbillServiceConfig(
       stateLoader = StateLoader[F, Page] { (_, request) =>
-        browser.currentPrincipal(request).flatMap {
-          case Right(current) =>
-            current.fold(F.pure(0))(accounts.currentCount).map { count =>
-              Page(
-                account = current.map(_.name),
-                protectedPage = request.pq.asPath == Root / "protected",
-                counter = count
-              )
+        PageRoute.fromPath.lift(request.pq) match {
+          case None => F.fail(new SessionAccessDenied)
+          case Some(route) =>
+            browser.currentPrincipal(request).flatMap {
+              case Right(current) =>
+                current.fold(F.pure(0))(accounts.currentCount).map { count =>
+                  Page(
+                    account = current.map(_.name),
+                    route = route,
+                    counter = count
+                  )
+                }
+              case Left(_) => F.fail(new SessionAccessDenied)
             }
-          case Left(_) => F.fail(new SessionAccessDenied)
         }
       },
       document = document,
       router = Router[F, Page](
-        fromState = { case page => if (page.protectedPage) Root / "protected" else Root },
-        toState = {
-          case Root               => page => F.pure(page.copy(protectedPage = false))
-          case Root / "protected" => page => F.pure(page.copy(protectedPage = true))
-        }
+        fromState = { case page => page.route.toPath },
+        toState = PageRoute.fromPath.andThen(route => page => F.pure(page.copy(route = route)))
       )
     )
   )

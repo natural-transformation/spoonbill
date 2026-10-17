@@ -56,6 +56,7 @@ class SnapshotSetupDiagnosticSpec extends AsyncFlatSpec with Matchers {
       val control = new SessionAccessControl[Future, String] {
         def authorizeHttp(request: Request.Head, state: String) = Future.unit
         def open(id: Qsid, request: Request.Head, connection: ConnectionId) = Future.successful(new SessionGuard[Future, String] {
+          val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
           override val viewSnapshots = Some(new ViewSnapshotSession[Future, String] {
             val ownerEpoch = ViewOwnershipEpoch.initial
             def initialize(fresh: String) = Future.failed(rejected)

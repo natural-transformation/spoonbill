@@ -113,10 +113,17 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
       Stream.empty[Future, Bytes],
       "spoonbill_binding=" + "b" * 43
     )
-    def open(qsid: Qsid = viewKey): SessionGuard[Future, String] = await(
-      configured.sessionAccessControl.get
-        .open(qsid, request, ConnectionId.fromUuid(new UUID(0L, ids.incrementAndGet())))
-    )
+    def open(qsid: Qsid = viewKey): SessionGuard[Future, String] = {
+      val guard = await(
+        configured.sessionAccessControl.get
+          .open(qsid, request, ConnectionId.fromUuid(new UUID(0L, ids.incrementAndGet())))
+      )
+      guard.applicationStateInitialization match {
+        case ApplicationStateInitialization.Retained() => ()
+        case ApplicationStateInitialization.Reconstructed(acknowledge) => await(acknowledge())
+      }
+      guard
+    }
     def manager = await(configured.stateStorage.get(viewKey.deviceId, viewKey.sessionId))
     def close(): Unit = {
       releaseFails.set(false); authorizeFails.set(false); factoryFails.set(false)
