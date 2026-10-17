@@ -134,6 +134,14 @@ when a business operation requires an independently retained idempotency key.
 Use the explicit replacement API for factor enrollment, factor replacement,
 disabling, or recovery-code regeneration that revokes the current host session.
 Ordinary `prepare` does not acquire that permission from its purpose string.
+Calls to `browser.begin`, `browser.resume`, or `browser.recover` from an
+`AuthenticatedActionContext` are deprecated in 5.0.0 to direct those flows to
+`beginReplacement`, `resumeReplacement`, and the checked replacement recovery
+outcome. The ordinary methods and `provider.prepare` remain supported for
+anonymous sign-in; deprecating them globally would warn valid sign-in callers.
+An existing authenticated flow must migrate its ceremony and transaction
+callback together. Changing only the purpose string or completion call does not
+grant replacement authority.
 Both built-in providers implement `ReplacementBrowserPersistence`; a third-party
 provider must implement this extension explicitly. The coordinator discovers its
 transport operations through `BrowserReplacementSupport` and does not fall back

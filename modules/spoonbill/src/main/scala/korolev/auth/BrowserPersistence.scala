@@ -163,6 +163,11 @@ trait BrowserPersistence[F[_], P] {
   ): F[Either[BrowserFailure, A]] =
     F.map(authorize(view))(_.flatMap(identity => Either.cond(allowed(identity), output, BrowserFailure.Denied)))
   def release(view: BrowserView[P]): F[Unit]
+
+  /**
+   * Ordinary sign-in ceremony. Authenticated session changes use
+   * BrowserReplacementSupport.beginReplacement.
+   */
   def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]]
   def bindChallenge(ceremony: BrowserCeremony, challenge: BrowserChallenge): F[Either[BrowserFailure, BrowserCeremony]]
   def resume(view: BrowserView[P], id: CeremonyId, purpose: String): F[Either[BrowserFailure, BrowserCeremony]]
@@ -178,6 +183,10 @@ trait TransactionalBrowserPersistence[F[_], G[_], P] extends BrowserPersistence[
   type Tx
 
   /**
+   * Ordinary sign-in only. Authenticated session changes must use
+   * ReplacementBrowserPersistence.prepareReplacement; this method cannot
+   * replace its own predecessor.
+   *
    * Consume host proof, create the host session and write its audit on the same
    * transaction as browser preparation. Rejection must fail G/throw, never
    * return an ordinary Left that permits the enclosing transaction to commit.

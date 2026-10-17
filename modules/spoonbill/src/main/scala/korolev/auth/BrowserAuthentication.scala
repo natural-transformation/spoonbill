@@ -374,6 +374,23 @@ final class BrowserAuthentication[F[_], S, P](
     withView(context.connectionId)(value => check(value).flatMap(_ => persistence.begin(value.view, purpose))).recover {
       case _: SessionAccessDenied => Left(BrowserFailure.Denied)
     }
+
+  /**
+   * Ordinary sign-in stays supported; authenticated security changes use
+   * beginReplacement.
+   */
+  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.0.0")
+  def begin(context: AuthenticatedActionContext[P]): F[Either[BrowserFailure, BrowserCeremony]] =
+    begin(context: PublicActionContext, "sign-in")
+
+  /**
+   * Ordinary sign-in stays supported; authenticated security changes use
+   * beginReplacement.
+   */
+  @deprecated("Use beginReplacement for authenticated security changes; begin is for ordinary sign-in", "5.0.0")
+  def begin(context: AuthenticatedActionContext[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] =
+    begin(context: PublicActionContext, purpose)
+
   def resume(
     context: PublicActionContext,
     id: CeremonyId,
@@ -382,10 +399,39 @@ final class BrowserAuthentication[F[_], S, P](
     withView(context.connectionId)(value =>
       check(value).flatMap(_ => persistence.resume(value.view, id, purpose))
     ).recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
+
+  /**
+   * Resume a replacement through resumeReplacement instead of an ordinary
+   * ceremony.
+   */
+  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.0.0")
+  def resume(context: AuthenticatedActionContext[P], id: CeremonyId): F[Either[BrowserFailure, BrowserCeremony]] =
+    resume(context: PublicActionContext, id, "sign-in")
+
+  /**
+   * Resume a replacement through resumeReplacement instead of an ordinary
+   * ceremony.
+   */
+  @deprecated("Use resumeReplacement for authenticated security changes; resume is for ordinary sign-in", "5.0.0")
+  def resume(
+    context: AuthenticatedActionContext[P],
+    id: CeremonyId,
+    purpose: String
+  ): F[Either[BrowserFailure, BrowserCeremony]] =
+    resume(context: PublicActionContext, id, purpose)
+
   def recover(context: PublicActionContext, id: CeremonyId): F[Either[BrowserFailure, BrowserRecovery]] =
     withView(context.connectionId)(value => check(value).flatMap(_ => persistence.recover(value.view, id))).recover {
       case _: SessionAccessDenied => Left(BrowserFailure.Denied)
     }
+
+  /**
+   * Replacement reconciliation uses the fixed recovery outcome and transport
+   * boundary.
+   */
+  @deprecated("Use recoverReplacementOutcome for authenticated replacement; recover is for ordinary sign-in", "5.0.0")
+  def recover(context: AuthenticatedActionContext[P], id: CeremonyId): F[Either[BrowserFailure, BrowserRecovery]] =
+    recover(context: PublicActionContext, id)
 
   /**
    * Resolve a server-owned view for a host transaction. The provider must

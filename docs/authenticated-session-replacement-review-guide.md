@@ -69,6 +69,16 @@ the PR's file list and use the reading order below to inspect the changes.
 - `BrowserReplacementSupport[F, P]` exposes transport/provider operations.
   `ReplacementBrowserPersistence[F, G, P]` preserves the provider-dependent `Tx`
   and inner transaction program `G`; coordinator code does not guess or erase it.
+- Authenticated-action calls to the ordinary coordinator ceremony methods are
+  deprecated with replacement-specific guidance. The ordinary provider methods
+  remain the supported anonymous sign-in path and are documented accordingly;
+  migration changes the ceremony, host transaction callback and completion path
+  together.
+  The warnings apply when the caller's context is statically
+  `AuthenticatedActionContext[P]`: both `begin` and `resume` forms, and
+  `recover`. Calls from `PublicActionContext` keep their ordinary sign-in
+  semantics without a warning. Existing method signatures continue forwarding
+  to the same implementation.
 - The existing `Effect` and `TransactionProgram` abstractions remain in use.
   Admission is suspended, callbacks are evaluated once, and successful values
   escape only after acknowledged settlement. A callback returning an ordinary
@@ -258,6 +268,24 @@ Detailed local logs are `/private/tmp/spoonbill-replacement-review-validation-20
 `/private/tmp/spoonbill-replacement-review-example-retry-20261017.log` and
 `/private/tmp/spoonbill-replacement-review-client-checks-20261017.log`.
 Repeat checks only for new changes, failures or unresolved concerns.
+
+After adding these scoped deprecations, formatting, full compile and test
+compilation passed. The coordinator/dispatch suites passed 20/20 tests, and the
+example suite passed 19/19, including JDBC and native IO. A temporary Scala 3
+compile probe of all five authenticated-context overloads emitted exactly five
+targeted deprecation warnings and compiled successfully; the probe was not
+added to the repository. Exact regression command:
+
+```sh
+nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'spoonbill/scalafmtOnly src/main/scala/korolev/auth/BrowserAuthentication.scala src/main/scala/korolev/auth/BrowserPersistence.scala' \
+  compile 'Test / compile' \
+  'spoonbill/testOnly spoonbill.auth.BrowserAuthenticationSpec spoonbill.action.ReplacementDispatchSpec' \
+  'browserAuthExample/test'
+```
+
+The local log is `/private/tmp/spoonbill-deprecation-validation-20261017.log`.
 
 The subsequent code-review response used scoped `scalafmtOnly` on its ten
 changed Scala files, then the following compile/test command (repeated after
