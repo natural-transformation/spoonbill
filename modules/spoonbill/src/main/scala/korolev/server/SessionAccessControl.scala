@@ -40,12 +40,24 @@ trait SessionOutputAdmission[F[_], S] {
   def apply[A](output: A, produced: S, current: S): F[A]
 }
 
+/** Local presentation adoption, independent of optional durable snapshots. */
+enum ApplicationStateInitialization[F[_]] {
+
+  /**
+   * Adopt existing local presentation; snapshots retain their own restoration
+   * policy.
+   */
+  case Retained()
+
+  /**
+   * Load the checked application route and acknowledge its authorized baseline
+   * before retaining it. The callback keeps the effect lazy even with Future.
+   */
+  case Reconstructed(acknowledge: () => F[Unit])
+}
+
 trait SessionGuard[F[_], S] {
-  // This acquisition created a placeholder instead of adopting HTTP or retained
-  // presentation. Reload its application route independently of durable snapshots.
-  private[spoonbill] def requiresApplicationState: Boolean = false
-  // A failed reconstruction must not turn its placeholder into retained state.
-  private[spoonbill] def applicationStateInitialized: Option[F[Unit]] = None
+  def applicationStateInitialization: ApplicationStateInitialization[F]
 
   private[spoonbill] def replacementCompletion
     : Option[(spoonbill.auth.CommittedReplacement, spoonbill.action.InvocationBinding) => F[

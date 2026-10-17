@@ -48,6 +48,7 @@ class SensitiveDomAdmissionSpec extends AsyncFlatSpec with Matchers {
     val control = new SessionAccessControl[Future, String] {
       def authorizeHttp(request: Request.Head, state: String) = Future.unit
       def open(qsid: Qsid, request: Request.Head, connection: ConnectionId) = Future.successful(new SessionGuard[Future, String] {
+        val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
         def authorize(state: String) =
           if (armed.get() && checks.incrementAndGet() == checkToHold) {
             entered.trySuccess(())

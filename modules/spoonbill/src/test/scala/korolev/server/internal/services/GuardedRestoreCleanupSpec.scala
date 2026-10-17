@@ -8,7 +8,7 @@ import scala.concurrent.Future
 import spoonbill.Qsid
 import spoonbill.effect.{Effect, Queue}
 import spoonbill.security.Identifiers.ConnectionId
-import spoonbill.server.{SessionAccessControl, SessionAccessDenied, SessionGuard, SpoonbillServiceConfig, StateLoader}
+import spoonbill.server.{ApplicationStateInitialization, SessionAccessControl, SessionAccessDenied, SessionGuard, SpoonbillServiceConfig, StateLoader}
 import spoonbill.state.{DeviceId, SessionId, StateManager, StateStorage}
 import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
@@ -58,6 +58,7 @@ class GuardedRestoreCleanupSpec extends AsyncFlatSpec with Matchers {
       def authorizeHttp(request: Request.Head, state: String): Future[Unit] = Future.unit
       def open(qsid: Qsid, request: Request.Head, connectionId: ConnectionId): Future[SessionGuard[Future, String]] =
         Future.successful(new SessionGuard[Future, String] {
+          val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
           def authorize(state: String): Future[Unit] = Future.failed(new SessionAccessDenied)
           def connected(state: String): Future[String] =
             Future.failed(new IllegalStateException("Denied state must not connect"))
@@ -108,6 +109,7 @@ class GuardedRestoreCleanupSpec extends AsyncFlatSpec with Matchers {
       def open(qsid: Qsid, request: Request.Head, connectionId: ConnectionId): Future[SessionGuard[Future, String]] = {
         opened.incrementAndGet()
         Future.successful(new SessionGuard[Future, String] {
+          val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
           def authorize(state: String): Future[Unit] = Future.failed(new SessionAccessDenied)
           def connected(state: String): Future[String] = Future.failed(new SessionAccessDenied)
           def close(): Future[Unit] = effect.delay { closed.incrementAndGet(); () }

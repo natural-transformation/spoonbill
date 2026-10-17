@@ -46,6 +46,7 @@ final class WebSocketGuardContractSpec extends AnyFlatSpec with Matchers {
       None
     }
     private def guard: SessionGuard[Future, String] = new SessionGuard[Future, String] {
+      val applicationStateInitialization = spoonbill.server.ApplicationStateInitialization.Retained[Future]()
       def authorize(state: String): Future[Unit] = authorizeResult
       def connected(state: String): Future[String] = authorizeResult.flatMap(_ => Future.successful(state))
       def close(): Future[Unit] = effect.delay { closed.incrementAndGet(); () }

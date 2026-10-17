@@ -72,6 +72,31 @@ business counter from host storage before overlaying presentation, so a lost
 response cannot turn an old presentation counter into current domain truth.
 There is no application authentication JavaScript.
 
+## Custom session guard initialization
+
+The unreleased recovery changes introduce a source-breaking contract for custom
+`SessionGuard` implementations. Every guard must implement
+`applicationStateInitialization: ApplicationStateInitialization[F]` and select
+one of these cases:
+
+- `Retained()` adopts the existing local application baseline when there is no
+  snapshot session. Ordinary HTTP bootstraps and retained reconnects use this case.
+- `Reconstructed(() => acknowledge())` requests loading the validated application
+  route even without a snapshot. Its required callback constructs the completion
+  effect only when the runtime invokes it after authorizing and adopting the
+  baseline. A reconstructed guard must discard unfinished presentation on close
+  until this acknowledgement has completed.
+
+The callback is a function returning `F[Unit]`, so constructing the guard cannot
+start it early for an eager effect such as `Future`. Do not precompute that effect
+outside the callback. Snapshot restoration remains independent: a configured
+snapshot session still starts from freshly loaded and authorized application
+state for either case.
+
+The ordinary `BrowserAuthentication` coordinator supplies this contract. Custom
+implementers must choose explicitly; there is no default Boolean or optional
+completion callback. Recompile custom integrations for the next major release.
+
 ## Ownership and output
 
 HTTP registration creates a durable browser-view admission record, so the first

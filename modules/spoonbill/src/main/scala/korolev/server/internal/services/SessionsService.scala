@@ -25,7 +25,13 @@ import spoonbill.effect.{AsyncTable, Effect, Hub, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, Frontend, SensitiveAuthorization}
 import spoonbill.security.Identifiers.ConnectionId
-import spoonbill.server.{SessionAccessControl, SessionAccessDenied, SessionGuard, SpoonbillServiceConfig}
+import spoonbill.server.{
+  ApplicationStateInitialization,
+  SessionAccessControl,
+  SessionAccessDenied,
+  SessionGuard,
+  SpoonbillServiceConfig
+}
 import spoonbill.server.internal.{BadRequestException, Cookies}
 import spoonbill.state.{GuardedStateManager, StateDeserializer, StateManager, StateSerializer, StateStorage}
 import spoonbill.web.{PathAndQuery, Request}
@@ -284,10 +290,14 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                  else control.resume(qsid, rh, connectionId).getOrElse(Effect[F].fail(MissingLocalView)),
                  Some((value: SessionGuard[F, S]) => value.close())
                )
-      _                    <- Effect[F].delay(guardRef.set(Some(guard)))
-      snapshots             = guard.viewSnapshots
-      initializeApplication = snapshots.nonEmpty || guard.requiresApplicationState
-      _                    <- if (snapshots.nonEmpty && localExists) Effect[F].delay(rawStateAcquired.set(true)) else Effect[F].unit
+      _             <- Effect[F].delay(guardRef.set(Some(guard)))
+      snapshots      = guard.viewSnapshots
+      initialization = guard.applicationStateInitialization
+      initializeApplication = initialization match {
+                                case ApplicationStateInitialization.Retained()       => snapshots.nonEmpty
+                                case ApplicationStateInitialization.Reconstructed(_) => true
+                              }
+      _ <- if (snapshots.nonEmpty && localExists) Effect[F].delay(rawStateAcquired.set(true)) else Effect[F].unit
       restoredManager <- if (initializeApplication) {
                            // Restore only presentation onto fresh authority. A prior process's
                            // arbitrary state/DOM cache is never the durable bootstrap baseline.
@@ -311,7 +321,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                                               _     <- local.write(avocet.Id.TopLevel, restored)
                                             } yield local
                                         }
-                             _ <- guard.applicationStateInitialized.fold(Effect[F].unit)(required(_))
+                             _ <- initialization match {
+                                    case ApplicationStateInitialization.Retained() => Effect[F].unit
+                                    case ApplicationStateInitialization.Reconstructed(acknowledge) =>
+                                      required(acknowledge())
+                                  }
                            } yield manager
                          } else {
                            stateStorage.exists(qsid.deviceId, qsid.sessionId).flatMap {

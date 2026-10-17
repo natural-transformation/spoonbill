@@ -44,6 +44,7 @@ class DurableApplicationRouteSpec extends AsyncFlatSpec with Matchers {
       def authorizeHttp(request: Request.Head, state: State) = Future.unit
       override def resume(id: Qsid, request: Request.Head, connection: ConnectionId) = Some(open(id, request, connection))
       def open(id: Qsid, request: Request.Head, connection: ConnectionId) = Future.successful(new SessionGuard[Future, State] {
+        val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
         override val viewSnapshots = Some(ViewSnapshotSession.projected[Future, State, String](store,
           _.page, (fresh, page) => fresh.copy(page = page)))
         def authorize(state: State) = if (state.requestMarker == "new-cookie:new-header") Future.unit

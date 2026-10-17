@@ -217,9 +217,11 @@ final class BrowserAuthentication[F[_], S, P](
                 }
                 .map { _ =>
                   val guard = new SessionGuard[F, S] {
-                    override private[spoonbill] val requiresApplicationState = reconstructed
-                    override private[spoonbill] def applicationStateInitialized =
-                      Some(F.delay { applicationInitialized.set(true); () })
+                    val applicationStateInitialization =
+                      if (reconstructed)
+                        ApplicationStateInitialization
+                          .Reconstructed(() => F.delay { applicationInitialized.set(true); () })
+                      else ApplicationStateInitialization.Retained[F]()
                     override private[spoonbill] val replacementCompletion = replacementSupport.map {
                       provider => (handoff: CommittedReplacement, binding: InvocationBinding) =>
                         withView(owner) { actual =>

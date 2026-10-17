@@ -5,16 +5,76 @@ import spoonbill.action.{AuthenticatedActionContext, UiOutcome}
 import spoonbill.auth.*
 import spoonbill.security.transaction.TransactionFailure
 import spoonbill.snapshot.*
+import spoonbill.web.PathAndQuery
+import spoonbill.web.PathAndQuery.{/, Root}
 
 final case class Principal(subject: UUID, name: String)
+
+/** Non-secret presentation text, never an authority or redirect destination. */
+opaque type PublicContinuation = String
+object PublicContinuation {
+  def fromText(value: String): PublicContinuation        = value
+  extension (value: PublicContinuation) def text: String = value
+}
+
+enum PageRoute {
+  case Landing, Protected
+  case Login(value: PublicContinuation)
+  case Information(value: PublicContinuation)
+
+  def continuation: Option[PublicContinuation] = this match {
+    case Landing | Protected => None
+    case Login(value)        => Some(value)
+    case Information(value)  => Some(value)
+  }
+
+  /**
+   * Total presentation update: routes without a continuation remain unchanged.
+   */
+  def withContinuation(value: PublicContinuation): PageRoute = this match {
+    case Landing | Protected => this
+    case Login(_)            => Login(value)
+    case Information(_)      => Information(value)
+  }
+
+  /**
+   * Account changes discard public presentation while preserving protected-page
+   * admission.
+   */
+  def afterAuthorityChange: PageRoute = this match {
+    case Protected                           => Protected
+    case Landing | Login(_) | Information(_) => Landing
+  }
+
+  def toPath: PathAndQuery = {
+    def publicPath(path: PathAndQuery, value: PublicContinuation): PathAndQuery =
+      if (value.text.isEmpty) path else path.withParam("continue", value.text)
+    this match {
+      case Landing            => Root
+      case Protected          => Root / "protected"
+      case Login(value)       => publicPath(Root / "login", value)
+      case Information(value) => publicPath(Root / "public", value)
+    }
+  }
+}
+
+object PageRoute {
+  val fromPath: PartialFunction[PathAndQuery, PageRoute] = {
+    case Root               => PageRoute.Landing
+    case Root / "protected" => PageRoute.Protected
+    case pq if pq.asPath == Root / "login" =>
+      PageRoute.Login(PublicContinuation.fromText(pq.param("continue").getOrElse("")))
+    case pq if pq.asPath == Root / "public" =>
+      PageRoute.Information(PublicContinuation.fromText(pq.param("continue").getOrElse("")))
+  }
+}
+
 final case class Page(
   account: Option[String] = None,
   ceremony: Option[CeremonyId] = None,
   challenge: Option[String] = None,
   recoveryPending: Boolean = false,
-  protectedPage: Boolean = false,
-  publicRoute: String = "",
-  continuation: String = "",
+  route: PageRoute = PageRoute.Landing,
   counter: Int = 0,
   mutationUnresolved: Boolean = false,
   draft: String = "",
@@ -109,9 +169,13 @@ trait Accounts[F[_]] {
 object Presentation {
   val policy: BrowserPresentation[Page, Principal] = BrowserPresentation(
     () => Page(),
-    (page, principal) => !page.protectedPage || principal.nonEmpty,
+    (page, principal) =>
+      page.route match {
+        case PageRoute.Protected                                               => principal.nonEmpty
+        case PageRoute.Landing | PageRoute.Login(_) | PageRoute.Information(_) => true
+      },
     (page, principal, continuation) => {
-      val base      = if (page.account != principal.map(_.name)) Page(protectedPage = page.protectedPage) else page
+      val base      = if (page.account != principal.map(_.name)) Page(route = page.route.afterAuthorityChange) else page
       val connected = base.copy(account = principal.map(_.name))
       if (principal.nonEmpty) connected.copy(ceremony = None, challenge = None, recoveryPending = false)
       else

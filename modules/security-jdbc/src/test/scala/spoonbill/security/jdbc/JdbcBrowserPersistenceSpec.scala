@@ -552,7 +552,10 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         // client DOM acknowledgment has arrived before this socket closes.
         await(manager.write(Id.TopLevel, "recovery codes"))
         await(manager.write(child, "authenticated component"))
-        authenticated.applicationStateInitialized.foreach(await(_))
+        authenticated.applicationStateInitialization match {
+          case ApplicationStateInitialization.Reconstructed(acknowledge) => await(acknowledge())
+          case ApplicationStateInitialization.Retained() => fail("Credential delivery must reconstruct presentation")
+        }
         await(authenticated.close())
         val resumed = await(access.resume(qsid, request(Some(credential.value)), owner()).get)
         resumed.ownershipEpoch should not be empty

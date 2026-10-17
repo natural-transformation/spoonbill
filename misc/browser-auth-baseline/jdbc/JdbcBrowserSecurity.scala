@@ -763,6 +763,7 @@ final class JdbcBrowserSecurity[S, P](
         case Right(None) =>
           removeIf(qsid, claim)
           Future.successful(new SessionGuard[Future, S] {
+            val applicationStateInitialization = spoonbill.server.ApplicationStateInitialization.Retained[Future]()
             // With no snapshot session or local storage, v3's ordinary missing
             // baseline path returns its terminal reload. This guard grants no
             // authority and owns no durable view or local presentation.
@@ -800,6 +801,7 @@ final class JdbcBrowserSecurity[S, P](
     val epoch       = acquired.epoch
     val closeResult = new AtomicReference[Promise[Unit]]()
     new SessionGuard[Future, S] {
+      val applicationStateInitialization = spoonbill.server.ApplicationStateInitialization.Retained[Future]()
       def authorize(state: S): Future[Unit] = withEntry(qsid, lease) { (_, _, actual) =>
         authorizeState(actual, state); () -> None
       }

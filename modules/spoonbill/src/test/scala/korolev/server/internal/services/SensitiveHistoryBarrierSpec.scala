@@ -47,6 +47,7 @@ class SensitiveHistoryBarrierSpec extends AsyncFlatSpec with Matchers {
     val control = new SessionAccessControl[Future, String] {
       def authorizeHttp(request: Request.Head, state: String) = Future.unit
       def open(qsid: Qsid, request: Request.Head, connection: ConnectionId) = Future.successful(new SessionGuard[Future, String] {
+        val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
         def authorize(state: String) = Future.unit
         def connected(state: String) = Future.successful(state)
         def close() = Future.successful { guardClosed.trySuccess(()); () }

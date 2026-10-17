@@ -118,7 +118,10 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
         configured.sessionAccessControl.get
           .open(qsid, request, ConnectionId.fromUuid(new UUID(0L, ids.incrementAndGet())))
       )
-      guard.applicationStateInitialized.foreach(await(_))
+      guard.applicationStateInitialization match {
+        case ApplicationStateInitialization.Retained() => ()
+        case ApplicationStateInitialization.Reconstructed(acknowledge) => await(acknowledge())
+      }
       guard
     }
     def manager = await(configured.stateStorage.get(viewKey.deviceId, viewKey.sessionId))
