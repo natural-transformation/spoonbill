@@ -1,6 +1,6 @@
 # Explicit state-update implementation validation
 
-Date: 2026-10-18. Implements [the design plan](sensitive-acknowledgement-type-design-plan.md).
+Date: 2026-10-18. Records implementation and validation of explicit state-update outcomes.
 Migration guidance: [planned Spoonbill 7 migration](migration-v7.md).
 
 ## Implementation
@@ -128,7 +128,7 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false \
   compile 'Test / compile' test
 ```
 
-The installed sbt reports that the plan's `Global / concurrentRestrictions` setting is unused. This report does not claim that setting serialized the aggregate gate. Focused core suites explicitly disabled parallel execution and forking.
+The installed sbt reports that the `Global / concurrentRestrictions` setting is unused. This report does not claim that setting serialized the aggregate gate. Focused core suites explicitly disabled parallel execution and forking.
 
 Audits and syntax checks:
 
@@ -179,6 +179,6 @@ Code review, interpreter spies, binding tests, and the runtime regression establ
 - No new state equality check, DOM traversal, render pass, executor hop, production buffer, or scheduler was added. The bounded transport gate/observer exists only in the browser test fixture.
 - Callback interpretation adds `Effect.delay` and its continuation. This is not evidence of a numerical allocation or latency improvement.
 
-Independent review identified no concrete performance regression concern requiring a targeted benchmark. No throughput, latency, allocation, or universal non-regression measurement is claimed. No benchmark framework was added. The verified baseline identity in the plan remains `5362feabd2ae1c5d58104ef255f5e52b2d8e7cfd`; this work did not run a baseline/candidate benchmark comparison.
+Independent review identified no concrete performance regression concern requiring a targeted benchmark. No throughput, latency, allocation, or universal non-regression measurement is claimed. No benchmark framework was added. The verified baseline identity remains `5362feabd2ae1c5d58104ef255f5e52b2d8e7cfd`; this work did not run a baseline/candidate benchmark comparison.
 
-All implementation validation gates in this plan have passed, including the complete real-service Chromium/WebKit acknowledgement run. Publication and deployment remain separate tasks. A genuine later publication still invalidates an older revision; revision/ownership validation and one-shot sensitive ownership were not relaxed.
+All implementation validation gates for this change have passed, including the complete real-service Chromium/WebKit acknowledgement run. Publication and deployment remain separate tasks. A genuine later publication still invalidates an older revision; revision/ownership validation and one-shot sensitive ownership were not relaxed.
