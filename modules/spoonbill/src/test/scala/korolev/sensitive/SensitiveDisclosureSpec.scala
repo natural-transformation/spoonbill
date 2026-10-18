@@ -20,7 +20,7 @@ class SensitiveDisclosureSpec extends AsyncFlatSpec with Matchers {
 
   private def outcome: UiOutcome[Int] = UiOutcome.PresentSensitive(region, purpose,
     SensitiveDisclosure.once(accepted(SensitivePayload.textList(Vector("synthetic-code"))), binding.sensitiveOwner),
-    1.minute, _ => StateUpdate.unchanged)
+    1.minute, _ => StateUpdate.noUpdate)
   private def holder(value: UiOutcome[Int]): SensitiveDisclosure = value match {
     case UiOutcome.PresentSensitive(_, _, disclosure, _, _) => disclosure
     case _ => fail("Expected sensitive disclosure")

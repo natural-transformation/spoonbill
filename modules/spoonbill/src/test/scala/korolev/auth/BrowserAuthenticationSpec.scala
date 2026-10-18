@@ -114,11 +114,11 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
         .public(right(ActionName.parse("test.context")), InputSchema.empty, PublicPolicy.allow[Future, Unit]) {
           (_, context) =>
             captured.success(context)
-            Future.successful(UiOutcome.unchanged[Page])
+            Future.successful(UiOutcome.noUpdate[Page])
         }
       await(ActionDispatcher.public(action, Vector.empty, binding(owner))) match {
-        case InvocationResult.Completed(UiOutcome.Updated(_)) => ()
-        case other                                            => fail(s"The public action did not dispatch: $other")
+        case InvocationResult.Completed(StateUpdate.NoUpdate()) => ()
+        case other                                              => fail(s"The public action did not dispatch: $other")
       }
       await(captured.future)
     }
@@ -218,7 +218,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       ActionPolicy[Future, Unit, String]((_, _) => Future.successful(AccessDecision.Allowed))
     ) { (_, _) =>
       invoked.incrementAndGet()
-      Future.successful(UiOutcome.unchanged[Page])
+      Future.successful(UiOutcome.noUpdate[Page])
     }
     await(ActionDispatcher.authenticated(action, Vector.empty, f.binding(owner), foreign)) shouldBe
       InvocationResult.Rejected(ActionRejection.Access(AccessDenied.StaleAuthority))
@@ -398,7 +398,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
     val result = ActionDispatcher.authenticated(action, Vector.empty, f.binding(owner), f.browser.authority)
     await(started.future)
     await(f.configured.authenticationCompletion.get.logout(browserBinding, Some(token)))
-    finish.success(UiOutcome.update[Page](_.copy(label = "must not publish")))
+    finish.success(UiOutcome.modify[Page](_.copy(label = "must not publish")))
     await(result) shouldBe InvocationResult.OutputSuppressed(AccessDenied.StaleAuthority)
     await(guard.close())
   }
@@ -538,7 +538,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
             value.belongsTo(context) shouldBe true
             value.sameInvocation(right(same)) shouldBe true
             captured.success(value)
-            UiOutcome.unchanged[Page]
+            UiOutcome.noUpdate[Page]
           }
         }
         await(ActionDispatcher.authenticated(action, Vector.empty, binding, f.browser.authority)) shouldBe

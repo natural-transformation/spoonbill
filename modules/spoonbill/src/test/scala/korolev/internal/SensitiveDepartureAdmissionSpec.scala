@@ -130,7 +130,7 @@ class SensitiveDepartureAdmissionSpec extends AsyncFlatSpec with Matchers {
     def consume(): Future[UiOutcome[Int]] = {
       // A synthetic one-read grant is spent only by the domain handler.
       consumed.incrementAndGet()
-      Future.successful(UiOutcome.unchanged[Int])
+      Future.successful(UiOutcome.noUpdate[Int])
     }
     val publicAction = actions.public(name, InputSchema.empty, PublicPolicy[Future, Unit](_ => gate(TypedGate.Policy))) {
       (_, _) => consume()
@@ -207,7 +207,7 @@ class SensitiveDepartureAdmissionSpec extends AsyncFlatSpec with Matchers {
       ActionName.parse("admission.consume").fold(error => fail(error.toString), identity),
       InputSchema.empty, PublicPolicy.allow[Future, Unit]) { (_, _) =>
       consumed.incrementAndGet()
-      Future.successful(UiOutcome.unchanged[Int])
+      Future.successful(UiOutcome.noUpdate[Int])
     }
     bounded(frontend, () => { release.trySuccess(()); () }) {
       // Omit an explicit generation: the runtime must capture it before the

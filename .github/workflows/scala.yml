@@ -142,6 +142,11 @@ jobs:
     - name: Test native Chromium and WebKit
       run: nix develop .#browser --no-write-lock-file --command bash scripts/test-native-browsers.sh
 
+    - name: Test sensitive acknowledgement against the standalone Scala service
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop . --no-write-lock-file --command \
+          bash scripts/test-sensitive-acknowledgement.sh
+
     - name: Validate profiling capabilities and owned-process measurements
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       run: |

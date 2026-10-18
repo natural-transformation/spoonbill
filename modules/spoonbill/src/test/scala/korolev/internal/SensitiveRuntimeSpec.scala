@@ -228,7 +228,7 @@ class SensitiveRuntimeSpec extends AsyncFlatSpec with Matchers {
     val action = new Actions[Future, Int, Unit].public(
       ActionName.parse("show-secret").toOption.getOrElse(fail("action")), InputSchema.empty,
       PublicPolicy.allow[Future, Unit]) { (_, context) =>
-      Future.successful(context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => StateUpdate.unchanged))
+      Future.successful(context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => StateUpdate.noUpdate))
     }
     val frontends = Vector(
       new Frontend[Future](Queue[Future, String]().stream, None, authorize = Some(() => Future.unit)),

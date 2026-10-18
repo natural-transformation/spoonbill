@@ -99,7 +99,7 @@ final class RecoveryResults(vault: JdbcCredentialVault, clock: () => Instant = (
   def present(consumed: Consumed, context: AuthenticatedActionContext[Principal]): UiOutcome[Page] =
     consumed.take(context, now()) match {
       case None =>
-        UiOutcome.update[Page](
+        UiOutcome.modify[Page](
           _.copy(message = "Recovery codes were already consumed. Regenerate to obtain new codes.")
         )
       case Some(record) => presentRecord(record, context)
@@ -115,7 +115,7 @@ final class RecoveryResults(vault: JdbcCredentialVault, clock: () => Instant = (
         .textList(codes)
         .fold(_ => throw new IllegalStateException("Invalid recovery payload"), identity)
       context.presentSensitive[Page](region, purpose, payload, 30.seconds) { outcome =>
-        spoonbill.action.StateUpdate(_.copy(message = outcome match {
+        spoonbill.action.StateUpdate.Modify(_.copy(message = outcome match {
           case DisclosureOutcome.BrowserProcessed => "Recovery codes disclosed once. Store them safely."
           case _                                  => "Recovery codes were consumed but delivery was not confirmed. Regenerate to obtain new codes."
         }))

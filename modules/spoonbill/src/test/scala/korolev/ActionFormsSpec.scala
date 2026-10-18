@@ -19,12 +19,12 @@ final class ActionFormsSpec extends AnyFlatSpec with Matchers {
     val field   = FieldName.parse("value").fold(error => fail(error.toString), identity)
     val actions = new Actions[Future, Int, Nothing]
     val action = actions.public(name, InputSchema.text(field, 30), PublicPolicy.allow[Future, String]) { (_, _) =>
-      Future.successful(UiOutcome.update[Int](_ + 1))
+      Future.successful(UiOutcome.modify[Int](_ + 1))
     }
     val node: Document.Node[Binding] = form(
       input(avocet.dsl.html.name := "value"),
       button("Submit"),
-      ActionForms.onSubmit[Future, Int, Unit, String](action, _ => identity)
+      ActionForms.onSubmit[Future, Int, Unit, String](action, _ => StateUpdate.noUpdate[Int])
     )
     val rc = new Html5RenderContext[Binding](TextPrettyPrintingConfig.noPrettyPrinting)
     node(rc)
@@ -37,12 +37,14 @@ final class ActionFormsSpec extends AnyFlatSpec with Matchers {
 
   "A native form binding" should "mark an ordinary HTML form without installing a typed action" in {
     val node: Document.Node[Binding] = form(
-      method := "post", action := "/auth/logout", button("Sign out"),
+      method := "post",
+      action := "/auth/logout",
+      button("Sign out"),
       ActionForms.nativeSubmit[Future, Int, Unit]
     )
     val rc = new Html5RenderContext[Binding](TextPrettyPrintingConfig.noPrettyPrinting)
     node(rc)
-    val html = rc.mkString
+    val html        = rc.mkString
     val openingForm = html.take(html.indexOf('>') + 1)
     openingForm should include("data-spoonbill-native-submit=\"true\"")
     openingForm should include("method=\"post\"")
@@ -53,11 +55,15 @@ final class ActionFormsSpec extends AnyFlatSpec with Matchers {
 
   it should "retain the typed descriptor when both explicit bindings are supplied" in {
     val actions = new Actions[Future, Int, Nothing]
-    val action = actions.public(ActionName.parse("fixture.priority").toOption.get,
-      InputSchema.empty, PublicPolicy.allow[Future, Unit])((_, _) => Future.successful(UiOutcome.unchanged[Int]))
+    val action = actions.public(
+      ActionName.parse("fixture.priority").toOption.get,
+      InputSchema.empty,
+      PublicPolicy.allow[Future, Unit]
+    )((_, _) => Future.successful(UiOutcome.noUpdate[Int]))
     val node: Document.Node[Binding] = form(
       ActionForms.nativeSubmit[Future, Int, Unit],
-      ActionForms.onSubmit[Future, Int, Unit, Unit](action, _ => identity), button("Submit")
+      ActionForms.onSubmit[Future, Int, Unit, Unit](action, _ => StateUpdate.noUpdate[Int]),
+      button("Submit")
     )
     val rc = new Html5RenderContext[Binding](TextPrettyPrintingConfig.noPrettyPrinting)
     node(rc)

@@ -84,7 +84,7 @@ class SensitiveDomAdmissionSpec extends AsyncFlatSpec with Matchers {
       ActionName.parse("admission.programmatic").fold(error => fail(error.toString), identity),
       InputSchema.empty, PublicPolicy.allow[Future, Unit]) { (_, _) =>
       programmaticInvoked.incrementAndGet()
-      Future.successful(UiOutcome.unchanged[String])
+      Future.successful(UiOutcome.noUpdate[String])
     }
     def until(frontend: Frontend[Future], prefix: String, remaining: Int = 24,
       seen: Vector[String] = Vector.empty): Future[Vector[String]] =

@@ -12,7 +12,7 @@ import org.scalatest.matchers.should.Matchers
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import spoonbill.Qsid
-import spoonbill.action.UiOutcome
+import spoonbill.action.{StateUpdate, UiOutcome}
 import spoonbill.auth.*
 import spoonbill.cats.IO3Effect
 import spoonbill.data.Bytes
@@ -215,8 +215,8 @@ class MemoryAccountsIOSpec extends AnyFlatSpec with Matchers {
                    _ <- IO {
                           record.completionId should not be handoff.completionId
                           first shouldBe a[UiOutcome.PresentSensitive[?]]
-                          repeated shouldBe a[UiOutcome.Updated[?]]
-                          formerlyUnexecuted shouldBe a[UiOutcome.Updated[?]]
+                          repeated shouldBe a[StateUpdate.Modify[?]]
+                          formerlyUnexecuted shouldBe a[StateUpdate.Modify[?]]
                           record.claim(owner.invocation, java.time.Instant.now()) shouldBe None
                           replayed.isLeft shouldBe true
                           consumed shouldBe None

@@ -38,15 +38,15 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     )
     .map(value => SecurityChange.values.find(_.purpose == value).get)
     .zip(InputSchema.secret(field("replacementPassword"), 256))
-  private val onRejected: ActionRejection => Page => Page = _ =>
-    _.copy(message = "This request was rejected. Recover this attempt or begin a new sign-in.")
+  private val onRejected: ActionRejection => StateUpdate[Page] = _ =>
+    StateUpdate.Modify(_.copy(message = "This request was rejected. Recover this attempt or begin a new sign-in."))
   private val continuePublic = actions.public(
     name("example.continue-public"),
     InputSchema.text(field("continuation"), 256).map(PublicContinuation.fromText),
     PublicPolicy.allow[F, PublicContinuation]
   ) { (continuation, _) =>
     F.pure(
-      UiOutcome.update[Page](page =>
+      UiOutcome.modify[Page](page =>
         page.copy(route = page.route.withContinuation(continuation), message = "Public continuation accepted.")
       )
     )
@@ -54,7 +54,7 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
   private def result(value: SignIn): UiOutcome[Page] = value match {
     case SignIn.Completed(receipt) => browser.complete(receipt)
     case SignIn.Challenge(id, reference) =>
-      UiOutcome.update(
+      UiOutcome.modify(
         _.copy(
           ceremony = Some(id),
           challenge = Some(reference),
@@ -63,20 +63,20 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
         )
       )
     case SignIn.Unresolved(id) =>
-      UiOutcome.update(
+      UiOutcome.modify(
         _.copy(
           ceremony = Some(id),
           recoveryPending = true,
           message = "Recover this attempt without resubmitting credentials."
         )
       )
-    case SignIn.Rejected(message) => UiOutcome.update(_.copy(message = message))
+    case SignIn.Rejected(message) => UiOutcome.modify(_.copy(message = message))
   }
   private val begin = actions.public(name("example.begin"), InputSchema.empty, PublicPolicy.allow[F, Unit]) {
     (_, context) =>
       browser.begin(context).map {
         case Right(ceremony) =>
-          UiOutcome.update[Page](
+          UiOutcome.modify[Page](
             _.copy(
               ceremony = Some(ceremony.id),
               challenge = None,
@@ -112,7 +112,7 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
       browser.recover(context, id).map {
         case Right(BrowserRecovery.Committed(receipt)) => browser.complete(receipt)
         case Right(BrowserRecovery.NotCommitted) =>
-          UiOutcome.update[Page](
+          UiOutcome.modify[Page](
             _.copy(
               ceremony = None,
               challenge = None,
@@ -129,16 +129,16 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     ActionPolicy[F, Unit, Principal]((_, _) => F.pure(AccessDecision.Allowed))
   ) { (_, context) =>
     browser.currentView(context).flatMap {
-      case Left(_) => F.pure(UiOutcome.unchanged[Page])
+      case Left(_) => F.pure(UiOutcome.noUpdate[Page])
       case Right(view) =>
         accounts.increment(view).map {
           case Right(count) =>
-            UiOutcome.update[Page](_.copy(counter = count, message = "Protected increment committed."))
+            UiOutcome.modify[Page](_.copy(counter = count, message = "Protected increment committed."))
           case Left(TransactionFailure.CommitUnknown | TransactionFailure.StorageFailure) =>
-            UiOutcome.update[Page](
+            UiOutcome.modify[Page](
               _.copy(mutationUnresolved = true, message = "The increment's disposition is unknown. Do not repeat it.")
             )
-          case Left(_) => UiOutcome.update[Page](_.copy(message = "The protected operation could not be confirmed."))
+          case Left(_) => UiOutcome.modify[Page](_.copy(message = "The protected operation could not be confirmed."))
         }
     }
   }
@@ -147,7 +147,7 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     InputSchema.text(field("draft"), 4096).zip(InputSchema.text(field("selectedItem"), 64)),
     ActionPolicy[F, (String, String), Principal]((_, _) => F.pure(AccessDecision.Allowed))
   ) { case ((draft, selectedItem), _) =>
-    F.pure(UiOutcome.update[Page](_.copy(draft = draft, selectedItem = selectedItem, message = "Draft saved.")))
+    F.pure(UiOutcome.modify[Page](_.copy(draft = draft, selectedItem = selectedItem, message = "Draft saved.")))
   }
   private val replace = actions.authenticated(
     name("example.replace-security"),
@@ -155,15 +155,15 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     ActionPolicy[F, (SecurityChange, Secret), Principal]((_, _) => F.pure(AccessDecision.Allowed))
   ) { case ((change, password), context) =>
     browser.beginReplacement(context, change.purpose).flatMap {
-      case Left(_) => F.pure(UiOutcome.update[Page](_.copy(message = "Security change could not be started.")))
+      case Left(_) => F.pure(UiOutcome.modify[Page](_.copy(message = "Security change could not be started.")))
       case Right(ceremony) =>
         browser.replacementInvocation(context).flatMap {
-          case Left(_) => F.pure(UiOutcome.update[Page](_.copy(message = "This session is no longer current.")))
+          case Left(_) => F.pure(UiOutcome.modify[Page](_.copy(message = "This session is no longer current.")))
           case Right(invocation) =>
             password.withValue(value => accounts.replace(ceremony, invocation, value)).map {
               case SessionReplacement.Completed(handoff) => browser.completeReplacement(handoff)
               case SessionReplacement.Unresolved(id)     => browser.recoverReplacementOutcome(id)
-              case SessionReplacement.Rejected(message)  => UiOutcome.update[Page](_.copy(message = message))
+              case SessionReplacement.Rejected(message)  => UiOutcome.modify[Page](_.copy(message = message))
             }
         }
     }
@@ -174,28 +174,28 @@ final class Application[F[_]](val accounts: Accounts[F])(using F: Effect[F], ec:
     ActionPolicy[F, Unit, Principal]((_, _) => F.pure(AccessDecision.Allowed))
   ) { (_, context) =>
     browser.currentView(context).flatMap {
-      case Left(_) => F.pure(UiOutcome.unchanged[Page])
+      case Left(_) => F.pure(UiOutcome.noUpdate[Page])
       case Right(view) =>
         browser.currentInvocation(context).flatMap {
-          case Left(_) => F.pure(UiOutcome.unchanged[Page])
+          case Left(_) => F.pure(UiOutcome.noUpdate[Page])
           case Right(invocation) =>
             accounts.consumeRecovery(view, invocation).flatMap {
               case Right(Some(result)) => accounts.presentRecovery(result, context)
               case Right(None) =>
                 F.pure(
                   UiOutcome
-                    .update[Page](_.copy(message = "No unused recovery codes remain. Regenerate to obtain new codes."))
+                    .modify[Page](_.copy(message = "No unused recovery codes remain. Regenerate to obtain new codes."))
                 )
               case Left(TransactionFailure.CommitUnknown | TransactionFailure.StorageFailure) =>
                 F.pure(
-                  UiOutcome.update[Page](
+                  UiOutcome.modify[Page](
                     _.copy(message =
                       "Recovery-code consumption is uncertain. Regenerate to obtain new codes; do not retry disclosure."
                     )
                   )
                 )
               case Left(_) =>
-                F.pure(UiOutcome.update[Page](_.copy(message = "Recovery codes are unavailable for this session.")))
+                F.pure(UiOutcome.modify[Page](_.copy(message = "Recovery codes are unavailable for this session.")))
             }
         }
     }

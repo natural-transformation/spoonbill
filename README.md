@@ -48,6 +48,7 @@ the managed IO application.
 * [User guide](docs/user-guide.adoc)
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
+* [Migrating to 7.0: explicit state updates (planned)](docs/migration-v7.md)
 * [Migrating to 5.0](docs/migration-v5.md)
 * [Migrating to 4.0](docs/migration-v4.md)
 * [Migrating to 3.0](docs/migration-3.0.md)

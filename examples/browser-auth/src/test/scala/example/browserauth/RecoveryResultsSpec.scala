@@ -7,7 +7,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
-import spoonbill.action.UiOutcome
+import spoonbill.action.{StateUpdate, UiOutcome}
 import spoonbill.auth.MemoryReplacementTestAccess
 import spoonbill.effect.Effect
 import spoonbill.security.jdbc.JdbcCredentialVault
@@ -46,13 +46,13 @@ class RecoveryResultsSpec extends AnyFlatSpec with Matchers {
       copied.context.invocationId shouldBe f.owner.context.invocationId
       copied.context.connectionId shouldBe f.owner.context.connectionId
       val consumed = RecoveryResults.consumed(f.record, f.owner.invocation)
-      f.results.present(consumed, foreign.context) shouldBe a[UiOutcome.Updated[?]]
-      f.results.present(consumed, copied.context) shouldBe a[UiOutcome.Updated[?]]
+      f.results.present(consumed, foreign.context) shouldBe a[StateUpdate.Modify[?]]
+      f.results.present(consumed, copied.context) shouldBe a[StateUpdate.Modify[?]]
       consumed.claim(copied.invocation, start) shouldBe None
       f.decryptions.get() shouldBe 0
       f.results.present(consumed, f.owner.context) shouldBe a[UiOutcome.PresentSensitive[?]]
       f.decryptions.get() shouldBe 1
-      f.results.present(consumed, f.owner.context) shouldBe a[UiOutcome.Updated[?]]
+      f.results.present(consumed, f.owner.context) shouldBe a[StateUpdate.Modify[?]]
       consumed.claim(f.owner.invocation, start) shouldBe None
       f.decryptions.get() shouldBe 1
     } finally { f.owner.close(); copied.close(); foreign.close() }
@@ -75,10 +75,10 @@ class RecoveryResultsSpec extends AnyFlatSpec with Matchers {
       val expired        = RecoveryResults.consumed(record, f.owner.invocation)
       val notYetObserved = RecoveryResults.consumed(f.record, f.owner.invocation)
       f.clock.set(record.expiresAt)
-      f.results.present(expired, f.owner.context) shouldBe a[UiOutcome.Updated[?]]
+      f.results.present(expired, f.owner.context) shouldBe a[StateUpdate.Modify[?]]
       f.clock.set(start)
-      f.results.present(expired, f.owner.context) shouldBe a[UiOutcome.Updated[?]]
-      f.results.present(notYetObserved, f.owner.context) shouldBe a[UiOutcome.Updated[?]]
+      f.results.present(expired, f.owner.context) shouldBe a[StateUpdate.Modify[?]]
+      f.results.present(notYetObserved, f.owner.context) shouldBe a[StateUpdate.Modify[?]]
       expired.claim(f.owner.invocation, start) shouldBe None
       notYetObserved.claim(f.owner.invocation, start) shouldBe None
       f.decryptions.get() shouldBe 0

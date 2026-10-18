@@ -82,6 +82,11 @@ Existing departure and sensitive-region cleanup still applies.
 
 ## Account actions and preparation
 
+For the planned next major release, see the [explicit state-update migration](migration-v7.md)
+for `UiOutcome.modify`, `UiOutcome.noUpdate`, and the narrower `ActionForms.onSubmit`
+rejection callback. Sensitive completion can now request no transition without
+publishing a new view revision.
+
 The shared example's [Application](../examples/browser-auth/src/main/scala/example/browserauth/Application.scala)
 shows the complete typed forms and outcomes:
 

@@ -24,8 +24,8 @@ object TypedActionSpec extends ZIOSpecDefault:
   private def field(value: String): FieldName =
     FieldName.parse(value).fold(_ => throw new IllegalArgumentException("Invalid test field name"), identity)
   private def updated[S](result: InvocationResult[S], state: S): S = result match
-    case InvocationResult.Completed(UiOutcome.Updated(update)) => update(state)
-    case _                                                     => throw new IllegalStateException("Expected a completed state update")
+    case InvocationResult.Completed(StateUpdate.Modify(reduce)) => reduce(state)
+    case _                                                      => throw new IllegalStateException("Expected a completed state update")
 
   private case class Principal(subject: String, generation: Long)
   private val principal = Principal("subject-1", 4L)
@@ -48,21 +48,21 @@ object TypedActionSpec extends ZIOSpecDefault:
       val title      = InputSchema.text(field("title"), 100)
       val rowId      = InputSchema.text(field("id"), 40)
       val create = actions.public(name("todo.create"), title, publicText) { (value, _) =>
-        ZIO.succeed(UiOutcome.update[State](_ :+ Todo("new", value, false)))
+        ZIO.succeed(UiOutcome.modify[State](_ :+ Todo("new", value, false)))
       }
       val edit = actions.public(name("todo.edit"), rowId.zip(title), PublicPolicy.allow[Task, (String, String)]) {
         case ((id, value), _) =>
-          ZIO.succeed(UiOutcome.update[State](_.map { todo =>
+          ZIO.succeed(UiOutcome.modify[State](_.map { todo =>
             if todo.id == id then todo.copy(title = value) else todo
           }))
       }
       val toggle = actions.public(name("todo.toggle"), rowId, publicText) { (id, _) =>
-        ZIO.succeed(UiOutcome.update[State](_.map { todo =>
+        ZIO.succeed(UiOutcome.modify[State](_.map { todo =>
           if todo.id == id then todo.copy(done = !todo.done) else todo
         }))
       }
       val remove = actions.public(name("todo.remove"), rowId, publicText) { (id, _) =>
-        ZIO.succeed(UiOutcome.update[State](_.filterNot(_.id == id)))
+        ZIO.succeed(UiOutcome.modify[State](_.filterNot(_.id == id)))
       }
       for
         created <- ActionDispatcher.public(create, Vector("title" -> "Draft"), binding)
@@ -84,7 +84,7 @@ object TypedActionSpec extends ZIOSpecDefault:
       val actions = new Actions[Task, Int, Nothing]
       val create = actions.public(name("todo.create"), schema, PublicPolicy.allow[Task, String]) { (_, _) =>
         created.set(true)
-        ZIO.succeed(UiOutcome.update[Int](_ + 1))
+        ZIO.succeed(UiOutcome.modify[Int](_ + 1))
       }
       val pending     = ActionDispatcher.public(create, Vector("title" -> "  "), binding)
       val wasDeferred = !created.get()
@@ -102,15 +102,15 @@ object TypedActionSpec extends ZIOSpecDefault:
       enum CounterEvent:
         case Changed(delta: Int)
       def child(delta: Int): (StateUpdate[Counter], CounterEvent) =
-        (StateUpdate(counter => counter.copy(value = counter.value + delta)), CounterEvent.Changed(delta))
+        (StateUpdate.Modify(counter => counter.copy(value = counter.value + delta)), CounterEvent.Changed(delta))
       def parent(event: CounterEvent): StateUpdate[Page] = event match
-        case CounterEvent.Changed(delta) => StateUpdate(page => page.copy(lastDelta = delta))
+        case CounterEvent.Changed(delta) => StateUpdate.Modify(page => page.copy(lastDelta = delta))
       val actions = new Actions[Task, Page, Nothing]
       val increment = actions.public(name("counter.increment"), InputSchema.empty, PublicPolicy.allow[Task, Unit]) {
         (_, _) =>
           val (local, event) = child(3)
           val zoomed         = local.zoom[Page](_.right)((page, counter) => page.copy(right = counter))
-          ZIO.succeed(UiOutcome.Updated(zoomed.andThen(parent(event))))
+          ZIO.succeed(zoomed.andThen(parent(event)))
       }
       ActionDispatcher.public(increment, Vector.empty, binding).map { result =>
         assertTrue(updated(result, Page(Counter(1), Counter(8), 0)) == Page(Counter(1), Counter(11), 3))
@@ -125,7 +125,7 @@ object TypedActionSpec extends ZIOSpecDefault:
                    InputSchema.empty,
                    ActionPolicy[Task, Unit, Principal]((_, _) => ZIO.succeed(AccessDecision.Allowed))
                  ) { (_, ctx) =>
-                   ZIO.succeed(UiOutcome.update[String](_ => ctx.principal.subject))
+                   ZIO.succeed(UiOutcome.modify[String](_ => ctx.principal.subject))
                  }
         result <- ActionDispatcher.authenticated(action, Vector.empty, binding, authority(current))
       yield assertTrue(updated(result, "") == "subject-1")
@@ -142,7 +142,7 @@ object TypedActionSpec extends ZIOSpecDefault:
             ActionPolicy[Task, Unit, Principal]((_, _) => ZIO.succeed(AccessDecision.Denied(AccessDenied.Forbidden)))
           ) { (_, _) =>
             created.set(true)
-            ZIO.succeed(UiOutcome.update[Int](_ + 1))
+            ZIO.succeed(UiOutcome.modify[Int](_ + 1))
           }
         result <- ActionDispatcher.authenticated(action, Vector.empty, binding, authority(current))
       yield assertTrue(
@@ -163,7 +163,7 @@ object TypedActionSpec extends ZIOSpecDefault:
                    ActionPolicy[Task, Unit, Principal]((_, _) => started.succeed(()) *> release.await)
                  ) { (_, _) =>
                    created.set(true)
-                   ZIO.succeed(UiOutcome.update[Int](_ + 1))
+                   ZIO.succeed(UiOutcome.modify[Int](_ + 1))
                  }
         running <- ActionDispatcher.authenticated(action, Vector.empty, binding, authority(current)).fork
         _       <- started.await
@@ -187,7 +187,7 @@ object TypedActionSpec extends ZIOSpecDefault:
                    InputSchema.empty,
                    ActionPolicy[Task, Unit, Principal]((_, _) => ZIO.succeed(AccessDecision.Allowed))
                  ) { (_, _) =>
-                   started.succeed(()) *> release.await *> committed.set(true).as(UiOutcome.update[Int](_ + 1))
+                   started.succeed(()) *> release.await *> committed.set(true).as(UiOutcome.modify[Int](_ + 1))
                  }
         running   <- ActionDispatcher.authenticated(action, Vector.empty, binding, authority(current)).fork
         _         <- started.await

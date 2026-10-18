@@ -76,7 +76,7 @@ object MemoryReplacementTestAccess {
       ActionPolicy[Future, Unit, Principal]((_, _) => Future.successful(AccessDecision.Allowed))
     ) { (_, context) =>
       captured.success(context)
-      Future.successful(UiOutcome.unchanged[Unit])
+      Future.successful(UiOutcome.noUpdate[Unit])
     }
     ActionDispatcher
       .authenticated(action, Vector.empty, binding, authority)

@@ -8,12 +8,15 @@ import spoonbill.sensitive.*
 /** Outside spoonbill's package to exercise the actual consumer boundary. */
 class SensitivePayloadSpec extends AnyFlatSpec with Matchers {
   private def accepted[A](result: Either[SensitiveError, A]): A = result.fold(error => fail(error.toString), identity)
-  private val setup = "otpauth://totp/Example:synthetic?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+  private val setup                                             = "otpauth://totp/Example:synthetic?secret=JBSWY3DPEHPK3PXP&issuer=Example"
 
   "Sensitive payloads" should "accept bounded recovery text and local TOTP QR modules without diagnostic disclosure" in {
     val matrix = accepted(QrMatrix.fromRows(Vector.fill(21)("0" * 21)))
-    val values: Vector[Any] = Vector(accepted(SensitivePayload.textList(Vector("synthetic-code-1", "synthetic-code-2"))),
-      accepted(SensitivePayload.totpSetup(setup, Some(matrix))), matrix)
+    val values: Vector[Any] = Vector(
+      accepted(SensitivePayload.textList(Vector("synthetic-code-1", "synthetic-code-2"))),
+      accepted(SensitivePayload.totpSetup(setup, Some(matrix))),
+      matrix
+    )
     values.foreach { value =>
       value.isInstanceOf[Product] shouldBe false
       value.isInstanceOf[java.io.Serializable] shouldBe false
@@ -37,10 +40,17 @@ class SensitivePayloadSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "reject arbitrary links and malformed TOTP URI shapes without retaining rejected text" in {
-    Vector("https://example.invalid/synthetic", "javascript:synthetic", "otpauth://hotp/x?secret=ABCD",
-      "otpauth://totp/x", "otpauth://totp/x?secret=ABCD&secret=EFGH",
-      "otpauth://user@totp/x?secret=ABCD", "otpauth://totp:443/x?secret=ABCD",
-      "otpauth://totp/x?secret=not-valid!", "otpauth://totp/x?secret=ABCD#synthetic").foreach { uri =>
+    Vector(
+      "https://example.invalid/synthetic",
+      "javascript:synthetic",
+      "otpauth://hotp/x?secret=ABCD",
+      "otpauth://totp/x",
+      "otpauth://totp/x?secret=ABCD&secret=EFGH",
+      "otpauth://user@totp/x?secret=ABCD",
+      "otpauth://totp:443/x?secret=ABCD",
+      "otpauth://totp/x?secret=not-valid!",
+      "otpauth://totp/x?secret=ABCD#synthetic"
+    ).foreach { uri =>
       SensitivePayload.totpSetup(uri) shouldBe Left(SensitiveError.InvalidTotpUri)
     }
     SensitivePayload.totpSetup(setup, limits = accepted(SensitiveLimits.create(maxUriUtf8Bytes = 8))) shouldBe
@@ -90,11 +100,20 @@ class SensitivePayloadSpec extends AnyFlatSpec with Matchers {
     typeCheckErrors("""
       def bypass(payload: spoonbill.sensitive.SensitivePayload) = spoonbill.sensitive.SensitiveDisclosure.once(payload, null)
     """) should not be empty
-    typeCheckErrors("""
+    val bypassErrors = typeCheckErrors("""
       import spoonbill.sensitive.*
       import scala.concurrent.duration.*
       def bypass(region: RegionId, purpose: Purpose, payload: SensitivePayload) =
-        spoonbill.action.UiOutcome.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => spoonbill.action.StateUpdate.unchanged)
-    """) should not be empty
+        spoonbill.action.UiOutcome.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => spoonbill.action.StateUpdate.noUpdate[Int])
+    """)
+    bypassErrors.exists(error =>
+      error.message.contains("presentSensitive") && error.message.contains("not a member")
+    ) shouldBe true
+    typeCheckErrors("""
+      import spoonbill.sensitive.*
+      import scala.concurrent.duration.*
+      def present(context: spoonbill.action.PublicActionContext, region: RegionId, purpose: Purpose, payload: SensitivePayload) =
+        context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => spoonbill.action.StateUpdate.noUpdate[Int])
+    """) shouldBe empty
   }
 }
