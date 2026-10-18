@@ -62,16 +62,17 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
     .zip(identifier("challenge"))
     .zip(InputSchema.secret(field("factor"), 6))
     .map { case ((ceremony, challenge), factor) => FactorInput(ceremony, challenge, factor) }
-  private val onRejected: ActionRejection => Page => Page = _ =>
-    page =>
+  private val onRejected: ActionRejection => StateUpdate[Page] = _ =>
+    StateUpdate.Modify(page =>
       page.copy(
         ceremony = None,
         challenge = None,
         recoveryPending = false,
         message = "This request was rejected. Begin a new sign-in if needed."
       )
+    )
 
-  private def rejected(error: Failure): UiOutcome[Page] = UiOutcome.update(
+  private def rejected(error: Failure): UiOutcome[Page] = UiOutcome.modify(
     _.copy(
       ceremony = None,
       challenge = None,
@@ -87,7 +88,7 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
   private def completion(ceremony: UUID, result: Either[Failure, Reply]): UiOutcome[Page] = result match {
     case Right(Reply.Prepared(id)) => UiOutcome.CommitAuthentication(id)
     case Right(Reply.Challenge(original, challenge)) =>
-      UiOutcome.update(
+      UiOutcome.modify(
         _.copy(
           ceremony = Some(original),
           challenge = Some(challenge),
@@ -95,7 +96,7 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
         )
       )
     case Left(Failure.Settlement(TransactionFailure.CommitUnknown)) =>
-      UiOutcome.update(
+      UiOutcome.modify(
         _.copy(
           ceremony = Some(ceremony),
           recoveryPending = true,
@@ -103,7 +104,7 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
         )
       )
     case Left(Failure.Used) =>
-      UiOutcome.update(
+      UiOutcome.modify(
         _.copy(
           ceremony = Some(ceremony),
           challenge = None,
@@ -118,7 +119,7 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
     (_, ctx) =>
       backend.begin(ctx.connectionId).map {
         case Right(id) =>
-          UiOutcome.update[Page](
+          UiOutcome.modify[Page](
             _.copy(
               ceremony = Some(id),
               challenge = None,
@@ -155,7 +156,7 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
         backend.recover(ctx.connectionId, ceremony).map {
           case Right(Recovery.Committed(id)) => UiOutcome.CommitAuthentication(id)
           case Right(Recovery.NotCommitted) =>
-            UiOutcome.update[Page](
+            UiOutcome.modify[Page](
               _.copy(
                 ceremony = None,
                 challenge = None,
@@ -164,7 +165,7 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
               )
             )
           case Left(Failure.Settlement(TransactionFailure.CommitUnknown)) =>
-            UiOutcome.update[Page](
+            UiOutcome.modify[Page](
               _.copy(
                 ceremony = Some(ceremony),
                 recoveryPending = true,
@@ -180,16 +181,16 @@ class ReferenceApplication[P](val backend: ReferenceBackend[P], val origin: Stri
     ActionPolicy[Future, Unit, P]((_, _) => Future.successful(AccessDecision.Allowed))
   ) { (_, ctx) =>
     backend.actionAuthority(ctx.connectionId, ctx.principal).flatMap {
-      case Left(_) => Future.successful(UiOutcome.update[Page](_.copy(message = "The protected action was denied.")))
+      case Left(_) => Future.successful(UiOutcome.modify[Page](_.copy(message = "The protected action was denied.")))
       case Right(authority) =>
         backend.protectedAction(ctx.connectionId, ctx.principal, authority).map {
           case Right(count) =>
-            UiOutcome.update[Page](_.copy(counter = count, message = "Protected increment committed."))
+            UiOutcome.modify[Page](_.copy(counter = count, message = "Protected increment committed."))
           case Left(TransactionFailure.CommitUnknown) =>
-            UiOutcome.update[Page](
+            UiOutcome.modify[Page](
               _.copy(mutationUnresolved = true, message = "The increment's disposition is unknown. Do not repeat it.")
             )
-          case Left(_) => UiOutcome.update[Page](_.copy(message = "The protected increment did not complete."))
+          case Left(_) => UiOutcome.modify[Page](_.copy(message = "The protected increment did not complete."))
         }
     }
   }

@@ -18,8 +18,8 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
   private def name(value: String): ActionName = ActionName.parse(value).fold(error => fail(error.toString), identity)
   private def field(value: String): FieldName = FieldName.parse(value).fold(error => fail(error.toString), identity)
   private def applyResult[S](result: InvocationResult[S], state: S): S = result match
-    case InvocationResult.Completed(UiOutcome.Updated(update)) => update(state)
-    case other                                                 => fail(s"Expected a completed update, got $other")
+    case InvocationResult.Completed(StateUpdate.Modify(reduce)) => reduce(state)
+    case other                                                  => fail(s"Expected a completed update, got $other")
 
   private case class Principal(user: String, generation: Long)
   private val principal = Principal("user-1", 7L)
@@ -39,15 +39,15 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
     val actions   = new Actions[Future, State, Nothing]
     val allowText = PublicPolicy.allow[Future, String]
     val create = actions.public(name("todo.create"), InputSchema.text(field("title"), 100), allowText) { (title, _) =>
-      Future.successful(UiOutcome.update[State](_ :+ Todo("new", title, false)))
+      Future.successful(UiOutcome.modify[State](_ :+ Todo("new", title, false)))
     }
     val toggle = actions.public(name("todo.toggle"), InputSchema.text(field("id"), 50), allowText) { (id, _) =>
       Future.successful(
-        UiOutcome.update[State](_.map(todo => if todo.id == id then todo.copy(done = !todo.done) else todo))
+        UiOutcome.modify[State](_.map(todo => if todo.id == id then todo.copy(done = !todo.done) else todo))
       )
     }
     val remove = actions.public(name("todo.remove"), InputSchema.text(field("id"), 50), allowText) { (id, _) =>
-      Future.successful(UiOutcome.update[State](_.filterNot(_.id == id)))
+      Future.successful(UiOutcome.modify[State](_.filterNot(_.id == id)))
     }
     for
       created <- ActionDispatcher.public(create, Vector("title" -> "Write tests"), binding)
@@ -66,15 +66,15 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
     enum CounterEvent:
       case Changed(delta: Int)
     def child(delta: Int): (StateUpdate[Counter], CounterEvent) =
-      (StateUpdate(counter => counter.copy(value = counter.value + delta)), CounterEvent.Changed(delta))
+      (StateUpdate.Modify(counter => counter.copy(value = counter.value + delta)), CounterEvent.Changed(delta))
     def parent(event: CounterEvent): StateUpdate[Page] = event match
-      case CounterEvent.Changed(delta) => StateUpdate(page => page.copy(lastDelta = delta))
+      case CounterEvent.Changed(delta) => StateUpdate.Modify(page => page.copy(lastDelta = delta))
     val actions = new Actions[Future, Page, Nothing]
     val increment = actions.public(name("counter.increment"), InputSchema.empty, PublicPolicy.allow[Future, Unit]) {
       (_, _) =>
         val (update, event) = child(2)
         val zoomed          = update.zoom[Page](_.left)((page, counter) => page.copy(left = counter))
-        Future.successful(UiOutcome.Updated(zoomed.andThen(parent(event))))
+        Future.successful(zoomed.andThen(parent(event)))
     }
     ActionDispatcher.public(increment, Vector.empty, binding).map { result =>
       applyResult(result, Page(Counter(1), Counter(9), 0)) shouldBe Page(Counter(3), Counter(9), 2)
@@ -93,7 +93,7 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
       )
     ) { (_, context) =>
       context.principal shouldBe principal
-      Future.successful(UiOutcome.update[Int](_ + 1))
+      Future.successful(UiOutcome.modify[Int](_ + 1))
     }
     ActionDispatcher.authenticated(action, Vector.empty, binding, authority(new AtomicBoolean(true))).map { result =>
       applyResult(result, 4) shouldBe 5
@@ -109,7 +109,7 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
       ActionPolicy[Future, Unit, Principal]((_, _) => Future.successful(AccessDecision.Allowed))
     ) { (_, _) =>
       called.set(true)
-      Future.successful(UiOutcome.update[Int](_ + 1))
+      Future.successful(UiOutcome.modify[Int](_ + 1))
     }
     ActionDispatcher.authenticated(action, Vector.empty, binding, authority(new AtomicBoolean(false))).map { result =>
       result shouldBe InvocationResult.Rejected(ActionRejection.Access(AccessDenied.Unauthenticated))
@@ -126,7 +126,7 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
       ActionPolicy[Future, Unit, Principal]((_, _) => Future.successful(AccessDecision.Denied(AccessDenied.Forbidden)))
     ) { (_, _) =>
       called.set(true)
-      Future.successful(UiOutcome.update[Int](_ + 1))
+      Future.successful(UiOutcome.modify[Int](_ + 1))
     }
     ActionDispatcher.authenticated(action, Vector.empty, binding, authority(new AtomicBoolean(true))).map { result =>
       result shouldBe InvocationResult.Rejected(ActionRejection.Access(AccessDenied.Forbidden))
@@ -149,7 +149,7 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
       }
     ) { (_, _) =>
       called.set(true)
-      Future.successful(UiOutcome.update[Int](_ + 1))
+      Future.successful(UiOutcome.modify[Int](_ + 1))
     }
     val running = ActionDispatcher.authenticated(action, Vector.empty, binding, authority(current))
     policyStarted.future.flatMap { _ =>
@@ -180,7 +180,7 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
     val running = ActionDispatcher.authenticated(action, Vector.empty, binding, authority(current))
     started.future.flatMap { _ =>
       current.set(false)
-      outcome.success(UiOutcome.update[Int](_ + 1))
+      outcome.success(UiOutcome.modify[Int](_ + 1))
       running.map(_ shouldBe InvocationResult.OutputSuppressed(AccessDenied.StaleAuthority))
     }
   }
@@ -201,7 +201,7 @@ class ActionSpec extends AsyncFlatSpec with Matchers:
       ActionPolicy[Future, Boolean, Principal]((_, _) => Future.successful(AccessDecision.Allowed))
     ) { (_, _) =>
       called.set(true)
-      Future.successful(UiOutcome.unchanged[Int])
+      Future.successful(UiOutcome.noUpdate[Int])
     }
     ActionDispatcher.authenticated(action, Vector("flag" -> "yes"), binding, port).map { result =>
       result shouldBe InvocationResult.Rejected(ActionRejection.Input(InputError.InvalidBoolean(field("flag"))))

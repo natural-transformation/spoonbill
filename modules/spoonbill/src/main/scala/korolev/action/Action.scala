@@ -81,53 +81,6 @@ sealed trait PublicActionContext:
 sealed trait AuthenticatedActionContext[P] extends PublicActionContext:
   def principal: P
 
-/**
- * Pure update descriptions. Callbacks are trusted application code; purity is a
- * contract, not a Scala guarantee. Only the owning view applies these updates.
- */
-final class StateUpdate[S] private (private val reduce: S => S):
-  def apply(state: S): S                            = reduce(state)
-  def andThen(next: StateUpdate[S]): StateUpdate[S] = StateUpdate(state => next(reduce(state)))
-  def zoom[Parent](read: Parent => S)(write: (Parent, S) => Parent): StateUpdate[Parent] =
-    StateUpdate(parent => write(parent, reduce(read(parent))))
-
-object StateUpdate:
-  def apply[S](reduce: S => S): StateUpdate[S] = new StateUpdate(reduce)
-  def unchanged[S]: StateUpdate[S]             = new StateUpdate(identity)
-
-enum UiOutcome[S]:
-  case Updated(update: StateUpdate[S])
-  case Invalid(error: InputError)
-
-  /**
-   * Opaque delivery handle; never a session credential or authentication proof.
-   */
-  case CommitAuthentication(completionId: java.util.UUID)
-
-  /**
-   * Restricted provider-issued completion, never ordinary application output.
-   */
-  case CommitReplacement(handoff: spoonbill.auth.CommittedReplacement)
-
-  /**
-   * Non-bearer lookup for checked transport reconciliation. Ordinary output
-   * authorization still applies; uncertainty never grants a handoff.
-   */
-  case RecoverReplacement(ceremonyId: spoonbill.auth.CeremonyId)
-
-  /** One-shot handoff; cached results retain no payload after transfer. */
-  case PresentSensitive(
-    region: spoonbill.sensitive.RegionId,
-    purpose: spoonbill.sensitive.Purpose,
-    disclosure: spoonbill.sensitive.SensitiveDisclosure,
-    lifetime: scala.concurrent.duration.FiniteDuration,
-    onResult: spoonbill.sensitive.DisclosureOutcome => StateUpdate[S]
-  )
-
-object UiOutcome:
-  def update[S](reduce: S => S): UiOutcome[S] = Updated(StateUpdate(reduce))
-  def unchanged[S]: UiOutcome[S]              = Updated(StateUpdate.unchanged)
-
 final case class ActionDescriptor(name: ActionName, fields: Vector[InputField])
 
 sealed trait Action[F[_], S, I]:

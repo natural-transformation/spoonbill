@@ -36,7 +36,7 @@ class SensitiveInvocationOwnershipSpec extends AsyncFlatSpec with Matchers {
       InputSchema.empty, PublicPolicy.allow[Future, Unit]) { (_, context) =>
       val result = cached.get().getOrElse {
         val created = context.presentSensitive[Int](region, purpose,
-          accepted(SensitivePayload.textList(Vector("synthetic-first-invocation-code"))), 1.minute)(_ => StateUpdate.unchanged)
+          accepted(SensitivePayload.textList(Vector("synthetic-first-invocation-code"))), 1.minute)(_ => StateUpdate.noUpdate)
         cached.set(Some(created))
         created
       }

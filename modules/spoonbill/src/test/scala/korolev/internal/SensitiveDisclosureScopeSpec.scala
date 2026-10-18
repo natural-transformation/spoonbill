@@ -46,7 +46,7 @@ class SensitiveDisclosureScopeSpec extends AsyncFlatSpec with Matchers {
       if (checks.incrementAndGet() == 1) Future.successful(AccessDecision.Allowed)
       else { policyEntered.trySuccess(()); policyResult.future }
     }) { (_, context) =>
-      val result = context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => StateUpdate.unchanged)
+      val result = context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => StateUpdate.noUpdate)
       cachedHandlerResult.trySuccess(result)
       cachedHandlerResult.future
     }
@@ -144,7 +144,7 @@ class SensitiveDisclosureScopeSpec extends AsyncFlatSpec with Matchers {
   it should "reject sensitive results from a context without a connection-owned scope" in {
     val binding = new InvocationBinding(InvocationId.fromUuid(UUID.randomUUID()), ConnectionId.fromUuid(UUID.randomUUID()))
     val action = new Actions[Future, Int, Unit].public(name, InputSchema.empty, PublicPolicy.allow[Future, Unit]) { (_, context) =>
-      Future.successful(context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => StateUpdate.unchanged))
+      Future.successful(context.presentSensitive[Int](region, purpose, payload, 1.minute)(_ => StateUpdate.noUpdate))
     }
     ActionDispatcher.public(action, Vector.empty, binding).failed.map(_ shouldBe a[SessionAccessDenied])
   }

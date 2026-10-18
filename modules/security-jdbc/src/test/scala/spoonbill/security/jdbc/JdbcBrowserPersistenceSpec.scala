@@ -503,11 +503,11 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           PublicPolicy.allow[Future, Unit]
         ) { (_, context) =>
           captured.success(context)
-          Future.successful(UiOutcome.unchanged[String])
+          Future.successful(UiOutcome.noUpdate[String])
         }
         await(ActionDispatcher.public(action, Vector.empty, invocation(connection))) match {
-          case InvocationResult.Completed(UiOutcome.Updated(_)) => ()
-          case other                                            => fail(s"The public action did not dispatch: $other")
+          case InvocationResult.Completed(StateUpdate.NoUpdate()) => ()
+          case other                                              => fail(s"The public action did not dispatch: $other")
         }
         await(captured.future)
       }
@@ -554,7 +554,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         await(manager.write(child, "authenticated component"))
         authenticated.applicationStateInitialization match {
           case ApplicationStateInitialization.Reconstructed(acknowledge) => await(acknowledge())
-          case ApplicationStateInitialization.Retained() => fail("Credential delivery must reconstruct presentation")
+          case ApplicationStateInitialization.Retained()                 => fail("Credential delivery must reconstruct presentation")
         }
         await(authenticated.close())
         val resumed = await(access.resume(qsid, request(Some(credential.value)), owner()).get)

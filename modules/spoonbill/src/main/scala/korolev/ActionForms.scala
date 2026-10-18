@@ -23,7 +23,7 @@ object ActionForms {
 
   def onSubmit[F[_]: Effect, S, M, I](
     action: PublicAction[F, S, I],
-    onRejected: ActionRejection => S => S
+    onRejected: ActionRejection => StateUpdate[S]
   ): Document.Attr[Context.Binding[F, S, M]] =
     bind(action.descriptor, onRejected) { access =>
       for {
@@ -36,7 +36,7 @@ object ActionForms {
   def onSubmit[F[_]: Effect, S, M, I, P](
     action: AuthenticatedAction[F, S, I, P],
     authority: SessionAuthority[F, P],
-    onRejected: ActionRejection => S => S
+    onRejected: ActionRejection => StateUpdate[S]
   ): Document.Attr[Context.Binding[F, S, M]] =
     bind(action.descriptor, onRejected) { access =>
       for {
@@ -50,7 +50,7 @@ object ActionForms {
 
   private def bind[F[_]: Effect, S, M](
     descriptor: ActionDescriptor,
-    onRejected: ActionRejection => S => S
+    onRejected: ActionRejection => StateUpdate[S]
   )(
     dispatch: Context.Access[F, S, M] => F[(InvocationBinding, InvocationResult[S])]
   ): Document.Attr[Context.Binding[F, S, M]] = {
@@ -68,7 +68,8 @@ object ActionForms {
           dispatched       <- dispatch(access)
           (binding, result) = dispatched
           _ <- result match {
-                 case InvocationResult.Completed(UiOutcome.Updated(update)) => access.transition(update.apply)
+                 case InvocationResult.Completed(update: StateUpdate[S]) =>
+                   StateUpdateInterpreter(update)(access.transition)
                  case InvocationResult.Completed(UiOutcome.CommitAuthentication(id)) =>
                    access.completeAuthentication(id)
                  case InvocationResult.Completed(UiOutcome.CommitReplacement(handoff)) =>
@@ -81,10 +82,11 @@ object ActionForms {
                      .consume[F](binding.sensitiveOwner)(payload =>
                        access.presentSensitive(region, purpose, payload, lifetime)
                      )
-                     .flatMap(result => access.transition(onResult(result).apply))
+                     .flatMap(result => StateUpdateInterpreter.callback(onResult(result))(access.transition))
                  case InvocationResult.Completed(UiOutcome.Invalid(error)) =>
-                   access.transition(onRejected(ActionRejection.Input(error)))
-                 case InvocationResult.Rejected(reason)    => access.transition(onRejected(reason))
+                   StateUpdateInterpreter.callback(onRejected(ActionRejection.Input(error)))(access.transition)
+                 case InvocationResult.Rejected(reason) =>
+                   StateUpdateInterpreter.callback(onRejected(reason))(access.transition)
                  case InvocationResult.Superseded()        => Effect[F].unit
                  case InvocationResult.OutputSuppressed(_) => access.retireReplacement(binding)
                }

@@ -83,8 +83,9 @@ object ZioHttpBrowserAuthFixture {
       sensitiveAccess = view => Option.when(view.principal.nonEmpty)(sensitive)
     )
 
-    private val actions                                     = new Actions[AppTask, Page, Principal]
-    private val onRejected: ActionRejection => Page => Page = _ => _.copy(message = "Rejected.")
+    private val actions = new Actions[AppTask, Page, Principal]
+    private val onRejected: ActionRejection => StateUpdate[Page] = _ =>
+      StateUpdate.Modify(_.copy(message = "Rejected."))
     private val ceremonyInput = InputSchema
       .text(field("ceremony"), 36)
       .validate(ValidationCode.parse("invalid-identifier").toOption.get)(value =>
@@ -94,7 +95,7 @@ object ZioHttpBrowserAuthFixture {
 
     private def signIn(ceremony: BrowserCeremony, username: String, password: String): AppTask[UiOutcome[Page]] =
       if (username != alice.name || password != "password")
-        ZIO.succeed(UiOutcome.update(_.copy(rejected = true, message = "Rejected.")))
+        ZIO.succeed(UiOutcome.modify(_.copy(rejected = true, message = "Rejected.")))
       else
         BrowserCredentials
           .generate[AppTask]
@@ -115,15 +116,15 @@ object ZioHttpBrowserAuthFixture {
           }
           .map {
             case Right(receipt) => browser.complete(receipt)
-            case Left(_)        => UiOutcome.update(_.copy(message = "Sign-in was not accepted."))
+            case Left(_)        => UiOutcome.modify(_.copy(message = "Sign-in was not accepted."))
           }
 
     private val begin = actions.public(name("fixture.begin"), InputSchema.empty, PublicPolicy.allow[AppTask, Unit]) {
       (_, context) =>
         browser.begin(context).map {
           case Right(ceremony) =>
-            UiOutcome.update[Page](_.copy(ceremony = Some(ceremony.id), message = "Sign-in started."))
-          case Left(_) => UiOutcome.update[Page](_.copy(message = "Sign-in could not be started."))
+            UiOutcome.modify[Page](_.copy(ceremony = Some(ceremony.id), message = "Sign-in started."))
+          case Left(_) => UiOutcome.modify[Page](_.copy(message = "Sign-in could not be started."))
         }
     }
     private val passwordInput =
@@ -135,7 +136,7 @@ object ZioHttpBrowserAuthFixture {
     ) { case (((id, username), secret), context) =>
       browser.resume(context, id).flatMap {
         case Right(ceremony) => secret.withValue(value => signIn(ceremony, username, value))
-        case Left(_)         => ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Sign-in expired.")))
+        case Left(_)         => ZIO.succeed(UiOutcome.modify[Page](_.copy(message = "Sign-in expired.")))
       }
     }
     private val disclose = actions.authenticated(
@@ -145,8 +146,10 @@ object ZioHttpBrowserAuthFixture {
     ) { (_, context) =>
       ZIO.succeed(context.presentSensitive[Page](region, purpose, codes, 1.minute) {
         case DisclosureOutcome.BrowserProcessed =>
-          StateUpdate(page => page.copy(disclosures = page.disclosures + 1, message = "Recovery codes disclosed."))
-        case other => StateUpdate(_.copy(message = s"Disclosure outcome: $other"))
+          StateUpdate.Modify(page =>
+            page.copy(disclosures = page.disclosures + 1, message = "Recovery codes disclosed.")
+          )
+        case other => StateUpdate.Modify(_.copy(message = s"Disclosure outcome: $other"))
       })
     }
 
@@ -163,10 +166,10 @@ object ZioHttpBrowserAuthFixture {
         // Capture the predecessor before checking this synthetic password proof.
         // This fixture tests the atomic boundary, not a production verifier.
         browser.beginReplacement(context, "fixture-session-replacement").flatMap {
-          case Left(_) => ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Replacement could not begin.")))
+          case Left(_) => ZIO.succeed(UiOutcome.modify[Page](_.copy(message = "Replacement could not begin.")))
           case Right(ceremony) =>
             secret.withValue { value =>
-              if (value != "password") ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Replacement rejected.")))
+              if (value != "password") ZIO.succeed(UiOutcome.modify[Page](_.copy(message = "Replacement rejected.")))
               else
                 for {
                   challenged <- provider.bindReplacementChallenge(
@@ -209,10 +212,10 @@ object ZioHttpBrowserAuthFixture {
                                        ZIO.succeed(browser.recoverReplacementOutcome(proof.id))
                                      case Left(_) =>
                                        ZIO.succeed(
-                                         UiOutcome.update[Page](_.copy(message = "Replacement was not accepted."))
+                                         UiOutcome.modify[Page](_.copy(message = "Replacement was not accepted."))
                                        )
                                    }
-                               case _ => ZIO.succeed(UiOutcome.update[Page](_.copy(message = "Replacement expired.")))
+                               case _ => ZIO.succeed(UiOutcome.modify[Page](_.copy(message = "Replacement expired.")))
                              }
                 } yield outcome
             }

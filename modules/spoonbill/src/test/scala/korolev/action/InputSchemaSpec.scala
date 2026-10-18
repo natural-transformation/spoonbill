@@ -99,10 +99,17 @@ class InputSchemaSpec extends AnyFlatSpec with Matchers:
       import spoonbill.action.*
       val actions = new Actions[Option, Int, Unit]
       val name = ActionName.parse("increment").fold(_ => throw new IllegalArgumentException, identity)
-      actions.public(name, InputSchema.empty)((_, _) => Some(UiOutcome.update[Int](_ + 1)))
+      actions.public(name, InputSchema.empty)((_, _) => Some(UiOutcome.modify[Int](_ + 1)))
     """)
     errors should not be empty
     errors.exists(_.message.contains("policy")) shouldBe true
+    typeCheckErrors("""
+      import spoonbill.action.*
+      val actions = new Actions[Option, Int, Unit]
+      val name = ActionName.parse("increment").fold(_ => throw new IllegalArgumentException, identity)
+      val policy = PublicPolicy[Option, Unit](_ => Some(AccessDecision.Allowed))
+      actions.public(name, InputSchema.empty, policy)((_, _) => Some(UiOutcome.modify[Int](_ + 1)))
+    """) shouldBe empty
   }
 
   "Names" should "reject unsafe or unbounded configuration strings" in {
