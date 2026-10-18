@@ -295,7 +295,8 @@ object SensitiveAcknowledgementBrowserFixture {
         )
         run.service.ws(observed).map { response =>
           val wrapped = response.mapOutput(run.gate)
-          run.releaseResponse.set(Some(wrapped.release))
+          // End coupled input through the adapter before releasing response resources.
+          run.releaseResponse.set(Some(() => request.httpRequest.body.cancel().flatMap(_ => wrapped.release())))
           wrapped
         }
       }
