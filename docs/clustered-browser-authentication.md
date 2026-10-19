@@ -1,6 +1,6 @@
 # Shared PostgreSQL browser authentication
 
-This checkout adds an opt-in shared-store mode to the ordinary
+Spoonbill 7.0.0 supports an opt-in shared-store mode through the ordinary
 `JdbcBrowserPersistence` / `BrowserAuthentication` integration. Multiple web
 processes can use the same realm, cookie namespace, host database and credential
 vault. Each physical view has one current database owner. A reconnect claims a
@@ -8,18 +8,19 @@ new epoch, validates current host authority and restores the application's
 explicit presentation projection. No actor system or remote authority service
 is required by core.
 
-Shared-store mode is available in 5.0.0 and later; these measurements are not
-a performance acceptance claim. Existing single-owner applications keep their
-explicit exclusive mode and do not acquire the clustered snapshot cost unless
-they opt into it.
+Shared-store mode has been available since 5.0.0. Existing single-owner
+applications keep their explicit exclusive mode and do not acquire the clustered
+snapshot cost unless they opt into it.
 
-For application testing, start with the historical
-[5.0.0-SNAPSHOT migration and testing guide](migration-testing-5.0.0-snapshot.md).
-The [v5 validation report](browser-auth-v5-validation.md) records its checks
-and bounded output-admission measurements.
-The [4.1 snapshot validation report](clustered-browser-authentication-validation.md)
+For current applications, use matching **7.0.0** Spoonbill modules, the
+[browser authentication guide](browser-authentication.md), and the
+[7.0 API migration](migration-v7.md). Recompile custom integrations before
+running the correctness fixture below. Release-specific measurements in the
+[v5 validation report](browser-auth-v5-validation.md),
+[5.0 snapshot testing guide](migration-testing-5.0.0-snapshot.md),
+[4.1 snapshot validation report](clustered-browser-authentication-validation.md),
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
-records; the major version explicitly permits the identified ABI change.
+records; they are not performance acceptance evidence for 7.0.0.
 
 ## Application integration
 
@@ -74,8 +75,9 @@ There is no application authentication JavaScript.
 
 ## Custom session guard initialization
 
-The unreleased recovery changes introduce a source-breaking contract for custom
-`SessionGuard` implementations. Every guard must implement
+Since 6.0.0, custom `SessionGuard` implementations must explicitly select how
+the runtime adopts application state. This source-breaking contract remains
+required in 7.0.0. Every guard must implement
 `applicationStateInitialization: ApplicationStateInitialization[F]` and select
 one of these cases:
 
@@ -95,7 +97,32 @@ state for either case.
 
 The ordinary `BrowserAuthentication` coordinator supplies this contract. Custom
 implementers must choose explicitly; there is no default Boolean or optional
-completion callback. Recompile custom integrations for the next major release.
+completion callback. These partial definitions show the required member:
+
+```scala
+import spoonbill.server.{ApplicationStateInitialization, SessionGuard}
+
+abstract class RetainedGuard[F[_], S] extends SessionGuard[F, S] {
+  final val applicationStateInitialization: ApplicationStateInitialization[F] =
+    ApplicationStateInitialization.Retained[F]()
+}
+
+abstract class ReconstructedGuard[F[_], S](acknowledge: () => F[Unit])
+    extends SessionGuard[F, S] {
+  final val applicationStateInitialization: ApplicationStateInitialization[F] =
+    ApplicationStateInitialization.Reconstructed[F](acknowledge)
+}
+```
+
+Applications still implement `authorize`, `connected`, and `close`; in the
+reconstructed case, `close` must release unfinished presentation until
+acknowledgement succeeds. Pass a thunk such as `() => recordAdoption()` instead
+of an already-started `Future`. See the
+[public guard contract](../modules/spoonbill/src/main/scala/korolev/server/SessionAccessControl.scala),
+[coordinator implementation](../modules/spoonbill/src/main/scala/korolev/auth/BrowserAuthentication.scala),
+and [runtime adoption sequence](../modules/spoonbill/src/main/scala/korolev/server/internal/services/SessionsService.scala).
+The [coordinator tests](../modules/spoonbill/src/test/scala/korolev/auth/BrowserAuthenticationSpec.scala)
+cover retained and reconstructed state, including unfinished initialization.
 
 ## Ownership and output
 
@@ -156,6 +183,14 @@ never submitted to the server has not reached that point. Capture such changes
 explicitly if the application needs autosave; component-local state must be
 lifted into the projected application state. The helper sees only top-level
 application state; private component state remains ephemeral.
+
+In 7.0.0, typed actions explicitly request this work with `UiOutcome.modify`;
+`UiOutcome.noUpdate` requests no state transition and therefore does not save a
+new projection. Sensitive completion and form rejection use the narrower
+`StateUpdate.Modify` / `StateUpdate.noUpdate` cases. An acknowledgement that needs
+no UI change should return `StateUpdate.noUpdate[S]`; `Modify(identity)` still
+requests a transition and render. This does not change snapshot or owner fences.
+See the [typed action and disclosure examples](browser-authentication.md#typed-outcomes-and-rejection).
 
 The reconnect can reconstruct the document and transport while restoring the
 same acknowledged draft and selection. Normal disconnect and old-owner cleanup
@@ -231,11 +266,17 @@ ordered after the probe to avoid racing its cookie delivery. A cheaper lookup
 or parallel reconnect would need separate race/authority tests; the sequential
 performance evidence does not establish burst capacity.
 
-## Migration from released 4.0.0
+## Upgrading existing deployments to 7.0.0
 
-Authenticated replacement adds an additional compatibility boundary. Every
-serving node must understand `spoonbill_browser_replacement` before this feature
-is enabled. Drain older binaries and apply the explicit
+Deploy matching 7.0.0 modules on compatible serving nodes and recompile against
+the [explicit state-update API](migration-v7.md). Custom guards must also implement
+the initialization contract above. Refresh browser pages onto the deployed client
+bundle. For earlier installations, the ownership and SQL migration boundaries
+below still apply; upgrading from 6.0.0 to 7.0.0 adds no framework SQL migration.
+
+Authenticated replacement, available since 5.1.0, adds an additional compatibility
+boundary. Every serving node must understand `spoonbill_browser_replacement`
+before this feature is enabled. Drain older binaries and apply the explicit
 [V5 forward upgrade](browser-auth-v4-deployment.md#upgrade-an-existing-browser-authentication-deployment);
 ordinary snapshot-format compatibility alone does not make mixed replacement
 binaries safe.

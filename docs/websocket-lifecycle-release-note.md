@@ -1,12 +1,15 @@
 # WebSocket lifecycle release note
 
+This is the historical 3.0.0 release note. For the current 7.0.0 API and upgrade
+steps, see the [user guide](user-guide.adoc) and [v7 migration guide](migration-v7.md).
+
 This change breaks the WebSocket result type shipped in 2.0.0. Protocols and on-wire messages are unchanged. Custom adapters and service wrappers must be rebuilt. Old binaries are not expected to link.
 
-## Version plan
+## Historical version decision
 
-GitHub release `v2.0.0` (tag `v2.0.0`, published 2026-10-09) is the current latest release. Maven coordinates use organization `com.natural-transformation` and the Scala 3 artifact suffix, including `spoonbill`, `spoonbill-pekko`, `spoonbill-akka`, `spoonbill-zio-http`, and `spoonbill-standalone`, at version `2.0.0`.
+At the original assessment on 2026-10-09, GitHub release `v2.0.0` was the latest release. Its Maven coordinates used organization `com.natural-transformation` and the Scala 3 artifact suffix, including `spoonbill`, `spoonbill-pekko`, `spoonbill-akka`, `spoonbill-zio-http`, and `spoonbill-standalone`, at version `2.0.0`.
 
-Maven Central [does not allow replacing or removing published components](https://central.sonatype.org/faq/can-i-change-a-component/). Replacing 2.0.0 on both destinations is therefore unavailable. Keep the GitHub release and publish **3.0.0**, because `WebSocketResponse` and `Effect` have breaking API changes. The local build version is `3.0.0-SNAPSHOT`; the release workflow sets `RELEASE_VERSION=3.0.0`. See the [migration guide](migration-3.0.md). This document does not itself publish the version.
+Maven Central [does not allow replacing or removing published components](https://central.sonatype.org/faq/can-i-change-a-component/). The change was therefore released as **3.0.0** rather than replacing 2.0.0, because `WebSocketResponse` and `Effect` had breaking API changes. That development build used `3.0.0-SNAPSHOT`, with `RELEASE_VERSION=3.0.0` supplied for publication. See the [3.0 migration guide](migration-3.0.md) for that upgrade.
 
 ## API migration
 

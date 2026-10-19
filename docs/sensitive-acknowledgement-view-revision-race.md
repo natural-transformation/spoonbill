@@ -6,7 +6,9 @@ Affected version: Spoonbill 6.0.0, tag commit `5362feabd2ae1c5d58104ef255f5e52b2
 
 ## Status
 
-A deterministic, framework-only test reproduces a connection-closing interaction between sensitive disclosure acknowledgment, identity state updates, and guarded view revisions. The two existing publication/admission protection tests still pass. No implementation fix has been applied.
+Resolved in [Spoonbill 7.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v7.0.0) through [PR #14](https://github.com/natural-transformation/spoonbill/pull/14). Sensitive completion callbacks can now return an explicit `NoUpdate`, skipping the unnecessary transition and publication. The regression now exercises real typed forms and guarded incoming messages, with a separate real-service Chromium/WebKit suite. See the [migration guide](migration-v7.md) and [implementation validation](sensitive-acknowledgement-implementation-validation.md).
+
+The investigation below records the original 6.0.0 behavior and reproduction. Its manual identity transition was replaced by the typed form path in the current test. The original deterministic test reproduced the connection-closing interaction while the two existing publication/admission protection tests still passed.
 
 A separate consumer browser diagnostic fails during enrollment confirmation with compatible symptoms. Its sanitized log establishes that the browser sent revision-bearing view events during the confirmation interval and that the serving process reported `SessionAccessDenied`. It does not identify the inner DOM event, prove that the typed confirmation handler ran, or identify the exact server rejection point. The isolated framework result is confirmed; attributing that entire browser failure to this mechanism remains an inference.
 

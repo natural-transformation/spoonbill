@@ -1,5 +1,54 @@
 # Changelog
 
+## 7.0.0 — 2026-10-18
+
+This is a source and binary compatibility break. Update all Spoonbill modules
+together and recompile using the [v7 migration guide](docs/migration-v7.md).
+
+- Added explicit `StateUpdate.NoUpdate()` and `StateUpdate.Modify(reduce)`
+  outcomes, with `UiOutcome.noUpdate` and `UiOutcome.modify` helpers for ordinary
+  action results. Pure `andThen` composition and `zoom` preserve the distinction
+  without evaluating reducers or lenses during construction.
+- Sensitive completion and form rejection callbacks returning `NoUpdate` now
+  finish without requesting a transition, render, handler replacement, or guarded
+  patch. A subsequent action from the same delivered view remains admissible
+  when authority and ownership are unchanged. Genuine later publications still
+  invalidate older revisions; `Modify(identity)` still requests publication.
+- Both `ActionForms.onSubmit` rejection callbacks now return `StateUpdate[S]`.
+  Removed `UiOutcome.Updated`, `UiOutcome.update`, the old `unchanged` helpers,
+  and the function-like `StateUpdate` construction and evaluation APIs.
+- Completion and rejection callbacks execute through `Effect.delay`. Ordinary
+  thrown ZIO callback exceptions now enter the typed failure channel instead of
+  becoming defects; queued reducer execution and failure reporting are unchanged.
+- Added typed-form, guarded-runtime, IO/ZIO, and real-service Chromium/WebKit
+  coverage. Browser fixture cleanup starts adapter shutdown before releasing
+  response resources, avoiding a reentrant cleanup wait.
+
+See [release notes](https://github.com/natural-transformation/spoonbill/releases/tag/v7.0.0)
+and [validation results](docs/sensitive-acknowledgement-implementation-validation.md).
+
+## 6.0.0 — 2026-10-17
+
+- Made guarded presentation initialization explicit. Custom `SessionGuard`
+  implementations must supply `applicationStateInitialization`, selecting a
+  retained baseline or a reconstructed baseline with a deferred acknowledgement.
+  The ordinary `BrowserAuthentication` coordinator supplies this contract.
+- Fixed anonymous peer attachment in clustered deployments: HTTP rendering on
+  one node followed by the first WebSocket on another preserves the requested
+  public route and continuation without requiring an authenticated snapshot.
+  Failed initialization discards unfinished presentation; retained reconnects
+  preserve existing state.
+- Fixed chained JDBC replacement recovery by excluding revoked historical
+  successors when finding the current committed replacement after response loss.
+- Replaced independent route strings and flags in the browser-authentication
+  example with `PageRoute` and an opaque `PublicContinuation`.
+
+This is a breaking release for custom guard implementations. See the
+[initialization contract](docs/clustered-browser-authentication.md#custom-session-guard-initialization)
+and [release notes](https://github.com/natural-transformation/spoonbill/releases/tag/v6.0.0).
+No additional database schema migration is required when upgrading from 5.1.0;
+earlier installations still need their documented migrations.
+
 ## 5.1.0 — 2026-10-17
 
 - Added explicit authenticated session replacement for factor enrollment,

@@ -1,7 +1,7 @@
 # Explicit state-update implementation validation
 
 Date: 2026-10-18. Records implementation and validation of explicit state-update outcomes.
-Migration guidance: [planned Spoonbill 7 migration](migration-v7.md).
+Migration guidance: [Spoonbill 7 migration](migration-v7.md).
 
 ## Implementation
 
@@ -12,7 +12,7 @@ Migration guidance: [planned Spoonbill 7 migration](migration-v7.md).
 - All compiled framework, example, baseline application, JDBC, and interop consumers are migrated. No dependencies, lockfiles, global effect/queue behavior, admission rules, or production browser protocol code were changed.
 - The standalone browser fixture uses the actual Scala service and assembled client, port zero, an ordered bounded output gate, bounded control requests, and synthetic state. CI includes its runner in the existing Linux native-browser job.
 
-No artifact has been published. Release version selection remains with the existing `RELEASE_VERSION` workflow; the historical `BaseVersion` is unchanged.
+These local checks preceded publication. [Spoonbill 7.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v7.0.0) was subsequently published on 2026-10-18 at commit `ab16dfa75b0497c1140502c5acb7a7c4c4894def`. The [signed publication workflow](https://github.com/natural-transformation/spoonbill/actions/runs/39123047855) and merged-main CI passed, and the POMs and JARs for all 24 Scala 3 modules were verified publicly available on Maven Central. [PR #15](https://github.com/natural-transformation/spoonbill/pull/15) also corrected a test-fixture cleanup deadlock discovered in post-merge CI by starting transport shutdown before response release. The validation observations below retain their original scope and date.
 
 ## Reproduction and protection coverage
 
@@ -181,4 +181,4 @@ Code review, interpreter spies, binding tests, and the runtime regression establ
 
 Independent review identified no concrete performance regression concern requiring a targeted benchmark. No throughput, latency, allocation, or universal non-regression measurement is claimed. No benchmark framework was added. The verified baseline identity remains `5362feabd2ae1c5d58104ef255f5e52b2d8e7cfd`; this work did not run a baseline/candidate benchmark comparison.
 
-All implementation validation gates for this change have passed, including the complete real-service Chromium/WebKit acknowledgement run. Publication and deployment remain separate tasks. A genuine later publication still invalidates an older revision; revision/ownership validation and one-shot sensitive ownership were not relaxed.
+All implementation validation gates for this change passed, including the complete real-service Chromium/WebKit acknowledgement run. Artifact publication subsequently completed as recorded above; application deployment remains separate. A genuine later publication still invalidates an older revision; revision/ownership validation and one-shot sensitive ownership were not relaxed.

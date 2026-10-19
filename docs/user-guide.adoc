@@ -1,1441 +1,835 @@
-= Spoonbill: Single Page Applications Framework
-:source-highlighter: pygments
-:numbered:
-:toc:
-
-:version: 1.6.0
-:commit: 47197a88cff770ec254aeae5d5c684fb586e8e3a
-:code: https://github.com/natural-transformation/spoonbill/blob/{commit}/
-
+= Spoonbill 7 User Guide
 Aleksey Fomkin <a@fomkin.org>
-
-== Introduction
-
-Not long ago we have entered the era of single-page applications. Some people say that we no longer need a server. They say that JavaScript applications can connect to DBMS directly. Fat clients. We disagree with this. This project is an attempt to solve the problems of the modern fat web.
-
-Spoonbill runs a single-page application on the server side, keeping in the browser only a bridge to receive commands and send events. The page loads instantly and works fast because it does a minimal amount of computation. It's important that Spoonbill provides a unified environment for full stack development. Client and server are now combined into a single app without any REST protocol or something else in the middle.
-
-Our project supports static page rendering so that search engines could index pages and users could view them immediately.
-
-=== Principles
-
-1. **Thin client.** Let's be honest, modern JavaScript applications are too greedy. Every JavaScript developer thinks that his page is special. But the user has a different opinion. He opens dozens of tabs. Each tab contains a ton of code, and this works very slowly. So we made our JavaScript bridge as lightweight as possible.
-
-2. **Immutable and pure.** Really, we don't need mutability even on the frontend. Especially on the frontend. The majority of modern JavaScript frameworks try to be functional. So we do.
-
-3. **Lack of dependencies.** Spoonbill does not impose to use cats, scalaz, Akka, or futures from the standard library. Use what you want. Spoonbill gives a way to integrate itself into any environment.
-
-=== Quick start
-
-You need SBT and JDK 11+ installed. Once installed, run g8 template.
-
-[source,console]
------------------------------------
-$ sbt new fomkin/spoonbill.g8
-$ cd myspoonbillproject
-$ sbt
-> ~reStart
------------------------------------
-
-The sbt command `~reStart` will make sure that your Spoonbill application gets restarted and the browser window reloaded on source code changes.
-
-Ok, now you are ready to start hacking with Spoonbill.
-
-== Understanding Spoonbill
-
-=== Template DSL
-
-Spoonbill uses https://github.com/fomkin/avocet[Avocet] as DSL (domain specific language) for templating. The avocet DSL allows to declare DOM using Scala code. Take a look.
-
-[source,scala]
------------------------------------
-import avocet.dsl._
-import avocet.dsl.html._
-
-div(
-  backgroundColor @= "yellow",
-  input(`type` := "text")
-)
------------------------------------
-
-This code fragment corresponds to HTML below.
-
-[source,html]
------------------------------------
-<div style="background-color: yellow">
-  <input type="text"></input>
-</div>
------------------------------------
-
-As you can see there are three simple rules:
-
-1. `tag()` declares tag
-2. `attribute := "value"` declares attribute
-3. `disabled`, `selected` is attributes too
-4. `backgroundColor @= "black"` declares style
-
-[NOTE]
-==========================
-Style keys are camelCased in order to be consistent with accessing the properties on DOM nodes from JS (e.g. node.style.backgroundImage).
-==========================
-
-You can define custom tags and styles using `TagDef`, `AttrDef` and `StyleDef` API.
-
-[source,scala]
------------------------------------
-import avocet.dsl._
-val myCustomElement = TagDef("myCustomElement")
-val myDataAttr = AttrDef("data-attr")
-val bottom = StyleDef("bottom")
------------------------------------
-
-If custom attribute and custom tag has same name, you can created mixed definition.
-
-[source,scala]
-----------------------
-val awesome = TagDef with StyleDef {
-  val ns = avocet.XmlNs.html
-  val name = "awesome"
-}
-----------------------
-
-=== Device and Session
-
-When a user opens Spoonbill application the first time, it sets a cookie named `device` with a unique identifier. After that, you can identify the user by `deviceId`.
-
-A session is created when the user opens a page. Every session has a unique identifier `sessionId`. Spoonbill has a separate _State_ for every session.
-
-=== State
-
-State is the only source of data needed to render a page. If you have something you want to display, it should be stored in state. State is always immutable.
-
-[source,scala]
------------------------------------
-sealed trait MyState
-
-case class Anonymous(
-  deviceId: DeviceId) extends MyState
-
-case class Authorized(
-  deviceId: DeviceId,
-  user: User) extends MyState
-
-case class User(
-  id: String,
-  name: String,
-  friends: Seq[String])
------------------------------------
-
-State stores in `StateStorage` and initializes in `StageLoader`.
-
-[source,scala]
------------------------------------
-StateLoader.forDeviceId { deviceId =>
-  // This hypothetical service method returns Future[User]
-  authorizationService.getUserByDeviceId(deviceId) map { user =>
-    Authorized(deviceId, user)
-  }
-}
------------------------------------
-
-The only way to modify the State is by applying a *transition* (see below).
-
-=== Render
-
-Render is a map between state and view. In other words render is a function which takes state as an argument and returns a DOM. Spoonbill uses https://github.com/fomkin/avocet[Avocet DSL] to define templates using Scala code. Do not be afraid, you will quickly get used to it.
-
-[source,scala]
------------------------------------
-val render: State => Node = {
-  case Anonymous(_) =>
-    Html(
-      body(
-        form(
-          input(placeholder := "Login"),
-          input(placeholder := "Password"),
-          button("Submit")
-        )
-      )
-    )
-  case Authorized(_, User(name, friends)) =>
-    Html(
-      body(
-        div(s"Your name is $name. Your friends:"),
-        ul(
-          // Look at that. You just map data to view
-          friends map { friend =>
-            li(friend)
-          }
-        )
-      )
-    )
-}
------------------------------------
-
-Render is called for each new state. It's important to understand that render produces a full DOM for every call. It does not mean that client receives a new page every time. Spoonbill makes a diff between current and latest DOM. Only changes between the two are sent to the client.
-
-=== Transitions
-
-Transition is a function that applies to the current state and produces a new state. Consider a transition which adds a new friend to the friends list.
-
-[source,scala]
---------------------------------------------------------------
-val newFriend = "Karl Heinrich Marx"
-// This hypothetical service method adds friend
-// to the user friend list and returns Future[Unit]
-userService.addFriend(user.id, newFriend) flatMap { _ =>
-  access.transition { case state @ Authorized(_, user) =>
-    state.copy(user = user.copy(user.friends :+ newFriend))
-  }
-}
---------------------------------------------------------------
-
-`Transition` is a type alias for `S => S` where `S` is the type of your state.
-
-=== Events
-
-Every DOM event emitted which had been emitted by browser's `document` object, can be handled by Spoonbill. Let's consider click event.
-
-[source,scala]
---------------------------------------------------------------
-case class MyState(i: String)
-
-def onClick(access: Access) = {
-  access.transition {
-    case MyState(i) =>
-      state.copy(i = i + 1)
-  }
-}
-
-def renderAnonymous(state: MyState) = optimize {
-  Html(
-    body(
-      state.i.toString,
-      button("Increment",
-        event("click")(onClick)
-      )
-    )
-  )
-}
---------------------------------------------------------------
-
-When "Increment" button will be clicked, `i` will be incremented by 1. Let's consider a more complex situation. Do you remember render example? Did you have a feeling that something was missing? Let's complement it with events!
-
-[source,scala]
------------------------------------
-val loginField = elementId()
-val passwordField = elementId()
-
-def onSubmit(access: Access) = {
-  for {
-    login <- access.valueOf(loginField)
-    password <- access.valueOf(passwordField)
-    user <- authService.authorize(login, password)
-    _ <- access.transition {
-      case Anonymous(deviceId) =>
-        Authorized(deviceId, user)
-    }
-  } yield ()
-}
-
-def renderAnonymous = optimize {
-  Html(
-    body(
-      form(
-        input(placeholder := "Login", loginField),
-        input(placeholder := "Password", passwordField),
-        button("Submit"),
-        event("submit")(onSubmit)
-      )
-    )
-  )
-}
------------------------------------
-
-Event gives you access to information from the client side. In this case, it is
-values of the input fields. You can also get data from the event object using
-`access.eventData`.
-
-For simple field reads, `valueAs` and `checked` decode common DOM properties into
-typed values.
-
-[source,scala]
------------------------------------
-for {
-  duration <- access.valueAs[Int](durationInput)
-  enabled <- access.checked(enabledInput)
-  _ <- access.transition(_.copy(duration = duration, enabled = enabled))
-} yield ()
------------------------------------
-
-For event data, define a `Context.EventDataDecoder` for the application-specific
-shape and use `eventDataAs`.
-
-[source,scala]
------------------------------------
-case class KeyData(raw: String)
-
-implicit val keyDataDecoder: Context.EventDataDecoder[KeyData] =
-  Context.EventDataDecoder.instance(raw => Right(KeyData(raw)))
-
-event("keydown") { access =>
-  access.eventDataAs[KeyData].flatMap { keyData =>
-    access.transition(_.copy(lastKey = keyData.raw))
-  }
-}
------------------------------------
-
-Event handlers should return F[Unit] which will be implicitly converted to `EventResult`.
-
-=== Stateful components
-
-In the world of front-end development people often call every thing that has HTML-like markup a "component". Until version 0.6, Spoonbill didn't have components support (except WebComponents on client side). When we say "component" we mean something that has its own state. In Spoonbill case, components also dispatch events to other components up in the hierarchy or to the application on the top.
-
-Worth to note that application is a component too, so you can consider Spoonbill's components system as a system composed of applications. Spoonbill components are not lightweight, so if you can implement a feature without components, do it so. Use components only when they are really necessary.
-
-Components are independent. Every component has its own context. It opens up a way to write reusable code.
-
-[source,scala]
------------------------------------
-object MyComponent extends Component[Future, ComponentState, ComponentParameters, EventType](initialState) {
-
-  import context._
-  import avocet.dsl._
-  import avocet.dsl.html._
-
-  def render(parameters: ComponentParameters, state: ComponentState): Node = {
-    div(
-      parameters.toString,
-      state.toString,
-      event("click") {
-        // Change component state here
-      }
-    )
-  }
-}
------------------------------------
-
-As you can observe, the state of the component has a default value. Occasionally, the initial state cannot be set without parameters. In such cases, you can pass a function called `loadState` instead of `initialState`. This function has an effect of `P => F[S]`, where `P` represents the component parameters. This can be highly advantageous.
-
-Imagine a component that displays the user's display name and photo, while the application state (higher than component) only contains the user's ID. The photo's address and display name are stored in a database.
-
-[source,scala]
------------------------------------
-class UserCardComponent(userService: UserService) extends Component[Future, Option[User], UserId, Any](loadState = userService.getUser(userId)) {
-
-  ...
-
-  // As `User` doesn't load instantly, we should display a placeholder. By default, it is a simple `div()`.
-  def renderNoState(userId: UserId): Node = {
-    // Just display user ID while state not loaded
-    div(userId.asString)
-  }
-
-  // The parameters of the user's ID can be modified, necessitating a state reload with the updated profile. The function offers an optional effect as a return value. If no reload is necessary, it returns None; otherwise, it returns the effect with the updated state.
-  def maybeUpdateState(userId: UserId, maybeUser: Option[User]): Option[F[Option[User]]] =
-    maybeUser.collect {
-      case user if user.id != userId =>
-        userService.getUser(userId)
-    }
-}
-
-// Inject userService dependency
-val UserCard = new UserCardComponent(userService)
------------------------------------
-
-Let's use our component in the application.
-
-[source,scala]
------------------------------------
-Html(
-  body(
-    "Hello world!",
-    MyComponent(parameters) { (access, _) =>
-      // make transition on component event
-      access.transition {
-        case n => n + 1
-      }
-    },
-    // And if you don't want to handle event
-    MyComponent(parameters)
-  )
-)
------------------------------------
-
-{code}examples/component/src/main/scala/ComponentExample.scala[See full example]
-
-=== Access element properties
-
-In the scope of an event, you can access the element properties if an element was bound with `elementId`. You get the value as a string. If the value is an object (on client side) you will get JSON-string. You can parse it with any JSON-library you want.
-
-[source,scala]
------------------------------------
-val loginField = elementId()
-
-...
-
-event("submit") { access =>
-  access.property(loginField, "value") flatMap {
-    access.transition { ... }
-  }
-}
------------------------------------
-
-Or you can set the value
-
-[source,scala]
------------------------------------
-access.property(loginField).set("value", "John Doe")
------------------------------------
-
-Also you can use shortcut `valueOf` for get values from elements.
-
-=== FormData
-
-Above, we considered a method allowing to read values and update form inputs. The flaw of this is the need of reading input one-by-one and lack of files uploading. FormData attended to solve these problems.
-
-In contrast to `property`, FormData works with form tag, not with input tag.
-
-[source,scala]
------------------------------------
-val myForm = elementId()
-val pictureFieldName = "picture"
-
-form(
-  myForm,
-  div(
-    legend("FormData Example"),
-    p(
-      label("Picture"),
-      input(`type` := "file", name := pictureFieldName)
-    ),
-    p(button("Submit"))
-  ),
-  event("submit") { access =>
-    access
-      .downloadFormData(myForm)
-      .flatMap { formData =>
-        access.transition { ... }
-      }
-  }
-)
------------------------------------
-
-{code}examples/form-data/src/main/scala/FormDataExample.scala[See full example]
-
-=== File streaming
-
-Don't get confused. Spoonbill applications works on the server side and client side is remote host. So when we say 'download' it means 'download from client to server'. When we say 'upload' it means 'upload from server to client'.
-
-==== Downloading
-
-Currently Spoonbill have few ways to download files from the client side:
-1. Download all files, selected within input, as byte arrays.
-2. Download all files, but using streams.
-3. Manual selection files from input.
-
-In all approaches HTML is the same, you need form with file input and button with handler.
-
-[source,scala]
------------------------------------
-Html(
-    body(
-      input(`type` := "file", multiple, fileInput),
-      ul(
-        progress.map {
-          case (name, (loaded, total)) =>
-            li(s"$name: $loaded / $total")
-        }
-      ),
-      button(
-        "Upload",
-        when(inProgress)(disabled),
-        event("click")(onClick)
-      )
-    )
-  )
------------------------------------
-
-Then you have a methods for each scenario:
-
-1. `downloadFiles` gives you byte arrays.
-2. `downloadFilesAsStream` gives you streams.
-3. `listFiles` and `downloadFileAsStream` gives you way to select specific file to download.
-
-[WARNING]
-==========================
-`downloadFiles` will store all files in server's RAM until download complete. If you work with large files or huge amount of small files please use streamed approach. Generally streamed approach is a best practice.
-==========================
-
-[source,scala]
------------------------------------
-for {
-  files <- access.downloadFilesAsStream(fileInput)
-  _ <- Future.sequence {
-    files.map { case (handler, data) =>
-      val path = Paths.get(handler.fileName)
-      data.to(FileIO.write(path))
-    }
-  }
-} yield ()
------------------------------------
-
-Note that `downloadFilesAsStream` gives you Spoonbill streams, which is not suitable to be used in applications. Spoonbill has built-in converters for popular stream libraries; see <<Streams>>.
-
-==== Uploading
-
-You can upload to client side any stream of bytes using `access.uploadFile`.
-
-[source,scala]
------------------------------------
-for {
-  stream <- effect.Stream("hello", " ", "world").mat()
-  bytes = stream.map(s => Bytes.wrap(s.getBytes(StandardCharsets.UTF_8)))
-  _ <- access.uploadFile("hello-world.txt", bytes, Some(11L), MimeTypes.`text/plain`)
-} yield ()
------------------------------------
-
-{code}examples/file-streaming/src/main/scala/FileStreamingExample.scala[See full example]
-
-=== Delays
-
-Sometimes you want to update a page after a timeout. For example it is useful when you want to show some sort of notification and have to close it after a few seconds. Delays apply transition after a given `FiniteDuration`
-
-[source,scala]
------------------------------------
-type MyState = Boolean
-
-def render(state: Boolean) =
-  if (state) {
-    Html(
-      body(
-        delay(3.seconds) { access =>
-          access.transition(_ => false)
-        },
-        "Wait 3 seconds!"
-      )
-    )
-  } else {
-    Html(
-      body(
-        button(
-          event("click") { access =>
-            access.transition(_ => true)
-          },
-          "Push the button"
-        )
-      )
-    )
-  }
-}
------------------------------------
-
-{code}examples/delay/src/main/scala/DelayExample.scala[See full example]
-
-=== Extensions
-
-Spoonbill is not just request-response, but also push. One of the big advantages of Spoonbill is the ability to display server side events without additional code. Consider example where we have a page with some sort of notifications list.
-
-[source,scala]
------------------------------------
-case class MyState(notifications: List[String])
-
-def render(state: MyState) = optimize {
-  ul(
-    state.notifications.map(notification =>
-      li(notification)
-    )
-  )
-}
------------------------------------
-
-Also, we have a message queue which has a topic with notifications for current user. The topic has identifier based on `deviceId` of a client. Lets try to bind an application state with messages from the queue.
-
-[source,scala]
--------------------------------------------------------------------------------
-val notificationQueue = ...
-
-val notificationsExtension = Extension { access =>
-  for {
-    subscription <- notificationQueue subscribe { notification =>
-      access.transition(s =>
-        s.copy(notifications = notification :: s.notifications)
-      )
-    }
-  } yield Extension.Handlers(onDestroy = subscription.stop())
-}
-
-SpoonbillServiceConfig(
-  ...
-  extensions = List(notificationsExtension)
-)
--------------------------------------------------------------------------------
-
-Now every session is subscribed to new notifications. Render will be invoked automatically and user will get his page updated.
-
-{code}examples/extension/src/main/scala/ExtensionExample.scala[See full example]
-
-=== Routing
-
-Router allows to integrate browser navigation into you app. In the router you define bidirectional mapping between the state and the PathAndQuery.
-
-Let's pretends that your application is a blogging platform.
-
-[source,scala]
--------------------------------------------------------------------------------
-case class MyState(author: String, title: String, text: String)
-
-SpoonbillServiceConfig(
-  ...
-  // Render the article
-  document = {
-    case MyState(author, title, text) =>
-      Html(
-        body(
-          div(s"$author: $title"),
-          div(text)
-        )
-      )
-  },
-  router = Router(
-    fromState = {
-      case MyState(author, article, _) =>
-        Root / author / article
-    },
-    toState = {
-      case Root / author / article => defaultState =>
-        articleService.load(author, article).map { text =>
-          MyState(author, article, text)
-        }
-    }
-  )
-)
--------------------------------------------------------------------------------
-
-{code}examples/routing/src/main/scala/RoutingExample.scala#L93[See full example]
-
-==== Using Query parameter extractors
-
-Large applications some times require ability to share URL from one user to other with exact some state of sorting and filtering parameters.
-For that you have possibility to use URL search parameters for state initialisation.
-For example initialize search form from URI:
-
-[source,scala]
--------------------------------------------------------------------------------
-object BeginOptionQueryParam extends OptionQueryParam("begin")
-object EndOptionQueryParam extends OptionQueryParam("end")
-
-case class State(begin: Option[String] = None, end: Option[String] = None)
-
-router = Router(
-    fromState = {
-      case State(begin, end) =>
-        (Root / "search").withParam("begin", begin).withParam("end", end)
-    },
-    toState = {
-      case Root =>
-        initialState =>
-          Future.successful(initialState)
-      case Root  / "search" :?* BeginOptionQueryParam(begin) *& EndOptionQueryParam(end) => _ =>
-          val result = State(begin, end)
-          Future.successful(result)
-    }
-)
--------------------------------------------------------------------------------
-
-{code}examples/routing/src/main/scala/PathAndQueryRoutingExample.scala[See full example]
-
-For easy parameter matching Spoonbill provide tree way for parameters matching:
-
-Exact parameter matching, be careful your parameter patterns order and count must have exact same order and count with request:
-
-* `:?`  - start query paraters
-* `:&`  - add one more parameter to query
-* `:??` - start exact parameter matchig block
-
-[source,scala]
--------------------------------------------------------------------------------
-val path = Root / "test" :? "k1" -> "v1" :& "k2" -> "v2" :& "k3" -> "v3"
-path match {
-    case Root / "test" :?? (("k1", v1), ("k2", v2), ("k3", v3)) =>
-        (v1, v2, v3)
-}
--------------------------------------------------------------------------------
-
-Parse parameter manually from Map[String, String]
-
-* `:?*` - extract parameters as Map[String, String]
-
-[source,scala]
--------------------------------------------------------------------------------
-val path = Root / "test" :? "k1" -> "v1" :& "k2" -> "v2" :& "k3" -> "v3"
-path match {
-    case Root / "test" :?* params =>
-        ???
-}
--------------------------------------------------------------------------------
-
-Use parameter extractor syntaxis, combain it with `:?*` for greater results
-
-* `*&` - add one more parameter extractor to match expression
-
-Available parameter extractor:
-
-* `QueryParam` or `QP` - abstract class for matching required request parameter
-* `OptionQueryParam` or `OQP`- abstract class for matching optional request parameter
-
-[source,scala]
--------------------------------------------------------------------------------
-object K1 extends OQP("k1")
-object K2 extends QP("k2")
-object K3 extends QP("k3")
-
-val path = Root / "test" :? "k1" -> "v1" :& "k2" -> "v2" :& "k3" -> "v3"
-path match {
-    case Root / "test" :?* K1(v1) *& K2(v2) *& K3(v3) =>
-        ???
-}
--------------------------------------------------------------------------------
-
-For more information about Path and Querry matching, please read {code}modules/web/src/test/scala/spoonbill/web/PathAndQuerySpec.scala[PathAndQuerySpec]
-
-==== Running at a nested path
-
-If Spoonbill is running at a nested path, e.g. `/ui/`, router's `rootPath` parameter should be set to a desired value:
-
-[source,scala]
--------------------------------------------------------------------------------
-router = Router(
-  static = ...,
-  dynamic = ...,
-  rootPath = "/ui/"
-)
--------------------------------------------------------------------------------
-
-=== Context scope
-
-Large applications have large states with deep hierarchy. For example,
-when you are making the transition to modify the field of case class which inherits sealed trait, and you know that in this case, you will always have
-this case class, it can make you fill pain.
-
-[source,scala]
--------------------------------------------------------------------------------
-case class ViewState(tab: Tab)
-sealed trait Tab
-case class Tab1(...) extends Tab
-case class Tab2(...) extends Tab
-
-def renderTab2(tab2: Tab2) = div(
-  ...,
-  button(
-    "Push me",
-    event("click") { access =>
-      access.maybeTransition {
-        // Imagine that you have deeper hierarchy. Pain
-        case s @ ViewState(s2: Tab2) =>
-          s.copy(tab = s2.copy(...))
-      }
-    }
-  )
-)
--------------------------------------------------------------------------------
-
-Spoonbill provides two solutions to solve this problem. First one is Components (noticed above). The second solution is context scoping.
-
-[source,scala]
--------------------------------------------------------------------------------
-val scopedContext = context.scope(
-  read = { case ViewState(tab: Tab2) => tab }, // extract sub state
-  write = { case (orig, s) => orig.copy(tab = s) } // modify original state
-)
--------------------------------------------------------------------------------
-
-Now you have context scoped to Tab2. If this context is imported, you will have isolated access to `Tab2`.
-
-Sometimes, being in context scope, you need to apply a transition to all state. In this case, you can handle an event using `eventUnscoped` method of the context. You will get `UnscopedAccess` which ignores current context scope.
-
-Also you can use similar approach on transition level.
-
-[source,scala]
--------------------------------------------------------------------------------
-
-import spoonbill.util.Lens
-
-val scopedContext = Lens[ViewState, Tab2](
-  read = { case ViewState(tab: Tab2) => tab },
-  write = { case (orig, s) => orig.copy(tab = s) }
-)
-
-// ...
-
-access.transition(lens) { tab2 =>
-  tab2.copy(...)
-}
--------------------------------------------------------------------------------
-
-
-
-{code}examples/context-scope/src/main/scala/ContextScopeExample.scala[See full example]
-
-=== Heartbeat and Reconnection
-
-By default, the Spoonbill client-side sends a heartbeat every `5` seconds and tracks how many heartbeats are lost. After two consecutive lost heartbeats, the client performs a forced reconnection to the server. The heartbeat interval can be controlled with `SpoonbillServiceConfig.heartbeatInterval`. Additionally, you can disable bidirectional heartbeat by setting `SpoonbillServiceConfig.heartbeatLimit = None`. As a result, the client-side will send messages to the server, but the server will not respond.
-
-=== Emitting Spoonbill IDs
-
-In some cases, you may want to add analytics scripts or other third-party JavaScript to your page that modifies the DOM by adding elements to certain places. Sometimes this can lead to parts of your application ceasing to function. To address this issue, you can set `SpoonbillServiceConfig.presetIds=true`. As a result, all nodes managed by Spoonbill will receive an additional attribute `k="6", and Spoonbill will use these IDs to manage the DOM, ignoring any nodes added via third-party JavaScript.
-
-=== Delayed render
-
-In certain scenarios, multiple transitions can occur within a single event handler. If the page is resource-intensive or includes a stateful component with delayed state loading, it can result in decreased performance. However, Spoonbill has the capability to bundle these transitions together, thereby optimizing rendering.
-
-[source,scala]
-------------------------------
-import scala.concurrent.duration.*
-
-val config = SpoonbillServiceConfig(
-  ...
-  delayedRender = 2.millis
-)
-------------------------------
-
-The render function will now be called only 2 milliseconds after the initial transition.
-
-[NOTE]
-============
-In this case `transitionForce` will wait until delayed render be performed.
-============
-
-=== Render-safe client effects
-
-Use `afterRender` when an event handler needs to transition state and then run a
-client-side effect against the rendered DOM.
-
-[source,scala]
-------------------------------
-for {
-  _ <- access.transition(_.copy(saved = true))
-  _ <- access.afterRender { rendered =>
-    rendered.focus(nameInput)
-  }
-} yield ()
-------------------------------
-
-`afterRender` waits for pending server-side rendering work before running the
-effect. It is useful for operations such as focusing an element or setting a DOM
-property after the element may have been replaced by a render diff.
-
-== Testing Spoonbill applications
-
-=== Testkit
-
-Use Spoonbill Test Kit to simulate environment for event listeners and extensions.
-
-Add Test Kit dependency to your project. You can use use Test Kit with any suitable testing library which supports asynchronous testing.
+:source-highlighter: highlight.js
+:sectnums:
+:toc:
+:version: 7.0.0
+:scala-version: 3.3.8
+:code: https://github.com/natural-transformation/spoonbill/blob/v{version}/
+
+== What Spoonbill does
+
+Spoonbill keeps application logic and immutable presentation state on the server.
+A Scala function renders that state as HTML through Avocet. The first HTTP
+response contains rendered HTML; after connection, a browser client sends events
+and applies server-generated DOM changes. Applications can use their existing
+services directly from Scala without building a separate JSON API for every UI
+interaction.
+
+This guide describes *Spoonbill {version}*, built with Scala {scala-version}.
+The repository's Nix environment supplies JDK 21. Maven coordinates use the
+organization `com.natural-transformation` and Scala 3 artifacts. Scala packages
+are named `spoonbill`; many source directories retain the historical `korolev`
+name. Source links below are pinned to the release tag.
+
+Presentation state is distinct from domain storage and authentication authority.
+The browser remains an untrusted input source. For account-bearing applications,
+use the guarded authentication integration described in <<authentication>>.
+The small public examples below intentionally have no accounts.
+
+Readers upgrading should also read link:migration-v7.md[the 7.0 migration guide].
+Version 7 replaces implicit identity updates with explicit `NoUpdate` and
+`Modify`, changes rejection callback types, and requires applications to recompile.
+
+== Start an application
+
+=== Use the managed development environment
+
+The repository provides `flake.nix` and `flake.lock`. With Nix and flakes enabled,
+run commands from the checkout through that environment:
+
+[source,shell]
+----
+nix develop . --no-write-lock-file
+sbt 'zioHttpExample/run'
+----
+
+The existing {code}examples/zio-http/src/main/scala/ZioHttpExample.scala[ZIO HTTP example]
+listens at http://localhost:8088[localhost:8088]. Stop it before starting another
+application on that port. To run one command without an interactive shell:
+
+[source,shell]
+----
+nix develop . --no-write-lock-file --command sbt 'zioHttpExample/run'
+----
+
+Use the applicable project flake for dependency resolution, builds and tests.
+The examples in this guide do not require a template generator or host-installed
+JDK, sbt, Node.js or browser packages.
+
+For a separate application project, create `build.sbt` with:
 
 [source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-testkit" % "{version}" % Test
-------------------------------
+----
+scalaVersion := "{scala-version}"
+libraryDependencies += "com.natural-transformation" %% "spoonbill-standalone" % "{version}"
+----
 
-Let's imagine that you are creating application which can to add two integer numbers and to show the result. The app has two text fields and a `span` tag to show the result. The view state of the app is `Option[Int]`. When one of the fields changes, the app reads values of inputs, adds them, and shows calculated result.
+Use `sbt.version=1.10.7` in `project/build.properties`, matching this release's
+build. Save an application below under `src/main/scala/`. Enter that application's
+Nix environment before running sbt. If you are deliberately reusing the Spoonbill
+checkout's environment, run this from the application directory, replacing the
+absolute path with your checkout:
 
+[source,shell]
+----
+nix develop /absolute/path/to/spoonbill --no-write-lock-file --command sbt 'runMain Counter'
+----
+
+The dependency versions are release coordinates. The repository's historical
+`BaseVersion` is a development fallback; release CI supplies `RELEASE_VERSION`.
+It is not necessary to copy that fallback into an application build.
+
+=== A complete counter
+
+This is a complete runnable application, not a fragment. `SpoonbillApp` supplies
+the context and execution context, starts the standalone server, and installs
+its shutdown hook. It defaults to `localhost:8080`.
+
+.Counter.scala — complete runnable application
 [source,scala]
-------------------------------
-val aInput = elementId()
-val bInput = elementId()
+----
+// guide-example: Counter.scala
+import avocet.dsl.*
+import avocet.dsl.html.*
+import scala.concurrent.Future
+import spoonbill.server.{SpoonbillApp, SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization.*
 
-def onChange(access: Access) =
-  for {
-    a <- access.valueOf(aInput)
-    b <- access.valueOf(bInput)
-    _ <-
-      if (a.isBlank || b.isBlank) Future.unit
-      else access.transition(_ => Some(a.toInt + b.toInt))
-  } yield ()
+object Counter extends SpoonbillApp[Future, Array[Byte], Int, Any] {
+  import context.*
 
-def renderForm(maybeResult: Option[Int]) =
-  form(
-    input(
-      aInput,
-      name := "a-input",
-      `type` := "number",
-      event("input")(onChange)
-    ),
-    span("+"),
-    input(
-      bInput,
-      name := "b-input",
-      `type` := "number",
-      event("input")(onChange)
-    ),
-    span(s"= ${maybeResult.fold("?")(_.toString)}")
+  val config: Future[SpoonbillServiceConfig[Future, Int, Any]] =
+    Future.successful(
+      SpoonbillServiceConfig[Future, Int, Any](
+        stateLoader = StateLoader.default(0),
+        document = count => Html(
+          head(title("Spoonbill counter")),
+          body(
+            h1(s"Count: $count"),
+            button(
+              "Increment",
+              event("click")(access => access.transition(_ + 1))
+            )
+          )
+        )
+      )
+    )
+}
+----
+
+Run `sbt 'runMain Counter'` inside the managed environment and open
+http://localhost:8080[localhost:8080]. Each page has its own presentation state.
+The reducer receives the current queued state when it executes.
+
+For an existing server, construct `spoonbillService(config)` and use an HTTP
+adapter. For explicit standalone lifecycle ownership, use
+`standalone.buildServer`; it returns a handler with `localAddress`,
+`stopServingRequests()` and `awaitShutdown()`.
+See {code}modules/standalone/src/main/scala/korolev/server/standalone.scala[the standalone adapter]
+and {code}modules/standalone/src/main/scala/korolev/server/KorolevApp.scala[SpoonbillApp].
+
+== Rendering, state and events
+
+=== Avocet templates
+
+Import `avocet.dsl.*` and `avocet.dsl.html.*`. A tag such as `div(...)` contains
+attributes, styles, children and Spoonbill bindings. `id := "summary"` sets an
+attribute; `backgroundColor @= "yellow"` sets a CSS property. A collection of
+nodes can be used as children, and optional attributes can express conditional
+markup. Custom elements, attributes and styles use `TagDef`, `AttrDef` and
+`StyleDef`.
+
+A document has the type `avocet.Document.Node[Context.Binding[F, S, M]]`.
+`Context[F, S, M]` exposes convenient aliases such as `Node` and `Access`.
+Here `F` is the effect, `S` is presentation state, and `M` is the component or
+extension message type.
+
+Rendering describes the current tree. Spoonbill compares trees and sends the
+changes; it does not resend the whole document for each ordinary transition.
+Keep rendering deterministic and put business effects in handlers or services.
+An empty visual diff can still accompany different event handlers, so it is not
+a reliable indication that a publication is unnecessary.
+
+Some existing examples use Avocet's `optimize` helper. It is optional for the
+examples in this guide; no Scala 2 macro plugin is required in their build.
+
+=== Devices, views and state loading
+
+The `deviceId` cookie and a view/session ID identify framework storage and
+connections. `Qsid` combines those identifiers. *Neither identifier authenticates
+a person or grants access to account data.* Do not implement login by looking up
+a user solely from the device cookie.
+
+`StateLoader[F, S]` receives the device ID and HTTP request head and returns
+initial presentation state. `StateLoader.default(value)` is suitable for a
+public example with immutable initial state. An application loader can consult
+trusted services; guarded applications must also authorize HTTP rendering and
+connection attachment through their security integration.
+
+Keep ordinary state limited to data that may safely participate in rendering,
+serialization and the chosen persistence policy. Credentials, one-use proofs,
+transaction handles, live authority capabilities and sensitive disclosure
+payloads do not belong in it. Domain writes go through domain services and
+transactions; changing a display counter is not a database commit.
+
+=== Low-level event handlers and transitions
+
+`event("click")` and `event("submit")` bind handlers returning `F[Unit]`.
+Bindings support an event phase and optional propagation stopping. An `Access`
+provides state operations, browser properties, files and other view operations.
+See {code}modules/spoonbill/src/main/scala/korolev/Context.scala[Context].
+
+`access.transition(reduce)` enqueues a state transformation. Its completion means
+the transition was queued, not that rendering finished or the browser painted.
+`transitionForce` waits for the server-side transition/render path. Async and
+partial-transition variants are available for existing low-level integrations;
+version 7 does not change their semantics.
+
+A low-level identity transition still requests work. For typed actions, use the
+explicit update descriptions in <<state-updates>>. Do not use `afterRender` to
+wait for a no-update action: it internally requests a forced identity transition.
+
+== Typed actions and forms
+
+Use typed forms for declared, bounded inputs, policy checks and explicit action
+outcomes. The framework captures the declared values in the submit message,
+then decodes and dispatches them together. This avoids reading each field later
+through a separate browser RPC.
+
+A `PublicAction` has an explicit `PublicPolicy`. An `AuthenticatedAction` has an
+`ActionPolicy` and a server-resolved principal, and its form requires a configured
+guarded runtime plus the matching `SessionAuthority`. An action name is a stable
+identifier, not authorization. Hiding a button is not an access check.
+
+=== A complete typed form
+
+This public application accepts a bounded display name. It demonstrates a state
+modification, an explicit no-update result, and the version 7 rejection callback.
+Save it alongside the counter and run `sbt 'runMain TypedGreeting'` after stopping
+the counter, since both use port 8080.
+
+.TypedGreeting.scala — complete runnable application
+[source,scala]
+----
+// guide-example: TypedGreeting.scala
+import avocet.dsl.*
+import avocet.dsl.html.*
+import scala.concurrent.Future
+import spoonbill.ActionForms
+import spoonbill.action.*
+import spoonbill.server.{SpoonbillApp, SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.javaSerialization.*
+
+final case class GreetingPage(displayName: String = "visitor", message: String = "")
+
+object TypedGreeting
+    extends SpoonbillApp[Future, Array[Byte], GreetingPage, Any] {
+  private val actions = new Actions[Future, GreetingPage, Unit]
+  private val displayName = FieldName.parse("display-name").toOption.get
+  private val nonempty = ValidationCode.parse("name-required").toOption.get
+  private val schema = InputSchema.text(displayName, 80)
+    .map(_.trim)
+    .validate(nonempty)(_.nonEmpty)
+
+  private val save = actions.public(
+    ActionName.parse("profile.save-name").toOption.get,
+    schema,
+    PublicPolicy.allow[Future, String]
+  ) { (name, _) =>
+    Future.successful(UiOutcome.modify[GreetingPage](
+      _.copy(displayName = name, message = "Name saved.")
+    ))
+  }
+
+  private val acknowledge = actions.public(
+    ActionName.parse("profile.acknowledge").toOption.get,
+    InputSchema.empty,
+    PublicPolicy.allow[Future, Unit]
+  ) { (_, _) => Future.successful(UiOutcome.noUpdate[GreetingPage]) }
+
+  private val onRejected: ActionRejection => StateUpdate[GreetingPage] =
+    _ => StateUpdate.Modify(_.copy(message = "Enter a name within the limit."))
+
+  val config: Future[SpoonbillServiceConfig[Future, GreetingPage, Any]] =
+    Future.successful(
+      SpoonbillServiceConfig[Future, GreetingPage, Any](
+        stateLoader = StateLoader.default(GreetingPage()),
+        document = page => Html(
+          head(title("Typed greeting")),
+          body(
+            h1(s"Hello, ${page.displayName}"),
+            p(page.message),
+            form(
+              ActionForms.onSubmit[Future, GreetingPage, Any, String](save, onRejected),
+              label("Display name", input(
+                name := displayName.value,
+                `type` := "text",
+                value := page.displayName
+              )),
+              button("Save")
+            ),
+            form(
+              ActionForms.onSubmit[Future, GreetingPage, Any, Unit](acknowledge, onRejected),
+              button("Acknowledge without updating")
+            )
+          )
+        )
+      )
+    )
+}
+----
+
+The `.toOption.get` calls here validate fixed developer-written identifiers at
+startup. Handle failures explicitly for identifiers derived from configuration
+or other untrusted sources.
+
+=== Inputs, rejection and native submission
+
+`InputSchema.text` and `InputSchema.secret` take a maximum UTF-8 byte length.
+`InputSchema.checked` decodes the explicit `"true"` or `"false"` sent for a
+checkbox, including an unchecked control. Combine schemas with `zip`, transform
+values with `map`, and validate with a bounded `ValidationCode`. Decoding rejects
+undeclared fields, duplicates, missing values and exceeded limits. Transport
+frame limits apply independently of schema limits.
+
+A `Secret` has a redacted string representation and an explicit `withValue`
+trusted-code boundary. Do not copy its plaintext into state, diagnostics or a
+reusable closure; it cannot guarantee erasure of JVM strings.
+
+Both `ActionForms.onSubmit` overloads require
+`ActionRejection => StateUpdate[S]`. Return `StateUpdate.noUpdate[S]` to ignore a
+rejection, or `StateUpdate.Modify(...)` to update presentation. `UiOutcome.Invalid`
+uses that same input-rejection path. Superseded or output-suppressed invocations
+have separate retirement behavior; they are not a request to replay the action.
+
+For an ordinary browser navigation or an HTTP endpoint such as logout, use
+`ActionForms.nativeSubmit[F, S, M]` on a form with its `method` and `action`.
+The destination must validate its own origin/CSRF and authorization. Typed
+`onSubmit` takes precedence if both markers are present.
+
+Sources: {code}modules/spoonbill/src/main/scala/korolev/action/InputSchema.scala[input schemas],
+{code}modules/spoonbill/src/main/scala/korolev/action/Action.scala[actions and dispatch],
+and {code}modules/spoonbill/src/main/scala/korolev/ActionForms.scala[form bindings].
+
+[[state-updates]]
+== Explicit state updates in version 7
+
+`StateUpdate[S]` is a closed subtype of `UiOutcome[S]`:
+
+[cols="1,3",options="header"]
+|===
+|Result |Meaning
+|`StateUpdate.NoUpdate()` / `StateUpdate.noUpdate[S]`
+|Do not request a state transition, render or guarded patch for this outcome.
+|`StateUpdate.Modify(reduce)`
+|Request one transition using the pure `S => S` reducer, even for `identity`.
+|`UiOutcome.noUpdate[S]` / `UiOutcome.modify[S](reduce)`
+|Construct those same values with the wider `UiOutcome[S]` result type, useful in action effects.
+|===
+
+No-update skips state-update work only. Admission, authorization, sensitive
+acknowledgement handling, event-counter completion and cleanup still run.
+A real later publication can invalidate an earlier browser revision. No-update
+is not permission to accept a stale revision or to replay proof-bearing work.
+
+The old `UiOutcome.Updated`, `UiOutcome.update`, `UiOutcome.unchanged`,
+`StateUpdate.unchanged` and function-like `StateUpdate(...)`/`update(state)` APIs
+are removed. There are no compatibility aliases.
+
+=== Pure composition and zoom
+
+`andThen` composes reducers in order. Combining either side with `NoUpdate`
+reuses the other update. `zoom` lifts a child update into a parent state without
+reading or writing the lens when constructing it. Reducers and lens functions
+must be pure; they execute later against the queued state. An identity reducer,
+or two changes that cancel out, remains a modification.
+
+This complete example is executable with `sbt 'runMain UpdateComposition'` in the
+same project. Its evaluator is a local demonstration, not a replacement for the
+framework's interpreter.
+
+.UpdateComposition.scala — complete executable example
+[source,scala]
+----
+// guide-example: UpdateComposition.scala
+import spoonbill.action.StateUpdate
+
+object UpdateComposition {
+  final case class Page(counter: Int, message: String)
+
+  def main(args: Array[String]): Unit = {
+    val increment = StateUpdate.Modify[Int](_ + 1)
+    val update = increment
+      .zoom[Page](_.counter)((page, count) => page.copy(counter = count))
+      .andThen(StateUpdate.Modify[Page](_.copy(message = "Updated")))
+      .andThen(StateUpdate.noUpdate[Page])
+
+    val before = Page(2, "")
+    val after = update match {
+      case StateUpdate.NoUpdate() => before
+      case StateUpdate.Modify(reduce) => reduce(before)
+    }
+    assert(after == Page(3, "Updated"))
+  }
+}
+----
+
+=== Completion callbacks and failures
+
+Sensitive completion accepts `DisclosureOutcome => StateUpdate[S]`; rejection
+accepts `ActionRejection => StateUpdate[S]`. These narrow callbacks cannot return
+an authentication commit, replacement, validation result or another disclosure.
+
+The framework evaluates callbacks through `Effect.delay`. Ordinary thrown
+callback errors fail the effect and request no transition. For IO and ZIO the
+callback remains deferred until execution. Future retains its eager semantics
+inside the existing continuation. In the ZIO adapter, ordinary callback
+exceptions enter the typed error channel through `liftError`, rather than
+becoming defects. A reducer failure still follows the existing queued
+transition/reporting behavior; enqueueing does not guarantee observing a later
+render failure in the action effect.
+
+See {code}modules/spoonbill/src/main/scala/korolev/action/UiOutcome.scala[the algebra]
+and link:migration-v7.md[the migration details].
+
+[[authentication]]
+== Authentication, ownership and recovery
+
+=== Install the guarded coordinator
+
+Use `BrowserAuthentication[F, S, P]` with a `BrowserPersistence[F, P]`,
+`BrowserPresentation[S, P]` and `BrowserConfiguration`.
+`browser.configure(baseConfig)` installs state storage, session access control,
+authentication completion and the security installation together. Do not replace
+one of those fields afterward. Guarded applications require WebSockets and
+uncompressed WebSocket transport.
+
+`BrowserPresentation` defines a fresh presentation, which states are allowed for
+the current optional principal, and how a connected presentation is derived.
+A display field saying an account is signed in is not authority. Authenticated
+typed forms use `browser.authority`; protected domain writes must additionally
+revalidate the captured view in the transaction performing the write.
+
+Deploy with exact HTTPS origins and secure cookies. Insecure HTTP configuration
+is restricted to explicitly allowed loopback origins. Use a consistent realm,
+cookie namespace and provider scope. In-memory fixtures are useful for examples;
+production persistence, account policy, password verification and key ownership
+remain host responsibilities.
+
+The complete {code}examples/browser-auth/src/main/scala/example/browserauth/Application.scala[browser authentication application]
+shares its UI between Future memory, native Cats Effect IO memory and JDBC
+implementations. Its synthetic accounts, passwords and encryption material are
+test data, not deployment defaults. Follow link:browser-authentication.md[the
+integration guide] for provider-specific setup and host transaction contracts.
+
+=== Sign-in and replacement
+
+For anonymous sign-in, begin/resume a live ceremony, verify the proof under host
+policy, and call the provider's `prepare`. The transaction consumes proof,
+creates the host session and records the browser preparation together. Only a
+committed receipt can produce `browser.complete(receipt)`. The transport delivers
+an HttpOnly credential and activates it on a fresh handshake.
+
+Changing credentials while authenticated requires the explicit replacement API:
+`beginReplacement`, `replacementInvocation`, challenge binding and
+`prepareReplacement`. The transaction revokes the exact predecessor and commits
+a successor session with the host changes. Return the dedicated replacement
+completion outcome. Recovery reconciles stored outcomes; it must not rerun the
+proof or business mutation after a lost response.
+
+Keep external notifications outside the database callback, using an outbox where
+needed. Do not commit, roll back, close a transaction, start detached work or
+wait on external services inside the provider's host callback. See
+link:browser-authentication.md[the full sign-in and replacement sequences] and
+link:one-use-authority-contract.md[one-use authority].
+
+=== Shared views and presentation snapshots
+
+`BrowserOwnership.ExclusiveScope` declares one live owner for the scope.
+`BrowserOwnership.SharedViews` enables shared-store coordination, ownership
+claims and fenced view operations across web processes. Configure every node
+with compatible database, scope, origins, credentials and policy.
+
+Persist only an explicit non-sensitive presentation projection with a
+`SnapshotFormat` and a `StateSchema`; schema derivation does not make arbitrary
+state safe to persist. Restore current host/domain data first, then overlay the
+allowed presentation projection. A saved counter or principal-shaped field
+cannot become authorization evidence. See
+link:clustered-browser-authentication.md[shared PostgreSQL setup and recovery].
+
+=== Custom guards and the version 6 initialization contract
+
+Applications implementing `SessionGuard` directly must implement
+`applicationStateInitialization: ApplicationStateInitialization[F]`:
+
+* `Retained()` adopts an existing local baseline when no snapshot restoration is configured.
+* `Reconstructed(() => acknowledge())` loads the validated application route and invokes the callback after the baseline is authorized and adopted.
+
+The reconstruction acknowledgement is a thunk. Construct the `F[Unit]` inside
+it so an eager Future cannot start the acknowledgement when the guard is built.
+A reconstructed guard must discard unfinished presentation on close until its
+acknowledgement completed. Snapshot restoration remains a separate path.
+
+This contract is already part of version 6 and remains required in version 7.
+See {code}modules/spoonbill/src/main/scala/korolev/server/SessionAccessControl.scala[the guard API]
+and link:clustered-browser-authentication.md#custom-session-guard-initialization[custom guard initialization].
+
+== Sensitive presentation
+
+Render an empty `SensitiveRegion[Binding](region)` in the ordinary document.
+The payload belongs to a transient browser region, not ordinary DOM text,
+attributes, view state or snapshots. A separate `SensitiveAccess[F, S]` policy
+must authorize purpose and audience; an authenticated session does not grant
+sensitive presentation automatically.
+
+Inside an admitted typed action, use `context.presentSensitive` with a validated
+`SensitivePayload`, region, purpose and finite lifetime. The context creates a
+one-shot disclosure bound to that invocation. Do not construct, reuse or transfer
+its internal ownership yourself.
+
+.Contextual fragment inside an authenticated action; application types and policy are supplied by the host
+[source,scala]
+----
+context.presentSensitive[Page](region, purpose, payload, 30.seconds) {
+  case DisclosureOutcome.BrowserProcessed => StateUpdate.noUpdate[Page]
+  case _ => StateUpdate.Modify[Page](
+    _.copy(message = "Delivery could not be confirmed.")
   )
-------------------------------
-
-Now we can to write test for it. Lets define the environment.
-
-[source,scala]
-------------------------------
-val browser = Browser()
-  .value(aInput, "2")
-  .value(bInput, "3")
-------------------------------
-
-Check that `onChange` behaves right.
-
-[source,scala]
-------------------------------
-"onChange" should "read inputs and put calculation result to the view state" in {
-  browser.access(Option.empty[Int], onChange) map { actions =>
-    actions shouldEqual List(
-      Action.Transition(Some(5))
-    )
-  }
 }
-------------------------------
+----
 
-Check that event will be handled correctly.
+The fragment's `Page`, region, purpose, payload and imports come from its enclosing
+application; it is not a standalone program. See the compiled
+{code}examples/browser-auth/src/main/scala/example/browserauth/Application.scala[application]
+for complete declarations and policy wiring.
 
-[source,scala]
-------------------------------
-it should "be handled" in {
-  browser.event(Option.empty[Int],
-                renderForm(None),
-                "input",
-                _.byName("a-input").headOption.map(_.id)) map { actions =>
-    actions shouldEqual List(
-      Action.Transition(Some(5))
-    )
-  }
-}
-------------------------------
+`BrowserProcessed` means the matching browser acknowledgement arrived, not that
+a human read the information. `NotSent` and `Uncertain` distinguish failure
+before emission from uncertain delivery. An uncertain result is not permission
+to replay a one-use secret. The client clears presentations on expiry, replacement,
+navigation/departure, disconnection and relevant security retirement. Ordinary
+unrelated rendering can preserve an authorized region.
 
-{code}examples/zio/src/test/scala/ZioExampleSpec.scala[See full example]
+The client uses a closed shadow root and clears owned presentation resources.
+These boundaries reduce accidental DOM/RPC/snapshot exposure; they cannot prevent
+authorized viewing, screenshots, compromised browser code or guarantee physical
+memory erasure. Keep plaintext out of logs and generic serialization.
 
-=== Selenium
+Version 7 lets a successful acknowledgement return `NoUpdate`, so it does not
+itself replace handlers or publish a new guarded revision. Returning
+`Modify(identity)` deliberately retains publication behavior.
+See {code}modules/spoonbill/src/main/scala/korolev/sensitive/SensitivePresentation.scala[disclosure outcomes]
+and {code}modules/spoonbill/src/main/scala/korolev/SensitiveRegion.scala[region hosts].
 
-Spoonbill applications like any other web application could be tested using https://www.selenium.dev[Selenium].
+== Build larger interfaces
+
+=== Components and scoped access
+
+`Component[F, S, P, M]` owns child state `S`, receives parameters `P`, and can
+publish messages `M` to its parent. Use it when independent state or lifecycle is
+useful; ordinary rendering functions are sufficient for stateless markup.
+Components can start with a value or a parameter-dependent `P => F[S]` loader.
+`renderNoState` supplies a loading view, while `maybeUpdateState` can request
+reloading after parameters change. Parent bindings handle published messages.
+See {code}examples/component/src/main/scala/ComponentExample.scala[the component example].
+
+`context.scope(read, write)` or `context.scope(lens)` focuses access on child
+state. A `Lens` can also be passed to transition methods. `eventUnscoped` gives a
+handler access to the enclosing context. Use lawful reads and writes and handle
+partial-state cases deliberately; scoping is a presentation convenience, not an
+authorization boundary. Typed pure updates use `StateUpdate.zoom` as shown above.
+See {code}examples/context-scope/src/main/scala/ContextScopeExample.scala[scoped access].
+
+=== Routing and mount paths
+
+`Router[F, S]` contains `fromState: PartialFunction[S, PathAndQuery]` and
+`toState: PartialFunction[PathAndQuery, S => F[S]]`. It maps state changes to URLs
+and browser navigation back to state. Compose routers with `++`; left-hand
+matches take precedence. Validate requested resources through your services and
+guards before rendering them.
+
+`PathAndQuery.Root / "search"` builds a path. `withParam` adds optional query
+values; `:?*` exposes query parameters, `QueryParam` and `OptionQueryParam` support
+required and optional extraction, and `*&` combines extractors. Exact matching
+operators are available when ordering and arity matter. See the compiled
+{code}examples/routing/src/main/scala/RoutingExample.scala[routing example],
+{code}examples/routing/src/main/scala/PathAndQueryRoutingExample.scala[query example]
+and {code}modules/web/src/test/scala/korolev/web/PathAndQuerySpec.scala[path tests].
+
+For a nested deployment such as `/ui/`, set `SpoonbillServiceConfig.rootPath` to
+`PathAndQuery.Root / "ui"`. This is a service setting, not a `Router` constructor
+parameter. Configure the reverse proxy consistently so HTML, static resources
+and transport endpoints use the same mount. Test direct links, browser history,
+encoded segments and reconnects at that mount.
+
+=== Properties, event data and focus
+
+Declare `elementId()` once in the relevant context and attach it to the rendered
+element. In a handler, `access.valueOf(id)` reads its value, `valueAs[T](id)` uses
+a `Context.ValueDecoder[T]`, and `checked(id)` decodes a boolean property.
+`access.property(id).get("value")` and `.set("value", text)` expose other
+properties. These are asynchronous browser operations; typed form submission is
+preferable when several declared fields must be captured together.
+
+`access.eventData` returns serialized event data. Use `eventDataAs[T]` with an
+application `Context.EventDataDecoder[T]` for its expected shape. Validate data
+from the browser rather than treating the decoded type as authority.
+See {code}examples/event-data/src/main/scala/EventDataExample.scala[event data]
+and {code}examples/focus/src/main/scala/FocusExample.scala[focus].
+
+`afterRender` sequences a client operation after the server's pending render
+work, for example focusing an element introduced by a transition. It requests a
+forced identity transition internally and does not acknowledge browser paint.
+It therefore belongs in explicit DOM-effect workflows, not no-update completion.
+
+=== Delays and server push
+
+`delay(duration)(handler)` attaches delayed work to a rendered binding. Use it
+for presentation timers, not as durable scheduling. See
+{code}examples/delay/src/main/scala/DelayExample.scala[the delay example].
+
+An `Extension` acquires session-scoped resources and receives state/message
+notifications. Use `Extension.managed` or `managedF` for subscriptions with cleanup;
+`Extension.Handlers.onDestroy` is a `() => F[Unit]` thunk. Resolve subscriptions
+from current trusted authority, not a device cookie. Retire them when the view
+ends; they are not durable jobs. See
+{code}modules/spoonbill/src/main/scala/korolev/Extension.scala[extension lifecycle]
+and {code}examples/extension/src/main/scala/ExtensionExample.scala[server push].
+
+=== Forms and file streams
+
+`access.downloadFormData(formId)` requests a form's multipart data. This is a
+separate facility from typed `InputSchema` forms. See
+{code}examples/form-data/src/main/scala/FormDataExample.scala[FormData].
+
+File API names are from the server's perspective:
+
+[cols="1,3",options="header"]
+|===
+|Operation |Direction and use
+|`downloadFiles(inputId)` |Browser to server; materializes selected files as `Bytes` in memory.
+|`downloadFilesAsStream(inputId)` |Browser to server; returns a stream per file.
+|`listFiles(inputId)` / `downloadFileAsStream(handler)` |Inspect selections, then consume chosen files.
+|`uploadFile(name, stream, size, mimeType)` |Server to browser; serves a byte stream as a download.
+|===
+
+Bound file sizes, counts and processing in the application. Treat names and MIME
+types as untrusted metadata; do not use a submitted filename directly as a
+filesystem destination. Consume or cancel streams and close any storage resources
+you own. Prefer streaming for large inputs. See
+{code}examples/file-streaming/src/main/scala/FileStreamingExample.scala[file streaming]
+and {code}examples/file-streaming/src/main/scala/OneByOneFileStreamingExample.scala[selective downloads].
 
 == JavaScript interoperability
 
-=== WebComponents
+Web Components can provide custom browser behavior while Scala owns application
+state. Preserve the boundaries of renderer-managed nodes and custom-element-owned
+DOM. See {code}examples/web-component/src/main/scala/WebComponentExample.scala[the Web Component example].
 
-If you need to extend your application with something that you can't implement with Spoonbill, you may use https://github.com/w3c/webcomponents[Web Components]. In simple terms, it is a standard technology that allows you to create custom HTML tags.
+`access.evalJs(code)` evaluates client JavaScript and returns its JSON result;
+Promise results are awaited. The `js` interpolator can refer to framework
+`ElementId` values. Treat evaluated code as trusted application code, validate
+returned values, and do not concatenate untrusted input into executable strings.
 
-[NOTE]
-============
-Spoonbill doesn't have any specific code to support WebComponents. WebComponent (Custom Elements + Shadow DOM) by design should behave as regular HTML tags. There is no difference between, for example, input or textarea, and any custom element.
-============
+`access.registerCallback(name)(handler)` accepts a string argument from the
+client. Browser code calls `Spoonbill.invokeCallback(name, argument)`. These
+callbacks still need application validation and authorization for protected work;
+they are not typed form actions. See
+{code}examples/evalJs/src/main/scala/EvalJsExample.scala[both interoperability directions].
 
-{code}examples/web-component/src/main/scala/WebComponentExample.scala[See full example]
+With `presetIds = true`, Spoonbill emits identifiers for its managed DOM nodes,
+which helps it distinguish nodes inserted by other scripts. This does not make
+arbitrary mutation of managed DOM safe or remove lifecycle requirements.
 
-=== Call JavaScript from server
+== Effects, servers and streams
 
-Spoonbill allows executing arbitrary JavaScript code on the client. Use `access.evalJs` to run JavaScript's `eval` method on the client and retrieve the result. The result is a JSON string, so you possibly need to add your favorite https://duckduckgo.com/?q=scala+json+libraries&t=hp&ia=web[JSON library] to project dependencies.
+=== Choose an effect
 
-[source,scala]
--------------------------------------------------------------------------------
-button(
-  "Push me",
-  event("click")(_.evalJs("1 + 1").map(println)) // 2
-)
--------------------------------------------------------------------------------
+Core uses `spoonbill.effect.Effect[F]`; it does not require Cats or ZIO.
+Future support is built in. Perform business effects in the action's `F`, then
+return a pure update or a dedicated control outcome. Do not introduce an
+`unsafeRun` boundary inside a handler to mix runtimes.
 
-Also it works for `Promise`.
+[cols="1,1,2",options="header"]
+|===
+|Runtime |Artifact |Integration
+|Cats Effect 3 |`spoonbill-ce3` |`spoonbill.cats.*` supplies the default IO instance; `IO3Effect` accepts an explicit `IORuntime`.
+|ZIO 2 |`spoonbill-zio2` |`taskEffectLayer` / `taskEffectInstance`, or `Zio2Effect[R, E]` with error conversions.
+|Monix |`spoonbill-monix` |`spoonbill.monix.*`, with the application's Monix scheduler.
+|Legacy Cats Effect 2 / ZIO 1 |`spoonbill-ce2` / `spoonbill-zio` |Separate integrations; choose the artifact matching the runtime major version.
+|===
 
-[source,scala]
--------------------------------------------------------------------------------
-button(
-  "Push me",
-  event("click") { access =>
-    access
-      .evalJs(
-        """crypto
-          |  .subtle
-          |  .digest('sha-256', Uint8Array.from([1, 2, 3]))
-          |  .then((res) => {
-          |    return Array.from(new Uint8Array(res))
-          |      .map(x => x.toString(16).padStart(2, '0'))
-          |      .join('')
-          |  })
-        """.stripMargin
-      )
-      .map(println) // "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81"
-  }
-)
--------------------------------------------------------------------------------
+All coordinates use `"com.natural-transformation" %% artifact % "{version}"`.
+Avoid combining two generations that expose the same integration package in one
+application. Future construction is eager; IO and ZIO descriptions are lazy.
+`Effect.delay` captures ordinary exceptions; `delayAsync` also captures effect
+construction and flattens the result. With Future these operations still run
+eagerly and do not introduce a scheduling barrier. These distinctions matter for
+callbacks and resource ownership.
 
-You can refer DOM elements bounded with `ElementId` using `js""` string interpolation.
+Sources and examples:
+{code}interop/ce3/src/main/scala/korolev/cats/IO3Effect.scala[IO adapter],
+{code}examples/cats/src/main/scala/CatsIOExample.scala[IO application],
+{code}interop/zio2/src/main/scala/korolev/zio/Zio2Effect.scala[ZIO 2 adapter],
+{code}examples/zio/src/main/scala/ZioExample.scala[ZIO application], and
+{code}examples/monix/src/main/scala/MonixExample.scala[Monix application].
 
-[source,scala]
--------------------------------------------------------------------------------
-// Declare element
-val myElement = elementId()
-// Bind the element in template
-div(myElement)
-// Refer the element
-access.evalJs(js"""$myElement.innerHTML = 'this is <a href="http://example.com">example</a>'""")
--------------------------------------------------------------------------------
+=== HTTP adapters
 
-{code}examples/evalJs/src/main/scala/EvalJsExample.scala[See full example]
+[cols="1,1,2",options="header"]
+|===
+|Server |Artifact |Entry point
+|Standalone |`spoonbill-standalone` |`spoonbill.server.standalone.buildServer` or `SpoonbillApp`.
+|Pekko HTTP |`spoonbill-pekko` |`spoonbill.pekko.pekkoHttpService(config)` with `PekkoHttpServerConfig`.
+|Akka HTTP |`spoonbill-akka` |`spoonbill.akka.akkaHttpService(config)` with `AkkaHttpServerConfig`.
+|ZIO HTTP |`spoonbill-zio-http` |`new ZioHttpSpoonbill[R].service(config)` with a compatible ZIO 2 effect/runtime.
+|===
 
-=== Call server from JavaScript
+The release's ZIO HTTP integration targets ZIO HTTP 3.11.6 and ZIO 2.1.26.
+Use `ZIOAppDefault`, a `Runtime[R]`, and `Zio2Effect`; old `ZEnv` and
+`DefaultRuntime` examples are not the ZIO 2 setup. The complete
+{code}examples/zio-http/src/main/scala/ZioHttpExample.scala[ZIO HTTP application]
+constructs `Routes[Any, Response]` and runs `Server.serve(routes)` with a server
+layer. Complete examples also exist for
+{code}examples/pekko-http/src/main/scala/PekkoHttpExample.scala[Pekko HTTP] and
+{code}examples/akka-http/src/main/scala/AkkaHttpExample.scala[Akka HTTP].
 
-You can invoke callbacks on a server side from a browser. Declare the callback using `access`.
+Custom service wrappers must preserve `WebSocketResponse.Duplex` versus
+`SendThenClose`. Transform output with `mapOutput` or `withOutput`, preserve
+ordering/cancellation, and execute `release()` when the upgrade is abandoned or
+the transport ends. Let the adapter own live transport teardown before awaiting
+session release; recursive release can deadlock. Never infer disposition from
+payload bytes or turn an authorization failure into successful output. See
+{code}modules/spoonbill/src/main/scala/korolev/server/WebSocketResponse.scala[the transport contract].
 
-[source,scala]
--------------------------------------------------------------------------------
-access.registerCallback("myCallback") { myArg =>
-  Future(println(myArg))
-}
--------------------------------------------------------------------------------
+=== Stream conversion and logging
 
-Now invoke it from the client side.
+Spoonbill's `Stream[F, A]` is a pull-based stream with explicit cancellation.
+Adapters bridge it to application streaming libraries:
+
+* `spoonbill-fs2-ce3` for FS2 3 / Cats Effect 3; `spoonbill-fs2-ce2` for FS2 2 / Cats Effect 2.
+* `spoonbill-zio2-streams` for ZIO 2 streams; `spoonbill-zio-streams` for ZIO 1.
+* Akka/Pekko integration utilities for reactive-streams publishers and their native streams.
+
+Use the matching runtime version and preserve cancellation when bridging.
+See the release's
+{code}interop/fs2-ce3/src/main/scala/korolev/fs2.scala[FS2 extensions],
+{code}interop/zio2-streams/src/main/scala/korolev/zio/streams/package.scala[ZIO 2 stream extensions]
+and {code}interop/pekko/src/main/scala/korolev/pekko/instances.scala[Pekko stream instances]
+for conversion and resource semantics.
+
+The default reporter writes to standard output. Add `spoonbill-slf4j` and set
+`reporter = spoonbill.slf4j.Slf4jReporter` to use your SLF4J backend. Guarded
+applications should log bounded event metadata and error codes, not credentials,
+submitted secret fields or sensitive payloads.
+
+== Testing
+
+Add `"com.natural-transformation" %% "spoonbill-testkit" % "{version}" % Test`
+to use `spoonbill.testkit.Browser`. It supplies property/form/file fixtures,
+JavaScript mocks, handler execution and simulated DOM event propagation.
+Assertions inspect recorded `Action` values. See
+{code}examples/zio/src/test/scala/ZioExampleSpec.scala[the compiled test example]
+and {code}modules/testkit/src/main/scala/korolev/testkit/Browser.scala[testkit capabilities].
+
+The testkit is not a real browser or a substitute for guarded transport tests.
+Its legacy access fixture does not supply the full typed-submission/authority
+runtime. Test pure schemas, policies and reducers directly, then verify typed
+forms, cookies, disclosure acknowledgement, revisions and reconnects through the
+real service/client path. A successful unit test cannot establish browser cookie
+or physical-connection behavior.
+
+The repository has deterministic Scala suites plus pinned Chromium/WebKit gates.
+These commands run from its root:
+
+[source,shell]
+----
+nix develop . --no-write-lock-file --command sbt 'spoonbill/test' 'testkit/test'
+nix develop .#browser --no-write-lock-file --command bash scripts/test-native-browsers.sh
+nix develop . --no-write-lock-file --command bash scripts/test-sensitive-acknowledgement.sh
+nix develop . --no-write-lock-file --command bash scripts/test-browser-auth.sh
+----
+
+The acknowledgement runner uses the actual standalone service and normal client
+submissions. It covers no-update, identity modification, real modification and
+authority revocation while holding publication delivery. See
+link:browser-tests.md[browser test setup and additional provider gates].
+
+== Storage, development and deployment
+
+=== Presentation storage
+
+`StateStorage` and its serializers support framework presentation. The
+`spoonbill.state.javaSerialization.*` import in the introductory applications
+supplies the simple JVM serialization implementation; it is not a durable,
+versioned business-data format.
+
+For a custom unguarded integration, `StateStorage.fromRepository` accepts
+existence, snapshot load/create, node write/delete and repository removal
+operations. Lower-level `StateManager.cached` and `serialized` expose reusable
+storage mechanics. Guarded authentication instead owns its installed storage
+bundle and explicit snapshot projection; do not replace it with a generic
+repository adapter. See
+{code}modules/spoonbill/src/main/scala/korolev/state/StateStorage.scala[state storage].
+
+=== Development and render scheduling
+
+`spoonbill.dev=true` enables development storage behavior for the default state
+storage. A process restart is not a production recovery mechanism, and custom
+storage changes this behavior. If using sbt-revolver in your application, run
+its restart commands inside the managed environment. Keep domain durability and
+authentication in their own integrations; development presentation retention
+cannot preserve arbitrary external mutable objects or authorize old sessions.
+
+`delayedRender` can coalesce queued render work. Its default is zero; use it only
+after measuring your application. It does not change the meaning of `NoUpdate`,
+and `transitionForce` still waits for the server render path. Do not use state
+equality or an empty DOM diff to bypass publication of changed handlers.
+
+Classpath resources under `static` are served beneath the service's static path,
+such as `/static/` at the root mount. Use appropriate external hosting for large
+assets. See {code}modules/spoonbill/src/main/scala/korolev/server/KorolevServiceConfig.scala[service settings].
+
+=== Connections and operations
+
+The default heartbeat interval is five seconds and the default limit is two
+unanswered heartbeats. `heartbeatInterval` and `heartbeatLimit` configure this;
+`None` disables the client's unanswered-heartbeat limit and server heartbeat
+replies, while the client continues sending heartbeats. Client connection loss
+can lead to reconnect or reload. A recovered guarded view must reauthorize and
+establish its baseline before user events are admitted.
+
+Configure proxies for WebSocket upgrades, the correct mount path, and idle/drain
+timeouts consistent with your service. Test rolling shutdown and reconnects
+through the actual proxy; increasing one vendor-specific timeout is not a
+portable fix. Multi-node routing requires a compatible ownership and recovery
+strategy, not merely routing a reconnect to another process.
+
+Use link:browser-auth-v4-deployment.md[the authentication deployment checklist]
+and link:clustered-browser-authentication.md[shared-view deployment] for origins,
+cookies, provider ownership, credential vaults and recovery. Existing validation
+and performance reports are evidence for their recorded versions and workloads,
+not a claim that every deployment has been tested.
+
+=== Troubleshooting
+
+First identify whether a failure is input validation, action policy, current
+authority/ownership, stale view admission, transport setup, or application logic.
+A successful browser acknowledgement followed by an explicit `NoUpdate` should
+not itself advance the guarded revision. A genuine modification still can.
+Inspect connection/revision metadata and completion signals without replaying
+action frames or weakening stale-view checks.
+
+For client protocol debugging, the browser exposes:
 
 [source,javascript]
--------------------------------------------------------------------------------
-Spoonbill.invokeCallback('myCallback', 'myArgValue');
--------------------------------------------------------------------------------
-
-{code}examples/evalJs/src/main/scala/EvalJsExample.scala[See full example]
-
-== Productivity
-
-=== Developer mode and "hot reload"
-
-Developer mode provides "hot reload" experience. Run your application with `spoonbill.dev=true` system property (or environment variable) and session will be kept alive after restart. We recommend to use https://github.com/spray/sbt-revolver[sbt-revolver] plugin.
-
-[source,bash]
--------------------------------------------------------------------------------
-reStart --- -Dspoonbill.dev=true
--------------------------------------------------------------------------------
-
-Make a change to your app source code and save the file. Switch to the browser and wait for changes to deliver.
-
-Notice that developer mode does not work with custom `StateStorage`.
-
-[NOTE]
-============
-Ensure that everything is stateless except Spoonbill part of the application. For example, if you keep some state outside of Spoonbill state, it won't be saved and will lead to inconsistency.
-============
-
-=== Custom state storage
-
-Use `StateStorage.fromRepository` when session state should be stored outside the
-default in-memory or developer-mode storage.
-
-[source,scala]
--------------------------------------------------------------------------------
-val storage = StateStorage.fromRepository[Future, AppState](
-  repositoryExists = key => repo.exists(key),
-  loadSnapshot = key => repo.loadSnapshot(key),
-  createSnapshot = (key, snapshot) => repo.create(key, snapshot),
-  writeNode = (key, nodeId, bytes) => repo.write(key, nodeId, bytes),
-  deleteNode = (key, nodeId) => repo.delete(key, nodeId),
-  removeRepository = key => repo.remove(key)
-)
-
-val config = SpoonbillServiceConfig[Future, AppState, Any](
-  stateLoader = StateLoader.default(AppState.empty),
-  stateStorage = storage,
-  document = render
-)
--------------------------------------------------------------------------------
-
-`StateManager.cached` and `StateManager.serialized` are also available for
-lower-level custom storage implementations that only need reusable read, write,
-delete, and snapshot mechanics.
-
-=== Serve files from resource directory
-
-Everything placed in directory named `static` (in the classpath of the application) will be served from the `/static/`. It may be useful when you want to distribute some small images or CSS with the app.
-
-[WARNING]
-============
-Spoonbill is not some sort of CDN node. Avoid serving lots of large files using this feature.
-============
-
-== Interoperability
-
-=== Slf4j
-
-By default Spoonbill log all messages to standard output. You can redirect logs to SLF4J backend.
-
-Add the dependency.
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-slf4j" % "{version}"
-------------------------------
-
-Configure reporter.
-
-[source,scala]
-------------------------------
-val config = SpoonbillServiceConfig(
-  ...
-  reporter = spoonbill.slf4j.Slf4jReporter
-)
-------------------------------
-
-=== Akka HTTP
-
-Spoonbill provides smooth Akka HTTP integration out of the box. To use it, add a dependency:
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-akka" % "{version}"
-------------------------------
-
-[source,scala]
-------------------------------
-val service = SpoonbillServiceConfig[...](
-  ...
-))
-------------------------------
-
-And create Spoonbill route:
-
-[source,scala]
-------------------------------
-val config = SpoonbillServiceConfig[Future, String, Any](
-  stateLoader = StateLoader.default("world"),
-  document = state => Html(body(div(s"Hello $state")))
-)
-
-val spoonbillRoute = akkaHttpService(config).apply(AkkaHttpServerConfig())
-------------------------------
-
-Then embed the route into your Akka HTTP routes structure.
-
-{code}examples/akka-http/src/main/scala/AkkaHttpExample.scala[See full example]
-
-This integration overrides default logging behavior to `akka.event.Logging`.
-
-Despite the fact that Akka uses standard Scala futures, the module can
-work we any effect type supported by Spoonbill
-
-=== Pekko HTTP
-
-Spoonbill provides smooth Pekko HTTP integration out of the box. To use it, add a dependency:
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-pekko" % "{version}"
-------------------------------
-
-[source,scala]
-------------------------------
-val service = SpoonbillServiceConfig[...](
-  ...
-))
-------------------------------
-
-And create Spoonbill route:
-
-[source,scala]
-------------------------------
-val config = SpoonbillServiceConfig[Future, String, Any](
-  stateLoader = StateLoader.default("world"),
-  document = state => Html(body(div(s"Hello $state")))
-)
-
-val spoonbillRoute = pekkoHttpService(config).apply(PekkoHttpServerConfig())
-------------------------------
-
-Then embed the route into your Pekko HTTP routes structure.
-
-{code}examples/pekko-http/src/main/scala/PekkoHttpExample.scala[See full example]
-
-This integration overrides default logging behavior to `org.apache.pekko.event.Logging`.
-
-Despite the fact that Pekko uses standard Scala futures, the module can
-work we any effect type supported by Spoonbill
-
-=== Zio-Http
-
-Spoonbill provides smooth Zio-Http integration out of the box.
-
-To use it, add a dependency:
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-zio-http" % "{version}"
-------------------------------
-
-And create Spoonbill service:
-
-[source,scala]
-------------------------------
-
-implicit val effect= new ZioEffect[ZEnv, Throwable](runtime, identity, identity)
-
-val config = SpoonbillServiceConfig[AppTask, String, Any](
-  stateLoader = StateLoader.default("world"),
-  document = state => Html(body(div(s"Hello $state")))
-)
-
-def route(): Routes[ZEnv, Response] = {
-  new ZioHttpSpoonbill[ZEnv].service(config)
-}
-
-
-------------------------------
-
-Then embed the route into your Zio-Http application.
-
-[source,scala]
-----------------------------
-def getAppRoute(): ZIO[ZEnv, Nothing, Routes[ZEnv, Response]] = {
-    ZIO.runtime[ZEnv].map { implicit rts =>
-        new Service().route()
-    }
-}
-
-val prog = for {
-  routes <- getAppRoute()
-  _      <- Server.serve(routes).provide(Server.defaultWithPort(8088))
-} yield ZExitCode.success
-
-----------------------------
-
-{code}examples/zio-http/src/main/scala/ZioHttpExample.scala[See full example]
-
-=== Effects
-
-In addition to standard Scala Futures, Spoonbill can work with popular effects libraries: ZIO, Cats Effect, and Monix. To use them, add the dependency and set `F` type parameter of` Context` and `SpoonbillServiceConfig` to demanded effect type.
-
-==== ZIO
-
-Add dependency for ZIO interop.
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-zio" % "{version}"
-------------------------------
-
-Or ZIO 2
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-zio2" % "{version}"
-------------------------------
-
-Initialize your app with ZIO.
-
-[source,scala]
-------------------------------
-import spoonbill.zio._
-
-implicit val runtime = new DefaultRuntime {}
-implicit val zioTaskEffectInstance = taskEffectInstance(runtime)
-val ctx = Context[zio.Task, MyState, Any]
-val config = SpoonbillServiceConfig[zio.Task, MyState, Any](...)
-------------------------------
-
-Spoonbill uses `Throwable` inside itself. That means if you want to work with your own, you should provide functions to convert `Throwable` to [[E]] and vice versa.
-
-{code}examples/zio/src/main/scala/ZioExample.scala[See full example]
-
-==== Monix
-
-Add Monix interop dependency.
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-monix" % "{version}"
-------------------------------
-
-Initialise your app with Monix. Ensure you have implicit `monix.execution.Scheduler` in the scope.
-
-[source,scala]
-------------------------------
-import spoonbill.monix._
-
-val ctx = Context[monix.eval.Task, MyState, Any]
-val config = SpoonbillServiceConfig[monix.eval.Task, MyState, Any](...)
-------------------------------
-
-{code}examples/monix/src/main/scala/MonixExample.scala[See full example]
-
-==== Cats Effect
-
-Add Cats dependency. If you use Cats Effect 2
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-ce2" % "{version}"
-------------------------------
-
-Or is you use Cats Effect 3
-
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-ce3" % "{version}"
-------------------------------
-
-Initialise your app with IO.
-
-[source,scala]
-------------------------------
-import spoonbill.cats._
-
-val ctx = Context[IO, MyState, Any]
-val config = SpoonbillServiceConfig[IO, MyState, Any](...)
-------------------------------
-
-{code}examples/cats/src/main/scala/CatsIOExample.scala[See full example]
-
-=== Streams
-
-Under the hood Spoonbill uses it's own simple pull based streams which can work with standard Futures. In the most cases you will not meet them, but sometimes you can.  Spoonbill streams is not suitable to be used in applications, so we offer converters for most popular stream libraries.
-
-==== Reactive Streams
-
-https://www.reactive-streams.org[Reactive Streams]  is a part of <<Akka HTTP>> server integration.
-
-Conversion from Spoonbill to Publisher.
-
-[source,scala]
-------------------------------
-import spoonbill.akka.instances._
-
-val publisher = mySpoonbillStream.asPublisher
-------------------------------
-
-Subscribe to Publisher
-
-[source,scala]
-------------------------------
-import spoonbill.akka.util.SpoonbillStreamSubscriber
-
-val subscriber = new SpoonbillStreamSubscriber[F, T]()
-publisher.subscribe(result)
-------------------------------
-
-==== Akka Streams
-
-Akka streams is a part of <<Akka HTTP>> server integration.
-
-
-Conversion from Akka Stream to Spoonbill.
-
-[source,scala]
-------------------------------
-import spoonbill.akka.instances._
-
-val akkaSource = spoonbillStream.asAkkaSource
-------------------------------
-
-Conversion from Akka Stream to Spoonbill.
-
-[source,scala]
-------------------------------
-import spoonbill.akka.instances._
-
-val (stream, spoonbillSink) = Sink.spoonbillStream[F, String].preMaterialize()
-
-myFlow.to(spoonbillSink)
-------------------------------
-
-==== ZIO
-
-To use it, add a dependency:
-[source,scala,subs="attributes"]
-------------------------------
-libraryDependencies += "com.natural-transformation" %% "spoonbill-zio-streams" % "{version}"
-------------------------------
-
-Conversion from Spoonbill to ZIO:
-
-[source,scala]
-------------------------------
-val io = SpoonbillStream(values: _*)
-  .mat[Task]()
-  .flatMap { spoonbillStream: SpoonbillStream[Task, Int] =>
-    spoonbillStream
-      .toZStream
-      .run(ZSink.foldLeft(List.empty[Int]){ case (acc, v) => acc :+ v})
-  }
-------------------------------
-
-Conversion from ZIO to Spoonbill:
-[source,scala]
-------------------------------
-val values = Vector(1, 2, 3, 4, 5)
-val io = ZStream.fromIterable(values)
-  .toSpoonbill()
-  .flatMap { spoonbillStream =>
-    spoonbillStream
-      .fold(Vector.empty[Int])((acc, value) => acc :+ value)
-      .map(result => result shouldEqual values)
-  }
-------------------------------
-
-==== Fs2
-
-Conversion from Spoonbill to Fs2:
-
-To use it, add a dependency.
-[source,scala,subs="attributes"]
-------------------------------
-// For Fs2-2.* and Cats Effect 2:
-libraryDependencies += "com.natural-transformation" %% "spoonbill-fs2-ce2" % "{version}"
-// For Fs2-3.* and Cats Effect 3:
-libraryDependencies += "com.natural-transformation" %% "spoonbill-fs2-ce3" % "{version}"
-------------------------------
-
-Conversion from Spoonbill to Fs2.
-
-[source,scala]
-------------------------------
-val io = SpoonbillStream(values: _*)
-  .mat[Task]()
-  .toFs2
-------------------------------
-
-Conversion from Fs2 to Spoonbill.
-
-[source,scala]
-------------------------------
-val values = Vector(1, 2, 3, 4, 5)
-val io = fs2.Stream.emits(values)
-  .toSpoonbill
-------------------------------
-
-== Troubleshooting
-
-=== Debug mode
-
-You view Spoonbill's client-server exchange. Enter in developer console of your browser and execute this.
-
-[source,javascript]
-------------------------------
-Spoonbill.setProtocolDebugEnabled(true)
-------------------------------
-
-Now you can see something like this.
-
-------------------------------
--> [0,0 ]
--> [2,"click",false ]
-<- [0,"0:1_3_1_1:click"]
--> [6,"/tab2" ]
--> [4,3,"1_3_1_1",0,"class","checkbox checkbox__checked",false,0,"1_3_1","1_3_1_2",0,"strike",1,"1_3_1_2","1_3_1_2_1","This is TODO #0" ]
--> [0,1 ]
-------------------------------
-
-Message starting with `->` is commands from server. Message started with `<-` is callback and client side events.
-First number is always an procedure or callback code. You can protocol description {code}modules/spoonbill/src/main/protocol.md[here].
-
-=== Reconnections under Kubernetes Ingress
-
-When using Spoonbill under Ingress you may face a problem with frequent recconections of websocket channel between browser and server.
-
-For Google Cloud hosting you can try the following:
-
-1. There is https://cloud.google.com/kubernetes-engine/docs/concepts/ingress#support_for_websocket[section] in the Ingress documentaion concerning websockets. It suggests to create a https://cloud.google.com/kubernetes-engine/docs/how-to/configure-backend-service[`BackendConfig`].
-2. You should set https://cloud.google.com/kubernetes-engine/docs/how-to/configure-backend-service#creating_a_backendconfig[`connectionDraining.drainingTimeoutSec`] to sufficiently large value (e.g. `"3600"`), `timeoutSec` doesn't solve the problem.
-
-This solution was tested only for Google Cloud, but it might work for other systems. Don't hesitate to open a PR and describe if this instruction works for other cases.
+----
+Spoonbill.setProtocolDebugEnabled(true);
+----
+
+Use this in a controlled development session and keep captured data appropriately
+restricted. Consult the release's
+{code}modules/spoonbill/src/main/protocol.md[protocol description] and
+link:client-protocol-generation.md[generated protocol constants]; application code
+should use the public bindings rather than hand-building protocol frames.
