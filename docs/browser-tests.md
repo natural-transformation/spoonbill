@@ -13,6 +13,19 @@ nix develop --no-write-lock-file --command node --test \
   misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs misc/browser-protocol-tests.mjs
 ```
 
+For the broader client and reference correctness checks run by
+[Scala CI](../.github/workflows/scala.yml), use:
+
+```bash
+nix develop --no-write-lock-file --command node --test \
+  misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+  misc/browser-protocol-tests.mjs \
+  misc/browser-auth-schema-tests.mjs \
+  misc/replacement-bootstrap-tests.mjs \
+  misc/core-purity-tests.mjs \
+  misc/browser-auth-baseline/*.test.mjs
+```
+
 The separate `browser` shell provides Node, GNU timeout, the Playwright driver,
 and its matching Chromium/WebKit bundle from the same locked nixpkgs revision:
 
@@ -76,10 +89,13 @@ The browser receives a real disclosure and sends its normal acknowledgement.
 An ordered, bounded output gate can withhold patch delivery while separate
 loopback control requests observe publication and completed event counters.
 The test submits the still-visible confirm form through native UI interaction;
-it does not replay a captured action frame. The browser process has a 250-second
-bound and individual control requests have a 10-second bound. Cleanup starts
-adapter-owned transport shutdown before releasing response resources, closes
-the guard, and releases held output and owned processes, including on failure.
+it does not replay a captured action frame. The 250-second limit covers the whole
+Node runner across both browsers and all eight cases. Individual control requests,
+page actions and navigation have 10-second limits; each browser launch has a
+15-second limit. Before starting the Node runner, the script allows 45 seconds
+for the Scala server to become ready. Cleanup starts adapter-owned transport
+shutdown before releasing response resources, closes the guard, and releases
+held output and owned processes, including on failure.
 
 ## ZIO HTTP transport
 

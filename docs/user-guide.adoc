@@ -466,10 +466,16 @@ Applications implementing `SessionGuard` directly must implement
 * `Retained()` adopts an existing local baseline when no snapshot restoration is configured.
 * `Reconstructed(() => acknowledge())` loads the validated application route and invokes the callback after the baseline is authorized and adopted.
 
+With a snapshot session, either case starts from freshly loaded, routed and
+authorized application state, then restores the permitted presentation projection
+and authorizes the restored state. `Retained()` does not preserve an old local
+baseline in this case.
+
 The reconstruction acknowledgement is a thunk. Construct the `F[Unit]` inside
 it so an eager Future cannot start the acknowledgement when the guard is built.
 A reconstructed guard must discard unfinished presentation on close until its
-acknowledgement completed. Snapshot restoration remains a separate path.
+acknowledgement completes. Its callback runs after baseline adoption, including
+snapshot restoration when configured.
 
 This contract is already part of version 6 and remains required in version 7.
 See {code}modules/spoonbill/src/main/scala/korolev/server/SessionAccessControl.scala[the guard API]
@@ -483,15 +489,17 @@ attributes, view state or snapshots. A separate `SensitiveAccess[F, S]` policy
 must authorize purpose and audience; an authenticated session does not grant
 sensitive presentation automatically.
 
-Inside an admitted typed action, use `context.presentSensitive` with a validated
-`SensitivePayload`, region, purpose and finite lifetime. The context creates a
-one-shot disclosure bound to that invocation. Do not construct, reuse or transfer
-its internal ownership yourself.
+Inside an admitted typed handler, its second argument is the action context:
+`actionContext: PublicActionContext`, or an `AuthenticatedActionContext[P]` for
+an authenticated action. Use its `presentSensitive` method with a validated
+`SensitivePayload`, region, purpose and finite lifetime. It returns
+`UiOutcome[Page]` and creates a one-shot disclosure bound to the invocation.
+Do not construct, reuse or transfer its internal ownership yourself.
 
-.Contextual fragment inside an authenticated action; application types and policy are supplied by the host
+.Contextual fragment using the typed handler's second argument; application types and policy are supplied by the host
 [source,scala]
 ----
-context.presentSensitive[Page](region, purpose, payload, 30.seconds) {
+actionContext.presentSensitive[Page](region, purpose, payload, 30.seconds) {
   case DisclosureOutcome.BrowserProcessed => StateUpdate.noUpdate[Page]
   case _ => StateUpdate.Modify[Page](
     _.copy(message = "Delivery could not be confirmed.")
@@ -500,7 +508,9 @@ context.presentSensitive[Page](region, purpose, payload, 30.seconds) {
 ----
 
 The fragment's `Page`, region, purpose, payload and imports come from its enclosing
-application; it is not a standalone program. See the compiled
+application; it is not a standalone program. The rendering `Context` supplies
+the template/event DSL. Low-level `Context.Access.presentSensitive` is a separate
+API returning `F[DisclosureOutcome]`, without an update callback. See the compiled
 {code}examples/browser-auth/src/main/scala/example/browserauth/Application.scala[application]
 for complete declarations and policy wiring.
 
@@ -552,7 +562,8 @@ guards before rendering them.
 `PathAndQuery.Root / "search"` builds a path. `withParam` adds optional query
 values; `:?*` exposes query parameters, `QueryParam` and `OptionQueryParam` support
 required and optional extraction, and `*&` combines extractors. Exact matching
-operators are available when ordering and arity matter. See the compiled
+uses `:?` for the first query pair and `:&` for subsequent pairs when ordering
+and arity matter. See the compiled
 {code}examples/routing/src/main/scala/RoutingExample.scala[routing example],
 {code}examples/routing/src/main/scala/PathAndQueryRoutingExample.scala[query example]
 and {code}modules/web/src/test/scala/korolev/web/PathAndQuerySpec.scala[path tests].
@@ -585,8 +596,9 @@ It therefore belongs in explicit DOM-effect workflows, not no-update completion.
 
 === Delays and server push
 
-`delay(duration)(handler)` attaches delayed work to a rendered binding. Use it
-for presentation timers, not as durable scheduling. See
+`delay(duration)(handler)` attaches delayed work to a rendered binding. This
+helper has been deprecated since 0.18.0. Existing presentation timers can still
+use it, but it is not durable scheduling. See
 {code}examples/delay/src/main/scala/DelayExample.scala[the delay example].
 
 An `Extension` acquires session-scoped resources and receives state/message
@@ -613,6 +625,10 @@ File API names are from the server's perspective:
 |`listFiles(inputId)` / `downloadFileAsStream(handler)` |Inspect selections, then consume chosen files.
 |`uploadFile(name, stream, size, mimeType)` |Server to browser; serves a byte stream as a download.
 |===
+
+`uploadFile` takes `size: Option[Long]`: use `Some(byteLength)` when known, such
+as `Some(11L)`, or `None` otherwise. Its optional `mimeType` argument defaults to
+`application/octet-stream`.
 
 Bound file sizes, counts and processing in the application. Treat names and MIME
 types as untrusted metadata; do not use a submitted filename directly as a
@@ -762,8 +778,11 @@ link:browser-tests.md[browser test setup and additional provider gates].
 
 `StateStorage` and its serializers support framework presentation. The
 `spoonbill.state.javaSerialization.*` import in the introductory applications
-supplies the simple JVM serialization implementation; it is not a durable,
-versioned business-data format.
+supplies the Java object serialization codecs (`StateSerializer` and
+`StateDeserializer`). The default unguarded store normally keeps state values
+in memory without calling these codecs. Development mode enables file-backed
+state serialization, as described below. This codec is not a durable, versioned
+business-data format.
 
 For a custom unguarded integration, `StateStorage.fromRepository` accepts
 existence, snapshot load/create, node write/delete and repository removal
@@ -775,9 +794,14 @@ repository adapter. See
 
 === Development and render scheduling
 
-`spoonbill.dev=true` enables development storage behavior for the default state
-storage. A process restart is not a production recovery mechanism, and custom
-storage changes this behavior. If using sbt-revolver in your application, run
+For the default unguarded store, the JVM property `-Dspoonbill.dev=true` or the
+environment variable `spoonbill.dev` set to `true` enables file-backed state storage.
+With the imported Java codecs, writes use `ObjectOutputStream`, so the state and
+its reachable field values must be serializable. The typed starter's Scala 3
+`GreetingPage` case class and its `String` fields already satisfy this requirement.
+Custom storage and the guarded coordinator's installed storage have their own
+policies. A process restart is not a production recovery mechanism. If using
+sbt-revolver in your application, run
 its restart commands inside the managed environment. Keep domain durability and
 authentication in their own integrations; development presentation retention
 cannot preserve arbitrary external mutable objects or authorize old sessions.
