@@ -1,14 +1,29 @@
 # Browser client regression checks
 
 Run from the Spoonbill checkout. Its root `flake.nix` and committed `flake.lock`
-provide the environments; no host application checkout, application server, database,
-JavaScript package installation or separate browser download is needed.
+provide the environments and pinned browsers. No host application checkout,
+JavaScript package installation or separate browser download is needed. The
+source-only client fixtures use synthetic transport; the real-service sections
+below start their own Scala server with synthetic in-memory state.
 
 The fast Node suites run in the default development shell:
 
 ```bash
 nix develop --no-write-lock-file --command node --test \
-  misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs
+  misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs misc/browser-protocol-tests.mjs
+```
+
+For the broader client and reference correctness checks run by
+[Scala CI](../.github/workflows/scala.yml), use:
+
+```bash
+nix develop --no-write-lock-file --command node --test \
+  misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
+  misc/browser-protocol-tests.mjs \
+  misc/browser-auth-schema-tests.mjs \
+  misc/replacement-bootstrap-tests.mjs \
+  misc/core-purity-tests.mjs \
+  misc/browser-auth-baseline/*.test.mjs
 ```
 
 The separate `browser` shell provides Node, GNU timeout, the Playwright driver,
@@ -48,6 +63,40 @@ departure fixture also destroys its loopback sockets and closes its server.
 Interrupting the runner signals only its active test process group. It does not
 stop unrelated browsers or services.
 
+## Sensitive acknowledgement against the Scala service
+
+Spoonbill 7.0.0's explicit `NoUpdate` behavior is checked through the actual
+standalone Scala service and assembled browser client:
+
+```bash
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop . --no-write-lock-file --command \
+  bash scripts/test-sensitive-acknowledgement.sh
+```
+
+The runner compiles `SensitiveAcknowledgementBrowserFixture`, starts an owned JVM
+on a loopback port selected by the server, then enters `.#browser` itself. It
+requires no database, host account, or authentication proof. Chromium and WebKit
+each run four cases:
+
+| Completion or authority change | Expected next action |
+| --- | --- |
+| `NoUpdate` | Confirm runs once at the delivered revision, with zero new patches and the same live connection. |
+| `Modify(identity)` | A patch is published; confirm from the old delivered revision is denied. |
+| State-changing `Modify` | A patch is published; confirm from the old delivered revision is denied. |
+| Authority revocation after `NoUpdate` | Confirm is denied even without a publication. |
+
+The browser receives a real disclosure and sends its normal acknowledgement.
+An ordered, bounded output gate can withhold patch delivery while separate
+loopback control requests observe publication and completed event counters.
+The test submits the still-visible confirm form through native UI interaction;
+it does not replay a captured action frame. The 250-second limit covers the whole
+Node runner across both browsers and all eight cases. Individual control requests,
+page actions and navigation have 10-second limits; each browser launch has a
+15-second limit. Before starting the Node runner, the script allows 45 seconds
+for the Scala server to become ready. Cleanup starts adapter-owned transport
+shutdown before releasing response resources, closes the guard, and releases
+held output and owned processes, including on failure.
+
 ## ZIO HTTP transport
 
 `scripts/test-zio-http-browser-auth.sh` serves a synthetic in-memory
@@ -74,9 +123,11 @@ JDBC exclusive provider, including restart and retained presentation.
 Browsers may open new connections, so the strict same-connection proof is the
 raw-socket `spoonbill.zio.http.ZioHttpKeepAliveSpec` suite.
 
-These fixtures use synthetic data. Most requests are fulfilled in-process; the
-departure fixture opens an ephemeral loopback HTTP/WebSocket listener. Its peer
-models revalidation and does not establish host application authorization.
+All fixtures described here use synthetic data. In the source-only native
+client suites, transport replies are supplied by the fixture; the departure
+fixture also opens an ephemeral loopback HTTP/WebSocket listener. Those peers
+model revalidation and do not establish host application authorization. The
+acknowledgement and ZIO HTTP suites instead execute actual Scala service paths.
 Framework Scala tests and host application integration checks remain separate
-gates. Browser CI verifies the library fixtures; host applications remain
-responsible for validating their authorization and authentication behavior.
+gates. Host applications remain responsible for validating their own
+authorization and authentication behavior.

@@ -1,8 +1,14 @@
 # Migrating to Spoonbill 7: explicit state updates
 
-The planned major release after 6.0.0 replaces identity-based “unchanged” outcomes with an explicit choice between no update and a state modification. This is a source and binary compatibility break; applications must migrate and recompile.
+Spoonbill [7.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v7.0.0), released on 2026-10-18, replaces identity-based “unchanged” outcomes with an explicit choice between no update and a state modification. This is a source and binary compatibility break; applications must migrate and recompile.
 
-Release publication continues to use the existing `RELEASE_VERSION` workflow. The historical `BaseVersion` is unchanged; this guide does not announce a published 7.0.0 artifact.
+Update every Spoonbill module to `7.0.0` together. The Scala 3 artifacts are published on Maven Central:
+
+```scala
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "7.0.0"
+```
+
+The [user guide](user-guide.adoc) describes the current API and includes complete starter applications. When upgrading from before 6.0.0, also implement the [custom session-guard initialization contract](clustered-browser-authentication.md#custom-session-guard-initialization); the standard `BrowserAuthentication` coordinator already supplies it. Upgrading from 6.0.0 to 7.0.0 adds no database schema migration.
 
 ## Constructors and callback types
 

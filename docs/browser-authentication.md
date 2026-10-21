@@ -15,8 +15,9 @@ not deployment defaults.
 For multiple live web nodes and rolling handoff, use the explicit
 [shared PostgreSQL mode and presentation projection](clustered-browser-authentication.md).
 Explicit exclusive mode retains its single-owner deployment contract.
-The [snapshot migration and testing guide](migration-testing-5.0.0-snapshot.md)
-covers trying it in an existing application.
+Use matching **7.0.0** versions for all Spoonbill modules and recompile application
+integrations. Start with this guide and the [7.0 migration guide](migration-v7.md);
+the earlier snapshot guides remain historical testing records.
 
 ## Install the coordinator
 
@@ -55,7 +56,10 @@ decides which ordinary state may be rendered for the current optional principal.
 `connected` receives optional continuation metadata for an interrupted challenge
 or preparation. A display field such as `page.account` is never authentication
 evidence. Sensitive regions require the separate `SensitiveAccess` policy;
-authentication does not enable them automatically.
+authentication does not enable them automatically. Since 6.0.0, custom
+`SessionGuard` implementations must also select their
+[application-state initialization contract](clustered-browser-authentication.md#custom-session-guard-initialization).
+The coordinator supplies that contract for its own guards.
 
 Use exact HTTPS origins and secure cookies for deployments. The configuration
 permits insecure HTTP only for explicit loopback origins. Scope must match the
@@ -82,10 +86,45 @@ Existing departure and sensitive-region cleanup still applies.
 
 ## Account actions and preparation
 
-For the planned next major release, see the [explicit state-update migration](migration-v7.md)
-for `UiOutcome.modify`, `UiOutcome.noUpdate`, and the narrower `ActionForms.onSubmit`
-rejection callback. Sensitive completion can now request no transition without
-publishing a new view revision.
+### Typed outcomes and rejection
+
+Since 7.0.0, ordinary actions return `F[UiOutcome[S]]` using `UiOutcome.modify`
+for a pure state transformation or `UiOutcome.noUpdate` when no state work is
+needed. Both `ActionForms.onSubmit` overloads require a rejection callback of type
+`ActionRejection => StateUpdate[S]`:
+
+```scala
+import spoonbill.ActionForms
+import spoonbill.action.*
+import spoonbill.effect.Effect
+
+case class ActionPage(message: String)
+
+def saved[F[_]: Effect]: F[UiOutcome[ActionPage]] =
+  Effect[F].pure(UiOutcome.modify[ActionPage](_.copy(message = "Saved.")))
+
+def noChange[F[_]: Effect]: F[UiOutcome[ActionPage]] =
+  Effect[F].pure(UiOutcome.noUpdate[ActionPage])
+
+val onRejected: ActionRejection => StateUpdate[ActionPage] =
+  _ => StateUpdate.Modify(_.copy(message = "The request was rejected."))
+
+def submit[F[_]: Effect](action: PublicAction[F, ActionPage, Unit]) =
+  ActionForms.onSubmit[F, ActionPage, Unit, Unit](action, onRejected)
+```
+
+To ignore rejection without a render, return `StateUpdate.noUpdate[ActionPage]`.
+`StateUpdate.Modify[ActionPage](identity)` intentionally requests a transition and
+render even when state is equal. The reducer is applied later on the existing
+transition queue; composing or zooming updates does not evaluate it. The
+[7.0 migration guide](migration-v7.md) lists removed constructors and helpers.
+
+Completion and rejection callbacks execute through `Effect.delay`; a thrown
+callback exception fails the effect without requesting a transition. In ZIO,
+ordinary callback exceptions are typed failures rather than defects. Reducer
+failures retain their existing queued reporting behavior.
+
+### Sign-in ceremony
 
 The shared example's [Application](../examples/browser-auth/src/main/scala/example/browserauth/Application.scala)
 shows the complete typed forms and outcomes:
@@ -140,8 +179,8 @@ Use the explicit replacement API for factor enrollment, factor replacement,
 disabling, or recovery-code regeneration that revokes the current host session.
 Ordinary `prepare` does not acquire that permission from its purpose string.
 Calls to `browser.begin`, `browser.resume`, or `browser.recover` from an
-`AuthenticatedActionContext` are deprecated in 5.1.0 to direct those flows to
-`beginReplacement`, `resumeReplacement`, and the checked replacement recovery
+`AuthenticatedActionContext` have been deprecated since 5.1.0 to direct those
+flows to `beginReplacement`, `resumeReplacement`, and the checked replacement recovery
 outcome. The ordinary methods and `provider.prepare` remain supported for
 anonymous sign-in; deprecating them globally would warn valid sign-in callers.
 An existing authenticated flow must migrate its ceremony and transaction
@@ -224,6 +263,36 @@ expiry again before decryption. Decryption transfers directly into
 `context.presentSensitive` and the existing invocation-owned disclosure runtime.
 Snapshots and ordinary presentation never contain the recovery codes.
 
+The completion callback returns `StateUpdate[S]`, so it can update ordinary
+presentation or explicitly request no update. For an action using `ActionPage`
+from the typed-outcome example above:
+
+```scala
+import scala.concurrent.duration.*
+import spoonbill.sensitive.*
+
+def disclose(
+  context: PublicActionContext,
+  region: RegionId,
+  purpose: Purpose,
+  payload: SensitivePayload
+): UiOutcome[ActionPage] =
+  context.presentSensitive[ActionPage](region, purpose, payload, 30.seconds) {
+    case DisclosureOutcome.BrowserProcessed => StateUpdate.noUpdate[ActionPage]
+    case _ => StateUpdate.Modify(_.copy(message = "Delivery could not be confirmed."))
+  }
+```
+
+Call this from the admitted typed handler; an authenticated context also supports
+this method. Render the matching `SensitiveRegion` and configure the separate
+sensitive-access policy. `BrowserProcessed` is a browser acknowledgement, not
+proof of human receipt. Returning `NoUpdate` avoids an acknowledgement-triggered
+transition and view publication while preserving acknowledgement and resource
+cleanup. A genuine later publication still makes an earlier browser revision
+stale; no-update outcomes do not bypass authority or ownership checks. The
+[recovery-result example](../examples/browser-auth/src/main/scala/example/browserauth/RecoveryResults.scala)
+chooses `Modify` instead because it displays a completion message.
+
 This guarantees at-most-once **consumption**, not human receipt. Lost output or
 unknown consumption commit can leave the codes unavailable. Regenerate through
 a new authorized ceremony instead of replaying disclosure. The memory example's
@@ -231,16 +300,17 @@ encryption key and results are process-local. The JDBC example keeps encrypted
 results in host tables and uses deployment-owned vault keys. Applications must
 bound and expire their own results; the reference `Accounts.maintenance` does so.
 
-For 5.1.0, rebuild consumers against the updated APIs; binary compatibility
-with already-compiled clients is not promised. Refresh
-browser pages onto the updated client bundle before enabling replacement. The
-new fixed recovery procedure is generated with that bundle; there is no claim
-that an older live tab understands it and no wire-version negotiation. Existing
-ordinary procedure numbers are unchanged. The
-[implementation and validation record](authenticated-session-replacement-plan.md)
-tracks the feature gates and the
-[performance protocol](authenticated-session-replacement-performance.md) separates
-measured evidence from limits.
+For current deployments, use **7.0.0** for every Spoonbill module and rebuild
+consumers; the 7.0 outcome API is not source or binary compatible with 6.x.
+Deploy compatible serving binaries and refresh browser pages onto their client
+bundle. When upgrading an installation that predates authenticated replacement,
+follow the [V5 schema and deployment upgrade](browser-auth-v4-deployment.md#upgrade-an-existing-browser-authentication-deployment)
+before enabling that feature. The fixed recovery procedure has been part of the
+client bundle since 5.1.0; older live tabs need not understand it, and there is no
+wire-version negotiation. Existing ordinary procedure numbers remain unchanged.
+The [historical replacement implementation and validation record](authenticated-session-replacement-plan.md)
+and [performance protocol](authenticated-session-replacement-performance.md)
+retain their original evidence and limits.
 
 ## Providers and transaction ownership
 

@@ -23,12 +23,13 @@ Client and server are combined into a single app without any REST protocol in th
 
 ```scala
 // build.sbt
-libraryDependencies += "com.natural-transformation" %% "spoonbill" % "<version>"
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "7.0.0"
 ```
 
-See the [examples](examples/) directory for working projects.
-The current development line is Spoonbill 5 (`5.0.0-SNAPSHOT` in this checkout).
-Keep every Spoonbill module on the same version. See the
+The latest release is [Spoonbill 7.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v7.0.0),
+published for Scala 3. Keep every Spoonbill module on the same version and
+recompile when upgrading from an earlier major release. Start with the
+[user guide](docs/user-guide.adoc) and [working examples](examples/). See the
 [browser authentication example](examples/browser-auth/) for password/factor
 login, recovery, protected actions and logout without application JavaScript.
 Its shared UI runs natively in cats-effect IO or Future; the
@@ -48,7 +49,7 @@ the managed IO application.
 * [User guide](docs/user-guide.adoc)
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
-* [Migrating to 7.0: explicit state updates (planned)](docs/migration-v7.md)
+* [Migrating to 7.0: explicit state updates](docs/migration-v7.md)
 * [Migrating to 5.0](docs/migration-v5.md)
 * [Migrating to 4.0](docs/migration-v4.md)
 * [Migrating to 3.0](docs/migration-3.0.md)

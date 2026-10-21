@@ -1,7 +1,8 @@
-# PostgreSQL deployment and v4 cutover
+# PostgreSQL deployment and upgrades
 
-This procedure applies to the v4 `JdbcBrowserPersistence` coordinator integration.
-It is an explicit deployment procedure, never a request-time migration. The
+This procedure covers the `JdbcBrowserPersistence` coordinator in Spoonbill 7.0.0,
+including the original v4 cutover and forward V5 schema migration. It is an
+explicit deployment procedure, never a request-time migration. The
 example's `--initialize`, synthetic users, public vault key and loopback database
 are development fixtures and must not be used for production users.
 
@@ -9,7 +10,7 @@ are development fixtures and must not be used for production users.
 
 | Component | Supported boundary |
 | --- | --- |
-| Spoonbill modules | Matching versions throughout; use 5.1.0 for replacement deployments |
+| Spoonbill modules | 7.0.0 throughout; recompile against the [v7 API](migration-v7.md) |
 | Scala | 3.3.8 |
 | Native Scala 3 Pekko / Pekko HTTP | 1.7.0 / 1.4.0, including testkits on the same `_3` variant |
 | JDBC dialect / validation engine | PostgreSQL 14; PostgreSQL-specific advisory locks, `ON CONFLICT`, and `RETURNING` are required |
@@ -22,7 +23,7 @@ before being declared supported. Binary exclusions that swap `_2.13` and `_3`
 are not a migration strategy.
 
 **Exclusive mode requires one live owning provider/coordinator instance per database authority scope
-(`realm`, `cookieNamespace`).** In v5, `ownership = BrowserOwnership.ExclusiveScope`
+(`realm`, `cookieNamespace`).** Since v5, `ownership = BrowserOwnership.ExclusiveScope`
 asserts this operational fact; it does not elect a leader or fence another
 process. Drain and stop the previous owner before starting its replacement.
 The advisory lock serializes framework transactions but does not make multiple
@@ -42,7 +43,13 @@ and policy-version contract. No application writer may reset slot generations,
 view epochs, proof use, ceremony outcomes, or clock maxima. Independent services
 that cannot honor this authority domain require a different conforming provider,
 not just a configuration setting. The released v4 constructor used
-`exclusiveAuthorityWriters = true`; see the [v5 source migration](migration-testing-5.0.0-snapshot.md).
+`exclusiveAuthorityWriters = true`; see the [v5 source migration](migration-v5.md).
+
+Releases 6.0.0 and 7.0.0 add no schema migration beyond V4 and V5. Custom
+`SessionGuard` implementations must adopt the [6.0 initialization contract](clustered-browser-authentication.md#custom-session-guard-initialization),
+and typed actions must adopt the [7.0 update outcomes](migration-v7.md). Keep
+serving binaries and browser clients compatible during the upgrade; the
+historical V4/V5 migrations below retain their original bytes and meaning.
 
 ## Explicit schema artifact
 
