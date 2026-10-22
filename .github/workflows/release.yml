@@ -6,52 +6,74 @@ on:
       version:
         description: "Release version (for example, 5.0.0)"
         required: true
-      branch:
-        description: "The branch to release from"
-        required: true
-        default: "main"
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
-  scala-3:
+  resolve:
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Check out repository for workflow_dispatch
-        if: github.event_name == 'workflow_dispatch'
+      - name: Check out trusted release resolver
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.branch }}
+          ref: main
+          persist-credentials: false
 
-      - name: Check out repository for release
-        if: github.event_name == 'release'
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
-
-      - name: Determine release version
-        id: set_version
+      - name: Resolve an immutable commit from reviewed main history
+        id: release
         env:
-          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+          REQUESTED_VERSION: ${{ inputs.version }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: bash scripts/resolve-release.sh
+
+  scala-3:
+    needs: resolve
+    runs-on: ubuntu-latest
+    # This environment MUST have required reviewers and environment-only secrets.
+    # See docs/pr-17-review-resolution.md before enabling releases.
+    environment: release
+    env:
+      RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - name: Require the configured release protection boundary
+        env:
+          RELEASE_PROTECTION_READY: ${{ vars.RELEASE_PROTECTION_READY }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            version="$REQUESTED_VERSION"
-          else
-            version="${RELEASE_TAG#v}"
-          fi
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Expected MAJOR.MINOR.PATCH with an optional prerelease suffix" >&2
+          if [[ "$RELEASE_PROTECTION_READY" != true ]]; then
+            echo 'Configure release environment protection and migrate repository secrets first.' >&2
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the approved immutable commit
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
 
       - name: Install Nix (with flake support)
         uses: cachix/install-nix-action@v20
         with:
           extra_nix_config: sandbox = true
+
+      - name: Verify bounded runtime artifacts before accessing signing credentials
+        run: |
+          env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+            sbt --batch --supershell=false -Dsbt.server.autostart=false \
+            'zioHttpRuntime/packageBin' 'zioHttpRuntime/packageSrc' 'zioHttpRuntime/makePom' \
+            'export zioHttp/Runtime/fullClasspath'
+          nix develop --no-write-lock-file --command node misc/check-zio-http-runtime.mjs \
+            --jar "interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}.jar" \
+            --pom "interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}.pom" \
+            --sources "interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}-sources.jar" \
+            --classpath-file interop/zio-http/target/streams/runtime/fullClasspath/_global/streams/export
 
       - name: Import GPG key
         id: import_gpg
@@ -62,21 +84,19 @@ jobs:
 
       - name: Publish Signed Artifacts
         env:
-          RELEASE_VERSION: ${{ steps.set_version.outputs.version }}
           # Release credentials (Sonatype Central / OSSRH Staging API Service).
           SONATYPE_CENTRAL_USERNAME: ${{ secrets.SONATYPE_CENTRAL_USERNAME }}
           SONATYPE_CENTRAL_PASSWORD: ${{ secrets.SONATYPE_CENTRAL_PASSWORD }}
           SONATYPE_STAGING_USERNAME: ${{ secrets.SONATYPE_STAGING_USERNAME }}
           SONATYPE_STAGING_PASSWORD: ${{ secrets.SONATYPE_STAGING_PASSWORD }}
         # publishes for Scala 3.
-        run: nix develop --no-write-lock-file --command sbt --batch --supershell=false publishSigned
+        run: env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command sbt --batch --supershell=false -Dsbt.server.autostart=false publishSigned
 
       - name: Sonatype Central Release
         env:
-          RELEASE_VERSION: ${{ steps.set_version.outputs.version }}
           # Release credentials (Sonatype Central / OSSRH Staging API Service).
           SONATYPE_CENTRAL_USERNAME: ${{ secrets.SONATYPE_CENTRAL_USERNAME }}
           SONATYPE_CENTRAL_PASSWORD: ${{ secrets.SONATYPE_CENTRAL_PASSWORD }}
           SONATYPE_STAGING_USERNAME: ${{ secrets.SONATYPE_STAGING_USERNAME }}
           SONATYPE_STAGING_PASSWORD: ${{ secrets.SONATYPE_STAGING_PASSWORD }}
-        run: nix develop --no-write-lock-file --command sbt --batch --supershell=false sonatypeCentralRelease
+        run: env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command sbt --batch --supershell=false -Dsbt.server.autostart=false sonatypeCentralRelease

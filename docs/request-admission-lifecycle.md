@@ -54,6 +54,7 @@ login-attempt rate limiter.
 | `idleViewSeconds` | 3,600 | Renewable owner lease and retention window for an unowned/bootstrap view |
 | `historySeconds` | 120 | Additional grace after ceremony/session expiry before eligible history is removed |
 | `maxSessionSeconds` | 86,400 | Maximum browser-session lifetime accepted from host preparation |
+| `workIntervalSeconds` | 30 | Shared JDBC cadence for aggregate capacity samples and the upper interval for full retention sweeps |
 
 Each retention window must be between one second and one year. Host preparation
 that requests a browser session beyond the configured maximum fails without
@@ -95,8 +96,8 @@ Operators must not reset the permanent metadata to recover capacity.
 
 ## Eligibility, leases, and concurrent writers
 
-Admission paths perform reclamation before allocating bindings, views, or
-ceremonies. Explicit maintenance also reclaims eligible records:
+Admission paths check whether reclamation is due before allocating bindings,
+views, or ceremonies. Explicit maintenance also reclaims eligible records:
 
 - Expired delivery material is disposable. Sessions and their completion records
   remain through session expiry and the history grace, including dependencies
@@ -172,6 +173,34 @@ and await coordinator closure. Tiny test windows require correspondingly frequen
 ticks; a connection whose owner lease expires must reload or reconnect through
 fresh admission rather than revive its old guard.
 
+Full JDBC retention sweeps share a durable cadence across all nodes in the same
+realm/namespace. The normal interval is the minimum of `workIntervalSeconds` and
+the configured idle-binding, idle-view, and history windows. A refused admission
+may request one pressure sweep and retry its exact admission checks once; pressure
+sweeps are limited to one attempt per second per scope. A full quota can therefore
+briefly refuse admission until a scheduled or pressure sweep runs. Existing
+authority is checked freshly and remains subject to its actual deadline.
+
+Aggregate JDBC capacity sampling runs at most once per `workIntervalSeconds`
+across the scope. Unsampled requests do not acquire the realm advisory lock for
+monitoring and do not perform grouped capacity scans. `usage()` remains an
+explicit, fresh administrative query. No authorization result is cached, and
+fresh admission counts continue enforcing every quota even between samples.
+
+`spoonbill_browser_work` holds the shared sweep/sample reservations. They commit
+independently through the reserved clock data source, so a denied admission or
+rolled-back sweep cannot reset its backoff and repeatedly trigger a full scan.
+A reservation records an attempted job, not successful cleanup. Failures may
+delay another normal attempt until the interval, or a pressure retry until one
+second; they never certify settlement or grant authority. The durable clock
+prevents backward samples from reopening the cadence, including after restart.
+Clock and cadence connections are used sequentially, preserving the existing
+domain-transaction plus one reserved-connection pool requirement. The reserved
+clock data source's role also needs SELECT/INSERT/UPDATE on
+`spoonbill_browser_work`; it does not need domain-row mutation privileges for
+cadence reservations. Retention-aware
+nodes sharing a scope should use consistent limits and cadence settings.
+
 Both built-in providers expose administrative `usage()` and implement the common
 `capacity` observation SPI. Export counts of retained and anonymous bindings,
 retained/active views, retained ceremonies, delivery material, and per-binding
@@ -183,8 +212,9 @@ includes the resource, used count, limit, and `exhausted` flag.
 `BrowserAuthentication` reports threshold transitions using the configured
 `Reporter.warning` and its optional `onCapacityWarning: BrowserCapacityWarning => Unit`
 callback. The default callback is a no-op; connect it to the application's alert
-system. The coordinator observes successful admission, ceremony admission, and
-maintenance. It emits a warning on crossing the threshold, on transition to
+system. Successful admission, ceremony admission, and maintenance request an
+observation; JDBC emits new observations only when its shared sample is due.
+The sampled coordinator emits a warning on crossing the threshold, on transition to
 exhaustion, and on falling from exhaustion into the warning band. Unchanged
 warning states are not emitted repeatedly. Falling below the threshold rearms a
 future warning; it does not emit a separate recovery callback. Callback/reporting
@@ -192,9 +222,12 @@ failure must not grant authority or disable the provider's limits.
 The callback runs on the coordinator's serialized path: keep it bounded,
 nonblocking, and free of coordinator reentry. Do not wait for another coordinator
 operation from the callback. If alert delivery needs asynchronous work, hand it
-to an application-owned bounded queue. Providers returning `Right(None)` from
-the common `capacity` SPI have no automatic usage observation; implement that SPI
-before expecting these coordinator alerts from a custom provider.
+to an application-owned bounded queue. `Right(None)` from the common `capacity`
+SPI means no new sample and preserves warning state: JDBC uses it between shared
+samples, while a provider without capacity support always returns it. Implement
+that SPI before expecting these alerts from a custom provider. JDBC warnings can
+lag admission by the sampling interval and may be emitted by another serving
+node; combine observations at the application's alert destination.
 
 At a warning or capacity refusal:
 
@@ -219,7 +252,8 @@ application remains responsible for its task scheduling and deployment capacity.
 Apply the forward
 [V6 browser retention migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V6__browser_retention.sql)
 after V4 and V5. V4/V5 migration bytes remain immutable. V6 adds the permanent
-`spoonbill_browser_retention` metadata table and slot/view activity timestamps.
+`spoonbill_browser_retention` metadata table, a separate shared work-cadence table,
+and slot/view activity timestamps.
 Existing activity timestamps initially use the database time of migration.
 Eligibility still follows the durable nondecreasing authority clock; a previously
 advanced clock can make those rows eligible sooner than a new wall-clock idle

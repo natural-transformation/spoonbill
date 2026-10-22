@@ -124,7 +124,11 @@ trait BrowserPersistence[F[_], P] {
   def capabilities: BrowserProviderCapabilities
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
-  /** Aggregate monitoring only; third-party providers may not expose usage. */
+  /**
+   * Aggregate monitoring only. None means no new sample (unsupported or
+   * deliberately throttled); consumers preserve their previous warning state.
+   * This observation is never an authorization or admission decision.
+   */
   def capacity(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, Option[BrowserPersistenceUsage]]] =
     F.pure(Right(None))
 

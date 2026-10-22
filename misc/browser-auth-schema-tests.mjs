@@ -58,11 +58,11 @@ test('schema export updates stale V6 without rewriting historical V4 or V5 bytes
   assert.deepEqual(readFileSync(upgradeFile), originalUpgrade);
   assert.deepEqual(readFileSync(retentionFile), expectedRetention);
   const metadata = JSON.parse(result.stdout);
-  assert.equal(metadata.tables, 10);
+  assert.equal(metadata.tables, 11);
   assert.equal(metadata.upgradeStatements, 3);
   assert.equal(metadata.upgradeTables, 1);
-  assert.equal(metadata.retentionStatements, 3);
-  assert.equal(metadata.retentionTables, 1);
+  assert.equal(metadata.retentionStatements, 4);
+  assert.equal(metadata.retentionTables, 2);
   const checked = run(directory, '--check');
   assert.equal(checked.status, 0, checked.stderr);
 }));
@@ -110,6 +110,7 @@ test('schema export rejects changed historical V5 bytes in both modes without re
 test('retention migration defines permanent fences and deployment restrictions', () => {
   const sql = readFileSync(path.join(repository, retention), 'utf8');
   assert.match(sql, /CREATE TABLE IF NOT EXISTS spoonbill_browser_retention/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS spoonbill_browser_work/);
   for (const column of ['id_prefix', 'credential_key', 'id_counter', 'binding_floor', 'view_floor']) assert.ok(sql.includes(column));
   assert.match(sql, /ALTER TABLE spoonbill_browser_slot ADD COLUMN IF NOT EXISTS last_seen/);
   assert.match(sql, /ALTER TABLE spoonbill_browser_view ADD COLUMN IF NOT EXISTS last_seen/);

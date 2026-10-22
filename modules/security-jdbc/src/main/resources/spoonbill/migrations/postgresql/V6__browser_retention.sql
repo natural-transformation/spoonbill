@@ -8,6 +8,12 @@
 -- Rollbacks must remain retention-aware and preserve metadata and host transaction guarantees.
 -- NEVER delete a reclamation-floor record, reset its counters/floors, or drop this metadata table.
 
+CREATE TABLE IF NOT EXISTS spoonbill_browser_work (
+      realm VARCHAR(96) NOT NULL, namespace VARCHAR(96) NOT NULL,
+      kind VARCHAR(16) NOT NULL CHECK(kind IN ('retention','capacity')),
+      epoch_second BIGINT NOT NULL, nano INTEGER NOT NULL CHECK(nano>=0 AND nano<1000000000),
+      PRIMARY KEY(realm,namespace,kind));
+
 CREATE TABLE IF NOT EXISTS spoonbill_browser_retention (
       realm VARCHAR(96) NOT NULL, namespace VARCHAR(96) NOT NULL, id_prefix BIGINT NOT NULL, credential_key BYTEA NOT NULL,
       id_counter BIGINT NOT NULL DEFAULT 0 CHECK(id_counter>=0 AND id_counter<=4611686018427387903),

@@ -104,7 +104,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     headers: Map[String, String]
   ): F[Response[Stream[F, Frame.Merged[B]]]] =
     for {
-      borrow <- takeRawConnection(address)
+      borrow <- takeSecureConnection(address)
       frames <- webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers)
     } yield frames
 
@@ -224,12 +224,18 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
                        group
                      )
         _       = reporter.debug("%s - Connection established", name)
-        engine  = sslContext.createSSLEngine(address.getHostName, address.getPort)
+        engine  = sslContext.createSSLEngine(address.getHostString, address.getPort)
+        _ = {
+          val parameters = engine.getSSLParameters
+          parameters.setEndpointIdentificationAlgorithm("HTTPS")
+          engine.setSSLParameters(parameters)
+        }
         socket <- SecureDataSocket.forClientMode(rawSocket, engine, blockingExecutor)
         _       = reporter.debug("%s - TLS handshake finished", name)
       } yield socket
     val pool = secureConnectionsPools.getOrElseUpdate(
-      address,
+      // InetSocketAddress equality collapses names sharing an IP; TLS identity must not.
+      (address.getHostString.toLowerCase(java.util.Locale.ROOT), address),
       new AsyncResourcePool(
         s"$name-tls-socket-pool",
         factory,
@@ -256,7 +262,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   private val http11                 = new Http11[B]()
   private val webSocketProtocol      = new WebSocketProtocol[B](maxWebSocketMessageBytes)
   private val rawConnectionsPools    = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, RawDataSocket[F, B]]]
-  private val secureConnectionsPools = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, SecureDataSocket[F, B]]]
+  private val secureConnectionsPools = TrieMap.empty[(String, InetSocketAddress), AsyncResourcePool[F, SecureDataSocket[F, B]]]
 }
 
 object HttpClient {

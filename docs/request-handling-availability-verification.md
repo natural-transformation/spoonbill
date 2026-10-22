@@ -4,6 +4,10 @@ Local verification on 22 October 2026 against the report baseline
 `7d2b739cc8b1181dea72c2c380749198852cb55f`. Dependencies, builds and tests use
 the repository-local `flake.nix`; no host packages were installed.
 
+This records the initial remediation. The subsequent security and Scala review
+fixes, current validation, and deferred release-environment setup are recorded in
+[the consolidated review resolution](pr-17-review-resolution.md).
+
 ## Finding disposition
 
 | Finding | Result in this PR | Remaining work |

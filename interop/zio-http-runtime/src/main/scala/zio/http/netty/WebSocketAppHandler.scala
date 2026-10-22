@@ -52,14 +52,15 @@ private[zio] final class WebSocketAppHandler(
 
   override def handlerAdded(ctx: ChannelHandlerContext): Unit = {
     if (onComplete.isEmpty) {
-      // Server upgrades add this handler after the HTTP request was decoded,
-      // before the handshake replaces the HTTP decoder with the WS decoder.
-      // Staying ahead of that replacement also covers pipelined first frames.
+      // Install before the real frame decoder can receive any bytes. Replacing
+      // the old HTTP decoder forwards its unread cumulation to the temporary
+      // rejection decoder, so an eager pre-101 prefix cannot bypass the observer.
       ctx.pipeline().addBefore(
         Names.HttpRequestDecoder,
         "spoonbill-websocket-frame-deadline",
         new WebSocketFrameDeadline(30000L, error => terminate(ctx, error)),
       )
+      ctx.pipeline().replace(Names.HttpRequestDecoder, Names.HttpRequestDecoder, new WebSocketUpgradeBoundary)
     }
   }
 
@@ -100,8 +101,8 @@ private[zio] final class WebSocketAppHandler(
   }
 
   override def channelRead0(ctx: ChannelHandlerContext, msg: JWebSocketFrame): Unit = {
-    // Also cover eager bytes that were already buffered by the HTTP decoder
-    // before its replacement and therefore bypass the newly inserted observer.
+    // Keep frame admission independently strict: direct/custom frame producers
+    // must not deliver partial commands even without raw-byte observation.
     if (onComplete.isEmpty && (!msg.isFinalFragment || msg.isInstanceOf[ContinuationWebSocketFrame]))
       terminate(ctx, new IllegalArgumentException("Fragmented WebSocket input is unsupported"))
     else dispatch(ctx, ChannelEvent.read(msg))
@@ -113,7 +114,11 @@ private[zio] final class WebSocketAppHandler(
   override def channelUnregistered(ctx: ChannelHandlerContext): Unit = {
     if (!terminated) {
       terminated = true
-      zExec.unsafeRunSync(queue.takeAll *> queue.offer(ChannelEvent.unregistered))
+      handshakeCompleted.unsafe.succeed(false)
+      // Preserve every admitted response before ordinary peer closure. The
+      // terminal gate reserves exactly one payload-free terminal beyond the
+      // 16 admitted events; no producer can append after this point.
+      zExec.unsafeRunSync(queue.offer(ChannelEvent.unregistered))
     }
     onComplete match {
       case Some(promise) => promise.unsafe.done(Exit.succeed(ChannelState.Invalid))

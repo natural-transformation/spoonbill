@@ -2,7 +2,8 @@ package spoonbill.server
 
 import java.net.{InetSocketAddress, Socket}
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{RejectedExecutionException, TimeoutException}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
@@ -13,6 +14,35 @@ import spoonbill.effect.{Effect, Stream}
 final class StandaloneMessageDeadlineSpec extends AnyFlatSpec with Matchers {
   implicit private val ec: ExecutionContext = ExecutionContext.global
   implicit private val effect: Effect[Future] = Effect.futureEffect
+
+  "Message completion" should "reject elapsed monotonic time before a delayed timer has executed" in {
+    val time = new AtomicLong()
+    val deadline = new MessageDeadline[Future](1.minute, () => Future.unit, () => time.get())
+    try {
+      deadline.start()
+      time.set(1.minute.toNanos)
+      intercept[TimeoutException](deadline.complete())
+      time.set(0L)
+      deadline.start()
+      intercept[TimeoutException](deadline.complete())
+    } finally deadline.close()
+  }
+
+  it should "close timed out input even when the application executor rejects work" in {
+    given ExecutionContext = new ExecutionContext {
+      def execute(task: Runnable): Unit = throw new RejectedExecutionException("Stopped application executor")
+      def reportFailure(error: Throwable): Unit = ()
+    }
+    val expired = Promise[Unit]()
+    val deadline = new MessageDeadline[Future](20.millis, () => {
+      expired.trySuccess(())
+      Future.unit
+    })
+    try {
+      deadline.start()
+      Await.result(expired.future, 2.seconds)
+    } finally deadline.close()
+  }
 
   private def withSocket(test: (Socket, Promise[Unit], AtomicInteger) => Unit, pauseAfterFirst: Boolean = false): Unit = {
     val released = Promise[Unit]()

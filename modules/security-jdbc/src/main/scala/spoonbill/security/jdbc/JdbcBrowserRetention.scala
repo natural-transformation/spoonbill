@@ -4,11 +4,39 @@ import java.sql.{Connection, PreparedStatement, Timestamp}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Instant
 import java.util.UUID
+import javax.sql.DataSource
 import scala.util.Using
 import spoonbill.auth.{BrowserIssuance, BrowserRetentionPolicy}
 
-/** All methods run under the provider's realm admission lock in its transaction. */
-private[jdbc] final class JdbcBrowserRetention(realm: String, namespace: String, policy: BrowserRetentionPolicy, vault: JdbcCredentialVault, clock: () => Instant) {
+/** Reclamation runs under the realm lock; cadence reservations commit independently. */
+private[jdbc] final class JdbcBrowserRetention(realm: String, namespace: String, policy: BrowserRetentionPolicy, vault: JdbcCredentialVault, clock: () => Instant, workSource: DataSource) {
+  private val sweepInterval = Vector(policy.workIntervalSeconds, policy.idleBindingSeconds,
+    policy.idleViewSeconds, policy.historySeconds).min
+
+  def reserveSweep(time: Instant, pressure: Boolean): Boolean =
+    reserve("retention", time, if (pressure) 1L else sweepInterval)
+
+  def reserveCapacity(time: Instant): Boolean = reserve("capacity", time, policy.workIntervalSeconds)
+
+  /**
+   * A reservation is a retry backoff, never evidence that cleanup succeeded.
+   * Commit it separately so a refused/rolled-back admission cannot repeatedly
+   * dispatch a full scan. This table deliberately has no FK to uncommitted
+   * enrollment metadata and is never locked by the domain transaction.
+   */
+  private def reserve(kind: String, time: Instant, seconds: Long): Boolean = {
+    val cutoff = time.minusSeconds(seconds)
+    JdbcTransactions.run[JdbcAuthError, Boolean](workSource, JdbcAuthError.StorageFailure, JdbcAuthError.StorageFailure) { connection =>
+      Right(sql(connection,
+        """INSERT INTO spoonbill_browser_work(realm,namespace,kind,epoch_second,nano) VALUES (?,?,?,?,?)
+        ON CONFLICT(realm,namespace,kind) DO UPDATE SET epoch_second=EXCLUDED.epoch_second,nano=EXCLUDED.nano
+        WHERE (spoonbill_browser_work.epoch_second,spoonbill_browser_work.nano)<=(?,?) RETURNING kind""") { query =>
+        query.setString(3, kind); query.setLong(4, time.getEpochSecond); query.setInt(5, time.getNano)
+        query.setLong(6, cutoff.getEpochSecond); query.setInt(7, cutoff.getNano)
+        Using.resource(query.executeQuery())(_.next())
+      })
+    }.fold(error => throw new JdbcAuthException(error), identity)
+  }
   private def associated(prefix: Long): Array[Byte] =
     s"spoonbill-browser-issuance-v1:${realm.length}:$realm${namespace.length}:$namespace:$prefix".getBytes(UTF_8)
   private def sql[A](connection: Connection, text: String)(run: PreparedStatement => A): A =
@@ -165,6 +193,11 @@ private[jdbc] object JdbcBrowserRetention {
   def initialize(connection: Connection): Unit = schema.foreach(text => Using.resource(connection.createStatement())(_.executeUpdate(text)))
 
   private val schema = Vector(
+    """CREATE TABLE IF NOT EXISTS spoonbill_browser_work (
+      realm VARCHAR(96) NOT NULL, namespace VARCHAR(96) NOT NULL,
+      kind VARCHAR(16) NOT NULL CHECK(kind IN ('retention','capacity')),
+      epoch_second BIGINT NOT NULL, nano INTEGER NOT NULL CHECK(nano>=0 AND nano<1000000000),
+      PRIMARY KEY(realm,namespace,kind))""",
     """CREATE TABLE IF NOT EXISTS spoonbill_browser_retention (
       realm VARCHAR(96) NOT NULL, namespace VARCHAR(96) NOT NULL, id_prefix BIGINT NOT NULL, credential_key BYTEA NOT NULL,
       id_counter BIGINT NOT NULL DEFAULT 0 CHECK(id_counter>=0 AND id_counter<=4611686018427387903),

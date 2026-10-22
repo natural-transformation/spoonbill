@@ -4,17 +4,19 @@ import avocet.Id
 import avocet.dsl.*
 import avocet.dsl.html.*
 import java.io.PrintWriter
+import java.lang.reflect.{InvocationHandler, InvocationTargetException, Method, Proxy}
 import java.security.{MessageDigest, SecureRandom}
 import java.sql.{Connection, SQLException, SQLFeatureNotSupportedException, Timestamp}
 import java.time.Instant
 import java.util.{Base64, Properties, UUID}
-import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
 import scala.util.Using
+import scala.jdk.CollectionConverters.*
 import spoonbill.Qsid
 import spoonbill.action.*
 import spoonbill.auth.*
@@ -151,6 +153,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     val domainTransactions    = new AtomicInteger()
     val hostResolutions       = new AtomicInteger()
     val replacementCallbacks  = new AtomicInteger()
+    val recordSql = new AtomicBoolean()
+    val statements = new ConcurrentLinkedQueue[String]()
     val source: DataSource = new DataSource {
       // sbt can reload the test classloader after DriverManager's discovery.
       // Use this fixture's explicit driver instead of that ambient registry.
@@ -168,7 +172,15 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           connection.setSchema(name)
         }
         openedConnections.incrementAndGet()
-        connection
+        Proxy.newProxyInstance(getClass.getClassLoader, Array(classOf[Connection]), new InvocationHandler {
+          def invoke(proxy: Object, method: Method, args: Array[Object]): Object = {
+            val arguments = Option(args).getOrElse(Array.empty[Object])
+            if (recordSql.get() && method.getName == "prepareStatement" && arguments.nonEmpty)
+              statements.add(arguments(0).toString.replaceAll("\\s+", " ").trim)
+            try method.invoke(connection, arguments*)
+            catch { case error: InvocationTargetException => throw error.getCause }
+          }
+        }).asInstanceOf[Connection]
       }
       def getConnection(user: String, password: String): Connection = throw new SQLFeatureNotSupportedException()
       def getLogWriter: PrintWriter                                 = throw new SQLFeatureNotSupportedException()
@@ -2551,5 +2563,172 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       provider.accepts(receipt) shouldBe true
       db.committedSessions shouldBe 1
     } finally { release.countDown(); await(provider.close()) }
+  }
+
+  "Shared maintenance cadence" should "skip sampled capacity before the realm lock across peers, restart, and backward clocks" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val first = db.fresh()
+    val peer = db.fresh()
+    try {
+      accepted(await(first.capacity)).isDefined shouldBe true
+      accepted(await(peer.capacity)) shouldBe None
+      accepted(await(first.capture(binding, None, activate = false)))
+      accepted(await(peer.usage())).retainedBindings shouldBe 1L
+      val restarted = db.fresh()
+      try Using.resource(db.source.getConnection) { held =>
+        held.setAutoCommit(false)
+        Using.resource(held.prepareStatement("SELECT pg_advisory_xact_lock(hashtextextended(?,0))")) { query =>
+          query.setString(1, s"spoonbill-auth:${db.realm.length}:${db.realm}session")
+          Using.resource(query.executeQuery())(_.next())
+        }
+        try {
+          db.clock.set(BrowserPersistenceConformance.start.minusSeconds(60))
+          accepted(Await.result(restarted.capacity, 2.seconds)) shouldBe None
+        } finally held.rollback()
+      } finally await(restarted.close())
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(30))
+      accepted(await(peer.capacity)).get.retainedBindings shouldBe 1L
+      accepted(await(first.capacity)) shouldBe None
+    } finally { await(first.close()); await(peer.close()) }
+  }
+
+  it should "retain a sweep reservation after denied admission and recover pressure capacity without waiting for the normal interval" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val provider = db.withLimits(BrowserPersistenceLimits(retainedBindings = 1, anonymousBindings = 1))
+    try {
+      val old = accepted(await(provider.capture(binding, None, activate = false)))
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(31))
+      db.recordSql.set(true)
+      (1 to 20).foreach { _ =>
+        await(provider.capture("z" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+      }
+      db.recordSql.set(false)
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
+      db.retained("spoonbill_browser_slot") shouldBe 1
+      // Sweep just before eligibility, then hit pressure one second later.
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(599))
+      await(provider.maintenance())
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(600))
+      val fresh = accepted(await(provider.capture("z" * 43, None, activate = false)))
+      fresh.generation should be > old.generation
+      db.retained("spoonbill_browser_slot") shouldBe 1
+      await(provider.claim(old, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)).isLeft shouldBe true
+    } finally { db.recordSql.set(false); await(provider.close()) }
+  }
+
+  it should "bound full sweep and monitoring work for public GETs over a realistic retained working set" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val rows = 8192
+    val limits = BrowserPersistenceLimits(anonymousBindings = 16384)
+    val first = db.withLimits(limits)
+    val second = db.withLimits(limits)
+    def coordinator(provider: JdbcBrowserPersistence[Future, String]) = new BrowserAuthentication[Future, Int, String](
+      provider, BrowserPresentation(() => 0, (_, _) => true, (state, _, _) => state),
+      BrowserConfiguration(provider.scope, Set("https://app.example")), clock = () => db.clock.get())
+    val browsers = Vector(coordinator(first), coordinator(second))
+    val services = browsers.map(browser => spoonbillService(browser.configure(SpoonbillServiceConfig[Future, Int, Any](
+      stateLoader = StateLoader.default(0), document = _ => Html(body(div("public")))))))
+    def get(index: Int): Double = {
+      val started = System.nanoTime()
+      val response = await(services(index % services.size).http(Request(Request.Method.Get, PathAndQuery.Root,
+        Nil, None, Stream.empty[Future, Bytes])))
+      response.status.code shouldBe 200
+      await(response.body.cancel())
+      (System.nanoTime() - started).toDouble / 1000000.0
+    }
+    try {
+      accepted(await(first.inspectPrincipal(binding, None)))
+      Using.resource(db.source.getConnection) { connection =>
+        def seed(statement: String, deadline: Instant): Unit = Using.resource(connection.prepareStatement(statement)) { query =>
+          query.setString(1, db.realm); query.setTimestamp(2, Timestamp.from(deadline)); query.setInt(3, rows)
+          query.executeUpdate() shouldBe rows
+        }
+        seed("""INSERT INTO spoonbill_browser_slot(realm,cookie_namespace,binding_hash,generation,last_seen)
+          SELECT ?,'session',decode(repeat(md5(i::text),2),'hex'),0,? FROM generate_series(1,?) ids(i)""", db.clock.get())
+        seed("""INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch,last_seen)
+          SELECT ?,'session','seed-'||i,decode(repeat(md5(i::text),2),'hex'),NULL,1,? FROM generate_series(1,?) ids(i)""", db.clock.get())
+        seed("""INSERT INTO spoonbill_auth_ceremony(realm,namespace,id,attempt,binding_hash,generation,purpose,phase,expires_at)
+          SELECT ?,'session',md5('ceremony-'||i)::uuid,md5('attempt-'||i)::uuid,
+          decode(repeat(md5(i::text),2),'hex'),0,'login','Begun',? FROM generate_series(1,?) ids(i)""", db.clock.get().plusSeconds(7200))
+      }
+      db.recordSql.set(true)
+      val warm = Vector(get(0), get(1))
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
+      db.statements.asScala.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 2
+      db.statements.clear()
+      val elapsed = (0 until 100).map(get).sorted
+      val statements = db.statements.asScala.toVector
+      db.recordSql.set(false)
+      statements.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 0
+      statements.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 0
+      // Admission counts and authority reads remain on each request; unrelated
+      // cleanup/monitoring queries must not grow with the retained row count.
+      statements.size should be <= 8000
+      accepted(await(first.usage())).retainedBindings shouldBe rows + 102L
+      info(f"Public GET cadence fixture: peers=2 rowsPerTable=$rows requests=100 SQL=${statements.size} " +
+        f"sweeps=0 aggregateScans=0 p50Ms=${elapsed(49)}%.2f p95Ms=${elapsed(94)}%.2f maxMs=${elapsed.last}%.2f " +
+        f"initialSampleMs=${warm.head}%.2f; instrumented disposable PostgreSQL, not a production throughput claim")
+      db.statements.clear()
+      db.clock.set(db.clock.get().plusSeconds(limits.retention.workIntervalSeconds))
+      db.recordSql.set(true)
+      get(0)
+      get(1)
+      db.recordSql.set(false)
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
+      db.statements.asScala.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 2
+      info("Next shared interval: two public GETs on different peers performed one full sweep and one capacity sample")
+    } finally { db.recordSql.set(false); browsers.foreach(browser => await(browser.close())) }
+  }
+
+  "Replacement owner leases" should "reject completion after lease expiry without a maintenance sweep" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val provider = db.withLimits(BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleViewSeconds = 1)))
+    try {
+      val (view, _, _) = retentionLogin(db, provider, binding, qsid, 600)
+      val ceremony = accepted(await(provider.beginReplacement(view, "replace")))
+      val invocation = replacementInvocation(view)
+      val receipt = accepted(await(db.replaceWith(provider, ceremony, invocation, view.identity.sessionId.get)))
+      db.clock.set(db.clock.get().plusSeconds(2))
+      await(provider.admitReplacementCompletion(receipt, invocation)).isLeft shouldBe true
+      db.replacementCallbacks.get() shouldBe 1
+      db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe 1
+    } finally await(provider.close())
+  }
+
+  it should "reject a delayed admitted replacement before invoking its host callback" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val pause = new AtomicBoolean()
+    val admitted = Promise[Unit]()
+    val release = Promise[Unit]()
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).flatMap { result =>
+        if (result == Right(()) && pause.compareAndSet(true, false)) {
+          admitted.trySuccess(())
+          release.future.map(_ => result)
+        } else Future.successful(result)
+      }
+    }
+    val provider = db.withRunner(runner, BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleViewSeconds = 1)))
+    try {
+      val (view, _, _) = retentionLogin(db, provider, binding, qsid, 600)
+      val ceremony = accepted(await(provider.beginReplacement(view, "replace")))
+      pause.set(true)
+      val pending = db.replaceWith(provider, ceremony, replacementInvocation(view), view.identity.sessionId.get)
+      await(admitted.future)
+      db.clock.set(db.clock.get().plusSeconds(2))
+      release.trySuccess(())
+      await(pending) shouldBe Left(TransactionFailure.Rejected(OperationError.Expired))
+      db.replacementCallbacks.get() shouldBe 0
+      db.committedSessions shouldBe 1
+      db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe 0
+    } finally { release.trySuccess(()); await(provider.close()) }
   }
 }

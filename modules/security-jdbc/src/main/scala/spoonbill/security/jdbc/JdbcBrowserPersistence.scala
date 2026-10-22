@@ -78,7 +78,7 @@ final class JdbcBrowserPersistence[F[_], P](
       ownership = ownership
     )
   private val issuer = new BrowserCapabilityScope[P]
-  private val retention = new JdbcBrowserRetention(realm, namespace, limits.retention, vault, () => now())
+  private val retention = new JdbcBrowserRetention(realm, namespace, limits.retention, vault, () => now(), clockSource.getOrElse(source))
   private val runner = existingRunner.getOrElse(new JdbcTransactionExecutor[F](source, blockingContext))
   private val durableClock = new JdbcBrowserClock(
     clockSource.getOrElse(source),
@@ -182,6 +182,18 @@ final class JdbcBrowserPersistence[F[_], P](
   private def run[A](body: Connection => A): F[Either[BrowserFailure, A]] =
     F.map(owned()(transaction(body)))(_.left.map(failure))
 
+  /** Retry only pure admission after a separately settled pressure cleanup. */
+  private def admission[A](body: Connection => A): F[Either[BrowserFailure, A]] =
+    F.flatMap(run(body)) {
+      case Left(BrowserFailure.Capacity) =>
+        F.flatMap(run(connection => reap(connection, pressure = true))) {
+          case Right(true) => run(body)
+          case Right(false) => F.pure(Left(BrowserFailure.Capacity))
+          case Left(error) => F.pure(Left(error))
+        }
+      case result => F.pure(result)
+    }
+
   private val authorization = new HostSessionAuthorization[HostPrincipal[P]] {
     def authorize(connection: Connection, sessionId: UUID, time: Instant): Option[HostPrincipal[P]] =
       host.resolve(connection, sessionId, time).filter(value => time.isBefore(value.expiresAt))
@@ -221,7 +233,9 @@ final class JdbcBrowserPersistence[F[_], P](
     retention.initialize(connection)
   }
 
-  private def reap(connection: Connection): Unit = {
+  private def reap(connection: Connection, pressure: Boolean = false): Boolean = {
+    val time = now()
+    if (!retention.reserveSweep(time, pressure)) return false
     // A peer can expire or retire ownership while this process remains alive.
     // Do not let its local cleanup bookkeeping become a new retained-history cap.
     val candidates = lifecycle.synchronized(ownedViews.toVector)
@@ -245,7 +259,8 @@ final class JdbcBrowserPersistence[F[_], P](
     }
     // Reconcile only previously committed loss, before this transaction stages
     // expiry. A later rollback must not forget an owner that close still owns.
-    retention.reap(connection, now())
+    retention.reap(connection, time)
+    true
   }
 
   private def touchBinding(connection: Connection, binding: String): Unit = sql(connection,
@@ -312,18 +327,22 @@ final class JdbcBrowserPersistence[F[_], P](
       Some(JdbcViewFence(BrowserView.key(view.qsid), view.ownerId, view.epoch))
     )
     if (!captured.sameAuthority(fresh)) reject()
+    renewOwnerLease(connection, BrowserView.key(view.qsid), view.ownerId, view.epoch)
+    touchBinding(connection, captured.binding)
+    fresh
+  }
+
+  private def renewOwnerLease(connection: Connection, view: String, owner: UUID, epoch: Long): Unit = {
     val time = now()
     val renewed = sql(connection,
       """UPDATE spoonbill_browser_view SET last_seen=? WHERE realm=? AND cookie_namespace=?
       AND view_id=? AND owner_id=? AND epoch=? AND last_seen>?""") { query =>
       query.setTimestamp(1, Timestamp.from(time)); query.setString(2, realm); query.setString(3, namespace)
-      query.setString(4, BrowserView.key(view.qsid)); query.setObject(5, view.ownerId); query.setLong(6, view.epoch)
+      query.setString(4, view); query.setObject(5, owner); query.setLong(6, epoch)
       query.setTimestamp(7, Timestamp.from(time.minusSeconds(limits.retention.idleViewSeconds)))
       query.executeUpdate()
     }
     if (renewed != 1) reject(OperationError.Expired)
-    touchBinding(connection, captured.binding)
-    fresh
   }
 
   override def inspectPrincipal(binding: String, token: Option[String])(using
@@ -344,7 +363,7 @@ final class JdbcBrowserPersistence[F[_], P](
     binding: String,
     token: Option[String],
     activate: Boolean
-  ): F[Either[BrowserFailure, BrowserIdentity[P]]] = run { connection =>
+  ): F[Either[BrowserFailure, BrowserIdentity[P]]] = admission { connection =>
     if (!validSecret(binding) || token.exists(value => !validSecret(value))) reject()
     reap(connection)
     if (token.isEmpty) {
@@ -415,7 +434,7 @@ final class JdbcBrowserPersistence[F[_], P](
   override def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using
     Effect[F]
   ): F[Either[BrowserFailure, Unit]] =
-    run { connection =>
+    admission { connection =>
       val state = claimState(connection, identity, qsid, existingOnly = false)
       if (state.previous.isEmpty) {
         if (count(connection, "spoonbill_browser_view", "cookie_namespace") >= limits.retainedViews)
@@ -438,7 +457,7 @@ final class JdbcBrowserPersistence[F[_], P](
     connectionId: ConnectionId,
     existingOnly: Boolean
   ): F[Either[BrowserFailure, BrowserView[P]]] = {
-    def acquire(admitted: Option[Option[Long]]): F[Either[BrowserFailure, BrowserView[P]]] = run { connection =>
+    def acquire(admitted: Option[Option[Long]]): F[Either[BrowserFailure, BrowserView[P]]] = admission { connection =>
       val state = claimState(connection, identity, qsid, existingOnly)
       if (admitted.exists(_ != state.previous.map(_._2))) reject()
       claimIn(connection, state, connectionId, qsid)
@@ -549,10 +568,20 @@ final class JdbcBrowserPersistence[F[_], P](
    * see them. Local in-flight resources are bounded separately by pendingJobs.
    */
   override def capacity(using Effect[F]): F[Either[BrowserFailure, Option[BrowserPersistenceUsage]]] =
-    F.map(usage())(_.left.map(failure).map(Some(_)))
+    F.map(owned() {
+      // Do not acquire the realm lock for an unsampled observation. The
+      // independently committed reservation also survives a failed sample.
+      F.flatMap(F.blocking(retention.reserveCapacity(now()))(blockingContext)) {
+        case true => transaction[Option[BrowserPersistenceUsage]](connection => Some(usageIn(connection)))
+        case false => F.pure[Either[TransactionFailure, Option[BrowserPersistenceUsage]]](Right(None))
+      }
+    })(_.left.map(failure))
 
   def usage(): F[Either[TransactionFailure, BrowserPersistenceUsage]] = owned() {
-    transaction { connection =>
+    transaction(usageIn)
+  }
+
+  private def usageIn(connection: Connection): BrowserPersistenceUsage = {
       def views(active: Boolean): Long = sql(
         connection,
         "SELECT count(*) FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace=?" +
@@ -586,7 +615,6 @@ final class JdbcBrowserPersistence[F[_], P](
           scope(query); Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
         }
       )
-    }
   }
 
   /**
@@ -752,7 +780,7 @@ final class JdbcBrowserPersistence[F[_], P](
     value.view.asInstanceOf[BrowserView[P]]
   }
 
-  def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = run(
+  def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = admission(
     beginIn(_, view, purpose)
   )
 
@@ -961,7 +989,7 @@ final class JdbcBrowserPersistence[F[_], P](
         ) reject()
       }
     }
-    if (checkOwner)
+    if (checkOwner) {
       sql(
         connection,
         """SELECT binding_hash,owner_id,epoch FROM spoonbill_browser_view
@@ -977,10 +1005,26 @@ final class JdbcBrowserPersistence[F[_], P](
           ) reject()
         }
       }
+      // Same authoritative renewal as ordinary output, sampled after row locks.
+      renewOwnerLease(connection, value.view, value.owner, value.epoch)
+    }
+  }
+
+  /** Before host work, inspect the lease without reversing host -> slot -> view lock order. */
+  private def requireReplacementOwnerLease(connection: Connection, value: Replacement): Unit = sql(connection,
+    """SELECT binding_hash,owner_id,epoch,last_seen FROM spoonbill_browser_view
+    WHERE realm=? AND cookie_namespace=? AND view_id=?""") { query =>
+    scope(query); query.setString(3, value.view)
+    Using.resource(query.executeQuery()) { rows =>
+      if (!rows.next() || rows.getBytes(1).toVector != value.binding ||
+        rows.getObject(2, classOf[UUID]) != value.owner || rows.getLong(3) != value.epoch) reject()
+      if (!now().isBefore(rows.getTimestamp(4).toInstant.plusSeconds(limits.retention.idleViewSeconds)))
+        reject(OperationError.Expired)
+    }
   }
 
   def beginReplacement(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserReplacementCeremony]] =
-    run { connection =>
+    admission { connection =>
       if (view.identity.host.isEmpty || view.identity.sessionId.isEmpty || view.identity.token.isEmpty) reject()
       val ceremony  = beginIn(connection, view, purpose)
       val principal = view.identity.host.get.stamp
@@ -1088,6 +1132,7 @@ final class JdbcBrowserPersistence[F[_], P](
           if (!rows.next() || rows.getBoolean(2) || rows.getLong(1) != captured.generation) reject()
         }
       }
+      requireReplacementOwnerLease(connection, captured)
       val prepared              = withHostTransaction(connection)(consume)
       val successor             = host.resolve(connection, prepared.sessionId, now()).getOrElse(reject())
       val predecessorAuthorized = host.resolve(connection, captured.predecessor, now()).nonEmpty
@@ -1337,6 +1382,7 @@ final class JdbcBrowserPersistence[F[_], P](
       Using.resource(query.executeQuery())(rows => if (!rows.next()) reject())
     }
     if (!captured.deadline.exists(now().isBefore)) reject(OperationError.Expired)
+    renewOwnerLease(connection, captured.view, captured.owner, captured.epoch)
     issuer.replacementControl(handoff, invocation).getOrElse(reject())
   }
   def withSuccessorCompletion[A](

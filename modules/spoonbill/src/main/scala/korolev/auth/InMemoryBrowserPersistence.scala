@@ -1098,7 +1098,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
         .valuesIterator
         .maxOption
         .getOrElse(0L),
-      limits
+      limits,
+      state.slots.valuesIterator.count(_.current.isEmpty).toLong
     )
   }
   def resources: F[Resources] = F.delay {

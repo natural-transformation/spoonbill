@@ -369,12 +369,12 @@ class ZioHttpSpoonbill[R] {
   }
 
   private def mkSpoonbillRequest[B](request: Request, path: String, body: B): SpoonbillRequest[B] = {
-    val cookies = request.rawHeader(Header.Cookie)
+    val cookies = request.headers.toList.filter(_.headerName.equalsIgnoreCase("cookie")).map(_.renderedValue).mkString("; ")
     val params  = request.url.queryParams.map.collect { case (k, v) if v.nonEmpty => (k, v.head) }
     SpoonbillRequest(
       pq = PQ.fromString(path).withParams(params),
       method = SpoonbillRequest.Method.fromString(request.method.name),
-      renderedCookie = cookies.orNull,
+      renderedCookie = cookies,
       contentLength = request.header(Header.ContentLength).map(_.length),
       headers = {
         val contentType = request.header(Header.ContentType)

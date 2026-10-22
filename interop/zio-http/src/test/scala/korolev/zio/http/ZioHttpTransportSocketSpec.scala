@@ -140,4 +140,25 @@ final class ZioHttpTransportSocketSpec extends AnyFlatSpec with Matchers {
     }.provide(Server.defaultWith(_.onAnyOpenPort))
     Unsafe.unsafe { implicit unsafe => Runtime.default.unsafe.run(program).getOrThrowFiberFailure() }
   }
+
+  for (inline <- List(false, true)) {
+    it should s"accept an immediate post-101 frame with avoidContextSwitching=$inline" in {
+      val program = ZIO.scoped {
+        for {
+          closed <- Promise.make[Nothing, Unit]
+          routes = Routes.singleton(Handler.fromFunctionZIO[(Path, Request)] { _ => Response.fromSocketApp(echo(closed)) })
+          port <- Server.install(routes)
+          _ <- onSocket(port, "/immediate") { socket => ZIO.attemptBlocking {
+            // Payload deliberately resembles another frame header. At a clean
+            // handoff it remains payload, and sending starts as soon as 101 is read.
+            val payload = Array[Byte](0x82.toByte, 0x80.toByte, 0, 0, 0, 0) ++ Array.fill[Byte](10)(7)
+            socket.getOutputStream.write(Array[Byte](0x82.toByte, 0x90.toByte, 0, 0, 0, 0) ++ payload)
+            socket.getOutputStream.flush()
+            socket.getInputStream.readNBytes(18).toSeq shouldBe (Array[Byte](0x82.toByte, 16) ++ payload).toSeq
+          } }
+        } yield ()
+      }.provide(Server.defaultWith(_.onAnyOpenPort.avoidContextSwitching(inline)))
+      Unsafe.unsafe { implicit unsafe => Runtime.default.unsafe.run(program).getOrThrowFiberFailure() }
+    }
+  }
 }

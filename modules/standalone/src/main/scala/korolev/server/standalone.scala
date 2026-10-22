@@ -25,12 +25,15 @@ object standalone {
     gracefulShutdown: Boolean,
     wsSetupTimeout: FiniteDuration = 30.seconds,
     wsMaxMessageBytes: Int = spoonbill.web.WebSocketLimits.DefaultMaxMessageBytes,
-    wsMessageTimeout: FiniteDuration = 30.seconds
+    wsMessageTimeout: FiniteDuration = 30.seconds,
+    maxRequestHeaderBytes: Int = 16 * 1024,
+    requestHeaderTimeout: FiniteDuration = 30.seconds
   )(implicit ec: ExecutionContext): F[ServerSocket.ServerSocketHandler[F]] = {
     require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
     require(wsMessageTimeout > Duration.Zero, "wsMessageTimeout must be positive")
     val webSocketProtocol = new WebSocketProtocol[B](wsMaxMessageBytes)
-    HttpServer.withConnection[F, B](address, group = group, gracefulShutdown = gracefulShutdown) { (request, client) =>
+    HttpServer.withConnection[F, B](address, group = group, gracefulShutdown = gracefulShutdown,
+      maxRequestHeaderBytes = maxRequestHeaderBytes, requestHeaderTimeout = requestHeaderTimeout) { (request, client) =>
       val protocols = request
         .header(Headers.SecWebSocketProtocol)
         .toSeq

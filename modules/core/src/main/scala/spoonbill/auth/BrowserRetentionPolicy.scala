@@ -5,8 +5,9 @@ final case class BrowserRetentionPolicy(
   idleBindingSeconds: Long = 600,
   idleViewSeconds: Long = 3600,
   historySeconds: Long = 120,
-  maxSessionSeconds: Long = 86400
+  maxSessionSeconds: Long = 86400,
+  workIntervalSeconds: Long = 30
 ) {
-  require(Vector(idleBindingSeconds, idleViewSeconds, historySeconds, maxSessionSeconds)
+  require(Vector(idleBindingSeconds, idleViewSeconds, historySeconds, maxSessionSeconds, workIntervalSeconds)
     .forall(value => value > 0 && value <= 31536000L), "Retention windows must be between one second and one year")
 }

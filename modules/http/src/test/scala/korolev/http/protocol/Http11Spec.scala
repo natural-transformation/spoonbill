@@ -47,6 +47,69 @@ class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks
     request.cookie("deviceId") shouldBe None
   }
 
+  it should "reject malformed request lines and fields without scanning another line as their value" in {
+    val malformed = Seq(
+      "garbage\r\n\r\n",
+      "GET  HTTP/1.1\r\n\r\n",
+      "GET /\r\n\r\n",
+      "GET / HTTP/1.1 extra\r\n\r\n",
+      "GET /bad\tpath HTTP/1.1\r\n\r\n",
+      "GET / HTTP/1.1\rX: value\r\n\r\n",
+      "GET / HTTP/1.1\r\nBad\r\n\r\n",
+      "GET / HTTP/1.1\r\nBad\r\nHost: valid\r\n\r\n",
+      "GET / HTTP/1.1\r\nBad\r\n\r\nBody: not-a-header\r\n",
+      "GET / HTTP/1.1\r\n: value\r\n\r\n",
+      "GET / HTTP/1.1\r\nX: value\rY: next\r\n\r\n",
+      "GET / HTTP/1.1\r\nX: value\nOther: injected\r\n\r\n",
+      "GET / HTTP/1.1\r\nX : value\r\n\r\n"
+    )
+    malformed.foreach { input =>
+      val bytes = Bytes.wrap(input.getBytes("US-ASCII"))
+      intercept[IllegalArgumentException](http11.decodeRequest(Bytes.empty, bytes))
+    }
+  }
+
+  it should "preserve valid requests without fields, empty field values, and untouched body bytes" in {
+    val body = "body: not a header\r\n\r\n"
+    for (version <- Seq("HTTP/1.0", "HTTP/1.1")) {
+      val bytes = Bytes.wrap(s"POST /plain?x=yes $version\r\n\r\n$body".getBytes("US-ASCII"))
+      val (remaining, request) = http11.parseRequest(bytes, http11.findLastHeaderEnd(bytes))
+      request.method shouldBe Request.Method.Post
+      request.param("x") shouldBe Some("yes")
+      request.headers shouldBe empty
+      remaining.asAsciiString shouldBe body
+    }
+    val bytes = Bytes.wrap("GET / HTTP/1.1\r\nX-Empty:\r\n\r\n".getBytes("US-ASCII"))
+    http11.parseRequest(bytes, http11.findLastHeaderEnd(bytes))._2.header("X-Empty") shouldBe Some("")
+  }
+
+  it should "accept the exact header budget including a split delimiter and preserve a large body" in {
+    val header = Bytes.wrap("POST / HTTP/1.1\r\nContent-Length: 65536\r\n\r\n".getBytes("US-ASCII"))
+    val parser = new Http11[Bytes](header.length.toInt)
+    val body = Bytes.wrap(Array.fill[Byte](65536)(42))
+    val (buffer, action) = parser.decodeRequest(Bytes.empty, header.slice(0, header.length - 1))
+    action shouldBe Decoder.Action.TakeNext
+    val (_, completed) = parser.decodeRequest(buffer, header.slice(header.length - 1, header.length) ++ body)
+    completed match {
+      case Decoder.Action.Fork(request, remaining) =>
+        request.contentLength shouldBe Some(65536L)
+        remaining shouldBe body
+      case other => fail(s"Expected a complete request, got $other")
+    }
+  }
+
+  it should "reject an over-budget header both in one read and across many reads" in {
+    val header = Bytes.wrap("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".getBytes("US-ASCII"))
+    val parser = new Http11[Bytes](header.length.toInt - 1)
+    intercept[IllegalArgumentException](parser.decodeRequest(Bytes.empty, header))
+    var buffer = Bytes.empty
+    (0L until header.length - 2).foreach { i =>
+      buffer = parser.decodeRequest(buffer, header.slice(i, i + 1))._1
+    }
+    intercept[IllegalArgumentException](parser.decodeRequest(buffer, header.slice(header.length - 2, header.length)))
+    intercept[IllegalArgumentException](parser.decodeRequest(Bytes.empty, Bytes.wrap(Array.fill[Byte](1024 * 1024)(65))))
+  }
+
   // TODO use from effect
   implicit val ec: ExecutionContext = new ExecutionContext {
     def execute(runnable: Runnable): Unit     = runnable.run()
@@ -223,15 +286,17 @@ class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks
   }
 
   "renderRequest/decodeRequest" should "comply with rule `decode(render(request)) == request`" in {
-    // FIXME fomkin: I do not understand why Gen.chooseNum gives values < 1
+    // Generated headers may exceed the production default. Exercise round-trip
+    // decoding with a sufficient budget; the boundary cases are tested above.
     forAll(genRequest, Gen.chooseNum(2, 20).filter(i => i > 1)) { (generated, numChunks) =>
       val (sampleRequest, decodedRequest, sampleBody, decodedBody) = await {
         for {
           (sampleBody, sampleRequest) <- generated
           renderedRequestAsStream     <- http11.renderRequest(sampleRequest)
           renderedRequestAsBytes      <- renderedRequestAsStream.fold(Bytes.empty)(_ ++ _)
-          renderedRequestAsChunks     <- Stream(sliceToChunks(renderedRequestAsBytes, numChunks): _*).mat()
-          maybeDecodedRequest         <- http11.decodeRequest(Decoder(renderedRequestAsChunks)).pull()
+          renderedRequestAsChunks     <- Stream(sliceToChunks(renderedRequestAsBytes, numChunks.max(1)): _*).mat()
+          parser                       = new Http11[Bytes](math.max(4, renderedRequestAsBytes.length.toInt))
+          maybeDecodedRequest         <- parser.decodeRequest(Decoder(renderedRequestAsChunks)).pull()
           decodedRequest               = maybeDecodedRequest.getOrElse(throw new Exception("No request found in rendered stream"))
           decodedBody                 <- decodedRequest.body.fold(Bytes.empty)(_ ++ _)
         } yield (

@@ -10,6 +10,7 @@ import spoonbill.effect
 import spoonbill.effect.Effect
 import spoonbill.effect.syntax._
 import scala.collection.mutable
+import scala.util.control.NonFatal
 
 class SecureDataSocket[F[_]: Effect, B: BytesLike] private (engine: SSLEngine, socket: RawDataSocket[F, B])
     extends DataSocket[F, B] {
@@ -200,11 +201,14 @@ object SecureDataSocket {
     socket: RawDataSocket[F, B],
     engine: SSLEngine,
     blockingExecutor: Executor
-  ): F[SecureDataSocket[F, B]] = {
-    engine.beginHandshake()
-    val secureSocket = new SecureDataSocket[F, B](engine, socket)
-    secureSocket.handshake(blockingExecutor).as(secureSocket)
-  }
+  ): F[SecureDataSocket[F, B]] =
+    Effect[F].delayAsync {
+      engine.beginHandshake()
+      val secureSocket = new SecureDataSocket[F, B](engine, socket)
+      secureSocket.handshake(blockingExecutor).as(secureSocket)
+    }.recoverF { case NonFatal(error) =>
+      socket.shutdown().recover { case NonFatal(_) => () } *> Effect[F].fail(error)
+    }
 
   private sealed trait UnwrapStatus
 

@@ -26,7 +26,7 @@ const sql = [
   ...statements('JdbcBrowserPersistence.scala', true),
   ...retention,
 ];
-assert.equal(sql.filter(value => value.startsWith('CREATE TABLE')).length, 10,
+assert.equal(sql.filter(value => value.startsWith('CREATE TABLE')).length, 11,
   'Review the deployment migration when framework table coverage changes');
 const destination = path.join(root, 'modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V4__browser_auth.sql');
 // Historical V4 from 7108eda8cef0d6d8ab838fe8c963f58cda810887. Neither mode
@@ -51,7 +51,7 @@ const upgradeSql = historicalUpgrade.toString('utf8').split(/\r?\n/).filter(line
 const normalized = values => values.map(value => value.replace(/\s+/g, ' ').trim()).sort();
 assert.deepEqual(normalized(upgradeSql), normalized(upgrade),
   'Frozen V5 must retain the exact replacement runtime DDL; use a forward migration for changes');
-assert.equal(retention.length, 3, 'Retention upgrade must define permanent scope metadata and both last_seen columns');
+assert.equal(retention.length, 4, 'Retention upgrade must define permanent scope metadata, shared work cadence and both last_seen columns');
 assert.deepEqual(normalized([...baselineSql, ...upgradeSql, ...retention]), normalized(sql),
   'Frozen V4 and V5 plus the forward retention upgrade must cover runtime DDL exactly; review a new migration for other changes');
 const retentionResult = '-- Spoonbill bounded browser retention: explicit PostgreSQL forward upgrade.\n' +
@@ -73,6 +73,6 @@ if (mode === '--write') {
 } else {
   assert.equal(readFileSync(retentionDestination, 'utf8'), retentionResult, 'Retention upgrade DDL is stale');
 }
-console.log(JSON.stringify({status: 'pass', mode, statements: sql.length, tables: 10,
+console.log(JSON.stringify({status: 'pass', mode, statements: sql.length, tables: 11,
   baselineStatements: baselineSql.length, baselineTables: 8, upgradeStatements: upgrade.length, upgradeTables: 1,
-  retentionStatements: retention.length, retentionTables: 1}));
+  retentionStatements: retention.length, retentionTables: 2}));

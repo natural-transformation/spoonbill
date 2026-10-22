@@ -105,6 +105,23 @@ class InMemoryBrowserRetentionSpec extends AnyFlatSpec with Matchers {
     } finally db.close()
   }
 
+  it should "report anonymous quota warning and exhaustion independently of global binding capacity" in {
+    val db = new Fixture(BrowserPersistenceLimits(retainedBindings = 100, anonymousBindings = 1, retention = policy))
+    try {
+      accepted(await(db.provider.capture(binding, None, activate = false)))
+      await(db.provider.capture("b" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+      val usage = accepted(await(db.provider.usage()))
+      usage.anonymousBindings shouldBe 1L
+      usage.warnings().filter(_.resource == "anonymousBindings") shouldBe
+        Vector(BrowserCapacityWarning("anonymousBindings", 1L, 1L))
+      usage.warnings().exists(_.resource == "retainedBindings") shouldBe false
+      db.advance(policy.idleBindingSeconds)
+      db.maintain()
+      accepted(await(db.provider.usage())).anonymousBindings shouldBe 0L
+      accepted(await(db.provider.capture("b" * 43, None, activate = false)))
+    } finally db.close()
+  }
+
   it should "fence recycled bindings and view keys even when owner UUIDs repeat" in {
     val db = new Fixture
     try {

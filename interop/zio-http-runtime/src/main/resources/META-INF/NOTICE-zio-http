@@ -9,6 +9,8 @@ frame assembly deadline. The original WebSocketAppHandler class family is
 removed and replaced, not shadowed by a second jar. Original dependencies and
 native classifiers are preserved from the pinned upstream POM.
 Reviewed dependency overrides: dev.zio:zio_3 and dev.zio:zio-streams_3 use 2.1.27.
+Normal closure preserves admitted events and appends one reserved terminal event.
+The upgrade handoff rejects pre-101 bytes before they can bypass frame observation.
 
 Binary SHA-256: e5ac833344472a68a017c7d2dec4ce00cc5251bcdea871cb9a9eb7853abe4dc0
 Sources SHA-256: 149a17e15f1591f8f7e6d576ca5a109859206e9dec60efdaaf36e32dba749e5d

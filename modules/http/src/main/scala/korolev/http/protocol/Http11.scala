@@ -8,7 +8,9 @@ import spoonbill.effect.syntax._
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 import spoonbill.web.Response.Status
 
-class Http11[B: BytesLike] {
+class Http11[B: BytesLike](maxRequestHeaderBytes: Int = 16 * 1024) {
+
+  require(maxRequestHeaderBytes >= 4, "maxRequestHeaderBytes must include the four-byte header delimiter")
 
   import Http11._
 
@@ -42,12 +44,18 @@ class Http11[B: BytesLike] {
     }
 
   def decodeRequest(buffer: B, incoming: B): (B, Decoder.Action[B, Request[Unit]]) = {
-    val allBytes = buffer ++ incoming
+    // Inspect only the remaining header budget before concatenating. A socket
+    // read may also contain a large body, which is not part of this limit.
+    require(buffer.length < maxRequestHeaderBytes, "HTTP request header too large")
+    val accepted = math.min(incoming.length, maxRequestHeaderBytes.toLong - buffer.length)
+    val allBytes = buffer ++ incoming.slice(0, accepted)
     findLastHeaderEnd(allBytes) match {
-      case -1 => (allBytes, Decoder.Action.TakeNext)
+      case -1 =>
+        require(allBytes.length < maxRequestHeaderBytes, "HTTP request header too large")
+        (allBytes, Decoder.Action.TakeNext)
       case lastByteOfHeader =>
         val (bodyBytes, request) = parseRequest(allBytes, lastByteOfHeader)
-        (BytesLike[B].empty, Decoder.Action.Fork(request, bodyBytes))
+        (BytesLike[B].empty, Decoder.Action.Fork(request, bodyBytes ++ incoming.slice(accepted)))
     }
   }
 
@@ -127,38 +135,55 @@ class Http11[B: BytesLike] {
     }
 
   def parseRequest(allBytes: B, lastByteOfHeader: Long): (B, Request[Unit]) = {
-    // Buffer contains header.
-    // Lets parse it.
-    val methodEnd          = allBytes.indexOf(' ')
-    val paramsStart        = allBytes.indexOf('?', methodEnd + 1)
-    val pathEnd            = allBytes.indexOf(' ', methodEnd + 1)
+    require(lastByteOfHeader >= 0 && lastByteOfHeader <= allBytes.length - 4 &&
+      allBytes(lastByteOfHeader) == '\r' && allBytes(lastByteOfHeader + 1) == '\n' &&
+      allBytes(lastByteOfHeader + 2) == '\r' && allBytes(lastByteOfHeader + 3) == '\n',
+      "Malformed HTTP header delimiter")
     val protocolVersionEnd = allBytes.indexOf('\r')
-    val hasParams          = paramsStart > -1 && paramsStart < protocolVersionEnd
-    val method             = allBytes.slice(0, methodEnd).asAsciiString
-    val path               = allBytes.slice(methodEnd + 1, if (hasParams) paramsStart else pathEnd).asAsciiString
-    val params =
-      if (hasParams) allBytes.slice(paramsStart + 1, pathEnd).asAsciiString
-      else null
-    //val protocolVersion = allBytes.slice(pathEnd + 1, protocolVersionEnd).asciiString
+    require(protocolVersionEnd > 0 && protocolVersionEnd <= lastByteOfHeader &&
+      allBytes(protocolVersionEnd + 1) == '\n', "Malformed HTTP request line")
+    val line = allBytes.slice(0, protocolVersionEnd).asAsciiString
+    val methodEnd = line.indexOf(' ')
+    val pathEnd = line.indexOf(' ', methodEnd + 1)
+    require(methodEnd > 0 && pathEnd > methodEnd + 1 && pathEnd < line.length - 1,
+      "Malformed HTTP request line")
+    val method = line.substring(0, methodEnd)
+    Headers.validate(method, "") // HTTP methods use the same token syntax as field names.
+    val target = line.substring(methodEnd + 1, pathEnd)
+    require(target.forall(c => c > ' ' && c < 127), "Malformed HTTP request target")
+    val version = line.substring(pathEnd + 1)
+    require(version == "HTTP/1.1" || version == "HTTP/1.0", "Unsupported HTTP request version")
+    val paramsStart = target.indexOf('?')
+    val path = if (paramsStart < 0) target else target.substring(0, paramsStart)
+    val params = if (paramsStart < 0) null else target.substring(paramsStart + 1)
     // Parse headers.
     val headers               = mutable.Buffer.empty[(String, String)]
     var headerStart           = protocolVersionEnd + 2 // first line end plus \r\n chars
     var cookie: String        = null
     var contentLength: String = null
     while (headerStart < lastByteOfHeader) {
+      // Bound each field to its own CRLF before searching/slicing its value.
+      // A missing colon must never send the parser back to the request line.
+      val valueEnd = allBytes.indexOf('\r', headerStart)
+      require(valueEnd >= headerStart && valueEnd <= lastByteOfHeader && allBytes(valueEnd + 1) == '\n',
+        "Malformed HTTP header line")
       val nameEnd  = allBytes.indexOf(':', headerStart)
-      val valueEnd = allBytes.indexOf('\r', nameEnd)
+      require(nameEnd > headerStart && nameEnd < valueEnd, "Malformed HTTP header field")
       val name     = allBytes.slice(headerStart, nameEnd).asAsciiString
       val value =
         if (allBytes(nameEnd + 1) == ' ') allBytes.slice(nameEnd + 2, valueEnd).asAsciiString
         else allBytes.slice(nameEnd + 1, valueEnd).asAsciiString
+      Headers.validate(name, value)
       name match {
         case _ if name.equalsIgnoreCase(Headers.Cookie)        => cookie = if (cookie == null) value else cookie + "; " + value
         case _ if name.equalsIgnoreCase(Headers.ContentLength) => contentLength = value
         case _                                                 => headers += ((name, value))
       }
-      headerStart = valueEnd + 2
+      val nextHeader = valueEnd + 2
+      require(nextHeader > headerStart, "HTTP header parser made no progress")
+      headerStart = nextHeader
     }
+    require(headerStart == lastByteOfHeader + 2, "Malformed HTTP header boundary")
     val request = Request(
       method = Request.Method.fromString(method),
       pq = PathAndQuery.fromString(path).withParams(Option(params)),

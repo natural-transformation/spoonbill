@@ -122,8 +122,18 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
       }
     }
 
+    @tailrec def creationFailed(): Unit = {
+      val ref = pool.get()
+      val waiting = ref.cbs.headOption
+      val next = ref.copy(total = if (waiting.isDefined) ref.total else ref.total - 1, cbs = ref.cbs.drop(1))
+      if (pool.compareAndSet(ref, next)) waiting.foreach(callback => createNew().runAsync(callback))
+      else creationFailed()
+    }
+
     def createNew(): F[Borrow[F, T]] =
-      factory.map { value =>
+      Effect[F].delayAsync(factory).recoverF { case scala.util.control.NonFatal(error) =>
+        Effect[F].delay(creationFailed()).flatMap(_ => Effect[F].fail(error))
+      }.map { value =>
         val observed = new AtomicBoolean(false)
         val settled = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
         def recordClose(): Unit =

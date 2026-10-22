@@ -11,7 +11,7 @@ upstream 3.11.6 queues decoded WebSocket events without a capacity limit.
 | --- | --- | --- | --- |
 | Pekko | `PekkoHttpServerConfig.wsMaxMessageBytes`, default 16 KiB | At most `wsStreamedParallelism` aggregation slots (default 2), finite Reactive Streams buffers; application sink input buffer pinned to 1 | Existing absolute collection deadline, default 30 seconds; failure cancels output and releases ownership |
 | Akka | `AkkaHttpServerConfig.wsMaxMessageBytes`, default 16 KiB | Same aggregation/backpressure policy as Pekko | Same as Pekko |
-| ZIO HTTP | `service` argument `wsMaxMessageBytes`, default 16 KiB, installed in Netty's decoder | Before conversion: at most 16 transport events, therefore at most 256 KiB data at the default frame cap. Application queue: `wsMaxQueuedMessages` (default 16) times message cap, another 256 KiB | Queue overflow closes connection and replaces buffered input with one terminal signal; absolute raw frame deadline 30 seconds |
+| ZIO HTTP | `service` argument `wsMaxMessageBytes`, default 16 KiB, installed in Netty's decoder | Before conversion: at most 16 admitted transport events, therefore at most 256 KiB data at the default frame cap, plus one reserved payload-free terminal on ordinary closure. Application queue: `wsMaxQueuedMessages` (default 16) times message cap, another 256 KiB | Queue overflow closes connection and replaces buffered input with one terminal signal; absolute raw frame deadline 30 seconds |
 | Standalone | `buildServer` argument `wsMaxMessageBytes`, default 16 KiB, bounds advertised frames and aggregate fragments | Pull-based decoder: one partial frame and one partial message, each bounded, plus socket read chunks (default 8096 bytes) | `wsMessageTimeout`, default 30 seconds, starts at first input and persists through fragments/control frames; failure closes socket and releases ownership |
 
 Budgets count UTF-8 bytes, not UTF-16 characters. Pekko/Akka count before every
@@ -56,8 +56,11 @@ It checks queue size before `frameFromNetty` copies or converts the payload.
 Consumers only decrease the size, so concurrent consumption cannot over-admit.
 All dispatch paths use the same cap. Overflow closes the channel, clears retained
 payloads, and leaves one terminal failure to wake the receiver; queued protocol
-messages are never silently dropped while keeping the connection alive. Peer
-closure also clears queued payloads and delivers a terminal signal.
+messages are never silently dropped while keeping the connection alive. Ordinary
+peer closure preserves admitted events in FIFO order, followed by one reserved
+payload-free terminal signal. The termination gate prevents any later producer
+from adding events, so the total is bounded by 16 admitted events plus one terminal.
+This preserves a final client response even when its consumer runs after closure.
 
 The adapter keeps decoder/UTF-8 validation enabled but disables automatic decoder
 Close emission. The bounded runtime sends one explicit failure Close through the
@@ -76,10 +79,18 @@ when a peer floods unread input. Cleanup still runs once, and a later independen
 connection must succeed.
 
 A server-only wire observer is installed after TLS and before the HTTP decoder
-that is replaced during upgrade. It tracks at most 14 header bytes and a remaining
-length counter, retains no payload, and never changes buffer read indexes. It
-enforces an absolute 30-second frame assembly deadline, including the initial
-post-upgrade wait (which also bounds eager data retained by the old decoder).
+that is replaced during upgrade. The accepted-upgrade handoff first replaces that
+HTTP decoder with a temporary rejection decoder: any unread prefix forwarded on
+removal, or bytes received before the real WebSocket decoder is installed, close
+the connection. Pre-101 WebSocket input is intentionally rejected rather than
+guessing the boundary of an already consumed frame. Netty replaces the temporary
+decoder before writing HTTP 101, so a compliant client can send its first frame
+immediately after reading that response. The observer also refuses installation
+after a WebSocket decoder already exists.
+
+The observer tracks at most 14 header bytes and a remaining length counter,
+retains no payload, and never changes buffer read indexes. It enforces an absolute
+30-second frame assembly deadline, including the initial post-upgrade wait.
 Subsequent idle periods after complete frames do not retain a timer. Masking,
 UTF-8 validation, and the configured maximum frame size remain Netty's job.
 
@@ -124,7 +135,7 @@ nix develop --no-write-lock-file -c sbt \
   'pekko/testOnly spoonbill.pekko.PekkoWebSocketLimitsSpec' \
   'akka/testOnly spoonbill.akka.AkkaWebSocketLimitsSpec' \
   'standalone/testOnly spoonbill.server.StandaloneWebSocketLimitsSpec spoonbill.server.StandaloneMessageDeadlineSpec' \
-  'zioHttp/testOnly spoonbill.zio.http.ZioHttpIngressLimitsSpec zio.http.netty.BoundedTransportSpec spoonbill.zio.http.ZioHttpTransportSocketSpec'
+  'zioHttp/testOnly spoonbill.zio.http.ZioHttpIngressLimitsSpec zio.http.netty.BoundedTransportSpec zio.http.netty.WebSocketUpgradeSocketSpec spoonbill.zio.http.ZioHttpTransportSocketSpec'
 ```
 
 Tests exercise declared lengths before payload arrival, UTF-8 boundaries and split
@@ -133,6 +144,12 @@ Netty queue admission, runtime artifact identity, and raw server sockets. The ZI
 socket stress pauses the handler, sends 1000 masked frames, and requires closure
 before allowing the handler to consume; a separate connection must still echo.
 Run existing adapter lifecycle/ownership suites alongside these checks.
+
+The upgrade regression uses a real loopback HTTP handshake and Netty's supported
+lenient HTTP parsing configuration to retain an eager partial frame. Default
+strict parsing can reject that input earlier; universal reachability under the
+default parser is not claimed. Separate default-ZIO tests send immediately after
+101 with both values of `avoidContextSwitching` and verify the payload is intact.
 
 CI must also run `zioHttpRuntime/packageBin`, `zioHttpRuntime/packageSrc`, and
 `zioHttpRuntime/makePom`, and export `zioHttp/Runtime/fullClasspath` to a file
@@ -148,7 +165,7 @@ nix develop --no-write-lock-file -c node misc/check-zio-http-runtime.mjs \
 
 This checks the entire runtime classpath for duplicate original handlers, the
 published dependency POM, Apache attribution, and the generated SHA-256 manifest
-against all three tracked and published patch sources. It fails on an omitted
+against all four tracked and published patch sources. It fails on an omitted
 upstream source artifact or changed pinned input; it does not publish anything.
 
 These are payload budgets, not exact JVM heap limits. UTF-16 text, arrays,

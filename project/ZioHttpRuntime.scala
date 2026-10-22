@@ -50,7 +50,7 @@ object ZioHttpRuntime {
     Compile / exportJars := true,
     Compile / resourceGenerators += Def.task {
       val sourceRoot = (Compile / scalaSource).value
-      val names = Seq("WebSocketAppHandler", "WebSocketFrameDeadline", "SpoonbillWebSocketRuntime")
+      val names = Seq("WebSocketAppHandler", "WebSocketFrameDeadline", "WebSocketUpgradeBoundary", "SpoonbillWebSocketRuntime")
       val hashes = names.map { name =>
         val path = s"zio/http/netty/$name.scala"
         "\"" + path + "\":\"" + digest(sourceRoot / path) + "\""

@@ -354,7 +354,7 @@ package object pekko {
       pq = PathAndQuery.fromString(path).withParams(request.uri.rawQueryString),
       method = SpoonbillRequest.Method.fromString(request.method.value),
       contentLength = request.entity.contentLengthOption,
-      renderedCookie = request.headers.find(_.is("cookie")).map(_.value()).getOrElse(""),
+      renderedCookie = request.headers.filter(_.is("cookie")).map(_.value()).mkString("; "),
       headers = {
         val contentType = request.entity.contentType
         val contentTypeHeaders =

@@ -82,6 +82,7 @@ assert.deepEqual(Object.keys(manifest.patchSources).sort(), [
   'zio/http/netty/SpoonbillWebSocketRuntime.scala',
   'zio/http/netty/WebSocketAppHandler.scala',
   'zio/http/netty/WebSocketFrameDeadline.scala',
+  'zio/http/netty/WebSocketUpgradeBoundary.scala',
 ]);
 for (const [name, checksum] of Object.entries(manifest.patchSources)) {
   assert.equal(sha(fs.readFileSync(path.join(tracked, 'src/main/scala', name))), checksum, `Tracked patch ${name}`);

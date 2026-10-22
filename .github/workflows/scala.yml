@@ -59,6 +59,7 @@ jobs:
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
           misc/browser-protocol-tests.mjs \
           misc/browser-auth-schema-tests.mjs \
+          misc/release-ref-tests.mjs \
           misc/replacement-bootstrap-tests.mjs \
           misc/core-purity-tests.mjs \
           misc/browser-auth-baseline/*.test.mjs

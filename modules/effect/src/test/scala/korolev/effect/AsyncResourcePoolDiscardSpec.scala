@@ -52,4 +52,26 @@ final class AsyncResourcePoolDiscardSpec extends AnyFlatSpec with Matchers {
     pool.unsafeGetState.items shouldBe empty
     pool.unsafeGetState.closedItems shouldBe empty
   }
+
+  "Pool creation" should "release failed reservations and retry a waiting borrower without exhausting capacity" in {
+    val failed = Promise[Resource]()
+    val calls = new AtomicInteger()
+    def factory: Future[Resource] = if (calls.getAndIncrement() == 0) failed.future else Future.successful(new Resource)
+    val pool = new AsyncResourcePool[Future, Resource]("factory-failure", factory,
+      () => Future.successful(0L), 1, 1.minute)
+    val first = pool.borrow()
+    val waiting = pool.borrow()
+    waiting.isCompleted shouldBe false
+    failed.failure(new IllegalStateException("Synthetic failed TLS handshake"))
+    intercept[IllegalStateException](await(first))
+    val recovered = await(waiting)
+    pool.unsafeGetState.total shouldBe 1
+    pool.unsafeGetState.closedItems shouldBe empty
+    await(recovered.discard())
+    pool.unsafeGetState.total shouldBe 0
+    val next = await(pool.borrow())
+    await(next.discard())
+    pool.unsafeGetState.total shouldBe 0
+    calls.get() shouldBe 3
+  }
 }
