@@ -1,10 +1,56 @@
 # PR #17 consolidated review resolution
 
-This records four rounds of the 22 October 2026 security and Scala reviews,
-against `2dfb7a87`, `56cff8c8`, `3d2d757e`, and `2b8e947c`. All twenty-two findings across the
-four rounds are accepted; none is rejected. The source reviews remain user-owned local
-documents and are not added to the PR by these changes. GitHub release setup
+This records five rounds of the 22 October 2026 security and Scala reviews,
+against `2dfb7a87`, `56cff8c8`, `3d2d757e`, `2b8e947c`, and `b7272e26`.
+All twenty-three findings across the five rounds are accepted; none is rejected.
+The source reviews remain user-owned local documents and are not added to the
+PR by these changes. GitHub release setup
 remains explicitly deferred to the user's final review.
+
+## Fifth-round dispositions
+
+The updated security review confirms no new actionable source-code finding in
+its reviewed paths. Its documented client deadline boundaries and outstanding
+release setup remain as recorded below.
+
+| ID | Updated review finding | Resolution |
+| --- | --- | --- |
+| SCALA5-1 | P2 skipping informational responses overflows the stack with eager input | Replace the response decoder's recursive `Stream.collect` use with a private loop whose entire pull and continuation execute through `Effect.fork` on `ExecutionContext.parasitic`. Each skipped response is scheduled without growing the synchronous Future continuation stack. Lazy effects remain in the caller's context and cancellation scope. The same decoder retains subsequent response/101 bytes, input errors and cancellation. |
+
+This is a narrow response-selection change; it does not change the shared stream
+operators or impose a new informational-response count limit. The absolute
+final-header deadline remains active across interim responses. Tests reproduce
+the review's eager-input shape with 3, 250 and 3,000 interim responses in chunks
+of at most 8,096 bytes, plus a 3,000-response one-byte-chunk case. This establishes
+stack safety for the reproduced decoder path without claiming every socket-read
+schedule previously reached the same stack depth.
+
+## Verification
+
+Fifth-round production/test compilation and all **1,343 tests** passed (1,302
+ScalaTest and 41 ZIO Test), with no failures, canceled, ignored, pending or
+aborted cases. All commands use the repository-local Nix flake.
+
+```sh
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  bash scripts/with-test-postgres.sh sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
+  compile 'Test / compile' test
+```
+
+| Command/check | Result | Evidence |
+| --- | --- | --- |
+| Aggregate command above | PASS | Includes 144 HTTP tests and both new Cats Effect cases. Eleven new regressions cover eager bursts, one-byte fragmentation, subsequent final responses, 101 bytes, missing/malformed final headers, input errors, explicit stream cancellation, caller context and parent-fiber cancellation. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command sbt --batch --supershell=false -Dsbt.server.autostart=false 'http/testOnly spoonbill.http.protocol.Http11InformationalResponseSpec spoonbill.http.protocol.Http11ResponseFramingSpec spoonbill.http.HttpClientBodylessResponseSpec'` | PASS | 24 cases, including the reproduced 3,000-response burst and the existing live-client absolute deadline/pool-recovery test. |
+| Independent source review | PASS | Confirmed the entire recursive step is inside the trampoline and preserves the decoder, caller effect context, cancellation and existing response selection. |
+| `git diff --check` | PASS | No whitespace errors. |
+
+No timeout was increased and no finite informational-response count limit was
+introduced. The PR description links the final-head CI results for packaging,
+JavaScript and native browser integrations. Local logs are
+`/tmp/pr17-round5-implementation-focused.log` and
+`/tmp/pr17-round5-implementation-all.log`; committed tests and commands suffice
+to rerun the checks.
 
 ## Fourth-round dispositions
 
@@ -30,7 +76,7 @@ headers. Neither timer limits response-body consumption. Certificate and
 hostname validation remain enabled. A completed setup cancels its timer before
 handing the connection to the HTTP exchange.
 
-## Verification
+## Fourth-round verification (`b7272e26`)
 
 Fourth-round production/test compilation and all **1,332 tests** passed (1,291
 ScalaTest and 41 ZIO Test), with no failures, canceled, ignored or pending cases.

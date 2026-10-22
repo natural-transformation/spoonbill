@@ -1,6 +1,7 @@
 package spoonbill.http.protocol
 
 import scala.collection.mutable
+import scala.concurrent.ExecutionContext
 import spoonbill.data.BytesLike
 import spoonbill.data.syntax._
 import spoonbill.effect.{Decoder, Effect, Stream}
@@ -94,11 +95,7 @@ class Http11[B: BytesLike](
   def decodeResponse[F[_]: Effect](
     decoder: Decoder[F, B],
     requestMethod: Request.Method = Request.Method.Get
-  ): Stream[F, Response[Stream[F, B]]] = decoder
-    .decode(BytesLike[B].empty)(decodeResponse)
-    // Informational responses end at their headers. Keep reading for the final
-    // response, except 101, whose remaining bytes belong to the upgraded stream.
-    .collect { case response if response.status.code < 100 || response.status.code == 101 || response.status.code >= 200 => response }
+  ): Stream[F, Response[Stream[F, B]]] = finalResponseHeaders(decoder.decode(BytesLike[B].empty)(decodeResponse))
     .map { response =>
       response.copy(
         body = if (response.status.code == 101) decoder
@@ -113,6 +110,21 @@ class Http11[B: BytesLike](
             decoder
         }
       )
+    }
+
+  private def finalResponseHeaders[F[_]: Effect](headers: Stream[F, Response[Unit]]): Stream[F, Response[Unit]] =
+    new Stream[F, Response[Unit]] {
+      def pull(): F[Option[Response[Unit]]] = Effect[F].fork {
+        headers.pull().flatMap {
+          case Some(response) if response.status.code >= 100 && response.status.code < 200 && response.status.code != 101 =>
+            // Eager Future continuations need a trampoline at each skipped
+            // response. Keep the whole step inside fork, including flatMap.
+            pull()
+          // Return 101 immediately; its unread bytes remain in the decoder.
+          case result => Effect[F].pure(result)
+        }
+      }(ExecutionContext.parasitic)
+      def cancel(): F[Unit] = headers.cancel()
     }
 
   def decodeResponse(buffer: B, incoming: B): (B, Decoder.Action[B, Response[Unit]]) = {
