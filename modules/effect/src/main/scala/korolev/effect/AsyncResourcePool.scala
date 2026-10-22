@@ -1,6 +1,6 @@
 package spoonbill.effect
 
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 import scala.collection.immutable.TreeSet
@@ -19,8 +19,17 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
 
   import AsyncResourcePool.Borrow
 
-  private class BorrowImpl(val value: T) extends Borrow[F, T] {
-    def give(): F[Unit] = {
+  private class BorrowImpl(val value: T, retire: () => F[Unit]) extends Borrow[F, T] {
+    private val returned = new AtomicBoolean(false)
+    def give(): F[Unit] = Effect[F].delayAsync {
+      if (returned.compareAndSet(false, true)) returnToPool() else Effect[F].unit
+    }
+    def discard(): F[Unit] = Effect[F].uncancelable {
+      Effect[F].delayAsync {
+        if (returned.compareAndSet(false, true)) retire().flatMap(_ => returnToPool()) else Effect[F].unit
+      }
+    }
+    private def returnToPool(): F[Unit] = {
       @tailrec def loop(nanos: Long): Unit = {
         val ref = pool.get()
         if (ref.itemIsClosed(value)) {
@@ -37,6 +46,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
           if (ref.cbs.isEmpty) {
             // There is no callbacks. Add item back to pool
             val item     = PoolItem(nanos, value)
+            item.retire = retire
             val newState = ref.copy(items = item :: ref.items)
             if (pool.compareAndSet(ref, newState)) {
               //reporter.debug("%s - Item has gave back to pool", name)
@@ -50,7 +60,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
                 val newState = ref.copy(cbs = restOfCbs)
                 if (pool.compareAndSet(ref, newState)) {
                   //reporter.debug("%s - Returned item transferred to next taker", name)
-                  cb(Right(new BorrowImpl(value)))
+                  cb(Right(new BorrowImpl(value, retire)))
                 } else {
                   loop(nanos)
                 }
@@ -114,9 +124,20 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
 
     def createNew(): F[Borrow[F, T]] =
       factory.map { value =>
+        val observed = new AtomicBoolean(false)
+        val settled = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+        def recordClose(): Unit =
+          if (observed.compareAndSet(false, true)) {
+            onCloseLoop(value)
+            settled.put((), ()).runAsyncForget
+          }
+        def retire(): F[Unit] =
+          Close[F, T].close(value).flatMap { _ =>
+            Effect[F].delay(recordClose()).flatMap(_ => settled.get(())).unit
+          }
         //reporter.debug("%s - Resource created", name)
-        Close[F, T].onClose(value).runAsync(_ => onCloseLoop(value))
-        new BorrowImpl(value)
+        Close[F, T].onClose(value).runAsync(_ => recordClose())
+        new BorrowImpl(value, () => retire())
       }
 
     Effect[F].promise { cb =>
@@ -125,7 +146,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
           // Return item from pool
           if (pool.compareAndSet(ref, ref.copy(items = xs))) {
             //reporter.debug("%s - Return item from pool", name)
-            cb(Right(new BorrowImpl(x.value)))
+            cb(Right(new BorrowImpl(x.value, x.retire)))
           } else {
             loop()
           }
@@ -237,7 +258,9 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
 
   type DisposePromise = Effect.Promise[Unit]
 
-  case class PoolItem(idle: Long = 0L, value: T)
+  case class PoolItem(idle: Long = 0L, value: T) {
+    private[AsyncResourcePool] var retire: () => F[Unit] = () => Close[F, T].close(value)
+  }
 
   case class PoolState(
     total: Int = 0,
@@ -261,6 +284,8 @@ object AsyncResourcePool {
   sealed trait Borrow[F[_], +T] {
     def value: T
     def give(): F[Unit]
+    /** Permanently retire this resource without returning a closed value to a waiter. */
+    def discard(): F[Unit]
   }
 
   implicit def asyncPoolMapClose[F[_]: Effect, K, T]: Close[F, AsyncResourcePool[F, T]] =

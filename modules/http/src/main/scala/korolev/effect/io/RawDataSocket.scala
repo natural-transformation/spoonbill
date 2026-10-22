@@ -36,7 +36,7 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
     * the peer observes transport closure. Ordinary stream cancellation does not
     * do this: an HTTP handler may cancel an unused body and still write a response.
     */
-  def shutdown(): F[Unit] = Effect[F].delay {
+  override def shutdown(): F[Unit] = Effect[F].delay {
     markClosed(CloseReason.StreamCanceled)
     try channel.close()
     catch { case NonFatal(_) => () }

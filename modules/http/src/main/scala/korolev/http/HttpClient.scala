@@ -4,6 +4,7 @@ import java.net.{InetSocketAddress, URI}
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
 import java.util.concurrent.{Executor, Executors}
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.ExecutionContext
@@ -67,7 +68,8 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   private def http(
     borrow: Borrow[F, DataSocket[F, B]],
     host: String,
-    request: Request[Stream[F, B]]
+    request: Request[Stream[F, B]],
+    recycleAfterBody: Boolean = true
   ): F[Response[Stream[F, B]]] =
     for {
       requestStream <- http11.renderRequest(request.withHeader(Headers.Host, host))
@@ -76,6 +78,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
       maybeResponse <- http11.decodeResponse(Decoder(socket.stream)).pull()
       response <-
         maybeResponse match {
+          case Some(response) if !recycleAfterBody => Effect[F].pure(response)
           case Some(response) =>
             val (consumed, consumableBody) = response.body.handleConsumed
             consumed
@@ -150,25 +153,40 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     outgoingFrames: Stream[F, WebSocketProtocol.Frame[B]],
     cookie: Map[String, String],
     headers: Map[String, String]
-  ): F[Response[Stream[F, WebSocketProtocol.Frame.Merged[B]]]] =
-    for {
+  ): F[Response[Stream[F, WebSocketProtocol.Frame.Merged[B]]]] = {
+    val closed = new AtomicBoolean(false)
+    def close(): F[Unit] = Effect[F].uncancelable {
+      Effect[F].delayAsync {
+        if (!closed.compareAndSet(false, true)) Effect[F].unit
+        else borrow.value.shutdown().recover { case NonFatal(_) => () } *>
+          outgoingFrames.cancel().recover { case NonFatal(_) => () } *>
+          borrow.discard()
+      }
+    }
+    val response = for {
       intention            <- WebSocketProtocol.Intention.random
       encodedOutgoingFrames = outgoingFrames.map(frame => webSocketProtocol.encodeFrame(frame, Some(123)))
       requestRaw            = Request(Request.Method.Get, path, headers.toSeq, None, encodedOutgoingFrames)
       requestWithCookie     = cookie.foldLeft(requestRaw) { case (acc, (k, v)) => acc.withCookie(k, v) }
       requestWithIntention  = webSocketProtocol.addIntention(requestWithCookie, intention)
-      rawResponse          <- http(borrow, host, requestWithIntention)
+      rawResponse          <- http(borrow, host, requestWithIntention, recycleAfterBody = false)
       frameDecoder          = Decoder(rawResponse.body)
       frames                = webSocketProtocol.mergeFrames(webSocketProtocol.decodeFrames(frameDecoder))
     } yield {
       val boundedInput = new Stream[F, Frame.Merged[B]] {
-        def pull(): F[Option[Frame.Merged[B]]] = frames.pull().recoverF { case NonFatal(error) =>
-          rawResponse.body.cancel().recover { case NonFatal(_) => () } *> Effect[F].fail(error)
+        def pull(): F[Option[Frame.Merged[B]]] = frames.pull().flatMap {
+          case None => close().start.as(None)
+          case value => Effect[F].pure(value)
+        }.recoverF { case NonFatal(error) =>
+          // A user output finalizer may await this read; settle the read first.
+          close().start *> Effect[F].fail(error)
         }
-        def cancel(): F[Unit] = frames.cancel()
+        def cancel(): F[Unit] = close()
       }
       rawResponse.copy(body = boundedInput)
     }
+    response.recoverF { case NonFatal(error) => close().start *> Effect[F].fail(error) }
+  }
 
   private def pqFromUri(uri: URI) = {
     val path  = if (uri.getPath == null) "" else uri.getPath

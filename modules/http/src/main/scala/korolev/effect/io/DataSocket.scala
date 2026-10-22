@@ -8,6 +8,8 @@ trait DataSocket[F[_], B] {
   def stream: Stream[F, B]
   def onClose(): F[CloseReason]
   def write(bytes: B): F[Unit]
+  /** Close the transport. Custom implementations retain their cancellation fallback. */
+  def shutdown(): F[Unit] = stream.cancel()
 }
 
 object DataSocket {
@@ -25,6 +27,6 @@ object DataSocket {
       def onClose(that: DataSocket[F, B]): F[Unit] =
         that.onClose().unit
       def close(that: DataSocket[F, B]): F[Unit] =
-        that.stream.cancel()
+        that.shutdown()
     }
 }
