@@ -68,7 +68,7 @@ object HttpServer {
               // A failed render, pull, or write still owns the response body.
               sending.recoverF { case NonFatal(error) =>
                 response.body.cancel().recover { case NonFatal(_) => () } *>
-                  endWebSocket(response, client) *>
+                  client.shutdown() *>
                   Effect[F].fail(error)
               }
             }

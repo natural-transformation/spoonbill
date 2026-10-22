@@ -1,12 +1,12 @@
 package spoonbill.http.protocol
 
+import scala.collection.mutable
 import spoonbill.data.BytesLike
 import spoonbill.data.syntax._
 import spoonbill.effect.{Decoder, Effect, Stream}
 import spoonbill.effect.syntax._
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 import spoonbill.web.Response.Status
-import scala.collection.mutable
 
 class Http11[B: BytesLike] {
 
@@ -153,7 +153,7 @@ class Http11[B: BytesLike] {
         if (allBytes(nameEnd + 1) == ' ') allBytes.slice(nameEnd + 2, valueEnd).asAsciiString
         else allBytes.slice(nameEnd + 1, valueEnd).asAsciiString
       name match {
-        case _ if name.equalsIgnoreCase(Headers.Cookie)        => cookie = value
+        case _ if name.equalsIgnoreCase(Headers.Cookie)        => cookie = if (cookie == null) value else cookie + "; " + value
         case _ if name.equalsIgnoreCase(Headers.ContentLength) => contentLength = value
         case _                                                 => headers += ((name, value))
       }
@@ -221,6 +221,8 @@ class Http11[B: BytesLike] {
   }
 
   def renderResponseHeader(status: Status, headers: Seq[(String, String)]): String = {
+    Headers.validateValue(status.phrase)
+    headers.foreach { case (name, value) => Headers.validate(name, value) }
     val builder = new java.lang.StringBuilder()
 
     builder
@@ -287,11 +289,11 @@ class Http11[B: BytesLike] {
   }
 
   def renderResponse[F[_]: Effect](response: Response[Stream[F, B]]): F[Stream[F, B]] = {
-    def go(readers: Seq[(String, String)], body: Stream[F, B]) = {
+    def go(readers: Seq[(String, String)], body: Stream[F, B]) =
+      Effect[F].delay {
       val fullHeaderString = renderResponseHeader(response.status, readers)
-      val fullHeaderBytes  = BytesLike[B].ascii(fullHeaderString)
-      Stream(fullHeaderBytes).mat().map(_ ++ body)
-    }
+        BytesLike[B].ascii(fullHeaderString)
+      }.flatMap(bytes => Stream(bytes).mat().map(_ ++ body))
     response.contentLength match {
       case Some(s)                                              => go((Headers.ContentLength -> s.toString) +: response.headers, response.body)
       case None if response.status == Status.SwitchingProtocols => go(response.headers, response.body)

@@ -18,4 +18,9 @@ package spoonbill.server.internal
 
 private[spoonbill] object Cookies {
   val DeviceId = "deviceId"
+
+  def validDeviceId(value: String): Boolean =
+    value != null && value.nonEmpty && value.length <= 128 && value.forall { c =>
+      (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || "._~-".contains(c)
+    }
 }

@@ -1,18 +1,51 @@
 package spoonbill.http.protocol
 
-import spoonbill.data.Bytes
-import spoonbill.effect.{Decoder, Stream}
-import spoonbill.web.{PathAndQuery, Request, Response}
 import org.scalacheck._
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.Duration
+import spoonbill.data.Bytes
+import spoonbill.effect.{Decoder, Stream}
+import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 
 class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks {
 
   val http11 = new Http11[Bytes]
+
+  "response serialization" should "reject unsafe arbitrary fields and status phrases before emitting bytes" in {
+    val controls = ((0 to 31).filterNot(_ == 9) :+ 127).map(_.toChar.toString)
+    controls.foreach { control =>
+      intercept[IllegalArgumentException] {
+        http11.renderResponseHeader(Response.Status.Ok, Seq("X-Test" -> s"before${control}after"))
+      }
+      intercept[IllegalArgumentException] {
+        http11.renderResponseHeader(new Response.Status(200, s"OK${control}X-Canary: yes"), Nil)
+      }
+    }
+    Seq("", "X:Canary", "X Canary", "X\r\nCanary", "X-ü").foreach { name =>
+      intercept[IllegalArgumentException](http11.renderResponseHeader(Response.Status.Ok, Seq(name -> "yes")))
+    }
+  }
+
+  it should "preserve repeated Set-Cookie fields and redirects" in {
+    val headers = Seq(
+      Headers.setCookie("deviceId", "safe-device", "/", 60),
+      Headers.setCookie("auth", "safe-token", "/", 60),
+      Headers.Location -> "/login?continue=%2Faccount"
+    )
+    val rendered = http11.renderResponseHeader(Response.Status.SeeOther, headers)
+    rendered.split("\r\n").count(_.startsWith("Set-Cookie: ")) shouldBe 2
+    rendered should include("Location: /login?continue=%2Faccount\r\n")
+  }
+
+  "request parsing" should "retain repeated cookie fields so duplicate identities remain ambiguous" in {
+    val bytes =
+      Bytes.wrap("GET / HTTP/1.1\r\nCookie: deviceId=first\r\ncOoKiE: deviceId=last\r\n\r\n".getBytes("US-ASCII"))
+    val (_, request) = http11.parseRequest(bytes, http11.findLastHeaderEnd(bytes))
+    request.cookie("deviceId") shouldBe None
+  }
 
   // TODO use from effect
   implicit val ec: ExecutionContext = new ExecutionContext {

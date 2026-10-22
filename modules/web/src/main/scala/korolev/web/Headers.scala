@@ -16,6 +16,7 @@
 
 package spoonbill.web
 
+import java.net.URLEncoder
 import java.util.Base64
 
 object Headers {
@@ -52,7 +53,27 @@ object Headers {
   final val ConnectionUpgrade       = Connection          -> "Upgrade"
   final val UpgradeWebSocket        = Upgrade             -> "websocket"
 
-  def setCookie(cookie: String, value: String, path: String, maxAge: Int): (String, String) =
-    SetCookie -> s"$cookie=$value; Path=$path; Max-Age=$maxAge; SameSite=Lax; HttpOnly"
+  /**
+   * Validate before serializing arbitrary application-supplied response fields.
+   */
+  def validate(name: String, value: String): Unit = {
+    require(name != null && name.nonEmpty && name.forall(isTokenCharacter), "Invalid HTTP header name")
+    validateValue(value)
+  }
+
+  def validateValue(value: String): Unit =
+    require(value != null && !value.exists(c => (c < ' ' && c != '\t') || c == 127), "Invalid HTTP header value")
+
+  private def isTokenCharacter(c: Char): Boolean =
+    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+      "!#$%&'*+-.^_`|~".contains(c)
+
+  def setCookie(cookie: String, value: String, path: String, maxAge: Int): (String, String) = {
+    require(cookie != null && cookie.nonEmpty, "Cookie name must not be empty")
+    require(path != null && !path.exists(c => c < ' ' || c == 127 || c == ';'), "Invalid cookie path")
+    val name    = URLEncoder.encode(cookie, "UTF-8")
+    val encoded = URLEncoder.encode(value, "UTF-8")
+    SetCookie -> s"$name=$encoded; Path=$path; Max-Age=$maxAge; SameSite=Lax; HttpOnly"
+  }
 
 }
