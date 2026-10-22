@@ -23,6 +23,7 @@ class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
     pq = Root,
     headers = Seq(
       "connection"            -> "upgrade",
+      "upgrade"               -> "websocket",
       "sec-websocket-key"     -> HandshakeKey,
       "sec-websocket-version" -> "13"
     ),
@@ -151,6 +152,10 @@ class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
   it should "understand that browser send just a regular HTTP request" in {
     val maybeIntention = findIntention(BasicHttpRequest)
     maybeIntention shouldEqual None
+  }
+
+  it should "reject a key-bearing request without the WebSocket Upgrade header" in {
+    findIntention(HandshakeRequest.copy(headers = HandshakeRequest.headers.filterNot(_._1 == "upgrade"))) shouldBe None
   }
 
   "handshake" should "add right headers (example from RFC (from RFC https://tools.ietf.org/html/rfc6455 1.2)" in {

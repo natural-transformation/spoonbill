@@ -9,6 +9,7 @@ import spoonbill.data.{BytesLike, BytesReader}
 import spoonbill.data.syntax._
 import spoonbill.effect.{Decoder, Effect, Stream}
 import spoonbill.effect.syntax._
+import spoonbill.http.HttpUpgradeInput
 import spoonbill.web.{Headers, Request, Response, WebSocketLimits}
 import spoonbill.web.Request.Head
 import spoonbill.web.Response.Status
@@ -172,7 +173,19 @@ final class WebSocketProtocol[B: BytesLike](maxMessageBytes: Int = WebSocketLimi
   }
 
   def findIntention(request: Head): Option[Intention] =
-    request.header(Headers.SecWebSocketKey).map(Intention(_))
+    request.header(Headers.SecWebSocketKey).map(value => Intention(value.trim)).filter(validHandshake(request, _))
+
+  private def validHandshake(request: Head, intention: Intention): Boolean = {
+    def values(name: String): Seq[String] = request.headers.collect {
+      case (key, value) if key.equalsIgnoreCase(name) => value.trim
+    }
+    def containsToken(name: String, token: String): Boolean =
+      values(name).flatMap(_.split(',')).exists(_.trim.equalsIgnoreCase(token))
+    request.method == Request.Method.Get && values(Headers.SecWebSocketVersion) == Seq("13") &&
+      values(Headers.SecWebSocketKey) == Seq(intention.key) &&
+      containsToken(Headers.Connection, "upgrade") && containsToken(Headers.Upgrade, "websocket") &&
+      scala.util.Try(Base64.getDecoder.decode(intention.key).length == 16).getOrElse(false)
+  }
 
   def addIntention[T](request: Request[T], intention: Intention): Request[T] =
     request.withHeaders(
@@ -206,10 +219,20 @@ final class WebSocketProtocol[B: BytesLike](maxMessageBytes: Int = WebSocketLimi
     onMessageCompleted: () => Unit = () => ()
   )(
     f: Request[Stream[F, Frame.Merged[B]]] => F[Response[Stream[F, Frame.Merged[B]]]]
-  ): Request[Stream[F, B]] => F[Response[Stream[F, B]]] = f
-    .compose[Request[Stream[F, B]]] { request =>
+  ): Request[Stream[F, B]] => F[Response[Stream[F, B]]] = request => Effect[F].delayAsync {
+    if (!validHandshake(request, intention) || request.contentLength.exists(_ != 0L) ||
+      request.header(Headers.TransferEncoding).nonEmpty)
+      Effect[F].pure(Response(Status.BadRequest, Stream.empty[F, B], Nil, Some(0L)))
+    else {
+      val transport = request.body match {
+        case input: HttpUpgradeInput[F, B] @unchecked => input.claim()
+        // Trusted adapters can supply their transport directly, without the
+        // public HTTP-body facade. Validation above still applies.
+        case input => Effect[F].pure(input)
+      }
+      transport.flatMap { input =>
       var pendingFrameBytes = false
-      val messages = Decoder(request.body)
+      val messages = Decoder(input)
         .decode((BytesLike[B].empty, DecodingState.begin)) { case ((buffer, state), incoming) =>
           if (BytesLike[B].length(incoming) > 0) onMessageStarted()
           val result = decodeFrames(buffer, state, incoming)
@@ -230,14 +253,13 @@ final class WebSocketProtocol[B: BytesLike](maxMessageBytes: Int = WebSocketLimi
           }
           result
         }
-      request.copy(body = messages)
-    }
-    .andThen[F[Response[Stream[F, B]]]] { responseF =>
-      responseF.map { response =>
+      Effect[F].delayAsync(f(request.copy(body = messages))).map { response =>
         val upgradedBody = response.body.map(m => encodeFrame(m, None))
         handshake(response, intention).copy(body = upgradedBody)
       }
+      }
     }
+  }
 }
 
 object WebSocketProtocol {

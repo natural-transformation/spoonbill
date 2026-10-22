@@ -110,6 +110,40 @@ class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks
     intercept[IllegalArgumentException](parser.decodeRequest(Bytes.empty, Bytes.wrap(Array.fill[Byte](1024 * 1024)(65))))
   }
 
+  "response header bounds" should "include a split delimiter without counting a buffered body against the cap" in {
+    val header = Bytes.wrap("HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n".getBytes("US-ASCII"))
+    val body = Bytes.wrap(Array.fill[Byte](65536)(42))
+    val parser = new Http11[Bytes](maxResponseHeaderBytes = header.length.toInt)
+    val (buffer, pending) = parser.decodeResponse(Bytes.empty, header.slice(0, header.length - 1))
+    pending shouldBe Decoder.Action.TakeNext
+    parser.decodeResponse(buffer, header.slice(header.length - 1, header.length) ++ body)._2 match {
+      case Decoder.Action.Fork(response, remaining) =>
+        response.contentLength shouldBe Some(65536L)
+        remaining shouldBe body
+      case other => fail(s"Expected complete response, got $other")
+    }
+    val small = new Http11[Bytes](maxResponseHeaderBytes = header.length.toInt - 1)
+    intercept[IllegalArgumentException](small.decodeResponse(Bytes.empty, header ++ body))
+    var accumulated = Bytes.empty
+    (0L until header.length - 2).foreach { index =>
+      accumulated = small.decodeResponse(accumulated, header.slice(index, index + 1))._1
+    }
+    intercept[IllegalArgumentException](small.decodeResponse(accumulated, header.slice(header.length - 2, header.length)))
+    intercept[IllegalArgumentException](small.decodeResponse(Bytes.empty, Bytes.wrap(Array.fill[Byte](1024 * 1024)(65))))
+  }
+
+  it should "reject malformed and ambiguous response framing before constructing a body" in {
+    Seq(
+      "garbage\r\n\r\n",
+      "HTTP/1.1 200 OK\r\nBad\r\nX: yes\r\n\r\n",
+      "HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n",
+      "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+      "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n"
+    ).foreach { value =>
+      intercept[IllegalArgumentException](http11.decodeResponse(Bytes.empty, Bytes.wrap(value.getBytes("US-ASCII"))))
+    }
+  }
+
   // TODO use from effect
   implicit val ec: ExecutionContext = new ExecutionContext {
     def execute(runnable: Runnable): Unit     = runnable.run()
@@ -157,7 +191,7 @@ class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks
 
   private val genStatus =
     for {
-      k <- Gen.choose(0, 1000)
+      k <- Gen.choose(100, 999)
       v <- Gen.alphaNumStr.filter(_.nonEmpty)
     } yield Response.Status(k, v.toUpperCase)
 
@@ -248,7 +282,8 @@ class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks
           renderedResponseAsStream     <- http11.renderResponse(sampleResponse)
           renderedResponseAsBytes      <- renderedResponseAsStream.fold(Bytes.empty)(_ ++ _)
           renderedResponseAsChunks     <- Stream(sliceToChunks(renderedResponseAsBytes, numChunks): _*).mat()
-          maybeDecodedResponse         <- http11.decodeResponse(Decoder(renderedResponseAsChunks)).pull()
+          parser                        = new Http11[Bytes](maxResponseHeaderBytes = math.max(4, renderedResponseAsBytes.length.toInt))
+          maybeDecodedResponse         <- parser.decodeResponse(Decoder(renderedResponseAsChunks)).pull()
           decodedResponse               = maybeDecodedResponse.getOrElse(throw new Exception("No response found in rendered stream"))
           decodedBody                  <- decodedResponse.body.fold(Bytes.empty)(_ ++ _)
         } yield (

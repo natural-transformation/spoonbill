@@ -396,7 +396,7 @@ lazy val ce3 = project
     normalizedName                         := "spoonbill-ce3",
     libraryDependencies += "org.typelevel" %% "cats-effect" % ce3Version
   )
-  .dependsOn(effect, spoonbill % "test->compile")
+  .dependsOn(effect, spoonbill % "test->compile", http % "test->compile")
 
 lazy val monix = project
   .in(interop / "monix")

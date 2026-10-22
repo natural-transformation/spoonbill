@@ -19,21 +19,24 @@ final class StandaloneDeadlineIsolationSpec extends AnyFlatSpec with Matchers {
   "Standalone deadlines" should "close another socket while cleanup is blocked and reject excess admission before the handler" in {
     val entered = new CountDownLatch(1)
     val releaseGate = new CountDownLatch(1)
-    val asyncCleanup = Promise[Unit]()
-    val releases = new AtomicInteger()
+    val blockedFinalizerExited = new CountDownLatch(1)
+    val asyncCleanup = Array.fill(2)(Promise[Unit]())
+    val cleanupEntered = Array.fill(2)(Promise[Unit]())
+    val releases = Array.fill(2)(new AtomicInteger())
     val handlers = new AtomicInteger()
-    val bothReleased = Promise[Unit]()
     val service = new SpoonbillService[Future] {
       def http(request: HttpRequest[Future]): Future[HttpResponse[Future]] = Future.failed(new IllegalStateException("unused"))
       def ws(request: WebSocketRequest[Future]): Future[WebSocketResponse[Future]] = {
-        handlers.incrementAndGet()
+        val connection = handlers.getAndIncrement()
         Future.successful(WebSocketResponse.Duplex(request.httpRequest.body, "json", () => {
-          val count = releases.incrementAndGet()
-          if (count == 1) {
+          releases(connection).incrementAndGet()
+          if (connection == 0) {
             entered.countDown()
-            releaseGate.await(10L, TimeUnit.SECONDS)
-            asyncCleanup.future
-          } else { bothReleased.trySuccess(()); Future.unit }
+            try assert(releaseGate.await(10L, TimeUnit.SECONDS), "Test did not release the synchronous finalizer")
+            finally blockedFinalizerExited.countDown()
+          }
+          cleanupEntered(connection).trySuccess(())
+          asyncCleanup(connection).future
         }))
       }
     }
@@ -70,28 +73,36 @@ final class StandaloneDeadlineIsolationSpec extends AnyFlatSpec with Matchers {
       entered.await(2L, TimeUnit.SECONDS) shouldBe true
       first.getInputStream.read() shouldBe -1
       val second = connect(true)
+      handlers.get() shouldBe 2 // Both 101 responses witness admitted handlers.
       unfinished(second)
       second.getInputStream.read() shouldBe -1
-      // Both sockets are physically closed, but their cleanup reservations are
-      // still occupied. Admission must not invoke a third application handler.
+      blockedFinalizerExited.getCount shouldBe 1L
+      releaseGate.countDown()
+      cleanupEntered.foreach(signal => Await.result(signal.future, 3.seconds))
+      asyncCleanup.foreach(_.isCompleted shouldBe false)
+      // A failed-read path can win cleanup outside the notification worker.
+      // EOF alone therefore does not imply its reservation is still occupied.
+      // Both finalizers have now entered independently held asynchronous work;
+      // neither connection can return its reservation before this assertion.
       val excess = connect(false)
       excess.getInputStream.read() shouldBe -1
       handlers.get() shouldBe 2
-      releaseGate.countDown()
-      Await.result(bothReleased.future, 3.seconds)
       Await.result(server.stopServingRequests(), 3.seconds)
       val stopped = server.awaitShutdown()
       stopped.isCompleted shouldBe false
-      asyncCleanup.success(())
+      asyncCleanup(0).success(())
+      stopped.isCompleted shouldBe false
+      asyncCleanup(1).success(())
       // An aborted NIO read may be retained as the server's terminal failure;
       // either outcome must wait for cleanup before settling.
       Await.ready(stopped, 3.seconds)
-      releases.get() shouldBe 2
+      releases.foreach(_.get() shouldBe 1)
     } finally {
       releaseGate.countDown()
-      asyncCleanup.trySuccess(())
+      asyncCleanup.foreach(_.trySuccess(()))
       sockets.foreach(_.close())
       Await.result(server.stopServingRequests(), 5.seconds)
+      Await.ready(server.awaitShutdown(), 5.seconds)
     }
   }
 }

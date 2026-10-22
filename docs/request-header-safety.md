@@ -37,6 +37,10 @@ one case-insensitive `Transfer-Encoding: chunked`, never both. Repeated fields,
 comma-separated lengths, overflow, and unsupported transfer codings receive 400
 and connection closure before dispatch. Without either field, the HTTP body is
 empty; raw upgraded traffic is passed separately to the upgrade adapter.
+The public `HttpServer.apply`/`WebSocketProtocol.upgrade` composition retains
+an explicit upgrade boundary through a private one-use capability. Ordinary HTTP
+body reads never reveal upgrade bytes. A valid explicit upgrade must claim input
+during handler evaluation; late or repeated claims fail closed.
 
 Chunk payload passes through as it arrives, without aggregation to its advertised
 size. Size/extension lines are bounded to 1,024 bytes including CRLF, and the total
@@ -54,6 +58,23 @@ current response, so its bytes cannot be reinterpreted as another request.
 `maxChunkLineBytes`, `maxTrailerBytes`, and `requestBodyTimeout` are configurable
 through both standalone server entry points. Close notifications use the bounded
 server admission/cleanup policy in [the transport contract](request-transport-limits.md).
+
+Expected errors actually observed in the request input (malformed or truncated
+framing, transport read failure, or body deadline expiry) close the connection
+without reporting an application failure or emitting a full trace. Application
+failures still use `ec.reportFailure`, including errors of the same class.
+Classification uses the recorded input failure's identity, not a broad class
+filter on handler failures.
+
+The outbound client's response prefix is separately bounded. Defaults in
+`HttpClient.create` are `maxResponseHeaderBytes = 16384` and
+`responseHeaderTimeout = 30.seconds`. The timer covers the borrowed exchange until
+complete response headers, excluding pool wait, connection/TLS setup and body
+consumption after headers. Failure closes and discards the connection; canceled
+or incomplete bodies and responses requiring closure are not recycled. Only a
+fully consumed framed body and successful request writer allow reuse. Request-body
+finalizers execute off the timer with finite per-client cleanup admission
+(`maxTotalConnections = 1024`, `closeNotificationWorkers = 2`).
 
 The standalone HTTP response serializer validates all field names as HTTP tokens
 and rejects CR, LF, NUL, DEL, and other ASCII controls in field values except

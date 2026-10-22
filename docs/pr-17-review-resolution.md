@@ -1,10 +1,92 @@
 # PR #17 consolidated review resolution
 
-This records both rounds of the 22 October 2026 security and Scala reviews,
-against `2dfb7a87` and then `56cff8c8`. All fifteen findings across the two rounds
-are accepted; none is rejected. The source reviews remain user-owned local
+This records three rounds of the 22 October 2026 security and Scala reviews,
+against `2dfb7a87`, `56cff8c8`, and `3d2d757e`. All nineteen findings across the
+three rounds are accepted; none is rejected. The source reviews remain user-owned local
 documents and are not added to the PR by these changes. GitHub release setup
 remains explicitly deferred to the user's final review.
+
+## Third-round dispositions
+
+| ID | Updated review finding | Resolution |
+| --- | --- | --- |
+| SEC3-1 | P2 client response headers have no aggregate bound/deadline and failure can strand a borrow | Bound the response prefix before concatenating and enforce an absolute deadline through header completion. Strict status/field/framing validation prevents malformed-response parser loops. Parse, EOF, timeout and request-write failures retire the connection. Canceled/truncated/close-delimited responses and `Connection: close` do not recycle. Failure publication does not await user request-body cleanup, which has bounded reserved notification capacity. Plain/TLS hostile-peer tests cover max-one pool recovery, exact caps with body tails, writer failures and blocked cleanup isolation. |
+| SEC3-2 | P3 malformed or timed-out request bodies amplify error traces | Record expected framing/transport/deadline failures actually observed by the request body and propagate them without `ec.reportFailure` or a futile 500 response on the closed socket. They are silent by default, matching header rejection. Application failures still receive full reporting, even when they use the same exception classes. A raw-socket burst verifies zero reports for expected input failures and preserves three deliberately raised application errors. |
+| SCALA3-1 | P2 lazy server starts share admission/stop state | Allocate dispatcher, parser and accept/stop/failure closures inside each effect execution. Cats Effect regressions reuse one start effect sequentially, run independent concurrent servers at quota one, and retry after a bind failure. |
+| SCALA3-2 | P2 the public HTTP facade loses WebSocket upgrade input | Preserve public `HttpServer.apply` plus `WebSocketProtocol.upgrade` composition through a private one-use input capability. Ordinary body reads remain strictly framed; unframed HTTP stays empty. Explicit upgrade checks the represented handshake fields and absence of an HTTP payload before claiming input; handler completion seals the capability. External-package tests cover echo, zero length, ordinary reads/pipelining, malformed input, late/repeated claims and non-101 cleanup. |
+
+The isolation-test instability was also investigated. EOF did not prove that a
+connection still occupied admission: failed-read cleanup could finish the second
+connection before the excess socket arrived, leaving a legitimate free slot. The
+fixture now holds two independent asynchronous cleanup promises and positively
+observes both admissions and cleanup entries before testing excess admission. It
+also proves the first synchronous finalizer remains blocked when the second
+deadline closes its socket. The 1,500 ms socket timeout is unchanged. The whole
+standalone batch and three additional bounded repeats passed. No production
+defect was established by this fixture failure.
+
+### Client settings and scope
+
+`HttpClient.create` adds trailing settings:
+
+| Setting | Default | Contract |
+| --- | --- | --- |
+| `maxResponseHeaderBytes` | 16 KiB | Response status/header prefix including CRLF-CRLF; body bytes in the same read are excluded. |
+| `responseHeaderTimeout` | 30 seconds | Absolute time after borrowing through complete headers; trickled progress cannot extend it. |
+| `maxTotalConnections` | 1,024 | Per-client physical connections and outstanding cleanup across destinations; saturation refuses new physical connections. |
+| `closeNotificationWorkers` | 2 | Bounded reserved cleanup workers; no user finalizer runs on the deadline scheduler. |
+
+The per-address default remains eight connections. Pool wait and connection/TLS
+establishment are outside the header deadline. It stops at complete headers and
+does not time response-body consumption. Applications must consume or cancel
+returned bodies and make their finalizers terminate to recover cleanup capacity.
+HTTP, HTTPS, WS and WSS response headers share these bounds. TLS certificate and
+hostname validation remain enabled.
+
+Public upgrade callers need no new server entry point. A WebSocket key alone
+does not expose transport bytes through an ordinary HTTP body. Explicit upgrade
+checks the represented fields described in
+[RFC 6455 section 4.2.1](https://www.rfc-editor.org/rfc/rfc6455.html#section-4.2.1).
+An old positive fixture was corrected to include `Upgrade: websocket`; a separate
+negative test covers its absence.
+
+## Verification
+
+Third-round aggregate compilation and all **1,304 tests** passed (1,263
+ScalaTest and 41 ZIO Test), with no failures, canceled, ignored or pending cases.
+
+```sh
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  bash scripts/with-test-postgres.sh sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
+  compile 'Test / compile' test \
+  'zioHttpRuntime/packageBin' 'zioHttpRuntime/packageSrc' 'zioHttpRuntime/makePom' \
+  'export zioHttp/Runtime/fullClasspath' 'export zioHttp/Test/fullClasspath' \
+  'export browserAuthExample/Runtime/fullClasspath'
+```
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Full command above | PASS | Includes 15 new client safety cases, exact response-cap/parser regressions, seven external public-upgrade cases, three Cats Effect server lifecycle cases, request diagnostics and the corrected isolation fixture. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command sbt --batch --supershell=false -Dsbt.server.autostart=false 'standalone/test' 'standalone/testOnly *StandaloneDeadlineIsolationSpec' 'standalone/testOnly *StandaloneDeadlineIsolationSpec' 'standalone/testOnly *StandaloneDeadlineIsolationSpec'` | PASS | All 39 standalone tests and three additional bounded isolation repeats, with unchanged socket timeouts. |
+| `nix develop --no-write-lock-file --command node --test misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs misc/browser-protocol-tests.mjs misc/browser-auth-schema-tests.mjs misc/replacement-bootstrap-tests.mjs misc/core-purity-tests.mjs misc/release-ref-tests.mjs misc/browser-auth-baseline/*.test.mjs` | PASS | 107 cases, no failures/skips. |
+| Runtime artifact audit (exact command in the first-round table) | PASS | Final patched-source manifest, binary, POM, attribution and single runtime provider match. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/test-sensitive-acknowledgement.sh` | PASS | Actual standalone service, Chromium/WebKit acknowledgements and identity/modify/revocation invalidation. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/test-browser-auth.sh examples/browser-auth/target/streams/runtime/fullClasspath/_global/streams/export` | PASS | Memory-provider authentication, replacement and forced recovery in both engines. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh env SPOONBILL_AUTH_PROVIDER=jdbc bash scripts/test-browser-auth.sh examples/browser-auth/target/streams/runtime/fullClasspath/_global/streams/export` | PASS | PostgreSQL browser authentication, replacement, logout, reload and loss recovery in both engines. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command env SPOONBILL_AUTH_PROVIDER=io bash scripts/test-browser-auth.sh examples/browser-auth/target/streams/runtime/fullClasspath/_global/streams/export` | PASS | Lazy IO provider, both engines and all recovery scenarios. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/test-zio-http-browser-auth.sh interop/zio-http/target/streams/test/fullClasspath/_global/streams/export` | PASS | ZIO authentication, reconnect, disclosure and replacement in both engines/event orders. |
+| `git diff --check` | PASS | No whitespace errors. |
+
+Early checks caught fixture-only compilation mistakes, which were corrected.
+The first aggregate run then rejected the incomplete positive WebSocket fixture
+described above; the corrected fixture and explicit negative case pass in the
+final aggregate. Validation did not weaken handshake or authorization checks.
+Local logs are `/tmp/pr17-round3-final-all.log`,
+`/tmp/pr17-round3-isolation.log`, `/tmp/pr17-round3-focused-rerun.log`,
+`/tmp/pr17-round3-js.log`, `/tmp/pr17-round3-artifact.log`, and
+`/tmp/pr17-round3-browser-*.log`. They are temporary; committed tests and commands
+are sufficient to reproduce the checks.
 
 ## Second-round dispositions
 
@@ -48,7 +130,7 @@ duplicates. Bounded valid extensions and trailers are parsed; routing/framing
 trailers are rejected and accepted trailers are discarded, never merged into
 the request headers. No deployed proxy configuration was tested.
 
-## Verification
+## Second-round verification (`3d2d757e`)
 
 Second-round production/test compilation and the full suite passed: **1,275
 tests** (1,234 ScalaTest and 41 ZIO Test), with no failures, canceled, ignored,
@@ -121,7 +203,7 @@ rerun the committed tests.
 
 ## Scope qualifications and disagreements
 
-There are no rejected findings in either round. Two qualifications matter when interpreting the
+There are no rejected findings in any round. Two qualifications matter when interpreting the
 fixes:
 
 - The Scala review reproduced observer misalignment in an embedded Netty channel,

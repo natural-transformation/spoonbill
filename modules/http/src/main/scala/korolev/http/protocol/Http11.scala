@@ -11,10 +11,12 @@ import spoonbill.web.Response.Status
 class Http11[B: BytesLike](
   maxRequestHeaderBytes: Int = 16 * 1024,
   maxChunkLineBytes: Int = 1024,
-  maxTrailerBytes: Int = 16 * 1024
+  maxTrailerBytes: Int = 16 * 1024,
+  maxResponseHeaderBytes: Int = 16 * 1024
 ) {
 
   require(maxRequestHeaderBytes >= 4, "maxRequestHeaderBytes must include the four-byte header delimiter")
+  require(maxResponseHeaderBytes >= 4, "maxResponseHeaderBytes must include the four-byte header delimiter")
   require(maxChunkLineBytes >= 3 && maxTrailerBytes >= 2, "Invalid chunk framing limits")
 
   import Http11._
@@ -94,6 +96,7 @@ class Http11[B: BytesLike](
     .map { response =>
       response.copy(
         body = response.contentLength match {
+          case Some(0) => Stream.empty
           case Some(contentLength) =>
             decoder.decode(0L)(decodeLimitedBody(_, _, contentLength))
           case None if response.header(Headers.TransferEncoding).contains("chunked") =>
@@ -105,13 +108,16 @@ class Http11[B: BytesLike](
     }
 
   def decodeResponse(buffer: B, incoming: B): (B, Decoder.Action[B, Response[Unit]]) = {
-    val allBytes = buffer ++ incoming
+    require(buffer.length < maxResponseHeaderBytes, "HTTP response header too large")
+    val accepted = math.min(incoming.length, maxResponseHeaderBytes.toLong - buffer.length)
+    val allBytes = buffer ++ incoming.slice(0, accepted)
     findLastHeaderEnd(allBytes) match {
       case -1 =>
+        require(allBytes.length < maxResponseHeaderBytes, "HTTP response header too large")
         (allBytes, Decoder.Action.TakeNext)
       case lastByteOfHeader =>
         val (bodyBytes, response) = parseResponse(allBytes, lastByteOfHeader)
-        (BytesLike[B].empty, Decoder.Action.Fork(response, bodyBytes))
+        (BytesLike[B].empty, Decoder.Action.Fork(response, bodyBytes ++ incoming.slice(accepted)))
     }
   }
 
@@ -238,6 +244,11 @@ class Http11[B: BytesLike](
     val statusCodeEnd      = bytes.indexOf(' ', statusCodeStart)
     val statusPhraseStart  = statusCodeEnd + 1
     val statusPhraseEnd    = bytes.indexOf('\r', statusPhraseStart)
+    require(protocolVersionEnd > 0 && statusCodeEnd == statusCodeStart + 3 &&
+      statusPhraseEnd >= statusPhraseStart && statusPhraseEnd <= lastHeaderEnd &&
+      bytes(statusPhraseEnd + 1) == '\n', "Malformed HTTP response line")
+    val version = bytes.slice(0, protocolVersionEnd).asAsciiString
+    require(version == "HTTP/1.1" || version == "HTTP/1.0", "Unsupported HTTP response version")
     val statusCode         = bytes.slice(statusCodeStart, statusCodeEnd)
     val statusPhrase       = bytes.slice(statusPhraseStart, statusPhraseEnd)
     // Headers
@@ -245,24 +256,38 @@ class Http11[B: BytesLike](
     val headers               = mutable.Buffer.empty[(String, String)]
     var cookie: String        = null
     var contentLength: String = null
+    var transferEncoding: String = null
     while (headerStart < lastHeaderEnd) {
+      val valueEnd = bytes.indexOf('\r', headerStart)
+      require(valueEnd >= headerStart && valueEnd <= lastHeaderEnd && bytes(valueEnd + 1) == '\n',
+        "Malformed HTTP response header line")
       val nameEnd  = bytes.indexOf(':', headerStart)
-      val valueEnd = bytes.indexOf('\r', nameEnd)
+      require(nameEnd > headerStart && nameEnd < valueEnd, "Malformed HTTP response header field")
       val name     = bytes.slice(headerStart, nameEnd).asAsciiString
       val value =
         if (bytes(nameEnd + 1) == ' ') bytes.slice(nameEnd + 2, valueEnd).asAsciiString
         else bytes.slice(nameEnd + 1, valueEnd).asAsciiString
+      Headers.validate(name, value)
       name match {
         case _ if name.equalsIgnoreCase(Headers.Cookie) =>
           cookie = value
           headers += ((name, value))
         case _ if name.equalsIgnoreCase(Headers.ContentLength) =>
-          contentLength = value
+          require(contentLength == null, "Repeated response Content-Length")
+          contentLength = value.trim
+          require(contentLength.nonEmpty && contentLength.forall(c => c >= '0' && c <= '9'),
+            "Invalid response Content-Length")
+        case _ if name.equalsIgnoreCase(Headers.TransferEncoding) =>
+          require(transferEncoding == null && value.trim.equalsIgnoreCase("chunked"),
+            "Unsupported response Transfer-Encoding")
+          transferEncoding = "chunked"
+          headers += ((Headers.TransferEncoding, transferEncoding))
         case _ =>
           headers += ((name, value))
       }
       headerStart = valueEnd + 2
     }
+    require(contentLength == null || transferEncoding == null, "Ambiguous HTTP response framing")
     val response = Response(
       status = Status(statusCode.asAsciiString.toInt, statusPhrase.asAsciiString),
       headers = headers.toVector,
