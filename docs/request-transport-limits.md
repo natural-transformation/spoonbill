@@ -1,92 +1,163 @@
 # Inbound WebSocket budgets
 
-SB-04 is partly remediated. The application aggregation and standalone decoder
-are bounded. ZIO HTTP 3.11.6 still has an unbounded dependency-owned ingress queue;
-this work does **not** establish a bounded total memory footprint for that adapter.
-A public deployment using ZIO HTTP needs an upstream queue/backpressure fix or a
-separately verified exposure restriction before this finding can be closed.
+All four server adapters enforce finite inbound message budgets. Limits apply
+before retaining complete messages, independently of guarded frontend protocol
+validation. The ZIO adapter includes a derived, pinned ZIO HTTP runtime because
+upstream 3.11.6 queues decoded WebSocket events without a capacity limit.
 
 ## Limits by adapter
 
-| Adapter | Message/frame limit | Pending application payload | Overflow behavior |
+| Adapter | Message/frame limit | Queued application payload | Time and overflow behavior |
 | --- | --- | --- | --- |
-| Pekko | `PekkoHttpServerConfig.wsMaxMessageBytes`, default 16 KiB | At most `wsStreamedParallelism` aggregation slots (default 2); finite Reactive Streams buffers, with the pre-materialized application sink input buffer pinned to 1 | Fails input, cancels output, releases connection ownership |
-| Akka | `AkkaHttpServerConfig.wsMaxMessageBytes`, default 16 KiB | Same bounded aggregation/backpressure scheme as Pekko | Same as Pekko |
-| ZIO HTTP | `service` argument `wsMaxMessageBytes`, default 16 KiB, installed in the Netty frame decoder and checked on application admission | `wsMaxQueuedMessages` (default 16) times the message limit: default 256 KiB payload, plus one frame being processed | A failed offer aborts the socket; finalization closes and empties the application queue |
-| Standalone | `buildServer` argument `wsMaxMessageBytes`, default 16 KiB for both advertised frame length and aggregate message | Pull-based decoder retains one partial frame and one partial message, each bounded by the limit, plus socket read chunks (default 8096 bytes) | Decoder failure follows existing connection teardown |
+| Pekko | `PekkoHttpServerConfig.wsMaxMessageBytes`, default 16 KiB | At most `wsStreamedParallelism` aggregation slots (default 2), finite Reactive Streams buffers; application sink input buffer pinned to 1 | Existing absolute collection deadline, default 30 seconds; failure cancels output and releases ownership |
+| Akka | `AkkaHttpServerConfig.wsMaxMessageBytes`, default 16 KiB | Same aggregation/backpressure policy as Pekko | Same as Pekko |
+| ZIO HTTP | `service` argument `wsMaxMessageBytes`, default 16 KiB, installed in Netty's decoder | Before conversion: at most 16 transport events, therefore at most 256 KiB data at the default frame cap. Application queue: `wsMaxQueuedMessages` (default 16) times message cap, another 256 KiB | Queue overflow closes connection and replaces buffered input with one terminal signal; absolute raw frame deadline 30 seconds |
+| Standalone | `buildServer` argument `wsMaxMessageBytes`, default 16 KiB, bounds advertised frames and aggregate fragments | Pull-based decoder: one partial frame and one partial message, each bounded, plus socket read chunks (default 8096 bytes) | `wsMessageTimeout`, default 30 seconds, starts at first input and persists through fragments/control frames; failure closes socket and releases ownership |
 
-The limits count UTF-8 bytes for text, not UTF-16 character count. Pekko/Akka count
-before each append and preserve surrogate pairs crossing chunk boundaries. Invalid
-or incomplete surrogate sequences fail admission. Binary aggregation checks the
-sum in `Long` before concatenation. A message exactly at the limit is accepted.
-Pekko/Akka stream collection retains the existing completion deadline (default
-30 seconds), independently of byte limits, including discarded terminal input.
+Budgets count UTF-8 bytes, not UTF-16 characters. Pekko/Akka count before every
+append and preserve surrogate pairs crossing chunks. Invalid or incomplete
+surrogate sequences fail admission. Binary aggregation checks the sum in `Long`
+before concatenation. Messages exactly at the cap succeed.
 
-Pekko 1.4's `FrameEventParser` emits partial frame data as it arrives; it does not
-allocate the advertised frame length. Its high-level API creates a strict message
-only when that message is already complete in the current input chunk. The
-adapter rejects strict messages immediately and stops streamed, unfragmented
-payloads as soon as the cumulative cap is crossed. A raw-socket regression sends
-a 65535-byte length but only five payload bytes against a four-byte cap, checking
-that ownership is released without receiving the remaining payload. There is no
-public Pekko setting for a frame-length rejection based solely on its header.
-The same application aggregation policy is applied to the Akka sibling.
+Pekko's frame parser emits partial data without allocating the advertised length.
+Strict messages occur only when complete in the current input chunk. The adapter
+checks strict messages immediately and stops larger streamed/unfragmented input
+as soon as its cumulative cap is crossed. A raw-socket regression advertises
+65535 bytes but sends only five against a four-byte cap; the connection releases
+without waiting for the rest. The Akka sibling uses the same aggregation policy.
 
-The standalone decoder rejects excessive or negative advertised lengths before
-waiting for payload chunks; fragment aggregation checks the cumulative size
-before appending. `HttpClient.create(maxWebSocketMessageBytes = ...)` uses the same
-bounded decoder with a separate 16 MiB default because server responses, including
-DOM updates, can exceed the client-command budget. This replaces its previous
-unbounded behavior; callers receiving larger responses must choose an explicit
-positive limit. Direct protocol users can choose a different positive limit.
-Outgoing messages are not limited by these ingress settings.
+The standalone decoder rejects oversized/negative lengths from their headers,
+and checks aggregate fragments before appending. Its independent timer closes a
+stalled partial input even when no further bytes arrive. Progress and interleaved
+control frames do not reset a fragmented message's deadline. Valid completion
+cancels the timer. Cancellation and errors use the existing once-gated teardown.
 
-ZIO HTTP previously delivered the initial nonfinal text/binary fragment as a
-complete application command and then failed on continuation. It now rejects the
-initial fragment before delivering a partial command. Fragmented messages remain
-unsupported on this adapter; this is not a fragmentation reassembly feature.
-Netty's existing masking and UTF-8 validation stay enabled.
+`HttpClient.create(maxWebSocketMessageBytes = ...)` uses a separate 16 MiB response
+cap: server DOM updates can exceed the command budget. This replaces previously
+unbounded response decoding; users expecting larger responses must explicitly
+choose a positive finite cap. Outgoing messages are not limited by ingress caps.
 
-## Remaining deployment requirements
+## Derived ZIO HTTP runtime
 
-The application queue budget is not a process heap cap. Byte arrays, UTF-16 text,
-accumulator copies, protocol objects, TLS/TCP buffers, stream-stage buffers, and
-outgoing application data add overhead. Pekko/Akka retain a finite number of
-messages under backpressure; materializer/transport buffer overrides must be
-included in deployment memory calculations. Aggregate retained payload scales
-with concurrent connections. Set and verify connection quotas, transport read
-chunk sizes, idle/read deadlines, and deployment rate controls. The standalone
-message byte cap does not add a fragmented-message completion deadline.
+`spoonbill-zio-http-runtime` derives from `dev.zio:zio-http_3:3.11.6`. The managed
+build verifies SHA-256 hashes for the upstream binary, sources, POM, and original
+handler source. It compiles the patched handler and packages the original classes
+with the replaced handler's entire class/TASTy family removed. Runtime consumers
+receive one derived jar, not two competing implementations. Source publication
+includes unchanged upstream sources plus the patch. Apache-2.0 license and
+attribution, upstream version, POM, dependency scopes, and native classifiers are
+preserved. The two direct `dev.zio:zio_3` and `dev.zio:zio-streams_3` dependencies
+are explicitly upgraded to 2.1.27; the manifest and packaging checker record this
+reviewed override without changing the original POM hash. Updating upstream
+requires reviewing the source patch and hashes.
 
-ZIO HTTP 3.11.6 `ServerInboundHandler.upgradeToWebSocket` unconditionally constructs
-`Queue.unbounded[WebSocketChannelEvent]`. `WebSocketAppHandler` copies decoded frame
-payloads into this queue before Spoonbill can apply admission checks.
-`WebSocketConfig` and `SocketDecoder` have no supported queue-capacity setting.
-The new bounded application queue and decoder reduce exposure but cannot bound
-that earlier queue under a producer outrunning the handler. No total per-connection
-or aggregate ZIO transport budget is claimed. An untested proxy rate limit is not
-closure evidence. Keep this limitation in deployment release decisions.
+The patched handler admits events on the channel's serialized Netty event loop.
+It checks queue size before `frameFromNetty` copies or converts the payload.
+Consumers only decrease the size, so concurrent consumption cannot over-admit.
+All dispatch paths use the same cap. Overflow closes the channel, clears retained
+payloads, and leaves one terminal failure to wake the receiver; queued protocol
+messages are never silently dropped while keeping the connection alive. Peer
+closure also clears queued payloads and delivers a terminal signal.
 
-Guarded frontend message validation, protocol negotiation, uncompressed guarded
-transport requirements, authority checks, and existing release-once ownership
-contracts remain in place.
+The adapter keeps decoder/UTF-8 validation enabled but disables automatic decoder
+Close emission. The bounded runtime sends one explicit failure Close through the
+normal outbound pipeline before publishing the terminal event, then requests
+protocol-aware shutdown. This lets Netty record the Close and suppress competing
+Close writes. The public `forceCloseTimeout` is set to one second, bounding a
+stalled close write. Decoder violations retain their 1007/1009 codes, queue
+exhaustion uses 1013, policy/time violations use 1008, and other failures use 1011.
 
-## Repeatable validation
+The socket regression permits at most one bounded Close control frame and no
+application output. EOF or a TCP reset counts only together with the server's
+`channel.awaitShutdown` witness, obtained while the client socket and consumer
+gate are both still open. Client cleanup cannot create this witness. The public
+shutdown API initiates channel closure; it does not promise FIN rather than RST
+when a peer floods unread input. Cleanup still runs once, and a later independent
+connection must succeed.
 
-Run inside the repository Nix environment:
+A server-only wire observer is installed after TLS and before the HTTP decoder
+that is replaced during upgrade. It tracks at most 14 header bytes and a remaining
+length counter, retains no payload, and never changes buffer read indexes. It
+enforces an absolute 30-second frame assembly deadline, including the initial
+post-upgrade wait (which also bounds eager data retained by the old decoder).
+Subsequent idle periods after complete frames do not retain a timer. Masking,
+UTF-8 validation, and the configured maximum frame size remain Netty's job.
+
+ZIO server fragmentation is explicitly unsupported. Nonfinal/continuation frames
+are rejected from the first header byte, before a split UTF-8 sequence is converted
+or a partial application command delivered. The adapter also rejects nonfinal
+frames defensively at its application boundary. Other adapters support bounded
+fragmentation.
+
+The ZIO service checks the runtime at startup and rejects an unpatched handler or
+duplicate handler resources. If another dependency brings `dev.zio:zio-http`,
+exclude that original artifact and retain the derived runtime; do not depend on
+classpath ordering. The derived runtime's bounded event admission also applies to
+ZIO HTTP client sockets; server-only wire fragmentation/deadline policy does not.
+
+## Official integration evidence (22 October 2026)
+
+Fresh GitHub release API checks confirmed [ZIO HTTP 3.11.6](https://github.com/zio/zio-http/releases/tag/v3.11.6)
+(14 September) is current and [ZIO 2.1.27](https://github.com/zio/zio/releases/tag/v2.1.27)
+(11 October) is the current core release. The latter's published POM uses Scala
+3.3.8, matching this repository. Upgrading core does not change the HTTP transport's
+[unbounded queue allocation](https://github.com/zio/zio-http/blob/v3.11.6/zio-http/jvm/src/main/scala/zio/http/netty/server/ServerInboundHandler.scala#L316-L343);
+the same allocation remains on upstream `main` at verification time.
+
+The official [server configuration](https://ziohttp.com/reference/server/#websocket-configuration)
+exposes decoder limits, close status, and force-close timing, but no ingress queue
+capacity. The [WebSocket examples](https://ziohttp.com/examples/websocket/) use
+`Handler.webSocket`, `receiveAll`, and `channel.shutdown`, while the
+[frame reference](https://ziohttp.com/reference/socket/websocketframe/) documents
+explicit Close frames. The tagged implementation makes
+[`shutdown` initiate the Netty channel close](https://github.com/zio/zio-http/blob/v3.11.6/zio-http/jvm/src/main/scala/zio/http/netty/WebSocketChannel.scala#L82-L83)
+and `awaitShutdown` observe its completion. We retain those lifecycle semantics;
+the small derived runtime supplies the missing pre-conversion admission bound.
+
+## Validation and deployment accounting
+
+Run inside the repository's Nix environment:
 
 ```sh
 nix develop --no-write-lock-file -c sbt \
   'http/testOnly spoonbill.http.protocol.WebSocketLimitsSpec' \
   'pekko/testOnly spoonbill.pekko.PekkoWebSocketLimitsSpec' \
   'akka/testOnly spoonbill.akka.AkkaWebSocketLimitsSpec' \
-  'standalone/testOnly spoonbill.server.StandaloneWebSocketLimitsSpec' \
-  'zioHttp/testOnly spoonbill.zio.http.ZioHttpIngressLimitsSpec'
+  'standalone/testOnly spoonbill.server.StandaloneWebSocketLimitsSpec spoonbill.server.StandaloneMessageDeadlineSpec' \
+  'zioHttp/testOnly spoonbill.zio.http.ZioHttpIngressLimitsSpec zio.http.netty.BoundedTransportSpec spoonbill.zio.http.ZioHttpTransportSocketSpec'
 ```
 
-The tests cover declared lengths before payload arrival, cumulative fragmentation,
-UTF-8 boundaries and split surrogates, slow incomplete input, real Pekko and standalone sockets,
-Netty's configured decoder boundary, bounded queue overflow, and cleanup. Run the
-existing adapter lifecycle/ownership suites as well. These local regressions do
-not establish production heap limits or proxy behavior; a disposable deployment
-load test and connection quota verification remain required for release closure.
+Tests exercise declared lengths before payload arrival, UTF-8 boundaries and split
+surrogates, fragmentation, stalled frames, completion/reset behavior, actual
+Netty queue admission, runtime artifact identity, and raw server sockets. The ZIO
+socket stress pauses the handler, sends 1000 masked frames, and requires closure
+before allowing the handler to consume; a separate connection must still echo.
+Run existing adapter lifecycle/ownership suites alongside these checks.
+
+CI must also run `zioHttpRuntime/packageBin`, `zioHttpRuntime/packageSrc`, and
+`zioHttpRuntime/makePom`, and export `zioHttp/Runtime/fullClasspath` to a file
+containing only its platform-separated path list. Verify those exact artifacts:
+
+```sh
+nix develop --no-write-lock-file -c node misc/check-zio-http-runtime.mjs \
+  --jar path/to/spoonbill-zio-http-runtime.jar \
+  --pom path/to/spoonbill-zio-http-runtime.pom \
+  --sources path/to/spoonbill-zio-http-runtime-sources.jar \
+  --classpath-file path/to/runtime-classpath.txt
+```
+
+This checks the entire runtime classpath for duplicate original handlers, the
+published dependency POM, Apache attribution, and the generated SHA-256 manifest
+against all three tracked and published patch sources. It fails on an omitted
+upstream source artifact or changed pinned input; it does not publish anything.
+
+These are payload budgets, not exact JVM heap limits. UTF-16 text, arrays,
+accumulator copies, protocol objects, TLS/TCP buffers, finite stream-stage
+buffers, and outgoing data add overhead. Aggregate storage scales with concurrent
+connections. Deployment owners still need finite connection quotas and memory
+accounting for their materializer/transport settings; changing those settings
+requires revalidating the totals. Such operational controls supplement the
+implemented per-connection bounds rather than substitute for them.
+
+Guarded frontend validation, uncompressed guarded transport requirements,
+subprotocol negotiation, authority checks, and once-only release remain intact.

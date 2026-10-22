@@ -15,8 +15,8 @@ val ce2Version   = "2.5.5"
 val ce3Version   = "3.3.12"
 
 val zioVersion     = "1.0.18"
-val zio2Version    = "2.1.26"
-val zioHttpVersion = "3.11.6"
+val zio2Version    = "2.1.27"
+val zioHttpVersion = ZioHttpRuntime.upstreamVersion
 
 val fs2ce2Version = "2.5.11"
 val fs2ce3Version = "3.2.8"
@@ -353,15 +353,20 @@ lazy val pekko = project
   )
   .dependsOn(spoonbill)
 
+lazy val zioHttpRuntime = project
+  .in(interop / "zio-http-runtime")
+  .settings(commonSettings: _*)
+  .settings(ZioHttpRuntime.settings)
+
 lazy val zioHttp = project
   .in(interop / "zio-http")
 
   .settings(commonSettings: _*)
   .settings(
     normalizedName                   := "spoonbill-zio-http",
-    libraryDependencies += "dev.zio" %% "zio-http" % zioHttpVersion
+    description := "Spoonbill integration with the bounded ZIO HTTP runtime"
   )
-  .dependsOn(spoonbill, web, zio2, zio2Streams)
+  .dependsOn(spoonbill, web, zio2, zio2Streams, zioHttpRuntime)
 
 lazy val slf4j = project
   .in(interop / "slf4j")
@@ -708,6 +713,7 @@ lazy val root = project
     scodec,
     fs2ce2,
     fs2ce3,
+    zioHttpRuntime,
     zioHttp,
     // Examples
     simpleExample,

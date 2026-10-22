@@ -72,6 +72,8 @@ final class ZioHttpIngressLimitsSpec extends AnyFlatSpec with Matchers {
   "Configured Netty decoder" should "reject an oversized frame using its header before payload allocation" in {
     val config = adapter.socketConfig(Some("json"), 4).decoderConfig
     config.withUTF8Validator shouldBe true
+    config.closeOnProtocolViolation shouldBe false
+    adapter.socketConfig(Some("json"), 4).forceCloseTimeoutMillis shouldBe 1000L
     val channel = new EmbeddedChannel(
       new WebSocket13FrameDecoder(
         config.expectMaskedFrames,

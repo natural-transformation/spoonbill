@@ -24,9 +24,11 @@ object standalone {
     group: AsynchronousChannelGroup = null,
     gracefulShutdown: Boolean,
     wsSetupTimeout: FiniteDuration = 30.seconds,
-    wsMaxMessageBytes: Int = spoonbill.web.WebSocketLimits.DefaultMaxMessageBytes
+    wsMaxMessageBytes: Int = spoonbill.web.WebSocketLimits.DefaultMaxMessageBytes,
+    wsMessageTimeout: FiniteDuration = 30.seconds
   )(implicit ec: ExecutionContext): F[ServerSocket.ServerSocketHandler[F]] = {
     require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
+    require(wsMessageTimeout > Duration.Zero, "wsMessageTimeout must be positive")
     val webSocketProtocol = new WebSocketProtocol[B](wsMaxMessageBytes)
     HttpServer.withConnection[F, B](address, group = group, gracefulShutdown = gracefulShutdown) { (request, client) =>
       val protocols = request
@@ -36,10 +38,16 @@ object standalone {
         .filterNot(_.isBlank)
       webSocketProtocol.findIntention(request) match {
         case Some(intention) =>
-          val f = webSocketProtocol.upgrade[F](intention) { frameRequest =>
+          val messageDeadline = new MessageDeadline[F](wsMessageTimeout, () => client.shutdown())
+          val detach = client.subscribeClose(_ => messageDeadline.close())
+          val f = webSocketProtocol.upgrade[F](intention, () => messageDeadline.start(), () => messageDeadline.complete()) { frameRequest =>
             attachWebSocket(service, frameRequest, protocols, client, wsSetupTimeout)
           }
-          f(request)
+          f(request).recoverF { case NonFatal(error) =>
+            messageDeadline.close()
+            detach()
+            Effect[F].fail(error)
+          }
         case _ =>
           // This is just HTTP query
           service

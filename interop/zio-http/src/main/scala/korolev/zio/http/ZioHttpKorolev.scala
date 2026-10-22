@@ -36,6 +36,7 @@ class ZioHttpSpoonbill[R] {
     require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
     require(wsMaxMessageBytes > 0, "wsMaxMessageBytes must be positive")
     require(wsMaxQueuedMessages > 0, "wsMaxQueuedMessages must be positive")
+    _root_.zio.http.netty.SpoonbillWebSocketRuntime.verify()
 
     val spoonbillServer = spoonbill.server.spoonbillService(config)
 
@@ -261,8 +262,11 @@ class ZioHttpSpoonbill[R] {
   private[http] def socketConfig(protocol: Option[String], maxMessageBytes: Int): WebSocketConfig =
     WebSocketConfig.default
       .subProtocol(protocol)
+      .forceCloseTimeout(_root_.zio.Duration.fromSeconds(1))
       .decoderConfig(
-        SocketDecoder.default.maxFramePayloadLength(maxMessageBytes)
+        // Validation stays enabled; the bounded runtime owns abort/cleanup.
+        // Avoid racing a decoder-emitted Close with protocol-handler shutdown.
+        SocketDecoder.default.copy(closeOnProtocolViolation = false).maxFramePayloadLength(maxMessageBytes)
       )
 
   private[http] def runSocket(

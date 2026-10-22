@@ -41,6 +41,18 @@ jobs:
           'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
           compile 'Test / compile' test
 
+    - name: Verify bounded ZIO HTTP runtime packaging
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+          sbt --batch --supershell=false -Dsbt.server.autostart=false \
+          'zioHttpRuntime/packageBin' 'zioHttpRuntime/packageSrc' 'zioHttpRuntime/makePom' \
+          'export zioHttp/Runtime/fullClasspath'
+        nix develop --no-write-lock-file --command node misc/check-zio-http-runtime.mjs \
+          --jar interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-5.0.0-SNAPSHOT.jar \
+          --pom interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-5.0.0-SNAPSHOT.pom \
+          --sources interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-5.0.0-SNAPSHOT-sources.jar \
+          --classpath-file interop/zio-http/target/streams/runtime/fullClasspath/_global/streams/export
+
     - name: Test browser clients and reference correctness
       run: |
         nix develop --no-write-lock-file --command node --test \

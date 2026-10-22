@@ -200,15 +200,36 @@ final class WebSocketProtocol[B: BytesLike](maxMessageBytes: Int = WebSocketLimi
    * Upgrade Request/Response with raw bytes to WebSocket protocol and insert
    * handshake headers. Fragments will be merged to single frames.
    */
-  def upgrade[F[_]: Effect](intention: Intention)(
+  def upgrade[F[_]: Effect](
+    intention: Intention,
+    onMessageStarted: () => Unit = () => (),
+    onMessageCompleted: () => Unit = () => ()
+  )(
     f: Request[Stream[F, Frame.Merged[B]]] => F[Response[Stream[F, Frame.Merged[B]]]]
   ): Request[Stream[F, B]] => F[Response[Stream[F, B]]] = f
     .compose[Request[Stream[F, B]]] { request =>
+      var pendingFrameBytes = false
       val messages = Decoder(request.body)
         .decode((BytesLike[B].empty, DecodingState.begin)) { case ((buffer, state), incoming) =>
-          decodeFrames(buffer, state, incoming)
+          if (BytesLike[B].length(incoming) > 0) onMessageStarted()
+          val result = decodeFrames(buffer, state, incoming)
+          pendingFrameBytes = result._2 match {
+            case Decoder.Action.Fork(_, remaining) => BytesLike[B].length(remaining) > 0
+            case _ => false
+          }
+          result
         }
-        .decode(Option.empty[Frame.Merged[B]])(mergeFrames)
+        .decode(Option.empty[Frame.Merged[B]]) { (buffer, incoming) =>
+          val result = mergeFrames(buffer, incoming)
+          // Control frames do not finish an outstanding fragmented message.
+          if (result._1.isEmpty) {
+            onMessageCompleted()
+            // A complete preceding message can leave an unconsumed tail in
+            // the decoder; keep that tail bounded even if the app pauses.
+            if (pendingFrameBytes) onMessageStarted()
+          }
+          result
+        }
       request.copy(body = messages)
     }
     .andThen[F[Response[Stream[F, B]]]] { responseF =>
