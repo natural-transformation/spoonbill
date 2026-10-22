@@ -23,10 +23,11 @@ object standalone {
     address: SocketAddress,
     group: AsynchronousChannelGroup = null,
     gracefulShutdown: Boolean,
-    wsSetupTimeout: FiniteDuration = 30.seconds
+    wsSetupTimeout: FiniteDuration = 30.seconds,
+    wsMaxMessageBytes: Int = spoonbill.web.WebSocketLimits.DefaultMaxMessageBytes
   )(implicit ec: ExecutionContext): F[ServerSocket.ServerSocketHandler[F]] = {
     require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
-    val webSocketProtocol = new WebSocketProtocol[B]
+    val webSocketProtocol = new WebSocketProtocol[B](wsMaxMessageBytes)
     HttpServer.withConnection[F, B](address, group = group, gracefulShutdown = gracefulShutdown) { (request, client) =>
       val protocols = request
         .header(Headers.SecWebSocketProtocol)
@@ -69,6 +70,11 @@ object standalone {
         case Some(frame) if isPeerClose(frame) => peerClose().as(None)
         case Some(_) => pull()
         case None => Effect[F].none
+      }.recoverF { case NonFatal(error) =>
+        // Decoder rejection must close an attached socket even when application
+        // output is idle and its caller does not cancel the failed input.
+        // A user finalizer may await this read, so do not await it here.
+        handoff.releaseApplication().start *> Effect[F].fail(error)
       }
       def cancel(): F[Unit] = handoff.stream.cancel()
     }

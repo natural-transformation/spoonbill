@@ -16,6 +16,7 @@ import spoonbill.server.{
 import spoonbill.server.internal.Cookies
 import spoonbill.state.{StateDeserializer, StateSerializer}
 import spoonbill.web.{PathAndQuery as PQ, Request as SpoonbillRequest, Response as SpoonbillResponse}
+import spoonbill.web.WebSocketLimits
 import spoonbill.zio.ChunkBytesLike
 import spoonbill.zio.Zio2Effect
 import spoonbill.zio.streams.*
@@ -27,10 +28,14 @@ class ZioHttpSpoonbill[R] {
 
   def service[S: StateSerializer: StateDeserializer, M](
     config: SpoonbillServiceConfig[RIO[R, *], S, M],
-    wsSetupTimeout: FiniteDuration = 30.seconds
+    wsSetupTimeout: FiniteDuration = 30.seconds,
+    wsMaxMessageBytes: Int = WebSocketLimits.DefaultMaxMessageBytes,
+    wsMaxQueuedMessages: Int = 16
   )(implicit eff: ZEffect): Routes[R, Response] = {
 
     require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
+    require(wsMaxMessageBytes > 0, "wsMaxMessageBytes must be positive")
+    require(wsMaxQueuedMessages > 0, "wsMaxQueuedMessages must be positive")
 
     val spoonbillServer = spoonbill.server.spoonbillService(config)
 
@@ -47,7 +52,16 @@ class ZioHttpSpoonbill[R] {
       }
       val response =
         if (isWebSocket)
-          routeWsRequest(req, subPath, spoonbillServer, config.reporter, config.webSocketProtocolsEnabled, wsSetupTimeout)
+          routeWsRequest(
+            req,
+            subPath,
+            spoonbillServer,
+            config.reporter,
+            config.webSocketProtocolsEnabled,
+            wsSetupTimeout,
+            wsMaxMessageBytes,
+            wsMaxQueuedMessages
+          )
         else routeHttpRequest(subPath, req, spoonbillServer)
       response.mapError(Response.fromThrowable)
     }
@@ -131,10 +145,13 @@ class ZioHttpSpoonbill[R] {
     spoonbillServer: SpoonbillService[RIO[R, *]],
     reporter: Reporter,
     webSocketProtocolsEnabled: Boolean,
-    wsSetupTimeout: FiniteDuration
+    wsSetupTimeout: FiniteDuration,
+    wsMaxMessageBytes: Int,
+    wsMaxQueuedMessages: Int
   )(implicit eff: ZEffect): ZIO[R, Throwable, Response] = {
 
-    val fromClientKQueue = Queue[RIO[R, *], Bytes]()
+    // The retained payload budget is maxQueuedMessages * maxMessageBytes.
+    val fromClientKQueue = Queue[RIO[R, *], Bytes](wsMaxQueuedMessages)
     val protocols = parseProtocols(req)
     // When protocol negotiation is disabled, force JSON to keep codecs aligned.
     val sanitizedProtocols =
@@ -151,7 +168,7 @@ class ZioHttpSpoonbill[R] {
         input = new KStream[RIO[R, *], Bytes] {
                   def pull(): RIO[R, Option[Bytes]] = fromClientKQueue.stream.pull()
                   def cancel(): RIO[R, Unit] =
-                    fromClientKQueue.stream.cancel() *> inputCancelled.succeed(()).unit
+                    fromClientKQueue.stream.cancel() *> fromClientKQueue.dequeueAll().unit *> inputCancelled.succeed(()).unit
                 }
         spoonbillRequest = mkSpoonbillRequest[KStream[RIO[R, *], Bytes]](req, fullPath, input)
         setup <- WebSocketSetup.make(input.cancel(), wsSetupTimeout)
@@ -176,7 +193,8 @@ class ZioHttpSpoonbill[R] {
                              discardInbound = discardInbound,
                              release = response.release,
                              inputCancelled = Some(inputCancelled),
-                             attach = setup.attach
+                             attach = setup.attach,
+                             maxMessageBytes = wsMaxMessageBytes
                            )
                 } yield {
                   reporter.debug(
@@ -201,12 +219,16 @@ class ZioHttpSpoonbill[R] {
     discardInbound: Boolean = false,
     release: () => RIO[R, Unit] = () => ZIO.unit,
     inputCancelled: Option[Promise[Nothing, Unit]] = None,
-    attach: RIO[R, Boolean] = ZIO.succeed(true)
+    attach: RIO[R, Boolean] = ZIO.succeed(true),
+    maxMessageBytes: Int = WebSocketLimits.DefaultMaxMessageBytes
   ): RIO[R, Response] = {
     val socket =
       Handler.webSocket { channel =>
         ZIO.acquireReleaseWith(attach) { attached =>
-          if (attached) fromClientKQueue.close().ignore *> ZIO.suspendSucceed(release()).ignore
+          if (attached)
+            fromClientKQueue.close().ignore *> fromClientKQueue.dequeueAll().ignore *> ZIO
+              .suspendSucceed(release())
+              .ignore
           else ZIO.unit
         } {
           case false => channel.shutdown
@@ -221,7 +243,8 @@ class ZioHttpSpoonbill[R] {
               onOutputComplete = channel.send(ChannelEvent.Read(WebSocketFrame.close(1000, None))).ignore,
               discardInbound = discardInbound,
               inputCancelled = inputCancelled,
-              onAbort = channel.shutdown
+              onAbort = channel.shutdown,
+              maxMessageBytes = maxMessageBytes
             )
         }
       }
@@ -230,15 +253,17 @@ class ZioHttpSpoonbill[R] {
     // This is required for the Sec-WebSocket-Protocol header to be included in the
     // WebSocket upgrade response - using Response.addHeader() does not work because
     // Netty's WebSocketServerProtocolHandler builds its own response from the config.
-    val configuredSocket = selectedProtocol match {
-      case Some(protocol) =>
-        socket.withConfig(WebSocketConfig.default.subProtocol(Some(protocol)))
-      case None =>
-        socket
-    }
+    val configuredSocket = socket.withConfig(socketConfig(selectedProtocol, maxMessageBytes))
 
     Response.fromSocketApp(configuredSocket)
   }
+
+  private[http] def socketConfig(protocol: Option[String], maxMessageBytes: Int): WebSocketConfig =
+    WebSocketConfig.default
+      .subProtocol(protocol)
+      .decoderConfig(
+        SocketDecoder.default.maxFramePayloadLength(maxMessageBytes)
+      )
 
   private[http] def runSocket(
     send: ChannelEvent[WebSocketFrame] => RIO[R, Unit],
@@ -250,14 +275,22 @@ class ZioHttpSpoonbill[R] {
     discardInbound: Boolean = false,
     release: () => RIO[R, Unit] = () => ZIO.unit,
     inputCancelled: Option[Promise[Nothing, Unit]] = None,
-    onAbort: RIO[R, Unit] = ZIO.unit
+    onAbort: RIO[R, Unit] = ZIO.unit,
+    maxMessageBytes: Int = WebSocketLimits.DefaultMaxMessageBytes
   ): RIO[R, Unit] = {
-    val admitBinary: Chunk[Byte] => RIO[R, Unit] =
-      if (discardInbound) _ => ZIO.unit
-      else bytes => fromClientKQueue.offer(Bytes.wrap(bytes)).unit
-    val admitText: String => RIO[R, Unit] =
-      if (discardInbound) _ => ZIO.unit
-      else text => fromClientKQueue.offer(BytesLike[Bytes].utf8(text)).unit
+    def admit(bytes: Bytes): RIO[R, Unit] =
+      if (discardInbound) ZIO.unit
+      else
+        fromClientKQueue.offer(bytes).flatMap {
+          case true  => ZIO.unit
+          case false => ZIO.fail(new IllegalStateException("WebSocket ingress queue exhausted"))
+        }
+    val admitBinary: Chunk[Byte] => RIO[R, Unit] = bytes =>
+      ZIO.attempt(WebSocketLimits.check(bytes.length.toLong, maxMessageBytes)) *> admit(Bytes.wrap(bytes))
+    val admitText: String => RIO[R, Unit] = text =>
+      ZIO
+        .attempt(new WebSocketLimits.TextAccumulator(maxMessageBytes).append(text).result())
+        .flatMap(value => admit(BytesLike[Bytes].utf8(value)))
 
     val handled =
       for {
@@ -296,6 +329,10 @@ class ZioHttpSpoonbill[R] {
                    .flatMap { completed =>
                      if (completed) fromClientKQueue.close() else ZIO.unit
                    }
+               // This adapter does not assemble fragmented frames. Reject the
+               // initial fragment too, before a partial command can be delivered.
+               case ChannelEvent.Read(frame) if !frame.isFinal =>
+                 ZIO.fail(new IllegalArgumentException("Fragmented WebSocket input is unsupported"))
                case ChannelEvent.Read(WebSocketFrame.Binary(bytes)) =>
                  handshakeComplete.succeed(true).unit *> admitBinary(bytes)
                case ChannelEvent.Read(WebSocketFrame.Text(t)) =>
@@ -322,7 +359,9 @@ class ZioHttpSpoonbill[R] {
           case false => handled.raceFirst(cancelled.await *> onAbort)
         }
     }
-    coupled.ensuring(fromClientKQueue.close().ignore *> release().ignore)
+    coupled
+      .onError(_ => onAbort.ignore)
+      .ensuring(fromClientKQueue.close().ignore *> fromClientKQueue.dequeueAll().ignore *> release().ignore)
   }
 
   private def mkSpoonbillRequest[B](request: Request, path: String, body: B): SpoonbillRequest[B] = {

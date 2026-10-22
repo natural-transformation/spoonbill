@@ -16,6 +16,7 @@
 
 package spoonbill
 
+import spoonbill.web.WebSocketLimits
 import spoonbill.data.{Bytes, BytesLike}
 import spoonbill.effect.{Effect, Reporter, Stream}
 import spoonbill.effect.syntax.*
@@ -84,7 +85,9 @@ package object pekko {
           } else {
             // inSink - consume messages from the client
             // outSource - push messages to the client
-            val (inStream, inSink) = Sink.spoonbillStream[F, Bytes].preMaterialize()
+            val (inStream, inSink) = Sink.spoonbillStream[F, Bytes]
+              .withAttributes(org.apache.pekko.stream.Attributes.inputBuffer(1, 1))
+              .preMaterialize()
             val spoonbillRequest     = mkSpoonbillRequest(request, path.toString, inStream)
             val ownership          = new UpgradeOwnership[F](request, inStream, pekkoHttpConfig.wsSetupTimeout)
 
@@ -178,22 +181,9 @@ package object pekko {
   )(implicit materializer: Materializer, ec: ExecutionContext): Flow[Message, Message, _] = {
     val source = outStream.asPekkoSource.map(text => BinaryMessage.Strict(text.as[ByteString]))
     val sink = Flow[Message]
-      .mapAsync(httpConfig.wsStreamedParallelism) {
-        case TextMessage.Strict(message) =>
-          Future.successful(Some(BytesLike[Bytes].utf8(message)))
-        case TextMessage.Streamed(stream) =>
-          stream
-            .completionTimeout(httpConfig.wsStreamedCompletionTimeout)
-            .runFold("")(_ + _)
-            .map(message => Some(BytesLike[Bytes].utf8(message)))
-        case BinaryMessage.Strict(data) =>
-          Future.successful(Some(Bytes.wrap(data)))
-        case BinaryMessage.Streamed(stream) =>
-          stream
-            .completionTimeout(httpConfig.wsStreamedCompletionTimeout)
-            .runFold(ByteString.empty)(_ ++ _)
-            .map(message => Some(Bytes.wrap(message)))
-      }
+      .mapAsync(httpConfig.wsStreamedParallelism)(message =>
+        boundedMessage(message, httpConfig).map(bytes => Option(bytes))
+      )
       .recover { case ex =>
         reporter.error("WebSocket input stream failed; shutting down output stream")
         Effect[F].runAsync(outStream.cancel().recover { case NonFatal(_) => () })(_ => ())
@@ -204,6 +194,39 @@ package object pekko {
       }
       .to(inSink)
     whenTerminated(logFrames(Flow.fromSinkAndSourceCoupled(sink, source), wsLoggingEnabled), release, onAttached)
+  }
+
+  /** Validate each chunk before it becomes part of a retained message. */
+  private[pekko] def boundedMessage(message: Message, config: PekkoHttpServerConfig)(implicit
+    materializer: Materializer,
+    ec: ExecutionContext
+  ): Future[Bytes] = message match {
+    case TextMessage.Strict(text) =>
+      Future.fromTry(
+        scala.util.Try(
+          BytesLike[Bytes].utf8(
+            new WebSocketLimits.TextAccumulator(config.wsMaxMessageBytes).append(text).result()
+          )
+        )
+      )
+    case TextMessage.Streamed(stream) =>
+      stream
+        .completionTimeout(config.wsStreamedCompletionTimeout)
+        .runFold(new WebSocketLimits.TextAccumulator(config.wsMaxMessageBytes))(_.append(_))
+        .map(acc => BytesLike[Bytes].utf8(acc.result()))
+    case BinaryMessage.Strict(data) =>
+      Future.fromTry(scala.util.Try {
+        WebSocketLimits.check(data.length.toLong, config.wsMaxMessageBytes)
+        Bytes.wrap(data)
+      })
+    case BinaryMessage.Streamed(stream) =>
+      stream
+        .completionTimeout(config.wsStreamedCompletionTimeout)
+        .runFold(ByteString.empty) { (acc, chunk) =>
+          WebSocketLimits.check(acc.length.toLong + chunk.length, config.wsMaxMessageBytes)
+          acc ++ chunk
+        }
+        .map(Bytes.wrap(_))
   }
 
   /** Release application resources after the output flow terminates. Emitted
@@ -231,14 +254,7 @@ package object pekko {
   )(implicit materializer: Materializer, ec: ExecutionContext): Flow[Message, Message, _] = {
     val source = outStream.asPekkoSource.map(text => BinaryMessage.Strict(text.as[ByteString]))
     val drain = Flow[Message]
-      .mapAsync(httpConfig.wsStreamedParallelism) {
-        case TextMessage.Streamed(stream) =>
-          stream.completionTimeout(httpConfig.wsStreamedCompletionTimeout).runWith(Sink.ignore).map(_ => ())
-        case BinaryMessage.Streamed(stream) =>
-          stream.completionTimeout(httpConfig.wsStreamedCompletionTimeout).runWith(Sink.ignore).map(_ => ())
-        case _ =>
-          Future.successful(())
-      }
+      .mapAsync(httpConfig.wsStreamedParallelism)(message => boundedMessage(message, httpConfig).map(_ => ()))
       .to(Sink.ignore)
     whenTerminated(logFrames(Flow.fromSinkAndSourceCoupled(drain, source), wsLoggingEnabled), release, onAttached)
   }

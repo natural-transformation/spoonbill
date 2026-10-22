@@ -6,6 +6,8 @@ import akka.stream.scaladsl.{Flow, Source}
 import java.io.ByteArrayInputStream
 import java.net.{BindException, InetSocketAddress, URI}
 import java.util.zip.GZIPInputStream
+import org.scalatest.freespec.AsyncFreeSpec
+import scala.concurrent.Future
 import spoonbill.data.Bytes
 import spoonbill.data.syntax._
 import spoonbill.effect.{Queue, Reporter, Stream}
@@ -16,8 +18,6 @@ import spoonbill.web.{Headers, PathAndQuery, Request}
 import spoonbill.web.PathAndQuery._
 import spoonbill.web.Request.Method
 import spoonbill.web.Response.Status
-import org.scalatest.freespec.AsyncFreeSpec
-import scala.concurrent.Future
 
 class HttpClientSpec extends AsyncFreeSpec {
 
@@ -114,6 +114,42 @@ class HttpClientSpec extends AsyncFreeSpec {
       } yield {
         assert(echo1.contains(wsSample1) && echo2.contains(wsSample2))
       }
+    }
+
+    "should accept response messages larger than the server command budget by default" in withServer(wsEchoRoute) {
+      port =>
+        val message = Frame.Text(Bytes.wrap(("x" * 20000).getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+        for {
+          client <- HttpClient.create[Future, Bytes]()
+          queue   = Queue[Future, Frame[Bytes]](1)
+          response <- client.webSocket(
+                        new InetSocketAddress("localhost", port),
+                        Root / "echo",
+                        queue.stream,
+                        Map.empty,
+                        Map.empty
+                      )
+          _    <- queue.offer(message)
+          echo <- response.body.pull()
+          _    <- response.body.cancel()
+          _    <- queue.close()
+        } yield assert(echo.contains(message))
+    }
+
+    "should apply a configured response byte limit at the decoder" in withServer(wsEchoRoute) { port =>
+      for {
+        client <- HttpClient.create[Future, Bytes](maxWebSocketMessageBytes = 4)
+        queue   = Queue[Future, Frame[Bytes]](1)
+        response <-
+          client.webSocket(new InetSocketAddress("localhost", port), Root / "echo", queue.stream, Map.empty, Map.empty)
+        exact = Frame.Text(Bytes.wrap("éé".getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+        _    <- queue.offer(exact)
+        echo <- response.body.pull()
+        _    <- queue.offer(Frame.Text(Bytes.wrap("ééa".getBytes(java.nio.charset.StandardCharsets.UTF_8))))
+        rejected <-
+          response.body.pull().map(_ => false).recover { case _: spoonbill.web.WebSocketLimits.Exceeded => true }
+        _ <- queue.close()
+      } yield assert(echo.contains(exact) && rejected)
     }
 
   }

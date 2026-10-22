@@ -1,14 +1,14 @@
 package spoonbill.http.protocol
 
-import spoonbill.data.Bytes
-import spoonbill.effect.Decoder
-import spoonbill.web.{Request, Response}
-import spoonbill.web.PathAndQuery.Root
 import org.scalatest.Assertion
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.annotation.tailrec
 import scala.util.Random
+import spoonbill.data.Bytes
+import spoonbill.effect.Decoder
+import spoonbill.web.{Request, Response}
+import spoonbill.web.PathAndQuery.Root
 
 class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
 
@@ -171,11 +171,13 @@ class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
    * decode(encode(frame)) == frame
    */
   private def isoCheck(size: Int, masked: Boolean): Assertion = {
+    // Exercise all wire length encodings with an explicitly sufficient budget.
+    val protocol = new WebSocketProtocol[Bytes](math.max(1, size))
     val random = new Random(0)
     val frame  = randomFrame(random, size)
     val mask   = if (masked) Some(random.nextInt()) else None
     val bytes  = encodeFrame(frame, mask)
-    decodeFrame(bytes) should matchPattern { case (_, Decoder.Action.Push(`frame`)) =>
+    protocol.decodeFrame(bytes) should matchPattern { case (_, Decoder.Action.Push(`frame`)) =>
       ()
     }
   }

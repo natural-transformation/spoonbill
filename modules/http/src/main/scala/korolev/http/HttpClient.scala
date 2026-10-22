@@ -5,6 +5,11 @@ import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
 import java.util.concurrent.{Executor, Executors}
 import javax.net.ssl.SSLContext
+import scala.collection.concurrent.TrieMap
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
+import scala.util.Random
+import scala.util.control.NonFatal
 import spoonbill.data.BytesLike
 import spoonbill.effect.{AsyncResourcePool, Decoder, Effect, Reporter, Scheduler, Stream}
 import spoonbill.effect.AsyncResourcePool.Borrow
@@ -13,10 +18,6 @@ import spoonbill.effect.syntax._
 import spoonbill.http.protocol.{Http11, WebSocketProtocol}
 import spoonbill.http.protocol.WebSocketProtocol.Frame
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
-import scala.collection.concurrent.TrieMap
-import scala.concurrent.ExecutionContext
-import scala.concurrent.duration._
-import scala.util.Random
 
 class HttpClient[F[_]: Effect, B: BytesLike] private (
   name: String,
@@ -26,7 +27,8 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   group: AsynchronousChannelGroup,
   bufferSize: Int,
   sslContext: SSLContext,
-  cleanupTicks: Stream[F, Unit]
+  cleanupTicks: Stream[F, Unit],
+  maxWebSocketMessageBytes: Int
 )(implicit executor: ExecutionContext, reporter: Reporter) {
   def apply(
     method: Request.Method,
@@ -159,7 +161,13 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
       frameDecoder          = Decoder(rawResponse.body)
       frames                = webSocketProtocol.mergeFrames(webSocketProtocol.decodeFrames(frameDecoder))
     } yield {
-      rawResponse.copy(body = frames)
+      val boundedInput = new Stream[F, Frame.Merged[B]] {
+        def pull(): F[Option[Frame.Merged[B]]] = frames.pull().recoverF { case NonFatal(error) =>
+          rawResponse.body.cancel().recover { case NonFatal(_) => () } *> Effect[F].fail(error)
+        }
+        def cancel(): F[Unit] = frames.cancel()
+      }
+      rawResponse.copy(body = boundedInput)
     }
 
   private def pqFromUri(uri: URI) = {
@@ -228,7 +236,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   }.runAsyncForget
 
   private val http11                 = new Http11[B]()
-  private val webSocketProtocol      = new WebSocketProtocol[B]()
+  private val webSocketProtocol      = new WebSocketProtocol[B](maxWebSocketMessageBytes)
   private val rawConnectionsPools    = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, RawDataSocket[F, B]]]
   private val secureConnectionsPools = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, SecureDataSocket[F, B]]]
 }
@@ -245,9 +253,11 @@ object HttpClient {
     blockingExecutor: Executor = null,
     group: AsynchronousChannelGroup = null,
     incomingBufferSize: Int = 8096,
-    sslContext: SSLContext = SSLContext.getDefault
+    sslContext: SSLContext = SSLContext.getDefault,
+    maxWebSocketMessageBytes: Int = 16 * 1024 * 1024
   )(implicit executor: ExecutionContext, reporter: Reporter): F[HttpClient[F, B]] =
     for {
+      _     <- Effect[F].delay(require(maxWebSocketMessageBytes > 0, "maxWebSocketMessageBytes must be positive"))
       ticks <- Scheduler[F].schedule(poolCleanupInterval)
     } yield {
       val safeName = Option(name).getOrElse(s"${Random.alphanumeric.take(5).mkString}-http-client")
@@ -262,7 +272,8 @@ object HttpClient {
         group,
         incomingBufferSize,
         sslContext,
-        ticks
+        ticks,
+        maxWebSocketMessageBytes
       )
     }
 }

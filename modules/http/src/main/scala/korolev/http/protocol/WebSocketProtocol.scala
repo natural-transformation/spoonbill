@@ -4,20 +4,22 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.{MessageDigest, SecureRandom}
 import java.util.Base64
+import scala.annotation.{switch, tailrec}
 import spoonbill.data.{BytesLike, BytesReader}
 import spoonbill.data.syntax._
 import spoonbill.effect.{Decoder, Effect, Stream}
 import spoonbill.effect.syntax._
-import spoonbill.web.{Headers, Request, Response}
+import spoonbill.web.{Headers, Request, Response, WebSocketLimits}
 import spoonbill.web.Request.Head
 import spoonbill.web.Response.Status
-import scala.annotation.{switch, tailrec}
 
 /**
  * @see
  *   https://tools.ietf.org/html/rfc6455
  */
-final class WebSocketProtocol[B: BytesLike] {
+final class WebSocketProtocol[B: BytesLike](maxMessageBytes: Int = WebSocketLimits.DefaultMaxMessageBytes) {
+
+  require(maxMessageBytes > 0, "maxMessageBytes must be positive")
 
   import WebSocketProtocol._
   import WebSocketProtocol.DecodingState._
@@ -74,6 +76,9 @@ final class WebSocketProtocol[B: BytesLike] {
         val length    = BytesReader.readLong(bytes, 0)
         val nextState = Payload(s.fin, s.mask, s.opcode, length)
         decodeFrames(bytes.slice(8), nextState, BytesLike[B].empty)
+      case s: Payload if s.length < 0 || s.length > maxMessageBytes =>
+        // Reject the advertised length before retaining any payload chunks.
+        throw new WebSocketLimits.Exceeded
       case s: Payload if bytes.length >= s.fullLength =>
         val payloadBytes = decodePayload(bytes, s)
         val frame = (s.opcode: @switch) match {
@@ -104,7 +109,15 @@ final class WebSocketProtocol[B: BytesLike] {
   def mergeFrames(
     buffer: Option[Frame.Merged[B]],
     incoming: Frame[B]
-  ): (Option[Frame.Merged[B]], Decoder.Action[Frame[B], Frame.Merged[B]]) =
+  ): (Option[Frame.Merged[B]], Decoder.Action[Frame[B], Frame.Merged[B]]) = {
+    def payloadLength(frame: Frame[B]): Long = frame match {
+      case Frame.Binary(payload, _)         => BytesLike[B].length(payload)
+      case Frame.Text(payload, _)           => BytesLike[B].length(payload)
+      case Frame.Continuation(payload, _)   => BytesLike[B].length(payload)
+      case Frame.Unspecified(_, _, payload) => BytesLike[B].length(payload)
+      case _                                => 0L
+    }
+    WebSocketLimits.check(buffer.fold(0L)(payloadLength) + payloadLength(incoming), maxMessageBytes)
     (buffer, incoming) match {
       case (_, controlFrame: Frame.Control[B] @unchecked) =>
         // Control frames MAY be injected in the middle of a fragmented message.
@@ -120,6 +133,7 @@ final class WebSocketProtocol[B: BytesLike] {
       case _ =>
         throw new IllegalStateException(s"Fragmentation in WebSocket is invalid. Received $incoming after $buffer")
     }
+  }
 
   def encodeFrame(frame: Frame[B], maybeMask: Option[Int]): B = frame match {
     case Frame.Pong | Frame.Ping | Frame.ConnectionClose =>
