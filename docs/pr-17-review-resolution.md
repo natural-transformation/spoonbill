@@ -69,7 +69,7 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --comm
 | --- | --- | --- |
 | Full command above | PASS | Includes 15 new client safety cases, exact response-cap/parser regressions, seven external public-upgrade cases, three Cats Effect server lifecycle cases, request diagnostics and the corrected isolation fixture. |
 | `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command sbt --batch --supershell=false -Dsbt.server.autostart=false 'standalone/test' 'standalone/testOnly *StandaloneDeadlineIsolationSpec' 'standalone/testOnly *StandaloneDeadlineIsolationSpec' 'standalone/testOnly *StandaloneDeadlineIsolationSpec'` | PASS | All 39 standalone tests and three additional bounded isolation repeats, with unchanged socket timeouts. |
-| `nix develop --no-write-lock-file --command node --test misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs misc/browser-protocol-tests.mjs misc/browser-auth-schema-tests.mjs misc/replacement-bootstrap-tests.mjs misc/core-purity-tests.mjs misc/release-ref-tests.mjs misc/browser-auth-baseline/*.test.mjs` | PASS | 107 cases, no failures/skips. |
+| `nix develop --no-write-lock-file --command node --test misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs misc/browser-protocol-tests.mjs misc/browser-auth-schema-tests.mjs misc/replacement-bootstrap-tests.mjs misc/browser-auth-completion-loss-tests.mjs misc/core-purity-tests.mjs misc/release-ref-tests.mjs misc/browser-auth-baseline/*.test.mjs` | PASS | 113 cases, no failures/skips, including six deterministic completion-loss fixture regressions. |
 | Runtime artifact audit (exact command in the first-round table) | PASS | Final patched-source manifest, binary, POM, attribution and single runtime provider match. |
 | `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/test-sensitive-acknowledgement.sh` | PASS | Actual standalone service, Chromium/WebKit acknowledgements and identity/modify/revocation invalidation. |
 | `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command bash scripts/test-browser-auth.sh examples/browser-auth/target/streams/runtime/fullClasspath/_global/streams/export` | PASS | Memory-provider authentication, replacement and forced recovery in both engines. |
@@ -82,9 +82,27 @@ Early checks caught fixture-only compilation mistakes, which were corrected.
 The first aggregate run then rejected the incomplete positive WebSocket fixture
 described above; the corrected fixture and explicit negative case pass in the
 final aggregate. Validation did not weaken handshake or authorization checks.
+
+The [first third-round CI run](https://github.com/natural-transformation/spoonbill/actions/runs/39838021482)
+passed the build but exposed another native-browser fixture assumption in
+JDBC/Chromium: the forced `lost-command` checkpoint required observing a completion
+frame, although replacement may commit and retire its transport before sending
+that frame. The browser had already received recovery 204. The fixture now arms
+one exact predecessor transport and recognizes either its intercepted completion
+or its witnessed upstream close. It drops any late completion after close,
+requires exactly one fault and zero forwarded completions, and permits zero
+observed completions only with that close witness. Setup and successor closures
+cannot satisfy the checkpoint. All changed-cookie, predecessor-denial, bounded
+delivery and one-time-disclosure checks remain. The six deterministic tests cover
+both event orders, late frames, unrelated closures and duplicate controls. No
+timeout or production authentication behavior changed. The complete memory, IO
+and PostgreSQL browser flows passed again in Chromium and WebKit with this
+fixture. The PostgreSQL run directly observed both an intercepted command and a
+close with zero commands; both retained the full security assertions.
+
 Local logs are `/tmp/pr17-round3-final-all.log`,
 `/tmp/pr17-round3-isolation.log`, `/tmp/pr17-round3-focused-rerun.log`,
-`/tmp/pr17-round3-js.log`, `/tmp/pr17-round3-artifact.log`, and
+`/tmp/pr17-round3-js-final.log`, `/tmp/pr17-round3-artifact.log`, and
 `/tmp/pr17-round3-browser-*.log`. They are temporary; committed tests and commands
 are sufficient to reproduce the checks.
 

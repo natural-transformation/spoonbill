@@ -61,6 +61,7 @@ jobs:
           misc/browser-auth-schema-tests.mjs \
           misc/release-ref-tests.mjs \
           misc/replacement-bootstrap-tests.mjs \
+          misc/browser-auth-completion-loss-tests.mjs \
           misc/core-purity-tests.mjs \
           misc/browser-auth-baseline/*.test.mjs
 
