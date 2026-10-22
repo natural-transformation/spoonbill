@@ -188,6 +188,16 @@ class SecureDataSocket[F[_]: Effect, B: BytesLike] private (engine: SSLEngine, s
 
 object SecureDataSocket {
 
+  /** The caller owns failure cleanup and must close the raw socket. */
+  private[spoonbill] def setupClient[F[_]: Effect, B: BytesLike](
+    socket: RawDataSocket[F, B],
+    engine: SSLEngine,
+    blockingExecutor: Executor
+  ): F[SecureDataSocket[F, B]] = Effect[F].delayAsync {
+    engine.setUseClientMode(true)
+    handshake(socket, engine, blockingExecutor)
+  }
+
   def forClientMode[F[_]: Effect, B: BytesLike](
     socket: RawDataSocket[F, B],
     engine: SSLEngine,
@@ -202,12 +212,19 @@ object SecureDataSocket {
     engine: SSLEngine,
     blockingExecutor: Executor
   ): F[SecureDataSocket[F, B]] =
+    handshake(socket, engine, blockingExecutor).recoverF { case NonFatal(error) =>
+      socket.shutdown().recover { case NonFatal(_) => () } *> Effect[F].fail(error)
+    }
+
+  private def handshake[F[_]: Effect, B: BytesLike](
+    socket: RawDataSocket[F, B],
+    engine: SSLEngine,
+    blockingExecutor: Executor
+  ): F[SecureDataSocket[F, B]] =
     Effect[F].delayAsync {
       engine.beginHandshake()
       val secureSocket = new SecureDataSocket[F, B](engine, socket)
       secureSocket.handshake(blockingExecutor).as(secureSocket)
-    }.recoverF { case NonFatal(error) =>
-      socket.shutdown().recover { case NonFatal(_) => () } *> Effect[F].fail(error)
     }
 
   private sealed trait UnwrapStatus

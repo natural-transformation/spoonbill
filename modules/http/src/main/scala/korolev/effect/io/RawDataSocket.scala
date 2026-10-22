@@ -18,6 +18,11 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
   writeBuffer: ByteBuffer
 ) extends DataSocket[F, B] {
 
+  /** Open first so callers can own and close a pending TCP connection. */
+  private[spoonbill] def connect(address: SocketAddress): F[Unit] = Effect[F].promise { cb =>
+    channel.connect(address, (), completionHandler[Void](result => cb(result.map(_ => ()))))
+  }
+
   val stream: Stream[F, B] = new Stream[F, B] {
 
     def pull(): F[Option[B]] = read(readBuffer).map {
@@ -285,15 +290,23 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
 
 object RawDataSocket {
 
+  private[spoonbill] def open[F[_]: Effect, B: BytesLike](
+    readBuffer: ByteBuffer,
+    writeBuffer: ByteBuffer,
+    group: AsynchronousChannelGroup
+  ): RawDataSocket[F, B] =
+    new RawDataSocket[F, B](AsynchronousSocketChannel.open(group), readBuffer, writeBuffer)
+
   def connect[F[_]: Effect, B: BytesLike](
     address: SocketAddress,
     readBuffer: ByteBuffer = ByteBuffer.allocate(8096),
     writeBuffer: ByteBuffer = ByteBuffer.allocate(8096),
     group: AsynchronousChannelGroup = null
   ): F[RawDataSocket[F, B]] =
-    Effect[F].promise { cb =>
-      val channel = AsynchronousSocketChannel.open(group)
-      lazy val ds = new RawDataSocket[F, B](channel, readBuffer, writeBuffer)
-      channel.connect(address, (), completionHandler[Void](cb.compose(_.map(_ => ds))))
+    Effect[F].delayAsync {
+      val socket = open[F, B](readBuffer, writeBuffer, group)
+      socket.connect(address).as(socket).recoverF { case NonFatal(error) =>
+        socket.shutdown() *> Effect[F].fail(error)
+      }
     }
 }

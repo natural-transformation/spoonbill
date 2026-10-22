@@ -91,11 +91,19 @@ class Http11[B: BytesLike](
     }
   }
 
-  def decodeResponse[F[_]: Effect](decoder: Decoder[F, B]): Stream[F, Response[Stream[F, B]]] = decoder
+  def decodeResponse[F[_]: Effect](
+    decoder: Decoder[F, B],
+    requestMethod: Request.Method = Request.Method.Get
+  ): Stream[F, Response[Stream[F, B]]] = decoder
     .decode(BytesLike[B].empty)(decodeResponse)
+    // Informational responses end at their headers. Keep reading for the final
+    // response, except 101, whose remaining bytes belong to the upgraded stream.
+    .collect { case response if response.status.code < 100 || response.status.code == 101 || response.status.code >= 200 => response }
     .map { response =>
       response.copy(
-        body = response.contentLength match {
+        body = if (response.status.code == 101) decoder
+        else if (isBodylessResponse(requestMethod, response.status)) Stream.empty
+        else response.contentLength match {
           case Some(0) => Stream.empty
           case Some(contentLength) =>
             decoder.decode(0L)(decodeLimitedBody(_, _, contentLength))
@@ -400,6 +408,12 @@ class Http11[B: BytesLike](
 object Http11 {
 
   final class InvalidFraming(message: String) extends IllegalArgumentException(message)
+
+  // Content-Length on HEAD and 304 describes the representation, not bytes on
+  // this connection (RFC 9112, section 6.3). 101 exposes the upgraded stream.
+  def isBodylessResponse(method: Request.Method, status: Status): Boolean =
+    status.code != 101 && (method == Request.Method.Head ||
+      (status.code >= 100 && status.code < 200) || status.code == 204 || status.code == 304)
 
   private implicit final class StringBuilderOps(val builder: StringBuilder) extends AnyVal {
     def newLine(): StringBuilder = builder

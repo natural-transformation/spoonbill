@@ -1,10 +1,64 @@
 # PR #17 consolidated review resolution
 
-This records three rounds of the 22 October 2026 security and Scala reviews,
-against `2dfb7a87`, `56cff8c8`, and `3d2d757e`. All nineteen findings across the
-three rounds are accepted; none is rejected. The source reviews remain user-owned local
+This records four rounds of the 22 October 2026 security and Scala reviews,
+against `2dfb7a87`, `56cff8c8`, `3d2d757e`, and `2b8e947c`. All twenty-two findings across the
+four rounds are accepted; none is rejected. The source reviews remain user-owned local
 documents and are not added to the PR by these changes. GitHub release setup
 remains explicitly deferred to the user's final review.
+
+## Fourth-round dispositions
+
+| ID | Updated review finding | Resolution |
+| --- | --- | --- |
+| SEC4-1 | P2 bodyless responses can occupy a client connection indefinitely | Select framing using the request method and response status. HEAD, 204 and 304 expose an empty body while preserving representation `Content-Length` metadata. Skip interim responses until the final response without restarting the header deadline. Preserve 101 upgraded bytes and never recycle that transport as HTTP. Protocol split-boundary tests and persistent local peers verify immediate EOF, physical connection reuse and subsequent response integrity. |
+| SEC4-2 | P2 TCP/TLS setup can stall before the header deadline starts | Add a positive trailing `connectionSetupTimeout`, default 30 seconds, covering TCP connect and TLS handshake under one absolute deadline. Own the raw channel and reserve close notification capacity before starting connect. Expiry closes the channel without running caller continuations on the timer; factory failure releases global and per-address reservations before another creation proceeds. Tests cover a silent TLS peer, queued same-address recovery, cross-address capacity recovery, late TCP success/failure, delayed scheduler completion, successful timer cancellation and channel allocation failure. |
+| SCALA4-1 | P2 response EOF waits for an unfinished upload | Deliver EOF once the response framing completes. For persistent framed responses, settle the upload in the background and retain connection ownership until it succeeds; a late upload failure discards it. Responses requiring closure initiate cancellation immediately, without waiting for the upload being canceled. Fixed-length, chunked and bodyless early-response tests hold a pending upload and a finalizer that depends on response completion, then verify bounded cleanup ownership and later pool recovery. |
+
+The bodyless and early-response behavior follows
+[RFC 9112 section 6.3](https://httpwg.org/specs/rfc9112.html#message.body.length)
+and [RFC 9110 section 7.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-7.5).
+A final response does not imply that its request has finished. An unfinished
+upload on a persistent connection still owns that connection until upload
+settlement; response EOF no longer waits for it. Application upload streams and
+their finalizers must terminate to recover that capacity.
+
+The setup timer starts after channel allocation/admission, before TCP connect,
+and includes the entire TLS handshake. It does not include DNS/address
+resolution or pool wait. The separate response-header timer starts after
+borrowing and remains active through informational responses until final
+headers. Neither timer limits response-body consumption. Certificate and
+hostname validation remain enabled. A completed setup cancels its timer before
+handing the connection to the HTTP exchange.
+
+## Verification
+
+Fourth-round production/test compilation and all **1,332 tests** passed (1,291
+ScalaTest and 41 ZIO Test), with no failures, canceled, ignored or pending cases.
+All commands use the repository-local Nix flake.
+
+```sh
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  bash scripts/with-test-postgres.sh sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
+  compile 'Test / compile' test
+```
+
+| Command/check | Result | Evidence |
+| --- | --- | --- |
+| Aggregate command above | PASS | Includes 135 HTTP tests. The 28 new cases cover eight setup-deadline/allocation cases, five early-response/upload cases, twelve persistent-peer bodyless/informational/upgrade cases and three protocol framing cases. The split-boundary protocol case covers every byte split for each method/status/framing variant. |
+| `env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command sbt --batch --supershell=false -Dsbt.server.autostart=false 'http/testOnly spoonbill.http.HttpClientSetupDeadlineSpec spoonbill.http.HttpClientTlsSecuritySpec spoonbill.http.HttpClientEarlyResponseSpec spoonbill.http.HttpClientResponseSafetySpec spoonbill.http.HttpClientBodylessResponseSpec spoonbill.http.protocol.Http11ResponseFramingSpec spoonbill.http.protocol.Http11Spec spoonbill.http.protocol.WebSocketProtocolSpec'` | PASS | 80 focused cases before the final generic-101 regression; that additional regression is included in the passing aggregate run. Existing WSS, hostname verification, response bounds and blocked-finalizer isolation cases remain green. |
+| Independent source review | PASS | Verified response EOF versus upload ownership, setup success/expiry races, late completion and reserved cleanup. The generic HTTP 101 path now excludes upgraded bytes from HTTP length validation and pool reuse, with a real-peer regression. |
+| `git diff --check` | PASS | No whitespace errors. |
+
+The setup test uses a real silent TLS peer to verify closure and recovery of
+both reservations. Pending TCP and delayed-scheduler races use a real raw
+channel with a controlled setup promise/clock, avoiding OS-dependent SYN retry
+timing. These tests do not claim a real network black-hole or DNS timeout test.
+The PR description links the final-head CI checks, including runtime packaging,
+JavaScript and native browser integrations. Local logs are
+`/tmp/pr17-round4-implementation-focused.log` and
+`/tmp/pr17-round4-implementation-all.log`; the committed commands are sufficient
+to rerun the validation.
 
 ## Third-round dispositions
 
@@ -50,7 +104,7 @@ checks the represented fields described in
 An old positive fixture was corrected to include `Upgrade: websocket`; a separate
 negative test covers its absence.
 
-## Verification
+## Third-round verification (`2b8e947c`)
 
 Third-round aggregate compilation and all **1,304 tests** passed (1,263
 ScalaTest and 41 ZIO Test), with no failures, canceled, ignored or pending cases.

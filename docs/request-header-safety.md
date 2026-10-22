@@ -70,11 +70,27 @@ The outbound client's response prefix is separately bounded. Defaults in
 `HttpClient.create` are `maxResponseHeaderBytes = 16384` and
 `responseHeaderTimeout = 30.seconds`. The timer covers the borrowed exchange until
 complete response headers, excluding pool wait, connection/TLS setup and body
-consumption after headers. Failure closes and discards the connection; canceled
+consumption after headers. Informational responses do not end or restart that
+deadline. A separate `connectionSetupTimeout = 30.seconds` bounds TCP connect and
+TLS handshake together, starting before connect and after channel admission;
+DNS/address resolution and pool wait remain outside it. Failed or timed-out
+setup closes its channel and releases both connection reservations.
+Failure closes and discards the connection; canceled
 or incomplete bodies and responses requiring closure are not recycled. Only a
 fully consumed framed body and successful request writer allow reuse. Request-body
 finalizers execute off the timer with finite per-client cleanup admission
 (`maxTotalConnections = 1024`, `closeNotificationWorkers = 2`).
+
+HEAD, 204 and 304 responses end at their headers even when `Content-Length`
+describes a representation. Their body is empty and that metadata remains
+available. A 101 response exposes upgraded protocol bytes instead of an HTTP
+body and is never returned to the HTTP connection pool.
+
+A complete final response can arrive while its upload is pending. Response EOF
+is delivered independently of upload settlement. A persistent connection remains
+owned until its writer succeeds; a failed writer discards it. A response requiring
+closure starts cancellation immediately and retains cleanup capacity until its
+finalizer settles, without making EOF wait for that finalizer.
 
 The standalone HTTP response serializer validates all field names as HTTP tokens
 and rejects CR, LF, NUL, DEL, and other ASCII controls in field values except

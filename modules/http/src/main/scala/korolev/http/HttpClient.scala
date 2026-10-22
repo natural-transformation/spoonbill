@@ -34,7 +34,8 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   maxResponseHeaderBytes: Int,
   responseHeaderTimeout: FiniteDuration,
   maxTotalConnections: Int,
-  closeNotificationWorkers: Int
+  closeNotificationWorkers: Int,
+  connectionSetupTimeout: FiniteDuration
 )(implicit executor: ExecutionContext, reporter: Reporter) {
   def apply(
     method: Request.Method,
@@ -103,22 +104,33 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         val closes = response.headers.exists { case (name, value) =>
           name.equalsIgnoreCase(Headers.Connection) && value.split(',').exists(_.trim.equalsIgnoreCase("close"))
         }
-        val reusable = !closes && (response.contentLength.isDefined || response.header(Headers.TransferEncoding).contains("chunked"))
+        val upgraded = response.status.code == 101
+        val bodyless = Http11.isBodylessResponse(request.method, response.status)
+        val expectedLength = if (upgraded) None else if (bodyless) Some(0L) else response.contentLength
+        val reusable = !closes && !upgraded &&
+          (bodyless || response.contentLength.isDefined || response.header(Headers.TransferEncoding).contains("chunked"))
         response.copy(body = new Stream[F, B] {
           def pull(): F[Option[B]] = Effect[F].delayAsync {
-            Option(failure.get()) match {
+            if (finished.get()) Effect[F].none
+            else Option(failure.get()) match {
               case Some(error) => Effect[F].fail(error)
-              case None if finished.get() => Effect[F].none
               case None => response.body.pull().flatMap {
                 case value @ Some(bytes) => count += bytes.length; Effect[F].pure(value)
                 case None =>
-                  if (response.contentLength.exists(_ != count))
+                  if (expectedLength.exists(_ != count))
                     Effect[F].fail(new IllegalStateException("Incomplete HTTP response body"))
-                  else writerDone.flatMap { _ =>
-                    if (finished.compareAndSet(false, true)) {
-                      if (reusable && connection.finish(cleanup)) borrow.give().as(None)
-                      else { discard(); Effect[F].none }
-                    } else Effect[F].none
+                  else if (!finished.compareAndSet(false, true)) Effect[F].none
+                  else if (!reusable) { discard(); Effect[F].none }
+                  else {
+                    // A final response can finish before its request upload.
+                    // Deliver EOF now, retaining ownership until the writer
+                    // settles. A failed writer retires rather than recycles.
+                    Effect[F].start {
+                      writerDone.flatMap { _ =>
+                        if (connection.finish(cleanup)) borrow.give()
+                        else { discard(); Effect[F].unit }
+                      }.recover { case NonFatal(error) => failed(error) }
+                    }.as(None)
                   }
               }
             }
@@ -155,7 +167,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
           result.left.foreach(error => complete(Left(error)))
         }
         writerObserved = true
-        http11.decodeResponse(Decoder(connection.socket.stream)).pull().runAsync {
+        http11.decodeResponse(Decoder(connection.socket.stream), request.method).pull().runAsync {
           case Right(Some(response)) => complete(Right(guarded(response)))
           case Right(None) => complete(Left(new IllegalStateException("Peer has closed connection before sending response.")))
           case Left(error) => complete(Left(error))
@@ -298,36 +310,35 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     closeDispatcher.reserve() match {
       case None => Effect[F].fail(new IllegalStateException("HTTP client connection and cleanup capacity exhausted"))
       case Some(reservation) =>
-        var connection: Option[ClientConnection] = None
-        RawDataSocket.connect[F, B](address, ByteBuffer.allocate(bufferSize), ByteBuffer.allocate(bufferSize), group)
-          .flatMap { raw =>
-            if (!raw.admitCloseNotifications(reservation)) {
-              reservation.cancel()
-              raw.shutdown() *> Effect[F].fail(new IllegalStateException("HTTP connection closed during creation"))
-            } else {
-              reservation.connectionFinished()
-              val value = new ClientConnection(raw, reservation)
-              connection = Some(value)
-              raw.subscribeCloseEffect(_ => value.onPhysicalClose()).flatMap { _ =>
+        Effect[F].delay {
+          RawDataSocket.open[F, B](ByteBuffer.allocate(bufferSize), ByteBuffer.allocate(bufferSize), group)
+        }.recoverF { case NonFatal(error) =>
+          reservation.cancel()
+          Effect[F].fail(error)
+        }.flatMap { raw =>
+          if (!raw.admitCloseNotifications(reservation)) {
+            reservation.cancel()
+            raw.shutdown() *> Effect[F].fail(new IllegalStateException("HTTP connection closed during creation"))
+          } else {
+            reservation.connectionFinished()
+            val value = new ClientConnection(raw, reservation)
+            HttpClient.withSetupDeadline(raw, reservation, connectionSetupTimeout) {
+              raw.subscribeCloseEffect(_ => value.onPhysicalClose()) *> raw.connect(address).flatMap { _ =>
                 if (!secure) Effect[F].pure(value)
                 else {
                   val engine = sslContext.createSSLEngine(address.getHostString, address.getPort)
                   val parameters = engine.getSSLParameters
                   parameters.setEndpointIdentificationAlgorithm("HTTPS")
                   engine.setSSLParameters(parameters)
-                  SecureDataSocket.forClientMode(raw, engine, blockingExecutor).map { socket =>
+                  SecureDataSocket.setupClient(raw, engine, blockingExecutor).map { socket =>
                     value.socket = socket
                     value
                   }
                 }
               }
             }
-          }.recoverF { case NonFatal(error) =>
-            connection match {
-              case Some(value) => connectionClose.close(value) *> Effect[F].fail(error)
-              case None => reservation.cancel(); Effect[F].fail(error)
-            }
           }
+        }
     }
   }
 
@@ -384,8 +395,46 @@ object HttpClient {
 
   private lazy val defaultBlockingExecutor = Executors.newCachedThreadPool()
 
+  /** The reserved close worker publishes timeout; the timer only closes transport.
+    * Package visibility permits a deterministic pending-TCP test without relying
+    * on operating-system routing or SYN retry behavior.
+    */
+  private[http] def withSetupDeadline[F[_]: Effect, B: BytesLike, A](
+    raw: RawDataSocket[F, B],
+    reservation: SocketCloseDispatcher.Reservation,
+    timeout: FiniteDuration,
+    clockNanos: () => Long = () => System.nanoTime()
+  )(setup: => F[A]): F[A] = Effect[F].delayAsync {
+    val settled = new AtomicBoolean()
+    val deadline = new RequestDeadline(timeout, () => raw.shutdownFromDeadline(), clockNanos)
+    var detach: () => Unit = () => ()
+    Effect[F].promise[A] { callback =>
+      def complete(result: Either[Throwable, A]): Unit = {
+        if (settled.compareAndSet(false, true)) {
+          val timely = deadline.complete()
+          detach()
+          callback(if (timely) result else Left(new TimeoutException("HTTP connection setup deadline exceeded")))
+        }
+      }
+      try {
+        // Install before TCP starts. A timeout cannot depend on connect or TLS
+        // completing, including a delegated handshake task that never returns.
+        detach = raw.subscribeClose(_ => complete(Left(new java.nio.channels.AsynchronousCloseException)))
+        deadline.start()
+        Effect[F].delayAsync(setup).runAsync(complete)
+      } catch { case NonFatal(error) => complete(Left(error)) }
+    }.recoverF { case NonFatal(error) =>
+      deadline.close()
+      detach()
+      raw.shutdownFromDeadline()
+      reservation.awaitReleased[F]() *> Effect[F].fail(error)
+    }
+  }
+
   /** Response-header limits apply after a connection is borrowed, excluding
-    * pool wait and TLS setup. maxTotalConnections bounds physical connections
+    * pool wait and connection setup. connectionSetupTimeout is a separate
+    * absolute TCP-connect plus TLS-handshake deadline; DNS resolution and pool
+    * wait are excluded. maxTotalConnections bounds physical connections
     * across destinations, including those awaiting request-body cleanup; new
     * connections fail admission when that capacity is exhausted. A response
     * failure is published without waiting for user cleanup.
@@ -403,13 +452,15 @@ object HttpClient {
     maxResponseHeaderBytes: Int = 16 * 1024,
     responseHeaderTimeout: FiniteDuration = 30.seconds,
     maxTotalConnections: Int = 1024,
-    closeNotificationWorkers: Int = 2
+    closeNotificationWorkers: Int = 2,
+    connectionSetupTimeout: FiniteDuration = 30.seconds
   )(implicit executor: ExecutionContext, reporter: Reporter): F[HttpClient[F, B]] =
     for {
       _     <- Effect[F].delay(require(maxWebSocketMessageBytes > 0, "maxWebSocketMessageBytes must be positive"))
       _ <- Effect[F].delay {
         require(maxResponseHeaderBytes >= 4, "maxResponseHeaderBytes must include the header delimiter")
         require(responseHeaderTimeout > Duration.Zero, "responseHeaderTimeout must be positive")
+        require(connectionSetupTimeout > Duration.Zero, "connectionSetupTimeout must be positive")
         require(maxTotalConnections > 0 && closeNotificationWorkers > 0 && maxConnectionsPerAddress > 0,
           "HTTP connection and cleanup limits must be positive")
       }
@@ -432,7 +483,8 @@ object HttpClient {
         maxResponseHeaderBytes,
         responseHeaderTimeout,
         maxTotalConnections,
-        closeNotificationWorkers
+        closeNotificationWorkers,
+        connectionSetupTimeout
       )
     }
 }

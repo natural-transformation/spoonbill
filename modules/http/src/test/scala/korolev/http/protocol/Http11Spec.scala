@@ -197,7 +197,9 @@ class Http11Spec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks
 
   private val genResponse =
     for {
-      status <- genStatus
+      // These round trips generate actual body bytes, so use body-bearing final
+      // responses; informational and bodyless statuses are covered separately.
+      status <- genStatus.filter(s => s.code >= 200 && s.code != 204 && s.code != 304)
       //pathStrings <- Gen.listOf(Gen.asciiPrintableStr)
       //path = Path.fromString(pathStrings.mkString("/"))
       headers    <- Gen.listOf(genHeader)
