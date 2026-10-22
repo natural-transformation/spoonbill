@@ -198,14 +198,20 @@ async function exercise(browser, engine, username, factor) {
 
     const predecessorView = new URL(sockets.at(-1).url).pathname;
     const replacementSocket = nextSocket();
+    // A committed replacement can lose its completion command when the old
+    // owner closes. Checked recovery is a supported delivery path; the fresh
+    // socket, changed cookie and predecessor-denial assertions below still apply.
     const replacementResponse = page.waitForResponse(response => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/auth/complete');
+      response.status() === 204 &&
+      ['/auth/complete', '/auth/recover'].includes(new URL(response.url()).pathname));
     replacementResponse.catch(() => {});
     phase = 'replacement-submit';
     await page.locator('select[name="securityChange"]').selectOption('regenerate-recovery');
     await page.locator('input[name="replacementPassword"]').fill('password');
     await page.getByRole('button', {name: 'Apply security change', exact: true}).click();
-    assert.equal((await replacementResponse).status(), 204);
+    const replacementDelivery = await replacementResponse;
+    assert.equal(replacementDelivery.status(), 204);
+    const replacementDeliveryPath = new URL(replacementDelivery.url()).pathname;
     await replacementSocket;
     phase = 'replacement-activated'; await ready();
     await page.getByText(`Authenticated account: ${username}`, {exact: true}).waitFor({state: 'visible'});
@@ -238,7 +244,7 @@ async function exercise(browser, engine, username, factor) {
     assert.deepEqual(errors, [], `${engine}: browser runtime errors`);
     console.log(JSON.stringify({provider, engine, flow: factor ? 'factor' : 'password',
       realCookieDelivery: true, sameViewActivation: true, protectedAction: true,
-      protectedHttpAndReload: true, replacementSameView: true, predecessorDenied: true,
+      protectedHttpAndReload: true, replacementSameView: true, replacementDeliveryPath, predecessorDenied: true,
       successorDisclosureOnce: true, logout: true, staleCookieDenied: true, foreignOriginDenied: true}));
   } catch (error) {
     const failure = /Socket closed/.test(error.message) ? 'socket-closed-before-ready'

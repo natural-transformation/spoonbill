@@ -6,7 +6,7 @@ import java.util.concurrent.{Executors, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{Await, Future, Promise}
 import scala.concurrent.duration.*
 import spoonbill.effect.Effect
 
@@ -52,6 +52,26 @@ final class RawDataSocketSubscriptionSpec extends AnyFlatSpec with Matchers {
       socket.subscribeClose(_ => { called.incrementAndGet(); () })()
       called.get() shouldBe 2
       socket.closeObserverCount shouldBe 0
+    }
+  }
+
+  it should "await asynchronous cleanup registered after closure in the registering effect" in {
+    withSocket { socket =>
+      Await.result(socket.shutdown(), 3.seconds)
+      val cleanup = Promise[Unit]()
+      val called = new AtomicInteger()
+      val registered = socket.subscribeCloseEffect { _ =>
+        called.incrementAndGet()
+        cleanup.future
+      }
+      called.get() shouldBe 1
+      registered.isCompleted shouldBe false
+      socket.closeObserverCount shouldBe 0
+      cleanup.success(())
+      val detach = Await.result(registered, 3.seconds)
+      detach()
+      Await.result(socket.shutdown(), 3.seconds)
+      called.get() shouldBe 1
     }
   }
 }

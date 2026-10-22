@@ -17,7 +17,7 @@ final class StandaloneMessageDeadlineSpec extends AnyFlatSpec with Matchers {
 
   "Message completion" should "reject elapsed monotonic time before a delayed timer has executed" in {
     val time = new AtomicLong()
-    val deadline = new MessageDeadline[Future](1.minute, () => Future.unit, () => time.get())
+    val deadline = new MessageDeadline(1.minute, () => (), () => time.get())
     try {
       deadline.start()
       time.set(1.minute.toNanos)
@@ -34,9 +34,9 @@ final class StandaloneMessageDeadlineSpec extends AnyFlatSpec with Matchers {
       def reportFailure(error: Throwable): Unit = ()
     }
     val expired = Promise[Unit]()
-    val deadline = new MessageDeadline[Future](20.millis, () => {
+    val deadline = new MessageDeadline(20.millis, () => {
       expired.trySuccess(())
-      Future.unit
+      ()
     })
     try {
       deadline.start()

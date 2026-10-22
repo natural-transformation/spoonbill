@@ -164,7 +164,7 @@ final class HttpServerHeaderLimitsSpec extends AnyFlatSpec with Matchers {
 
   it should "reject elapsed completion even before its scheduled timer has run" in {
     val time = new AtomicLong(0L)
-    val deadline = new RequestHeaderDeadline[Future](1.minute, () => Future.unit, () => time.get())
+    val deadline = new RequestDeadline(1.minute, () => (), () => time.get())
     try {
       deadline.start()
       time.set(1.minute.toNanos)

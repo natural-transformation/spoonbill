@@ -10,24 +10,34 @@ import spoonbill.effect.Effect
 import spoonbill.effect.syntax.*
 
 /** Own an upgrade until its first output pull, including a late service result.
-  * All transitions run inside F. Cleanup cannot recursively wait on itself.
+  * The timer only claims expiry and closes transport; application cleanup runs
+  * through reserved close notification. Cleanup cannot recursively wait on itself.
   */
 private[server] final class SetupDeadline[F[_]: Effect](
   timeout: FiniteDuration,
   releaseInput: () => F[Unit],
-  shutdown: () => F[Unit]
+  shutdown: () => F[Unit],
+  shutdownFromTimer: () => Unit
 )(implicit ec: ExecutionContext) {
   private type Release = () => F[Unit]
   private sealed trait State
   private case class Pending(release: Option[Release]) extends State
   private case class Attached(release: Release) extends State
+  private case class Expired(release: Option[Release]) extends State
   private case object Finished extends State
   private val state = new AtomicReference[State](Pending(None))
   @volatile private var detachObserver: () => Unit = () => ()
   private val scheduled = SetupDeadline.timer.schedule(new Runnable {
-    def run(): Unit = ec.execute(new Runnable {
-      def run(): Unit = expire().runAsync(_ => ())
-    })
+    def run(): Unit = {
+      @tailrec def claim(): Boolean = state.get() match {
+        case pending: Pending =>
+          if (state.compareAndSet(pending, Expired(pending.release))) true else claim()
+        case _ => false
+      }
+      // Only physical closure runs here. The socket's reserved notification
+      // worker calls transportEnded to settle the captured application cleanup.
+      if (claim()) shutdownFromTimer()
+    }
   }, timeout.toNanos, TimeUnit.NANOSECONDS)
 
   /** Registration can race with expiry/close; either side removes the observer. */
@@ -72,6 +82,8 @@ private[server] final class SetupDeadline[F[_]: Effect](
         if (state.compareAndSet(pending, Finished)) Some(pending.release) else claim()
       case attached: Attached if !setupOnly =>
         if (state.compareAndSet(attached, Finished)) Some(Some(attached.release)) else claim()
+      case expired: Expired =>
+        if (state.compareAndSet(expired, Finished)) Some(expired.release) else claim()
       case _ => None
     }
     claim() match {

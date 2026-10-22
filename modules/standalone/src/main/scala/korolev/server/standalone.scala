@@ -27,26 +27,35 @@ object standalone {
     wsMaxMessageBytes: Int = spoonbill.web.WebSocketLimits.DefaultMaxMessageBytes,
     wsMessageTimeout: FiniteDuration = 30.seconds,
     maxRequestHeaderBytes: Int = 16 * 1024,
-    requestHeaderTimeout: FiniteDuration = 30.seconds
+    requestHeaderTimeout: FiniteDuration = 30.seconds,
+    requestBodyTimeout: FiniteDuration = 30.seconds,
+    maxChunkLineBytes: Int = 1024,
+    maxTrailerBytes: Int = 16 * 1024,
+    maxConnections: Int = 1024,
+    closeNotificationWorkers: Int = 2
   )(implicit ec: ExecutionContext): F[ServerSocket.ServerSocketHandler[F]] = {
     require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
     require(wsMessageTimeout > Duration.Zero, "wsMessageTimeout must be positive")
     val webSocketProtocol = new WebSocketProtocol[B](wsMaxMessageBytes)
     HttpServer.withConnection[F, B](address, group = group, gracefulShutdown = gracefulShutdown,
-      maxRequestHeaderBytes = maxRequestHeaderBytes, requestHeaderTimeout = requestHeaderTimeout) { (request, client) =>
+      maxRequestHeaderBytes = maxRequestHeaderBytes, requestHeaderTimeout = requestHeaderTimeout,
+      requestBodyTimeout = requestBodyTimeout, maxChunkLineBytes = maxChunkLineBytes, maxTrailerBytes = maxTrailerBytes,
+      maxConnections = maxConnections, closeNotificationWorkers = closeNotificationWorkers) { (request, client, upgradeInput) =>
       val protocols = request
         .header(Headers.SecWebSocketProtocol)
         .toSeq
         .flatMap(_.split(','))
         .filterNot(_.isBlank)
       webSocketProtocol.findIntention(request) match {
+        case Some(_) if request.contentLength.exists(_ > 0) || request.header(Headers.TransferEncoding).nonEmpty =>
+          Effect[F].pure(Response(Response.Status.BadRequest, Stream.empty[F, B], Nil, Some(0L)))
         case Some(intention) =>
-          val messageDeadline = new MessageDeadline[F](wsMessageTimeout, () => client.shutdown())
+          val messageDeadline = new MessageDeadline(wsMessageTimeout, () => client.shutdownFromDeadline())
           val detach = client.subscribeClose(_ => messageDeadline.close())
           val f = webSocketProtocol.upgrade[F](intention, () => messageDeadline.start(), () => messageDeadline.complete()) { frameRequest =>
             attachWebSocket(service, frameRequest, protocols, client, wsSetupTimeout)
           }
-          f(request).recoverF { case NonFatal(error) =>
+          f(request.copy(body = upgradeInput)).recoverF { case NonFatal(error) =>
             messageDeadline.close()
             detach()
             Effect[F].fail(error)
@@ -71,7 +80,8 @@ object standalone {
     setupTimeout: FiniteDuration
   )(implicit ec: ExecutionContext): F[Response[Stream[F, WebSocketProtocol.Frame.Merged[B]]]] = {
     val handoff = new SetupInput(request.body)
-    val deadline = new SetupDeadline(setupTimeout, () => handoff.releaseApplication(), () => client.shutdown())
+    val deadline = new SetupDeadline(setupTimeout, () => handoff.releaseApplication(),
+      () => client.shutdown(), () => client.shutdownFromDeadline())
     var peerClose: () => F[Unit] = () => Effect[F].unit
     // This is the existing binary-frame conversion path. Control-frame
     // termination does not add an effect continuation to ordinary input.
@@ -90,10 +100,8 @@ object standalone {
       def cancel(): F[Unit] = handoff.stream.cancel()
     }
     val wsRequest = WebSocketRequest(request.copy(body = bytes), protocols)
-    Effect[F].delay {
-      val detach = client.subscribeClose(_ => deadline.transportEnded().runAsync(_ => ()))
-      deadline.onFinished(detach)
-    } *>
+    client.subscribeCloseEffect(_ => deadline.transportEnded())
+      .flatMap(detach => Effect[F].delay(deadline.onFinished(detach))) *>
       Effect[F].delayAsync(service.ws(wsRequest)).flatMap { response =>
       val closeFrame =
         WebSocketProtocol.Frame.ConnectionClose.asInstanceOf[WebSocketProtocol.Frame.Merged[B]]
@@ -101,6 +109,10 @@ object standalone {
       // application element that was already in flight when the peer ended.
       val closing = new AtomicInteger(0)
       val finalized = new AtomicBoolean(false)
+      val cleanupFinished = scala.concurrent.Promise[Unit]()
+      def awaitCleanup(): F[Unit] = Effect[F].promise { callback =>
+        cleanupFinished.future.onComplete(result => callback(result.toEither))(ExecutionContext.parasitic)
+      }
       val cancelOutput = WebSocketResponse.releaseOnce[F](() => response.output.cancel())
       // Claim before invoking user cleanup: releasing a session can cancel its
       // input recursively. That callback must not wait on its own release.
@@ -109,9 +121,11 @@ object standalone {
         if (finalized.compareAndSet(false, true)) {
           // The normal path arrives only after writing Close. Close the channel
           // before user cleanup, which may await an outstanding application read.
-          client.shutdown() *>
+          (client.shutdown() *>
             cancelOutput().recover { case NonFatal(_) => () } *>
-            response.release().recover { case NonFatal(_) => () }
+            Effect[F].delayAsync(response.release()).recover { case NonFatal(_) => () })
+            .recover { case NonFatal(_) => () }
+            .flatMap(_ => Effect[F].delay { cleanupFinished.trySuccess(()); () })
         } else Effect[F].unit
       }
       def requestGracefulClose(): F[Unit] = Effect[F].delayAsync {
@@ -133,7 +147,7 @@ object standalone {
         closing
       )
       peerClose = () => requestGracefulClose()
-      deadline.acquire(() => abort()).flatMap { acquired =>
+      deadline.acquire(() => abort() *> awaitCleanup()).flatMap { acquired =>
         if (!acquired) Effect[F].fail(new TimeoutException("WebSocket setup ended before attachment"))
         else response match {
         case WebSocketResponse.Duplex(_, protocol, _) =>

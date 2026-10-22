@@ -2,12 +2,11 @@ package spoonbill.http
 
 import java.util.concurrent.{ScheduledFuture, ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit}
 import scala.concurrent.duration.FiniteDuration
-import spoonbill.effect.Effect
 
-/** One absolute deadline for each request header, including an idle connection. */
-private[http] final class RequestHeaderDeadline[F[_]: Effect](
+/** Absolute HTTP header/body assembly deadline, with transport-only expiration. */
+private[http] final class RequestDeadline(
   timeout: FiniteDuration,
-  shutdown: () => F[Unit],
+  shutdown: () => Unit,
   clockNanos: () => Long = () => System.nanoTime()
 ) {
   private var generation = 0L
@@ -20,9 +19,9 @@ private[http] final class RequestHeaderDeadline[F[_]: Effect](
       generation += 1
       startedAt = clockNanos()
       val ticket = generation
-      pending = Some(RequestHeaderDeadline.timer.schedule(new Runnable {
+      pending = Some(RequestDeadline.timer.schedule(new Runnable {
         def run(): Unit = {
-          val expired = RequestHeaderDeadline.this.synchronized {
+          val expired = RequestDeadline.this.synchronized {
             if (!closed && generation == ticket && pending.nonEmpty) {
               closed = true
               pending = None
@@ -30,7 +29,7 @@ private[http] final class RequestHeaderDeadline[F[_]: Effect](
             } else false
           }
           // Physical shutdown must not wait for the application executor.
-          if (expired) Effect[F].runAsync(shutdown())(_ => ())
+          if (expired) shutdown()
         }
       }, timeout.toNanos, TimeUnit.NANOSECONDS))
     }
@@ -52,10 +51,10 @@ private[http] final class RequestHeaderDeadline[F[_]: Effect](
   }
 }
 
-private[http] object RequestHeaderDeadline {
+private[http] object RequestDeadline {
   private val timer = new ScheduledThreadPoolExecutor(1, new ThreadFactory {
     def newThread(runnable: Runnable): Thread = {
-      val thread = new Thread(runnable, "spoonbill-http-header")
+      val thread = new Thread(runnable, "spoonbill-http-assembly")
       thread.setDaemon(true)
       thread
     }

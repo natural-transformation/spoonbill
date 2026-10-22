@@ -95,6 +95,8 @@ final class JdbcBrowserPersistence[F[_], P](
   private val maintaining      = new AtomicBoolean()
   private case class OwnedView(binding: Digest256, owner: UUID, epoch: Long)
   private var ownedViews = Map.empty[(String, UUID), OwnedView]
+  private val ownedViewLimit = limits.retainedViews.toLong + limits.pendingJobs.toLong
+  private[jdbc] def ownedViewCount: Int = lifecycle.synchronized(ownedViews.size)
   private val closing    = new AtomicBoolean()
   private val closed     = Promise[Unit]()
 
@@ -233,9 +235,8 @@ final class JdbcBrowserPersistence[F[_], P](
     retention.initialize(connection)
   }
 
-  private def reap(connection: Connection, pressure: Boolean = false): Boolean = {
-    val time = now()
-    if (!retention.reserveSweep(time, pressure)) return false
+  /** Check committed loss before this transaction stages any ownership changes. */
+  private def reconcileOwnedViews(connection: Connection): Unit = {
     // A peer can expire or retire ownership while this process remains alive.
     // Do not let its local cleanup bookkeeping become a new retained-history cap.
     val candidates = lifecycle.synchronized(ownedViews.toVector)
@@ -257,8 +258,11 @@ final class JdbcBrowserPersistence[F[_], P](
         }
       }
     }
-    // Reconcile only previously committed loss, before this transaction stages
-    // expiry. A later rollback must not forget an owner that close still owns.
+  }
+
+  private def reap(connection: Connection, pressure: Boolean = false): Boolean = {
+    val time = now()
+    if (!retention.reserveSweep(time, pressure)) return false
     retention.reap(connection, time)
     true
   }
@@ -408,6 +412,10 @@ final class JdbcBrowserPersistence[F[_], P](
     existingOnly: Boolean
   ): ClaimState = {
     if (!issuer.owns(identity)) reject(OperationError.ForeignPermit)
+    // Peers cannot reconcile this process's uncertain claim tuples. Recover
+    // local capacity independently of their shared sweep reservation, and
+    // before reap can stage an expiry that might subsequently roll back.
+    if (lifecycle.synchronized(ownedViews.size.toLong >= ownedViewLimit)) reconcileOwnedViews(connection)
     reap(connection)
     val fresh = captureIn(connection, identity.binding, identity.token, false, Some(identity.generation))
     if (!identity.sameAuthority(fresh)) reject()
@@ -499,7 +507,7 @@ final class JdbcBrowserPersistence[F[_], P](
     lifecycle.synchronized {
       // Keep the predecessor until settlement is known: a same-view takeover
       // needs one pending tuple without consuming another durable view slot.
-      if (ownedViews.size.toLong >= limits.retainedViews.toLong + limits.pendingJobs.toLong)
+      if (ownedViews.size.toLong >= ownedViewLimit)
         reject(OperationError.CapacityExceeded)
       // Register before dispatch so unknown commit can still be conditionally
       // released. Failed claims are harmless candidates for final cleanup.
@@ -1685,6 +1693,7 @@ final class JdbcBrowserPersistence[F[_], P](
     case false => F.unit
     case true =>
       F.recoverF(F.map(owned(cleanup = true)(transaction { connection =>
+        reconcileOwnedViews(connection)
         retire(connection, now()); retirePolicy(connection); reap(connection)
       })) { result =>
         maintaining.set(false)

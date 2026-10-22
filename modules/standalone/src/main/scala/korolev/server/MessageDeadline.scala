@@ -2,12 +2,11 @@ package spoonbill.server
 
 import java.util.concurrent.{ScheduledFuture, ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit, TimeoutException}
 import scala.concurrent.duration.FiniteDuration
-import spoonbill.effect.Effect
 
 /** Absolute assembly deadline; progress and control frames cannot extend it. */
-private[server] final class MessageDeadline[F[_]: Effect](
+private[server] final class MessageDeadline(
   timeout: FiniteDuration,
-  shutdown: () => F[Unit],
+  shutdown: () => Unit,
   clockNanos: () => Long = () => System.nanoTime()
 ) {
   private var generation = 0L
@@ -30,7 +29,7 @@ private[server] final class MessageDeadline[F[_]: Effect](
             } else false
           }
           // Physical closure must not wait for a delayed/rejected application executor.
-          if (expired) Effect[F].runAsync(shutdown())(_ => ())
+          if (expired) shutdown()
         }
       }, timeout.toNanos, TimeUnit.NANOSECONDS))
     }

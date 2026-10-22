@@ -32,6 +32,29 @@ header byte limit.
 Malformed request lines and fields are rejected before appending parsed headers;
 in particular, a missing colon cannot cause a non-progressing parser loop.
 
+Standalone request framing accepts one nonnegative decimal `Content-Length` or
+one case-insensitive `Transfer-Encoding: chunked`, never both. Repeated fields,
+comma-separated lengths, overflow, and unsupported transfer codings receive 400
+and connection closure before dispatch. Without either field, the HTTP body is
+empty; raw upgraded traffic is passed separately to the upgrade adapter.
+
+Chunk payload passes through as it arrives, without aggregation to its advertised
+size. Size/extension lines are bounded to 1,024 bytes including CRLF, and the total
+trailer section to 16 KiB. Invalid delimiters, truncated bodies and malformed or
+framing/routing trailers fail closed. Valid trailers are consumed and discarded
+before a subsequent request can be parsed. Applications retain responsibility for
+their total body limits; for example `/auth/complete` now sees and rejects the
+37th byte without waiting for the remainder of a large advertised chunk.
+
+`requestBodyTimeout` defaults to an absolute 30 seconds from parsed headers until
+body framing is completely decoded. It is independent of header timeout and is
+not extended by progress. A completed body stops this timer before application
+work continues. An unread or canceled body forces connection closure after the
+current response, so its bytes cannot be reinterpreted as another request.
+`maxChunkLineBytes`, `maxTrailerBytes`, and `requestBodyTimeout` are configurable
+through both standalone server entry points. Close notifications use the bounded
+server admission/cleanup policy in [the transport contract](request-transport-limits.md).
+
 The standalone HTTP response serializer validates all field names as HTTP tokens
 and rejects CR, LF, NUL, DEL, and other ASCII controls in field values except
 horizontal tab. The same check protects custom status phrases. Validation happens

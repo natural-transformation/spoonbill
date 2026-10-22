@@ -201,6 +201,14 @@ clock data source's role also needs SELECT/INSERT/UPDATE on
 cadence reservations. Retention-aware
 nodes sharing a scope should use consistent limits and cadence settings.
 
+Each JDBC provider separately reconciles its process-local ownership bookkeeping
+during its own maintenance and before a claim when that bookkeeping reaches its
+bound. Losing the shared sweep reservation never skips this local-capacity
+recovery. Reconciliation precedes transaction-local expiry and forgets only
+ownership already lost in committed authoritative state, including uncertain
+claims after lost commit acknowledgements. Ordinary public GETs do not add a
+routine ownership scan; full database sweeps remain on the shared cadence.
+
 Both built-in providers expose administrative `usage()` and implement the common
 `capacity` observation SPI. Export counts of retained and anonymous bindings,
 retained/active views, retained ceremonies, delivery material, and per-binding

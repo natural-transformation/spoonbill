@@ -32,6 +32,23 @@ stalled partial input even when no further bytes arrive. Progress and interleave
 control frames do not reset a fragmented message's deadline. Valid completion
 cancels the timer. Cancellation and errors use the existing once-gated teardown.
 
+Standalone HTTP servers reserve a cleanup slot before invoking a handler or
+installing a deadline. `maxConnections` defaults to 1024 and includes connections
+whose transport has closed but whose serving work or cleanup has not finished.
+`closeNotificationWorkers` defaults to 2; the per-server notification queue holds
+at most `maxConnections` tasks, with no caller-runs fallback. Saturation closes
+new connections before application handlers run. Ordinary RawDataSocket clients
+do not inherit this server admission limit.
+
+Header, body, setup, and message timers close the native socket directly, then
+submit its one reserved close notification. Application finalizers never run on
+those shared timers. A blocked synchronous finalizer can occupy a notification
+worker, and asynchronous cleanup retains its admission slot until completion.
+Both are bounded by the server's configured connection budget. Graceful shutdown
+waits for serving work and finalization; stopping admission does not discard
+already reserved cleanup. Applications must still make their finalizers terminate
+to recover capacity after application failures.
+
 `HttpClient.create(maxWebSocketMessageBytes = ...)` uses a separate 16 MiB response
 cap: server DOM updates can exceed the command budget. This replaces previously
 unbounded response decoding; users expecting larger responses must explicitly
@@ -131,10 +148,10 @@ Run inside the repository's Nix environment:
 
 ```sh
 nix develop --no-write-lock-file -c sbt \
-  'http/testOnly spoonbill.http.protocol.WebSocketLimitsSpec' \
+  'http/testOnly spoonbill.http.protocol.WebSocketLimitsSpec spoonbill.effect.io.SocketCloseDispatcherSpec' \
   'pekko/testOnly spoonbill.pekko.PekkoWebSocketLimitsSpec' \
   'akka/testOnly spoonbill.akka.AkkaWebSocketLimitsSpec' \
-  'standalone/testOnly spoonbill.server.StandaloneWebSocketLimitsSpec spoonbill.server.StandaloneMessageDeadlineSpec' \
+  'standalone/testOnly spoonbill.server.StandaloneWebSocketLimitsSpec spoonbill.server.StandaloneMessageDeadlineSpec spoonbill.server.StandaloneDeadlineIsolationSpec spoonbill.server.StandaloneSetupDeadlineSpec' \
   'zioHttp/testOnly spoonbill.zio.http.ZioHttpIngressLimitsSpec zio.http.netty.BoundedTransportSpec zio.http.netty.WebSocketUpgradeSocketSpec spoonbill.zio.http.ZioHttpTransportSocketSpec'
 ```
 

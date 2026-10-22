@@ -2565,6 +2565,127 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     } finally { release.countDown(); await(provider.close()) }
   }
 
+  "Local ownership reconciliation" should "recover bookkeeping capacity even when a peer wins every full sweep" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(workIntervalSeconds = 1))
+    val provider = db.withLimits(limits)
+    val peer = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)))
+      for (_ <- 1 to 8) {
+        db.clock.set(db.clock.get().plusSeconds(1))
+        await(peer.maintenance())
+        accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)))
+        provider.ownedViewCount should be <= (limits.retainedViews + limits.pendingJobs)
+        db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      }
+      await(provider.close())
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally { await(provider.close()); await(peer.close()) }
+  }
+
+  it should "recover after lost claim acknowledgements without depending on winning a peer's sweep reservation" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(workIntervalSeconds = 1))
+    val loseClaimAcknowledgement = new AtomicBoolean(true)
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).map {
+        case Right(_: BrowserView[?]) if loseClaimAcknowledgement.get() => Left(TransactionFailure.CommitUnknown)
+        case result => result
+      }
+    }
+    val provider = db.withRunner(runner, limits)
+    val peer = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      for (_ <- 1 to 2) {
+        db.clock.set(db.clock.get().plusSeconds(1))
+        await(peer.maintenance())
+        await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)) shouldBe
+          Left(BrowserFailure.Settlement(TransactionFailure.CommitUnknown))
+      }
+      provider.ownedViewCount shouldBe 2
+      loseClaimAcknowledgement.set(false)
+      for (_ <- 1 to 5) {
+        db.clock.set(db.clock.get().plusSeconds(1))
+        await(peer.maintenance())
+        accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)))
+        provider.ownedViewCount should be <= 2
+      }
+      db.retained("spoonbill_browser_view") shouldBe 1
+    } finally { await(provider.close()); await(peer.close()) }
+  }
+
+  it should "reconcile on local maintenance without forgetting a still-current uncertain owner" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(workIntervalSeconds = 1))
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).map {
+        case Right(_: BrowserView[?]) => Left(TransactionFailure.CommitUnknown)
+        case result => result
+      }
+    }
+    val provider = db.withRunner(runner, limits)
+    val peer = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      (1 to 2).foreach { _ =>
+        await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)) shouldBe
+          Left(BrowserFailure.Settlement(TransactionFailure.CommitUnknown))
+      }
+      provider.ownedViewCount shouldBe 2
+      db.clock.set(db.clock.get().plusSeconds(1))
+      await(peer.maintenance())
+      db.statements.clear()
+      db.recordSql.set(true)
+      await(provider.maintenance())
+      db.recordSql.set(false)
+      db.statements.asScala.count(_.contains("owner_id=ANY(?)")) shouldBe 1
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 0
+      provider.ownedViewCount shouldBe 1
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      await(provider.close())
+      provider.ownedViewCount shouldBe 0
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally { db.recordSql.set(false); await(provider.close()); await(peer.close()) }
+  }
+
+  it should "retain shutdown ownership when capacity reconciliation precedes an expiry that rolls back" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(idleBindingSeconds = 1, idleViewSeconds = 1, workIntervalSeconds = 1))
+    val provider = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      (1 to 2).foreach { _ =>
+        accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)))
+      }
+      provider.ownedViewCount shouldBe 2
+      db.clock.set(db.clock.get().plusSeconds(2))
+      // This transaction stages expiry/deletion, then its stale identity check
+      // rejects. Reconciliation must have retained the last committed owner.
+      await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)).isLeft shouldBe true
+      provider.ownedViewCount shouldBe 1
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      await(provider.close())
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally await(provider.close())
+  }
+
   "Shared maintenance cadence" should "skip sampled capacity before the realm lock across peers, restart, and backward clocks" in Using.resource(
     new Fixture(exclusive = false)
   ) { db =>
@@ -2654,20 +2775,27 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           SELECT ?,'session',md5('ceremony-'||i)::uuid,md5('attempt-'||i)::uuid,
           decode(repeat(md5(i::text),2),'hex'),0,'login','Begun',? FROM generate_series(1,?) ids(i)""", db.clock.get().plusSeconds(7200))
       }
+      // Keep real local ownership so this also detects a reconciliation scan
+      // accidentally added to every public bootstrap or shared sweep.
+      open(first)
+      first.ownedViewCount shouldBe 1
+      db.clock.set(db.clock.get().plusSeconds(limits.retention.workIntervalSeconds))
       db.recordSql.set(true)
       val warm = Vector(get(0), get(1))
       db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
       db.statements.asScala.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 2
+      db.statements.asScala.count(_.contains("owner_id=ANY(?)")) shouldBe 0
       db.statements.clear()
       val elapsed = (0 until 100).map(get).sorted
       val statements = db.statements.asScala.toVector
       db.recordSql.set(false)
       statements.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 0
       statements.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 0
+      statements.count(_.contains("owner_id=ANY(?)")) shouldBe 0
       // Admission counts and authority reads remain on each request; unrelated
       // cleanup/monitoring queries must not grow with the retained row count.
       statements.size should be <= 8000
-      accepted(await(first.usage())).retainedBindings shouldBe rows + 102L
+      accepted(await(first.usage())).retainedBindings shouldBe rows + 103L
       info(f"Public GET cadence fixture: peers=2 rowsPerTable=$rows requests=100 SQL=${statements.size} " +
         f"sweeps=0 aggregateScans=0 p50Ms=${elapsed(49)}%.2f p95Ms=${elapsed(94)}%.2f maxMs=${elapsed.last}%.2f " +
         f"initialSampleMs=${warm.head}%.2f; instrumented disposable PostgreSQL, not a production throughput claim")
@@ -2679,6 +2807,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.recordSql.set(false)
       db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
       db.statements.asScala.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 2
+      db.statements.asScala.count(_.contains("owner_id=ANY(?)")) shouldBe 0
       info("Next shared interval: two public GETs on different peers performed one full sweep and one capacity sample")
     } finally { db.recordSql.set(false); browsers.foreach(browser => await(browser.close())) }
   }

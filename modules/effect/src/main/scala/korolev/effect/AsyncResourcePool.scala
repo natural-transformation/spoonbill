@@ -4,6 +4,7 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 import scala.collection.immutable.TreeSet
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 
 /**
@@ -114,7 +115,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
         )
         if (pool.compareAndSet(ref, newState)) {
           ref.cbs.headOption.foreach { cb =>
-            createNew().runAsync(cb)
+            startCreation(cb)
           }
         } else {
           onCloseLoop(value)
@@ -126,7 +127,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
       val ref = pool.get()
       val waiting = ref.cbs.headOption
       val next = ref.copy(total = if (waiting.isDefined) ref.total else ref.total - 1, cbs = ref.cbs.drop(1))
-      if (pool.compareAndSet(ref, next)) waiting.foreach(callback => createNew().runAsync(callback))
+      if (pool.compareAndSet(ref, next)) waiting.foreach(startCreation)
       else creationFailed()
     }
 
@@ -150,6 +151,13 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
         new BorrowImpl(value, () => retire())
       }
 
+    // Future's Effect can complete inline. Trampoline all launches so a failed
+    // factory cannot recursively walk the waiter backlog on the current stack.
+    // Every queued launch already owns one of maxCount creation reservations;
+    // waiters remain in cbs, with no additional pool-owned work queue or executor.
+    def startCreation(callback: Promise): Unit =
+      ExecutionContext.parasitic.execute(() => createNew().runAsync(callback))
+
     Effect[F].promise { cb =>
       @tailrec def loop(): Unit = pool.get() match {
         case ref @ PoolState(_, x :: xs, _, _, _, _) =>
@@ -172,7 +180,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
           val newState = ref.copy(total = ref.total + 1)
           if (pool.compareAndSet(ref, newState)) {
             //reporter.debug("%s - Pool is empty. Try to create new item, increment total", name)
-            createNew().runAsync(cb)
+            startCreation(cb)
           } else {
             loop()
           }

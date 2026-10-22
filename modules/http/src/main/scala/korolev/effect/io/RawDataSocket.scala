@@ -37,18 +37,58 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
     * do this: an HTTP handler may cancel an unused body and still write a response.
     */
   override def shutdown(): F[Unit] = Effect[F].delay {
-    markClosed(CloseReason.StreamCanceled)
-    try channel.close()
-    catch { case NonFatal(_) => () }
+    shutdownAndNotify()
   }
 
-  private def markClosed(reason: CloseReason): Unit = {
-    @tailrec def loop(): Unit = {
+  /** Server admission must install a reserved dispatcher before any deadlines.
+    * No observer, effect construction, or continuation runs on the timer.
+    */
+  private[spoonbill] def shutdownFromDeadline(): Unit = {
+    require(state.get().notifications.nonEmpty, "Deadline shutdown requires reserved close notifications")
+    shutdownAndNotify()
+  }
+
+  private[spoonbill] def admitCloseNotifications(reservation: SocketCloseDispatcher.Reservation): Boolean = {
+    @tailrec def loop(): Boolean = {
+      val before = state.get()
+      if (before.closed.nonEmpty || before.notifications.nonEmpty) false
+      else if (state.compareAndSet(before, before.copy(notifications = Some(reservation)))) true
+      else loop()
+    }
+    loop()
+  }
+
+  /** A failed connection launch cannot reach the HTTP serving finalizer. */
+  private[io] def markConnectionWorkFinished(afterCleanup: () => Unit): Unit =
+    state.get().notifications match {
+      case Some(reservation) =>
+        reservation.connectionFinished()
+        reservation.afterReleased(afterCleanup)
+      case None => afterCleanup()
+    }
+
+  /** Launch failures must close even when the effect runtime cannot start cleanup. */
+  private[io] def shutdownAfterHandlerFailure(): Unit = shutdownAndNotify()
+
+  private def shutdownAndNotify(): Unit = {
+    // Claim observers before close so a failed pending NIO read cannot steal
+    // their notification, but never invoke them before physical closure.
+    val notice = closeState(CloseReason.StreamCanceled)
+    try channel.close()
+    catch { case NonFatal(_) => () }
+    notice.foreach(dispatchClose)
+  }
+
+  private def markClosed(reason: CloseReason): Unit = closeState(reason).foreach(dispatchClose)
+
+  private def closeState(reason: CloseReason): Option[CloseNotice] = {
+    @tailrec def loop(): Option[CloseNotice] = {
       val ref = state.get()
       if (ref.closed.isEmpty) {
-        if (state.compareAndSet(ref, ref.copy(closed = Some(reason)))) dispatchClose(reason)
+        if (state.compareAndSet(ref, ref.copy(closed = Some(reason), onCloseCbs = Nil, onCloseEffects = Nil)))
+          Some(CloseNotice(reason, ref.onCloseCbs, ref.onCloseEffects, ref.notifications))
         else loop()
-      }
+      } else None
     }
     loop()
   }
@@ -57,10 +97,17 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
     @tailrec def unsetInProgress(maybeReason: Option[CloseReason]): Unit = {
       val ref = state.get
       if (ref.closed.isEmpty) {
-        val newState = ref.copy(inProgress = false, closed = maybeReason)
+        val newState = ref.copy(inProgress = false, closed = maybeReason,
+          onCloseCbs = if (maybeReason.nonEmpty) Nil else ref.onCloseCbs,
+          onCloseEffects = if (maybeReason.nonEmpty) Nil else ref.onCloseEffects)
         if (state.compareAndSet(ref, newState)) {
           maybeReason match {
-            case Some(reason) => dispatchClose(reason)
+            case Some(reason) =>
+              // EOF already forbids further writes in this transport. Release
+              // its native handle before any application close notification.
+              try channel.close()
+              catch { case NonFatal(_) => () }
+              dispatchClose(CloseNotice(reason, ref.onCloseCbs, ref.onCloseEffects, ref.notifications))
             case None         => // do nothing
           }
         } else {
@@ -146,6 +193,33 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
   private[spoonbill] def subscribeClose(callback: CloseReason => Unit): () => Unit =
     registerClose(result => result.foreach(callback))
 
+  /** Application-owned finalization remains part of the reserved cleanup.
+    * Late registration awaits cleanup in the caller's serving effect instead.
+    */
+  private[spoonbill] def subscribeCloseEffect(callback: CloseReason => F[Unit]): F[() => Unit] = Effect[F].delayAsync {
+    @tailrec def loop(): Option[CloseReason] = {
+      val before = state.get()
+      before.closed match {
+        case reason @ Some(_) => reason
+        case None =>
+          if (state.compareAndSet(before, before.copy(onCloseEffects = callback :: before.onCloseEffects))) None
+          else loop()
+      }
+    }
+    val detach: () => Unit = () => {
+      @tailrec def remove(): Unit = {
+        val before = state.get()
+        if (before.onCloseEffects.exists(_ eq callback) &&
+            !state.compareAndSet(before, before.copy(onCloseEffects = before.onCloseEffects.filterNot(_ eq callback)))) remove()
+      }
+      remove()
+    }
+    loop() match {
+      case None => Effect[F].pure(detach)
+      case Some(reason) => Effect[F].delayAsync(callback(reason)).as(detach)
+    }
+  }
+
   private def registerClose(cb: OnCloseCallback): () => Unit = {
     @tailrec def loop(): Unit = {
       val ref = state.get
@@ -170,23 +244,40 @@ sealed class RawDataSocket[F[_]: Effect, B: BytesLike](
     }
   }
 
-  private def dispatchClose(reason: CloseReason): Unit = {
-    @tailrec def take(): List[OnCloseCallback] = {
-      val ref = state.get()
-      if (ref.onCloseCbs.isEmpty) Nil
-      else if (state.compareAndSet(ref, ref.copy(onCloseCbs = Nil))) ref.onCloseCbs
-      else take()
+  private def dispatchClose(notice: CloseNotice): Unit = {
+    def notify(done: () => Unit): Unit = {
+      notice.callbacks.foreach { callback =>
+        try callback(Right(notice.reason))
+        catch { case NonFatal(error) =>
+          val thread = Thread.currentThread()
+          thread.getUncaughtExceptionHandler.uncaughtException(thread, error)
+        }
+      }
+      val cleanup = notice.effects.foldLeft(Effect[F].unit) { (previous, callback) =>
+        previous *> Effect[F].delayAsync(callback(notice.reason)).recover { case NonFatal(_) => () }
+      }
+      Effect[F].runAsync(cleanup)(_ => done())
     }
-    take().foreach(cb => cb(Right(reason)))
+    notice.notifications match {
+      case Some(reservation) => reservation.dispatch(notify)
+      case None => notify(() => ())
+    }
   }
 
-  private[io] def closeObserverCount: Int = state.get().onCloseCbs.size
+  private[io] def closeObserverCount: Int = {
+    val current = state.get()
+    current.onCloseCbs.size + current.onCloseEffects.size
+  }
 
   private type OnCloseCallback = Effect.Promise[CloseReason]
+  private case class CloseNotice(reason: CloseReason, callbacks: List[OnCloseCallback],
+    effects: List[CloseReason => F[Unit]], notifications: Option[SocketCloseDispatcher.Reservation])
   private case class State(
     inProgress: Boolean = false,
     closed: Option[CloseReason] = None,
-    onCloseCbs: List[OnCloseCallback] = Nil
+    onCloseCbs: List[OnCloseCallback] = Nil,
+    onCloseEffects: List[CloseReason => F[Unit]] = Nil,
+    notifications: Option[SocketCloseDispatcher.Reservation] = None
   )
 
   private val state = new AtomicReference(State())
