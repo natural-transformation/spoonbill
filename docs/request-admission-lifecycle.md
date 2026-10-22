@@ -1,87 +1,259 @@
-# Browser admission and retained capacity
+# Browser admission, retention, and recovery
 
-## Implemented boundary
+The built-in memory and PostgreSQL providers reclaim inactive browser metadata
+without resetting the authority of a previously issued identity, view, or
+ceremony. Reclamation combines finite retention windows, serialized writer
+exclusion, permanent fencing floors, and nonreused issuance identifiers. Expiry
+alone is never permission to repeat host proof consumption.
 
-`BrowserPersistence.inspectPrincipal` observes HTTP presentation authority.
-The built-in memory and JDBC providers do not insert a binding when a correctly
-formed binding has never been admitted and no session credential is supplied.
-They return anonymous presentation only. This operation cannot create a view or
-ceremony capability. A supplied credential and every previously admitted binding
-still go through the existing authoritative checks. Inspection never activates a
-pending credential.
+## Admission and finite budgets
 
-`BrowserAuthentication` uses inspection for its HTTP guard and state-loader
-principal lookup. A denied shared HTTP presentation is checked before admission;
-an allowed shared bootstrap still captures authority and registers its durable
-view, rechecking presentation after capture. WebSocket admission and subsequent
-commands retain the original transactional checks.
+`BrowserPersistence.inspectPrincipal` does not create a binding for an unknown,
+well-formed binding cookie when no session credential is supplied. It returns
+anonymous presentation only. A supplied credential and every existing binding
+still undergo authoritative checks; observation does not activate a pending
+credential or issue a capability. `BrowserAuthentication` uses this path for
+HTTP authorization and principal lookup. Shared HTTP bootstrap checks
+presentation before capturing/registering its durable view and checks it again
+after capture. A successful shared bootstrap still consumes bounded admission.
 
-The default SPI implementation delegates to `capture` for source compatibility.
-Third-party providers must implement and test their own nonallocating inspection
-before claiming this protection.
+The default SPI implementation delegates to `capture` for compatibility.
+Third-party providers must implement and test their own nonallocating observation,
+retention, and capacity reporting; these built-in guarantees do not follow merely
+from implementing the interface.
 
-## Invariant and migration
+`BrowserPersistenceLimits` controls these defaults per provider scope:
 
-No retained row is deleted or recycled. Existing binding generations, view epochs,
-one-use ceremonies, negative outcomes and replacement linkage retain their
-original lifetime. An anonymous HTTP observation is display data, never a
-capability for a later operation. Every later admission independently reads
-current state. A missing binding is safe to observe only with no credential;
-it does not establish a prior identity or revive an old view.
+| Capacity | Default |
+| --- | --- |
+| Retained bindings | 32,768 |
+| Anonymous bindings, including pending ordinary sign-in | 1,024 |
+| Retained views | 131,072 |
+| Active views per binding | 16 |
+| Retained ceremonies | 32,768 |
+| Retained ceremonies per binding | 16 |
+| Delivery materials | 1,024 |
+| Delivery attempts | 3 |
+| Pending provider operations | 256 |
+| Ceremony lifetime | 120 seconds |
+| Delivery lifetime | 60 seconds |
 
-There is no database schema migration. An older serving node can still allocate
-on HTTP inspection, so roll out all nodes before expecting the reduced growth
-rate. Code rollback retains all history and restores the old allocation behavior;
-it cannot be used to reclaim capacity. JDBC restart also preserves history.
+The anonymous quota counts slots without a current session. New anonymous
+bindings cannot consume the entire default global binding budget. Existing
+identities are not evicted when a limit is reached. Authentication, replacement,
+view ownership, and host transactions retain their normal authority checks.
+`ceremoniesPerBinding` counts currently retained attempts, including expired
+attempts whose retention grace or dependencies have not finished. It is not a
+login-attempt rate limiter.
 
-## Monitoring and recovery
+`BrowserPersistenceLimits.retention` is a `BrowserRetentionPolicy`:
 
-Both built-in providers expose `usage()`. JDBC observations are serialized in an
-authoritative transaction; memory observations share the admission owner. Call
-this administrative method on a bounded monitoring schedule and export the
-aggregate counts. Do not expose it as an unauthenticated HTTP endpoint.
+| Policy field | Default | Meaning |
+| --- | --- | --- |
+| `idleBindingSeconds` | 600 | Minimum inactivity before an unreferenced anonymous binding can be removed |
+| `idleViewSeconds` | 3,600 | Renewable owner lease and retention window for an unowned/bootstrap view |
+| `historySeconds` | 120 | Additional grace after ceremony/session expiry before eligible history is removed |
+| `maxSessionSeconds` | 86,400 | Maximum browser-session lifetime accepted from host preparation |
 
-`usage.warnings()` reports capacities at or above 80%; `warnings(95)` supports an
-urgent threshold, and each result has `exhausted`. Counts distinguish retained
-bindings/views/ceremonies, active views, delivery material, and per-binding
-maxima. Connect warnings to the deployment's existing alert system. This library
-does not install an alert service. Track growth per hour and forecast time to the
-limit; choose a warning threshold with enough lead time for the deployment's
-drained transition procedure. Per-binding ceremony exhaustion needs a separate
-alert even when global history is low.
+Each retention window must be between one second and one year. Host preparation
+that requests a browser session beyond the configured maximum fails without
+committing its host mutation. The host's account and session data remain
+application-owned; the browser authority deadline does not extend host authority.
 
-At warning or exhaustion:
+## Why deletion does not revive old authority
 
-1. Limit new anonymous bootstrap/handshake and ceremony admissions at the trusted
-   ingress. Keep existing authorized sessions available where their required
-   capacities are not exhausted. Rate limits only slow growth; they do not reclaim
-   history or guarantee fairness to new users.
-2. Inspect aggregate history and active ownership separately. Retiring a stale
-   owner releases active capacity only. Do not delete its retained view record.
-3. Arrange a drained namespace transition using the deployment contract in
-   [browser-auth-v4-deployment.md](browser-auth-v4-deployment.md). Fence every old
-   writer, reconcile unresolved transactions by their original identifiers,
-   revoke old host authority, change the namespace/cookies, and require new proof.
-   Preserve old negative/replay history and clock maxima. A cookie rename alone
-   is not a transition.
-4. Verify old sessions, completion identifiers, views and delayed writers fail
-   against the new deployment. Keep traffic closed if writer exclusion or host
-   revocation is uncertain. Do not roll back to earlier security state.
+A provider retains a scope-wide binding-generation floor and view-epoch floor.
+Deleting a record raises its floor above the removed generation or epoch in the
+same serialized operation. Recreating the same raw binding cookie or view key
+starts at the current floor, so an old captured identity, view, delayed release,
+or protected writer cannot match the recreated authority. A replayed binding
+cookie can obtain a fresh anonymous identity; it cannot recover the retired
+identity or its authenticated session.
 
-The reduced-limit tests verify allocation scope, warning thresholds, authority
-preservation, last-slot races, and retained counts across JDBC restart. The
-existing provider conformance suites continue to test late writers, stale owners,
-replacement/replay handling and cleanup.
+Ceremony IDs and completion/attempt IDs share a monotonically allocated,
+nonreused sequence under a scope-specific UUID prefix. The JDBC prefix is chosen
+to avoid existing legacy ceremony and attempt prefixes before reclamation starts.
+Sequence allocation persists with its transaction. Missing retired attempts
+cannot become new attempts with the same identifier. Captured immutable ceremony
+metadata and deadlines remain checked before preparation; a missing or expired
+record never authorizes rerunning the host callback.
 
-## Remaining SB-02 work
+A provider-owned random 256-bit issuance key derives the browser cookie with
+HMAC-SHA256 over a domain-separated context containing the host-supplied secret,
+provider scope, binding digest, and unique attempt ID. The browser cookie is
+**different from `HostSessionPrepared.credential`**. Applications must use the
+actual delivered cookie, not copy the preparation secret into a browser request.
+Even reuse of previously exposed host preparation material after history removal
+cannot recreate the retired cookie or derive its successor from public inputs.
+Preparation also rejects supplied material matching a still-retained browser
+credential. Provider keys and plaintext derivation buffers are not logged.
+The memory provider wipes its key when shutdown has drained admitted work.
 
-SB-02 is **partially mitigated, not closed**. Successful shared HTTP bootstraps,
-WebSocket admissions and ceremonies still consume retained history. A per-binding
-ceremony limit remains cumulative. The implementation does not establish steady
-state for indefinitely repeated login/logout or repeated shared page reloads.
+Counters and fences never wrap, reset, or silently recycle on overflow. Exhausted
+issuance is refused; a saturated fence is retained or refuses its transition.
+Operators must not reset the permanent metadata to recover capacity.
 
-A sustainable retirement protocol and a deployment-specific rehearsed cutover
-remain required. They need explicit host proof/replay retention, durable scope
-revocation, overlapping-node exclusion, unresolved-transaction fencing and a
-migration/rollback proof. These cannot be inferred from ceremony expiry. No
-production cutover or deployment alert configuration was performed for this PR.
+## Eligibility, leases, and concurrent writers
+
+Admission paths perform reclamation before allocating bindings, views, or
+ceremonies. Explicit maintenance also reclaims eligible records:
+
+- Expired delivery material is disposable. Sessions and their completion records
+  remain through session expiry and the history grace, including dependencies
+  that still require them.
+- Expired ceremonies are removed only after their grace and required completion,
+  session, material, and replacement dependencies are retired. A live replacement
+  successor keeps its required linkage and verified completion metadata even
+  after the original ceremony deadline. Dependencies may extend retention beyond
+  an individual record's grace period.
+- Owner activity renews a view lease only while the owner and unexpired lease are
+  still authoritative. An expired owner cannot renew itself back into authority.
+  Unowned views become removable after their retention window; JDBC removes a
+  dependent presentation snapshot before removing its view.
+- An inactive binding is removable only when it has no current/pending authority
+  and no remaining view, session, ceremony, or replacement dependency.
+
+When an active session expires, its slot advances its generation and loses current
+authority. If an abandoned committed replacement's successor expires, retirement
+also advances the slot and clears current authority. It **never restores the
+predecessor**. A predecessor's expiry alone does not discard an otherwise usable
+pending successor.
+
+Memory reclamation holds the same monitor as its immutable host/browser
+transaction. JDBC reclamation and provider transactions hold the same realm and
+namespace advisory transaction lock. A transaction already running must settle
+before cleanup can establish eligibility. A delayed preparation that starts after
+cleanup finds a missing or stale record before its host callback can run.
+Shared-node operations and restart use durable floors, issuance state, and the
+nondecreasing persisted clock. A backward wall-clock sample cannot restore expired
+authority. Exclusive ownership still requires one live provider instance; shared
+ownership must be selected explicitly for overlapping nodes.
+
+An enrolled JDBC scope rejects independent lower-level
+`JdbcBrowserSessions` creation and protected operations that would bypass managed
+lifecycle checks. Reduction-only logout, revocation, and release remain available.
+Use `JdbcBrowserPersistence` and its transaction boundary for admitted authority;
+do not mix raw SQL writers or unmanaged creation paths into the scope.
+
+Host proof-use records, host sessions, audit records, and outboxes are **not**
+pruned by this policy. Their durable replay, uniqueness, mutation, and retention
+contracts remain the application's responsibility. The framework does not repeat
+a host callback to repair an unknown commit; it reconciles the original attempt
+under writer exclusion.
+
+Local presentation history is bounded too. After authoritative checks, the
+coordinator sweeps expired presentations and forgets only history with no retained
+entry, then removes the matching obsolete authority stamps. Active and
+reconnectable presentations retain their history. Managers, snapshots, and leases
+have separate identity tokens, so references to an old entry cannot read, write,
+publish, release, or invalidate a new entry even if its view key and fence match.
+The public presentation-store API retains its original lifetime-history behavior;
+only the guarded coordinator invokes the private reclamation operation.
+JDBC also bounds local ownership-cleanup bookkeeping at
+`retainedViews + pendingJobs`; the extra slots permit transient ownership handoff
+while database view limits still apply. Reconciliation forgets only ownership
+already proven lost in committed state, so a failed cleanup transaction cannot
+make shutdown forget a resource it still owns.
+
+## Required application maintenance and observability
+
+The application must schedule **`browser.maintenance()`** for each live
+`BrowserAuthentication` coordinator. Construction starts no scheduler. Calling
+only `provider.maintenance()` does not also detach expired local guards or reclaim
+the coordinator's local presentation bookkeeping.
+
+With the default windows, a nonoverlapping maintenance tick every 30 seconds is a
+reasonable starting point. Choose an interval comfortably below the shortest
+configured owner lease and recovery window, account for scheduler/database delays,
+and monitor failed or delayed ticks. Coordinator maintenance revalidates attached
+owners, detaches expired authority, renews valid owners, reclaims absent local
+history, and observes capacity. Stop the application's scheduler during shutdown
+and await coordinator closure. Tiny test windows require correspondingly frequent
+ticks; a connection whose owner lease expires must reload or reconnect through
+fresh admission rather than revive its old guard.
+
+Both built-in providers expose administrative `usage()` and implement the common
+`capacity` observation SPI. Export counts of retained and anonymous bindings,
+retained/active views, retained ceremonies, delivery material, and per-binding
+maxima. These observations do not grant authority and should not be exposed as
+an unauthenticated endpoint. `usage.warnings()` defaults to 80%; each result
+includes the resource, used count, limit, and `exhausted` flag.
+
+`BrowserConfiguration.capacityWarningPercent` defaults to 80 and accepts 1–99.
+`BrowserAuthentication` reports threshold transitions using the configured
+`Reporter.warning` and its optional `onCapacityWarning: BrowserCapacityWarning => Unit`
+callback. The default callback is a no-op; connect it to the application's alert
+system. The coordinator observes successful admission, ceremony admission, and
+maintenance. It emits a warning on crossing the threshold, on transition to
+exhaustion, and on falling from exhaustion into the warning band. Unchanged
+warning states are not emitted repeatedly. Falling below the threshold rearms a
+future warning; it does not emit a separate recovery callback. Callback/reporting
+failure must not grant authority or disable the provider's limits.
+The callback runs on the coordinator's serialized path: keep it bounded,
+nonblocking, and free of coordinator reentry. Do not wait for another coordinator
+operation from the callback. If alert delivery needs asynchronous work, hand it
+to an application-owned bounded queue. Providers returning `Right(None)` from
+the common `capacity` SPI have no automatic usage observation; implement that SPI
+before expecting these coordinator alerts from a custom provider.
+
+At a warning or capacity refusal:
+
+1. Inspect anonymous demand, live owners, retained dependencies, and maintenance
+   health separately. Apply ingress and ceremony rate limits to untrusted demand.
+2. Run or restore the scheduled coordinator maintenance. Eligible inactive history
+   recovers capacity; live owners and required authentication metadata remain.
+   Retained capacity is not a promise to admit more simultaneous live work.
+3. Use the authorized administrative owner-retirement API for an abandoned owner
+   when appropriate. Do not manually delete session, ceremony, clock, or floor
+   rows, clear cookies to evade limits, or retry a consumed proof.
+4. If legitimate live demand exceeds the configured budget, review the relevant
+   capacity and retention settings. Persistent database, vault, or settlement
+   failures require repair before admitting new work; expired evidence cannot
+   substitute for a known outcome.
+
+No production alert destination or scheduler is installed by this change. The
+application remains responsible for its task scheduling and deployment capacity.
+
+## PostgreSQL V6 migration, restart, and rollback
+
+Apply the forward
+[V6 browser retention migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V6__browser_retention.sql)
+after V4 and V5. V4/V5 migration bytes remain immutable. V6 adds the permanent
+`spoonbill_browser_retention` metadata table and slot/view activity timestamps.
+Existing activity timestamps initially use the database time of migration.
+Eligibility still follows the durable nondecreasing authority clock; a previously
+advanced clock can make those rows eligible sooner than a new wall-clock idle
+window. Plan initial reclamation accordingly. Runtime schema initialization
+remains an explicit bootstrap operation, not a request-time migration.
+
+Drain and stop **every old serving/writing binary before** starting a
+retention-aware provider against that scope. Apply the DDL transaction using the
+migration role and preserve existing authority state. The first provider
+transaction enrolls its scope under the realm lock, establishes the issuance
+prefix/counter and encrypted key, and clamps legacy browser-session expiries to
+at most `enrollment time + maxSessionSeconds`. Enrollment shortens browser
+authority when necessary; it does not rewrite host identity stamps or extend host
+session lifetime. Account for that possible forced reauthentication in rollout
+planning. Retention-aware shared nodes may overlap after this cutover.
+
+The issuance key is encrypted with the configured credential vault and associated
+with the scope and identifier prefix. Preserve its decryptability together with
+the prefix, counter, binding/view floors, and durable clock across restarts,
+backup/restore, and retention-aware rollbacks. Restoring an earlier security
+snapshot that loses consumed attempts or lowers these high-water marks can revive
+old authority and is not a supported recovery operation. Missing or corrupt key
+material fails issuance closed; never manufacture replacement metadata in place.
+
+There is no automatic down migration and no supported mixed old/new writer
+period. After reclamation starts, rollback may use only binaries that honor V6
+fences and the same host transaction contract. An older binary can recreate
+zero-generation or initial-epoch records after deletion and is unsafe even if
+V6's tables remain present. Do not drop metadata, reset counters, or reopen a
+pre-cutover privileged scope as a rollback shortcut. If a new scope is needed,
+perform a separately reviewed drained transition with old-writer exclusion and
+host-authority revocation.
+
+The memory provider has no restart persistence: a new instance has a new issuer
+and secret, rejects old authenticated cookies/capabilities, and requires login.
+Its floors protect the lifetime of that instance; host-owned durable data remains
+outside the memory provider's restart guarantee.

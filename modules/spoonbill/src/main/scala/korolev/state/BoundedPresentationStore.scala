@@ -36,9 +36,11 @@ object BoundedPresentationStore {
  * Sensitive disclosures, credentials and mutable application values must never
  * enter these node maps; sensitive regions retain their separate lifecycle.
  *
- * Ownership history is bounded and never evicted or reset during this store's
- * lifetime. Exhaustion refuses new identities. Restart drops all presentation;
- * the authoritative provider must still preserve its generation/epoch history.
+ * Public operations retain bounded ownership history for the store's lifetime.
+ * The framework coordinator may reclaim absent history after authoritative
+ * provider checks; managers and leases retain independent unforgeable tokens.
+ * Restart drops all presentation; the authoritative provider still preserves
+ * its generation/epoch fences.
  */
 final class BoundedPresentationStore[F[_], S](
   limits: BoundedPresentationStore.Limits,
@@ -48,6 +50,7 @@ final class BoundedPresentationStore[F[_], S](
   private enum Phase { case Bootstrap, Pending, Active, Disconnected }
   private case class Entry(
     token: AnyRef,
+    leaseToken: Option[AnyRef],
     fence: Option[ViewFence],
     phase: Phase,
     deadline: Instant,
@@ -122,6 +125,7 @@ final class BoundedPresentationStore[F[_], S](
     entries += qsid -> Entry(
       token,
       None,
+      None,
       Phase.Bootstrap,
       time.plusSeconds(limits.bootstrapSeconds),
       Map(Id.TopLevel -> topLevel),
@@ -157,6 +161,7 @@ final class BoundedPresentationStore[F[_], S](
     history += qsid -> fence
     entries += qsid -> previous.copy(
       token = token,
+      leaseToken = Some(token),
       fence = Some(fence),
       phase = Phase.Pending,
       deadline = time.plusSeconds(limits.pendingSeconds)
@@ -192,7 +197,11 @@ final class BoundedPresentationStore[F[_], S](
         }
       }
     }
-    def invalidate(): F[Unit] = BoundedPresentationStore.this.invalidate(qsid, fence)
+    def invalidate(): F[Unit] = F.delay {
+      monitor.synchronized {
+        if (entries.get(qsid).exists(_.leaseToken.exists(_ eq token))) entries -= qsid
+      }
+    }
   }
 
   /**
@@ -240,6 +249,17 @@ final class BoundedPresentationStore[F[_], S](
         entries.valuesIterator.map(_.nodes.size).sum
       )
     }
+  }
+
+  /**
+   * Guarded coordinators call only after establishing current provider
+   * authority. Public store operations deliberately do not reclaim history:
+   * this store cannot prove that a caller-supplied fence is still authorized.
+   */
+  private[spoonbill] def reclaimAbsentHistory(): F[Set[Qsid]] = effect { time =>
+    sweep(time)
+    history = history.filter { case (qsid, _) => entries.contains(qsid) }
+    entries.keySet
   }
   def close(): F[Unit] = F.delay {
     monitor.synchronized {

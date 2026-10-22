@@ -55,8 +55,9 @@ enum BrowserCeremonyError {
 
 /**
  * Pure decisions only. Providers serialize read/decide/write with their host
- * mutation and retain every negative/replay fence. Recovery may fence absence
- * only after excluding the earlier writer on the same authoritative record.
+ * mutation and preserve negative/replay exclusion. Eligible expired records
+ * may be retired only behind permanent issuance and generation fences, after
+ * excluding earlier writers. Expiry or absence alone never authorizes replay.
  */
 final case class BrowserCeremonyRecord(
   id: CeremonyId,
@@ -110,7 +111,9 @@ final case class BrowserPersistenceLimits(
   maxDeliveries: Int = 3,
   pendingJobs: Int = 256,
   ceremonySeconds: Long = 120,
-  deliverySeconds: Long = 60
+  deliverySeconds: Long = 60,
+  anonymousBindings: Int = 1024,
+  retention: BrowserRetentionPolicy = BrowserRetentionPolicy()
 ) {
   require(
     Vector(
@@ -121,7 +124,8 @@ final case class BrowserPersistenceLimits(
       activeViewsPerBinding,
       deliveryMaterials,
       maxDeliveries,
-      pendingJobs
+      pendingJobs,
+      anonymousBindings
     ).forall(_ > 0)
   )
   require(ceremonySeconds > 0 && deliverySeconds > 0)

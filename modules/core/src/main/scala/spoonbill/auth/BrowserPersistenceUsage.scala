@@ -4,7 +4,7 @@ import java.util.UUID
 import spoonbill.security.Versions.ViewOwnershipEpoch
 
 /** Aggregate counts only, with no browser identifiers or presentation payloads.
- * Retiring ownership frees active capacity; retained security history remains.
+ * Ownership retirement and safe history reclamation free separate capacities.
  */
 final case class BrowserPersistenceUsage(
   retainedBindings: Long,
@@ -14,18 +14,20 @@ final case class BrowserPersistenceUsage(
   deliveryMaterials: Long,
   maxActiveViewsPerBinding: Long,
   maxCeremoniesPerBinding: Long,
-  limits: BrowserPersistenceLimits
+  limits: BrowserPersistenceLimits,
+  anonymousBindings: Long = 0L
 ) {
 
   /**
    * Poll from an administrative monitoring task, not a public request. Active
-   * capacity can fall; retained history cannot. Per-binding maxima deliberately
+   * capacity and reclaimed history are tracked separately. Per-binding maxima deliberately
    * reveal no binding identifiers.
    */
   def warnings(atPercent: Int = 80): Vector[BrowserCapacityWarning] = {
     require(atPercent > 0 && atPercent <= 100, "Warning percentage must be in 1..100")
     Vector(
       BrowserCapacityWarning("retainedBindings", retainedBindings, limits.retainedBindings),
+      BrowserCapacityWarning("anonymousBindings", anonymousBindings, limits.anonymousBindings),
       BrowserCapacityWarning("retainedViews", retainedViews, limits.retainedViews),
       BrowserCapacityWarning("retainedCeremonies", retainedCeremonies, limits.retainedCeremonies),
       BrowserCapacityWarning("deliveryMaterials", deliveryMaterials, limits.deliveryMaterials),

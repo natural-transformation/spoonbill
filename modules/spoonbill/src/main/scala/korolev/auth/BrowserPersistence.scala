@@ -124,6 +124,9 @@ trait BrowserPersistence[F[_], P] {
   def capabilities: BrowserProviderCapabilities
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
+  /** Aggregate monitoring only; third-party providers may not expose usage. */
+  def capacity(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, Option[BrowserPersistenceUsage]]] =
+    F.pure(Right(None))
 
   /**
    * Observe HTTP presentation authority without admitting a new binding or
