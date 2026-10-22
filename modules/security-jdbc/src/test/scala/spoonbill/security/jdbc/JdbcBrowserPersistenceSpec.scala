@@ -430,6 +430,88 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
   }
   protected def fixture(): BrowserReplacementConformance.Fixture = new Fixture
   private val qsid                                               = Qsid("provider-device", "provider-view")
+
+  "JDBC anonymous HTTP admission" should "deny cookie-free presentation without allocating in either ownership mode" in {
+    Vector(true, false).foreach { exclusive =>
+      Using.resource(new Fixture(exclusive = exclusive)) { db =>
+        val provider = db.withLimits(BrowserPersistenceLimits(retainedBindings = 1, retainedViews = 1))
+        val browser = new BrowserAuthentication[Future, Int, String](
+          provider,
+          BrowserPresentation(() => 0, (_, _) => false, (state, _, _) => state),
+          BrowserConfiguration(provider.scope, Set("https://app.example"))
+        )
+        try {
+          val service = spoonbillService(
+            browser.configure(
+              SpoonbillServiceConfig[Future, Int, Any](
+                stateLoader = StateLoader.default(0),
+                document = _ => Html(body(div("denied")))
+              )
+            )
+          )
+          (1 to 50).foreach { _ =>
+            val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, Stream.empty[Future, Bytes], "")
+            intercept[SessionAccessDenied](await(service.http(request)))
+          }
+          val usage = accepted(await(provider.usage()))
+          usage.retainedBindings shouldBe 0
+          usage.retainedViews shouldBe 0
+        } finally await(browser.close())
+      }
+    }
+  }
+
+  it should "serialize the last retained binding admission across shared providers" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedBindings = 1)
+    val first  = db.withLimits(limits)
+    val peer   = db.withLimits(limits)
+    try {
+      val attempts = Vector(
+        first.capture("a" * 43, None, activate = true),
+        peer.capture("b" * 43, None, activate = true)
+      )
+      val outcomes = await(Future.sequence(attempts))
+      outcomes.count(_.isRight) shouldBe 1
+      outcomes.count(_ == Left(BrowserFailure.Capacity)) shouldBe 1
+      accepted(await(first.usage())).retainedBindings shouldBe 1
+      accepted(await(peer.usage())).retainedBindings shouldBe 1
+    } finally { await(first.close()); await(peer.close()) }
+  }
+
+  "JDBC HTTP principal observation" should "avoid retained admissions across ownership modes and provider restart" in {
+    Vector(true, false).foreach { exclusive =>
+      Using.resource(new Fixture(exclusive = exclusive)) { db =>
+        val limits   = BrowserPersistenceLimits(retainedBindings = 1)
+        val provider = db.withLimits(limits)
+        try {
+          (1 to 100).foreach { index =>
+            accepted(await(provider.inspectPrincipal(f"$index%043d", None))) shouldBe None
+          }
+          accepted(await(provider.usage())).retainedBindings shouldBe 0
+          val (view, token) = signedIn(db, provider)
+          accepted(await(provider.inspectPrincipal(binding, Some(token.value)))).isDefined shouldBe true
+          await(provider.inspectPrincipal(binding, None)).isLeft shouldBe true
+          await(provider.inspectPrincipal("bad", None)).isLeft shouldBe true
+          await(provider.inspectPrincipal("x" * 43, Some("t" * 43))).isLeft shouldBe true
+          accepted(await(provider.inspectPrincipal("x" * 43, None))) shouldBe None
+          await(provider.capture("x" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+          accepted(await(provider.authorize(view))).principal.isDefined shouldBe true
+          accepted(await(provider.usage())).retainedBindings shouldBe 1
+        } finally await(provider.close())
+        val restarted = db.withLimits(limits)
+        try {
+          accepted(await(restarted.inspectPrincipal("y" * 43, None))) shouldBe None
+          await(restarted.capture("y" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+          val usage = accepted(await(restarted.usage()))
+          usage.retainedBindings shouldBe 1
+          usage.retainedCeremonies shouldBe 1
+          usage.warnings().find(_.resource == "retainedBindings").get.exhausted shouldBe true
+        } finally await(restarted.close())
+      }
+    }
+  }
   private def open(provider: BrowserPersistence[Future, String], existing: Boolean = false): BrowserView[String] = {
     val identity = accepted(await(provider.capture(binding, None, activate = false)))
     accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existing)))

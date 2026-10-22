@@ -154,16 +154,28 @@ final class BrowserAuthentication[F[_], S, P](
   private val access: SessionAccessControl[F, S] = new SessionAccessControl[F, S] {
     override private[spoonbill] def securityInstallation: Option[BrowserSecurityInstallation[F, S]] = Some(installation)
     def authorizeHttp(request: Request.Head, state: S): F[Unit] = gate {
-      capture(request, activate = false).flatMap { identity =>
-        if (presentation.allowed(state, principal(identity))) F.unit else denied
-      }
+      tokens(request)
+        .fold(denied[Option[P]]) { case (binding, token) =>
+          persistence.inspectPrincipal(binding, token).flatMap(requireResult)
+        }
+        .flatMap { observed =>
+          if (presentation.allowed(state, observed)) F.unit else denied
+        }
     }
     override def prepareHttp(qsid: Qsid, request: Request.Head, state: S): Option[F[Unit]] =
       Option.when(shared)(gate {
-        capture(request, activate = false).flatMap { identity =>
-          if (!presentation.allowed(state, principal(identity))) denied
-          else persistence.registerView(identity, qsid).flatMap(requireResult)
-        }
+        tokens(request)
+          .fold(denied[Option[P]]) { case (binding, token) =>
+            persistence.inspectPrincipal(binding, token).flatMap(requireResult)
+          }
+          .flatMap { observed =>
+            if (!presentation.allowed(state, observed)) denied
+            else
+              capture(request, activate = false).flatMap { identity =>
+                if (!presentation.allowed(state, principal(identity))) denied
+                else persistence.registerView(identity, qsid).flatMap(requireResult)
+              }
+          }
       })
     def open(qsid: Qsid, request: Request.Head, owner: ConnectionId): F[SessionGuard[F, S]] =
       acquire(qsid, request, owner, existingOnly = false)
@@ -455,7 +467,7 @@ final class BrowserAuthentication[F[_], S, P](
   def currentPrincipal(request: Request.Head): F[Either[BrowserFailure, Option[P]]] = gate {
     tokens(request) match {
       case None                   => F.pure(Left(BrowserFailure.Denied))
-      case Some((binding, token)) => persistence.capture(binding, token, activate = false).map(_.map(principal))
+      case Some((binding, token)) => persistence.inspectPrincipal(binding, token)
     }
   }
   def complete(receipt: CommittedAuthentication): UiOutcome[S] = {

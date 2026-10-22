@@ -269,6 +269,14 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   }
   def accepts(receipt: CommittedAuthentication): Boolean = issuer.owns(receipt)
 
+  override def inspectPrincipal(binding: String, token: Option[String])(using
+    Effect[F]
+  ): F[Either[BrowserFailure, Option[P]]] = result {
+    if (!validCredential(binding) || token.exists(value => !validCredential(value))) deny()
+    if (token.isEmpty && !state.slots.contains(digest(binding))) None
+    else identityFor(state, binding, token, pending = true).principal.map(_.value)
+  }
+
   def capture(
     binding: String,
     token: Option[String],
@@ -971,6 +979,28 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     }
   }
   def inspectHost: F[Either[BrowserFailure, H]] = result(state.host)
+
+  /**
+   * Aggregate observation under the same owner as admission; never grants
+   * authority.
+   */
+  def usage(): F[Either[BrowserFailure, BrowserPersistenceUsage]] = result {
+    val active = state.views.valuesIterator.filter(_.owner.nonEmpty).toVector
+    BrowserPersistenceUsage(
+      state.slots.size.toLong,
+      state.views.size.toLong,
+      active.size.toLong,
+      state.ceremonies.size.toLong,
+      state.completions.valuesIterator.count(_.material.nonEmpty).toLong,
+      active.groupMapReduce(_.binding)(_ => 1L)(_ + _).valuesIterator.maxOption.getOrElse(0L),
+      state.ceremonies.valuesIterator.toVector
+        .groupMapReduce(_.bindingKey)(_ => 1L)(_ + _)
+        .valuesIterator
+        .maxOption
+        .getOrElse(0L),
+      limits
+    )
+  }
   def resources: F[Resources] = F.delay {
     monitor.synchronized {
       currentState.fold(Resources(0, 0, 0, 0, 0, 0)) { s =>

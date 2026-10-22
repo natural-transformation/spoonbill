@@ -182,7 +182,27 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
     seen.get() shouldBe Some(cookie)
     seenCredential.get() shouldBe None
     await(response.body.fold(Bytes.empty)(_ ++ _)).asUtf8String should include("initial public page")
-    await(f.provider.resources).bindings shouldBe 1
+    await(f.provider.resources).bindings shouldBe 0
+  }
+
+  it should "serve repeated cookie-free pages and deny protected pages without retaining admissions" in withFixture {
+    f =>
+      val service = spoonbillService(f.configured)
+      (1 to 100).foreach { _ =>
+        val response = await(service.http(f.request(binding = None)))
+        response.status.code shouldBe 200
+        await(response.body.cancel())
+      }
+      val deniedService =
+        spoonbillService(f.configured.copy(stateLoader = StateLoader.default(Page(protectedPage = true))))
+      (1 to 100).foreach { _ =>
+        intercept[SessionAccessDenied](await(deniedService.http(f.request(binding = None))))
+      }
+      await(f.provider.resources).bindings shouldBe 0
+      await(f.provider.resources).views shouldBe 0
+      val guard = f.open(f.connection())
+      await(f.provider.resources).bindings shouldBe 1
+      await(guard.close())
   }
 
   "Browser authentication authority" should "enforce public/protected presentation and default-deny sensitive disclosure" in withFixture {
@@ -500,7 +520,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       } shouldBe true
       await(f.provider.resources).bindings shouldBe 0
       await(f.browser.currentPrincipal(f.request())) shouldBe Right(None)
-      await(f.provider.resources).bindings shouldBe 1
+      await(f.provider.resources).bindings shouldBe 0
       await(f.access.authorizeHttp(f.request(), Page()))
   }
 

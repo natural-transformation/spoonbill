@@ -266,6 +266,20 @@ final class JdbcBrowserPersistence[F[_], P](
     fresh
   }
 
+  override def inspectPrincipal(binding: String, token: Option[String])(using
+    Effect[F]
+  ): F[Either[BrowserFailure, Option[P]]] = run { connection =>
+    if (!validSecret(binding) || token.exists(value => !validSecret(value))) reject()
+    val exists = sql(
+      connection,
+      "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace=? AND binding_hash=?"
+    ) { query =>
+      scope(query); query.setBytes(3, digest(binding).bytes); Using.resource(query.executeQuery())(_.next())
+    }
+    if (token.isEmpty && !exists) None
+    else captureIn(connection, binding, token, activate = false).principal.map(_.value)
+  }
+
   def capture(
     binding: String,
     token: Option[String],
