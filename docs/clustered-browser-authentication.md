@@ -1,6 +1,6 @@
 # Shared PostgreSQL browser authentication
 
-Spoonbill 7.0.0 supports an opt-in shared-store mode through the ordinary
+The Spoonbill 8.0.0 release target supports an opt-in shared-store mode through the ordinary
 `JdbcBrowserPersistence` / `BrowserAuthentication` integration. Multiple web
 processes can use the same realm, cookie namespace, host database and credential
 vault. Each physical view has one current database owner. A reconnect claims a
@@ -12,15 +12,15 @@ Shared-store mode has been available since 5.0.0. Existing single-owner
 applications keep their explicit exclusive mode and do not acquire the clustered
 snapshot cost unless they opt into it.
 
-For current applications, use matching **7.0.0** Spoonbill modules, the
+For this release target, use matching **8.0.0** Spoonbill modules, the
 [browser authentication guide](browser-authentication.md), and the
-[7.0 API migration](migration-v7.md). Recompile custom integrations before
+[8.0 migration guide](migration-v8.md). Recompile custom integrations before
 running the correctness fixture below. Release-specific measurements in the
 [v5 validation report](browser-auth-v5-validation.md),
 [5.0 snapshot testing guide](migration-testing-5.0.0-snapshot.md),
 [4.1 snapshot validation report](clustered-browser-authentication-validation.md),
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
-records; they are not performance acceptance evidence for 7.0.0.
+records; they are not performance acceptance evidence for 8.0.0.
 
 ## Application integration
 
@@ -77,7 +77,7 @@ There is no application authentication JavaScript.
 
 Since 6.0.0, custom `SessionGuard` implementations must explicitly select how
 the runtime adopts application state. This source-breaking contract remains
-required in 7.0.0. Every guard must implement
+required in 8.0.0. Every guard must implement
 `applicationStateInitialization: ApplicationStateInitialization[F]` and select
 one of these cases:
 
@@ -150,7 +150,7 @@ view epoch at that point. These guarantees depend on every
 receiver using the supplied guarded path and every host mutation honoring the
 provider's transaction contract.
 
-No process lease or heartbeat expiry is needed for database takeover. With the
+Database takeover does not wait for the previous owner's lease to expire. With the
 database reachable, recovery takes the browser reconnect delay plus bounded
 application/database work. There is no unconditional wall-clock availability
 guarantee during a database outage or partition. Nodes that cannot validate
@@ -158,11 +158,13 @@ current authority fail closed; they do not serve from an authorization cache.
 Shared clock observations retain the database maximum across node changes and
 clock rollback.
 
-Same-view reconnect can replace a crashed owner immediately; this does not add
-background lease reaping for abandoned distinct views. Their durable owner rows
-continue to count against `activeViewsPerBinding` until that view is explicitly
-released or taken over and closed. Configure and monitor that bound; capacity
-pressure fails closed rather than recycling an old view's security history.
+Same-view reconnect can replace a crashed owner immediately. In 8.0.0, active
+owners also have renewable leases; expired owners cannot revive their old guards.
+Schedule `browser.maintenance()` on every live coordinator to renew valid owners,
+detach expired authority, and reclaim eligible inactive records. Abandoned views
+remain subject to retention windows and dependency checks. Configure and monitor
+`activeViewsPerBinding` and the other capacity bounds; pressure fails closed.
+See the [lease and maintenance contract](request-admission-lifecycle.md).
 
 For explicit operator recovery, the provider exposes `usage()` and bounded
 `ownedViewPage(after, limit)` inventory. After application authorization,
@@ -184,7 +186,7 @@ explicitly if the application needs autosave; component-local state must be
 lifted into the projected application state. The helper sees only top-level
 application state; private component state remains ephemeral.
 
-In 7.0.0, typed actions explicitly request this work with `UiOutcome.modify`;
+Since 7.0.0, typed actions explicitly request this work with `UiOutcome.modify`;
 `UiOutcome.noUpdate` requests no state transition and therefore does not save a
 new projection. Sensitive completion and form rejection use the narrower
 `StateUpdate.Modify` / `StateUpdate.noUpdate` cases. An acknowledgement that needs
@@ -266,13 +268,21 @@ ordered after the probe to avoid racing its cookie delivery. A cheaper lookup
 or parallel reconnect would need separate race/authority tests; the sequential
 performance evidence does not establish burst capacity.
 
-## Upgrading existing deployments to 7.0.0
+## Upgrading existing deployments to 8.0.0
 
-Deploy matching 7.0.0 modules on compatible serving nodes and recompile against
-the [explicit state-update API](migration-v7.md). Custom guards must also implement
+Deploy matching 8.0.0 modules and recompile against the
+[8.0 migration guide](migration-v8.md). Drain and stop every pre-V6 serving or
+writing binary before starting a retention-aware provider against the same scope,
+and apply the required V6 migration after V4 and V5. Preserve the durable issuance
+key, counters, floors, clock, and vault keys. After reclamation starts, rollback
+requires a binary that honors V6 fences; older writers are unsafe even with V6
+tables present. Follow the [V6 migration and rollback procedure](request-admission-lifecycle.md#postgresql-v6-migration-restart-and-rollback).
+
+Schedule coordinator maintenance on every node. Custom guards must still implement
 the initialization contract above. Refresh browser pages onto the deployed client
-bundle. For earlier installations, the ownership and SQL migration boundaries
-below still apply; upgrading from 6.0.0 to 7.0.0 adds no framework SQL migration.
+bundle. Upgrades from before 7.0.0 must also adopt the
+[explicit state-update API](migration-v7.md). The earlier ownership and SQL
+migration boundaries below remain relevant.
 
 Authenticated replacement, available since 5.1.0, adds an additional compatibility
 boundary. Every serving node must understand `spoonbill_browser_replacement`
