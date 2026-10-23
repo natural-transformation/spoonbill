@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {createCompletionLoss} from './browser-auth-completion-loss.cjs';
+import {createCompletionLoss, createCookieDeliveryLoss, createRequestDeliveryLoss} from './browser-auth-completion-loss.cjs';
 
 function fixture() {
   const faults = [];
@@ -70,4 +70,51 @@ test('a closed setup transport cannot be armed or replaced by a successor target
   assert.throws(() => loss.arm(predecessor), /live predecessor/);
   loss.arm(successor);
   assert.throws(() => loss.arm({}), /live predecessor/);
+});
+
+test('cookie loss ignores setup, other endpoints, and non-POST requests', () => {
+  const loss = createCookieDeliveryLoss();
+  assert.equal(loss.route('POST', '/auth/complete'), 'continue');
+  loss.arm();
+  assert.equal(loss.route('GET', '/auth/recover'), 'continue');
+  assert.equal(loss.route('POST', '/auth/logout'), 'continue');
+  assert.equal(loss.snapshot().deliveryPath, undefined);
+  assert.throws(() => loss.arm(), /only be armed once/);
+});
+
+for (const first of ['/auth/complete', '/auth/recover']) {
+  test(`cookie loss captures one ${first} response and leaves checked recovery available`, () => {
+    const loss = createCookieDeliveryLoss();
+    loss.arm();
+    assert.equal(loss.route('POST', first), 'fetch');
+    assert.equal(loss.route('POST', '/auth/complete'), 'abort');
+    assert.equal(loss.route('POST', '/auth/recover'), 'continue');
+    assert.equal(loss.route('POST', '/auth/recover'), 'continue');
+    assert.deepEqual(loss.snapshot(), {deliveryPath: first});
+  });
+
+  test(`request loss aborts two ${first} attempts and holds exactly the third without forwarding`, () => {
+    const loss = createRequestDeliveryLoss();
+    assert.equal(loss.route('POST', first), 'continue');
+    loss.arm();
+    assert.equal(loss.route('GET', first), 'continue');
+    assert.equal(loss.route('POST', '/auth/logout'), 'continue');
+    assert.equal(loss.route('POST', first), 'abort');
+    assert.equal(loss.route('POST', first), 'abort');
+    assert.equal(loss.route('POST', first), 'hold');
+    assert.deepEqual(loss.snapshot(), {deliveryPath: first, attempts: 3, mixedPath: false, overBudget: false});
+    assert.equal(loss.route('POST', first), 'abort');
+    assert.equal(loss.snapshot().overBudget, true, 'Late attempts must remain failures after the fault resolves');
+    assert.equal(loss.snapshot().attempts, 4);
+  });
+}
+
+test('request loss records mixed paths instead of treating them as one bounded retry chain', () => {
+  const loss = createRequestDeliveryLoss();
+  loss.arm();
+  assert.equal(loss.route('POST', '/auth/complete'), 'abort');
+  assert.equal(loss.route('POST', '/auth/recover'), 'abort');
+  assert.equal(loss.route('POST', '/auth/complete'), 'abort');
+  assert.deepEqual(loss.snapshot(), {deliveryPath: '/auth/complete', attempts: 3, mixedPath: true, overBudget: false});
+  assert.throws(() => loss.arm(), /only be armed once/);
 });

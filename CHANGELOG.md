@@ -1,5 +1,42 @@
 # Changelog
 
+## 8.0.0 — 2026-10-23
+
+This is a major release with public Scala signature/binary compatibility changes
+and a required PostgreSQL V6 cutover. Update every Spoonbill module together,
+recompile, and follow the [v8 migration guide](docs/migration-v8.md).
+
+- Bound static-resource cache entries, payload bytes and concurrent reads;
+  validate directory/JAR containment and canonical asset names.
+- Add guarded browser retention, anonymous-binding quotas, renewable owner
+  leases and capacity warnings. Permanent issuance and generation fences keep
+  retired security history from reopening old authority. Shared JDBC cadence
+  bounds maintenance scans; local ownership reconciliation remains independent.
+- Bound inbound WebSocket messages across standalone, Akka, Pekko and ZIO HTTP.
+  The published `spoonbill-zio-http-runtime` derives from ZIO HTTP 3.11.6 with
+  bounded pre-conversion ingress and uses ZIO 2.1.27. Consumers must exclude a
+  second original `zio-http` runtime.
+- Bound standalone HTTP headers, chunk metadata and body assembly time; reject
+  ambiguous framing and stream chunk payload without whole-chunk accumulation.
+  Preserve ordinary empty request bodies and the public WebSocket upgrade API.
+- Bound client TCP/TLS setup and response headers; validate HTTPS/WSS hostnames
+  and use TLS for WSS. Recover pool capacity after failed setup, parsing, writes
+  or cancellation. Correct bodyless and informational responses, and deliver
+  final response EOF independently of unfinished request uploads.
+- Keep deadline-triggered physical socket closure independent of application
+  finalizers, reserve finite cleanup capacity, isolate repeated lazy server
+  starts, and avoid application-error traces for expected malformed input.
+- Harden release source selection and require the configured GitHub release
+  protection boundary before accessing signing/publishing credentials.
+
+PostgreSQL deployments must drain all older writers before applying V6 and
+starting retention-aware providers. Schedule `browser.maintenance()` for every
+live coordinator; preserve issuance keys/counters, fences and the durable clock.
+Older binaries cannot safely resume a reclaimed scope.
+
+See the [release notes](https://github.com/natural-transformation/spoonbill/releases/tag/v8.0.0)
+and [consolidated review and validation record](docs/pr-17-review-resolution.md).
+
 ## 7.0.0 — 2026-10-18
 
 This is a source and binary compatibility break. Update all Spoonbill modules

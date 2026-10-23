@@ -39,4 +39,47 @@ function createCompletionLoss(onFault) {
   };
 }
 
-module.exports = {createCompletionLoss};
+// Select the one real response whose cookie acceptance will be faulted. A
+// replacement may first deliver through either completion or checked recovery.
+function createCookieDeliveryLoss() {
+  let armed = false, deliveryPath;
+  return {
+    arm() {
+      if (armed) throw new Error('Cookie delivery loss can only be armed once');
+      armed = true;
+    },
+    route(method, path) {
+      if (!armed || method !== 'POST' || !['/auth/complete', '/auth/recover'].includes(path)) return 'continue';
+      if (deliveryPath === undefined) { deliveryPath = path; return 'fetch'; }
+      // Never consume a second delivery. Checked recovery must remain available
+      // to prove either held-cookie reuse or exhausted predecessor rejection.
+      return path === '/auth/complete' ? 'abort' : 'continue';
+    },
+    snapshot() { return {deliveryPath}; },
+  };
+}
+
+function createRequestDeliveryLoss() {
+  let armed = false, deliveryPath;
+  let attempts = 0, mixedPath = false, overBudget = false;
+  return {
+    arm() {
+      if (armed) throw new Error('Request delivery loss can only be armed once');
+      armed = true;
+    },
+    route(method, path) {
+      if (!armed || method !== 'POST' || !['/auth/complete', '/auth/recover'].includes(path)) return 'continue';
+      if (deliveryPath === undefined) deliveryPath = path;
+      attempts++;
+      mixedPath ||= path !== deliveryPath;
+      overBudget ||= attempts > 3;
+      if (mixedPath || overBudget || attempts < 3) return 'abort';
+      // Hold the third real attempt until page departure, so automatic fallback
+      // cannot deliver before the test deliberately starts a fresh bootstrap.
+      return 'hold';
+    },
+    snapshot() { return {deliveryPath, attempts, mixedPath, overBudget}; },
+  };
+}
+
+module.exports = {createCompletionLoss, createCookieDeliveryLoss, createRequestDeliveryLoss};

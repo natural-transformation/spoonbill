@@ -1,7 +1,7 @@
 // Public v4 example correctness against the actual server and browser engines.
 // No client authentication implementation, fabricated frames, or performance sampling.
 const assert = require('node:assert/strict');
-const {createCompletionLoss} = require('./browser-auth-completion-loss.cjs');
+const {createCompletionLoss, createCookieDeliveryLoss, createRequestDeliveryLoss} = require('./browser-auth-completion-loss.cjs');
 
 assert.ok(process.env.PLAYWRIGHT_DRIVER_PATH, 'Use nix develop .#browser');
 assert.ok(process.env.SPOONBILL_AUTH_ORIGIN, 'Start the public example through scripts/test-browser-auth.sh');
@@ -316,6 +316,13 @@ async function replacementRecovery(browser, engine, scenario, username) {
   const routeErrors = [], errors = [];
   let phase = 'login', armed = false, replacementStarted = false, completionRequests = 0, fetchedResponses = 0;
   let replacementControls = 0, completionHandle;
+  const cookieLoss = ['accepted-cookie-loss', 'unaccepted-cookie-loss'].includes(scenario);
+  const requestLoss = scenario === 'request-loss';
+  const httpLoss = cookieLoss || requestLoss;
+  const cookieDeliveryLoss = createCookieDeliveryLoss();
+  const requestDeliveryLoss = createRequestDeliveryLoss();
+  let latestNativeTransport, httpLossPredecessor, httpLossPredecessorClosed = false, heldHttpRoute;
+  let httpFaultFailure = false, nativeTransportChanged = () => {};
   let latestRoutedTransport;
   const completionLoss = createCompletionLoss(() => {
     armed = false;
@@ -346,10 +353,15 @@ async function replacementRecovery(browser, engine, scenario, username) {
         const path = new URL(socket.url()).pathname;
         if (path === '/auth/activate') activations.push(path);
         else {
+          const transport = {ready: false, closed: false};
+          latestNativeTransport = transport;
+          nativeTransportChanged();
           paths.push(path);
           const replacementConnection = replacementStarted;
+          socket.on('close', () => { transport.closed = true; nativeTransportChanged(); });
           socket.on('framereceived', event => {
             const code = frameCode(event);
+            if (code === 21) { transport.ready = true; nativeTransportChanged(); }
             if (replacementStarted && code === 18) replacementControls++;
             if (replacementConnection && code === 21) successorReady.resolve();
           });
@@ -358,6 +370,15 @@ async function replacementRecovery(browser, engine, scenario, username) {
     }
     const routed = scenario === 'lost-command' || scenario === 'second-tab';
     observe(page, routed);
+    async function currentNativePredecessor() {
+      const ready = checkpoint('Current predecessor transport did not become ready');
+      nativeTransportChanged = () => {
+        if (latestNativeTransport?.ready && !latestNativeTransport.closed) ready.resolve(latestNativeTransport);
+      };
+      nativeTransportChanged();
+      try { return await ready.promise; }
+      finally { nativeTransportChanged = () => {}; ready.cancel(); }
+    }
     async function installFaultRoute(routedReady) {
       // Forward real traffic, dropping the armed predecessor's completion or
       // witnessing its close before that command. Both are supported loss paths.
@@ -412,22 +433,31 @@ async function replacementRecovery(browser, engine, scenario, username) {
         });
       });
     }
-    await page.route(origin + '/auth/complete', async route => {
+    const faultHttpDelivery = async route => {
       if (!armed || ['lost-command', 'second-tab'].includes(scenario)) return route.continue();
-      completionRequests++;
+      const path = new URL(route.request().url()).pathname;
+      if (route.request().method() !== 'POST') return route.continue();
+      if (path === '/auth/complete') completionRequests++;
       try {
         const handle = route.request().postData();
-        assert.match(handle, /^[0-9a-f-]{36}$/);
-        if (completionHandle === undefined) completionHandle = handle;
-        else assert.ok(handle === completionHandle, 'Retries must use the same committed completion');
-        if (scenario === 'request-loss') {
-          // The server never sees these bounded attempts; bootstrap recovery
-          // must still deliver the original committed outcome exactly once.
-          await route.abort('failed');
+        if (path === '/auth/complete') {
+          assert.match(handle, /^[0-9a-f-]{36}$/);
+          if (completionHandle === undefined) completionHandle = handle;
+          else assert.ok(handle === completionHandle, 'Retries must use the same committed completion');
+        } else assert.ok(!handle || /^[0-9a-f-]{36}$/.test(handle), 'Recovery contains only an optional bounded lookup');
+        if (requestLoss) {
+          const action = requestDeliveryLoss.route(route.request().method(), path);
+          if (action === 'continue') return route.continue();
+          if (action === 'abort') return route.abort('failed');
+          // No request is sent to the server. Keep the third held until owned
+          // page departure, then bootstrap the original committed outcome once.
+          heldHttpRoute = route;
           fault.resolve();
           return;
         }
-        if (fetchedResponses > 0) return route.abort('failed');
+        const action = cookieDeliveryLoss.route(route.request().method(), path);
+        if (action === 'continue') return route.continue();
+        if (action === 'abort') return route.abort('failed');
         fetchedResponses++;
         const response = await route.fetch();
         assert.equal(response.status(), 204);
@@ -436,10 +466,11 @@ async function replacementRecovery(browser, engine, scenario, username) {
           'Expected one server-issued session cookie');
         assert.match(header, /;\s*HttpOnly(?:;|$)/i);
         assert.match(header, /;\s*SameSite=Lax(?:;|$)/i);
+        const value = header.slice('spoonbill_session='.length).split(';', 1)[0];
+        assert.notEqual(value, predecessor.value, 'The fault must target a new successor credential');
         if (scenario === 'accepted-cookie-loss') {
           // route.fetch may update the shared cookie jar. Install only the
           // exact server-issued HttpOnly value if the browser did not do so.
-          const value = header.slice('spoonbill_session='.length).split(';', 1)[0];
           const installed = (await context.cookies()).find(cookie => cookie.name === 'spoonbill_session');
           if (installed?.value !== value)
             await context.addCookies([{...predecessor, value, httpOnly: true, sameSite: 'Lax'}]);
@@ -448,13 +479,19 @@ async function replacementRecovery(browser, engine, scenario, username) {
           // its API request cookie jar as a side effect.
           await context.addCookies([predecessor]);
         }
-        await route.abort('failed');
+        // Keep this real reply undelivered. After the positive cookie witness,
+        // the test isolates this context offline, aborts the reply while its
+        // page is alive, and departs before allowing a fresh browser bootstrap.
+        heldHttpRoute = route;
         fault.resolve();
       } catch (error) {
+        httpFaultFailure = true;
         fault.reject(new Error('Replacement HTTP fault injection failed'));
         try { await route.abort('failed'); } catch (_) {}
       }
-    });
+    };
+    await page.route(origin + '/auth/complete', faultHttpDelivery);
+    await page.route(origin + '/auth/recover', faultHttpDelivery);
     await page.goto(origin + '/');
     await page.waitForFunction(() => window.Spoonbill?.ready === true);
     await page.getByRole('button', {name: 'Begin sign-in', exact: true}).click();
@@ -496,6 +533,7 @@ async function replacementRecovery(browser, engine, scenario, username) {
     phase = scenario;
     await page.locator('select[name="securityChange"]').selectOption('regenerate-recovery');
     await page.locator('input[name="replacementPassword"]').fill('password');
+    if (httpLoss) httpLossPredecessor = await currentNativePredecessor();
     // Each replacement operation gets the existing bounded recovery window;
     // native login, navigation and fault-transport setup use their own bounds.
     operationStartedAt = Date.now();
@@ -504,6 +542,10 @@ async function replacementRecovery(browser, engine, scenario, username) {
     successorReady = checkpoint('Replacement successor readiness checkpoint expired');
     replacementStarted = true;
     armed = true;
+    if (cookieLoss) {
+      cookieDeliveryLoss.arm();
+    }
+    if (requestLoss) requestDeliveryLoss.arm();
     if (routed) {
       assert.ok(latestRoutedTransport?.ready, 'Arm only the latest ready predecessor transport');
       completionLoss.arm(latestRoutedTransport);
@@ -511,15 +553,42 @@ async function replacementRecovery(browser, engine, scenario, username) {
     await page.getByRole('button', {name: 'Apply security change', exact: true}).click();
     await fault.promise;
     let recovered = page;
-    if (scenario === 'second-tab') {
+    if (httpLoss) {
+      // Snapshot before fixture teardown: our own page close cannot justify a
+      // missing completion control on a natural recovery delivery.
+      httpLossPredecessorClosed = httpLossPredecessor.closed;
+      assert.equal(fetchedResponses, cookieLoss ? 1 : 0, 'Only cookie-loss may consume a server response before page departure');
+      if (requestLoss) assert.equal(requestDeliveryLoss.snapshot().attempts, 3);
+      const cookiesBeforeDeparture = await context.cookies();
+      const beforeBinding = cookiesBeforeDeparture.find(cookie => cookie.name === 'spoonbill_binding')?.value;
+      const beforeSession = cookiesBeforeDeparture.find(cookie => cookie.name === 'spoonbill_session')?.value;
+      assert.equal(beforeBinding, binding.value, 'The fault must preserve the original browser binding');
+      assert.ok(beforeSession, 'Cookie acceptance or deliberate restoration must precede teardown');
+      // Abort must complete before target disposal. Offline isolation prevents
+      // the original page's automatic fallback from delivering during teardown;
+      // no product callback or authentication implementation is replaced.
+      armed = false;
+      try {
+        await context.setOffline(true);
+        await heldHttpRoute.abort('failed');
+        heldHttpRoute = undefined;
+        await page.close();
+      } finally { await context.setOffline(false); }
+      const cookiesAfterDeparture = await context.cookies();
+      assert.equal(cookiesAfterDeparture.find(cookie => cookie.name === 'spoonbill_binding')?.value,
+        beforeBinding, 'Transport teardown must preserve the binding cookie');
+      assert.equal(cookiesAfterDeparture.find(cookie => cookie.name === 'spoonbill_session')?.value,
+        beforeSession, 'Transport teardown must preserve the accepted or restored session cookie');
+    }
+    if (scenario === 'second-tab' || httpLoss) {
       recovered = await context.newPage();
       recovered.setDefaultTimeout(25000);
       observe(recovered);
-      assert.equal((await recovered.goto(origin + '/protected')).status(), 200);
+      assert.equal((await recovered.goto(origin + '/protected')).status(), scenario === 'unaccepted-cookie-loss' ? 403 : 200);
     }
     if (scenario === 'unaccepted-cookie-loss') {
       phase = 'committed-unavailable';
-      await page.getByRole('heading', {name: 'Authentication required', exact: true}).waitFor({state: 'visible'});
+      await recovered.getByRole('heading', {name: 'Authentication required', exact: true}).waitFor({state: 'visible'});
       assert.equal((await context.request.post(origin + '/auth/recover', {
         headers: {'Origin': origin, 'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'text/plain'}, data: '',
       })).status(), 403, 'Exhaustion must preserve the committed unavailable outcome');
@@ -529,8 +598,8 @@ async function replacementRecovery(browser, engine, scenario, username) {
       assert.equal((await context.request.post(origin + '/auth/logout', {
         headers: {'Origin': origin, 'Sec-Fetch-Site': 'same-origin'}, maxRedirects: 0,
       })).status(), 303);
-      assert.equal((await page.goto(origin + '/')).status(), 200);
-      await page.getByRole('button', {name: 'Begin sign-in', exact: true}).waitFor({state: 'visible'});
+      assert.equal((await recovered.goto(origin + '/')).status(), 200);
+      await recovered.getByRole('button', {name: 'Begin sign-in', exact: true}).waitFor({state: 'visible'});
     } else {
       phase = 'successor-recovered';
       // Wait for the new physical activation, not the predecessor's still
@@ -558,7 +627,13 @@ async function replacementRecovery(browser, engine, scenario, username) {
       await discloseOnce(recovered);
     }
     assert.ok(completionRequests <= 3, 'Completion attempts must stay within the bridge retry bound');
-    if (scenario === 'request-loss') assert.equal(completionRequests, 3, 'Exhaust pre-delivery retries before bootstrap');
+    if (requestLoss) {
+      const loss = requestDeliveryLoss.snapshot();
+      assert.equal(loss.attempts, 3, 'Exhaust exactly three pre-delivery attempts before bootstrap');
+      assert.equal(loss.mixedPath, false, 'Attempts must use the same observed delivery path');
+      assert.equal(loss.overBudget, false, 'No attempt may exceed the retry bound');
+      assert.equal(completionRequests, loss.deliveryPath === '/auth/complete' ? 3 : 0);
+    }
     if (routed) {
       const loss = completionLoss.snapshot();
       assert.equal(loss.faultCount, 1, 'Exactly one predecessor transport fault must be observed');
@@ -570,11 +645,17 @@ async function replacementRecovery(browser, engine, scenario, username) {
         assert.equal(loss.faultSource, 'upstream-close');
         assert.equal(loss.witnessedTargetClose, true, 'Zero controls require a real armed predecessor close');
       }
+    } else if (httpLoss && replacementControls === 0) {
+      assert.equal((cookieLoss ? cookieDeliveryLoss : requestDeliveryLoss).snapshot().deliveryPath, '/auth/recover');
+      assert.equal(httpLossPredecessorClosed, true, 'Missing control requires a real predecessor close before fixture teardown');
     } else assert.equal(replacementControls, 1, 'Recovery must not submit another replacement completion');
+    assert.equal(httpFaultFailure, false, 'Late HTTP fault failures must not be swallowed by an already settled checkpoint');
     assert.deepEqual(errors, []);
     assert.deepEqual(routeErrors, []);
     console.log(JSON.stringify({provider, engine, scenario, predecessorDenied: true,
       transportFault: routed ? completionLoss.snapshot() : undefined,
+      cookieFault: cookieLoss ? {...cookieDeliveryLoss.snapshot(), predecessorClosed: httpLossPredecessorClosed} : undefined,
+      requestFault: requestLoss ? {...requestDeliveryLoss.snapshot(), predecessorClosed: httpLossPredecessorClosed} : undefined,
       successorDisclosureOnce: scenario !== 'unaccepted-cookie-loss', boundedDelivery: true}));
   } catch (error) {
     const failure = error.name === 'TimeoutError' ? 'timeout' : error.name === 'AssertionError' ? 'assertion' : 'runtime-error';
@@ -583,11 +664,23 @@ async function replacementRecovery(browser, engine, scenario, username) {
     console.error(JSON.stringify({kind: 'replacement-recovery-failure', provider, engine, scenario, phase,
       failure, completionRequests, fetchedResponses, recoveries, activationCount: activations.length,
       transportFault: completionLoss.snapshot(),
+      cookieFault: cookieLoss ? {...cookieDeliveryLoss.snapshot(), predecessorClosed: httpLossPredecessorClosed} : undefined,
+      requestFault: requestLoss ? {...requestDeliveryLoss.snapshot(), predecessorClosed: httpLossPredecessorClosed} : undefined,
       setupElapsedMs: (operationStartedAt ?? Date.now()) - setupStartedAt,
       operationElapsedMs: operationStartedAt === undefined ? undefined : Date.now() - operationStartedAt,
       pageErrors: errors, routeErrors, diagnostic: pageErrorInfo(error, phase)}));
     throw new Error(`${provider}/${engine}/${scenario}: ${phase}: ${failure}`);
-  } finally { fault?.cancel(); recoverySuccess?.cancel(); successorReady?.cancel(); await context.close(); }
+  } finally {
+    fault?.cancel(); recoverySuccess?.cancel(); successorReady?.cancel();
+    // Context closure also disposes a held reply if an earlier assertion failed.
+    await context.close();
+    if (heldHttpRoute) {
+      try { await heldHttpRoute.abort('failed'); }
+      catch (error) {
+        if (!/Target page, context or browser has been closed/.test(String(error.message))) throw error;
+      }
+    }
+  }
 }
 
 (async () => {

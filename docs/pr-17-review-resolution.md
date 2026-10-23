@@ -344,33 +344,57 @@ for different peer names even when their resolved IP addresses match.
 
 ## Release setup deferred to final review
 
-The user explicitly requested that GitHub environment and secret setup be left
-documented for final review. No environment, protection rule, or secret was
-created, changed, retrieved, or deleted. Metadata inspection found no existing
+At completion of PR #17, the user had explicitly requested that GitHub
+environment and secret setup be left documented for final review. No environment,
+protection rule, or secret had been changed. Metadata inspection found no existing
 environments and a repository-scoped secret named `GPG_PRIVATE_KEY`.
 
-Before enabling releases, a repository administrator must:
+During 8.0.0 release preparation on 2026-10-23, the owner selected `Zhen-hao` as
+the required release reviewer and explicitly allowed that account to approve
+runs it initiates. This is an intentional exception to the no-self-review
+recommendation below. The `release` environment now requires that reviewer and
+permits only branch `main` and tags matching `v*`. Main requires a pull request
+and successful GitHub Actions `build` and `native-browser` checks, including for
+administrators; force pushes and deletion are disabled. PR approval count is
+zero; the explicit release approval remains the environment gate. Release-tag
+creation, modification and deletion are restricted to repository administrators.
+The owner also explicitly chose to continue using the organization secrets shared
+across open-source projects. They are not being migrated to the environment;
+the existing repository `GPG_PRIVATE_KEY` override is retained. Environment
+approval gates this release workflow, but does not remove other permitted
+workflows' access to those shared credentials. This residual exposure is an
+explicit owner policy choice, not a claim that environment-only isolation was
+completed.
+
+Before enabling releases under the selected policy, a repository administrator
+must verify:
 
 1. Create the `release` environment with trusted required reviewers and prevent
-   self-review. Review both the workflow revision and resolved source SHA before
+   self-review unless the owner explicitly permits it, as recorded above for
+   8.0.0. Review both the workflow revision and resolved source SHA before
    approval. Maintain reviewed, protected `main` history, disallow force pushes,
    and restrict release-tag creation, update, and deletion to release owners.
 2. Configure environment deployment rules for branch `main` and the intended
    release tags (for example, `v*`). The rule applies to the workflow event ref,
    not the commit checked out later. Manual dispatch must run on `main`; release
    tags must resolve to a commit in reviewed main history.
-3. Re-enter signing and publishing credentials directly as environment secrets:
-   `GPG_PRIVATE_KEY`, `PGP_PASSPHRASE`, and the used `SONATYPE_CENTRAL_*` or
-   `SONATYPE_STAGING_*` pairs. Existing secret values are write-only; they cannot
-   be copied out by the API. Confirm the replacements, then remove repository
-   or organization-level copies exposed to this repository.
+3. Confirm that `GPG_PRIVATE_KEY`, `PGP_PASSPHRASE`, and the used
+   `SONATYPE_CENTRAL_*` and `SONATYPE_STAGING_*` pairs are available through the
+   approved organization/repository scope. Repository secrets override matching
+   organization names. Verify the intended signing identity and publishing
+   account when publishing; metadata checks cannot validate secret values.
 4. Set the **environment** variable `RELEASE_PROTECTION_READY=true` only after
-   verifying those controls. Until then, the proposed workflow exits before
+   verifying those controls. Until then, the workflow exits before
    signing or publishing. This variable is an enablement latch, not a substitute
    for server-side protection.
 
-A repository-scoped signing key remains accessible to another branch workflow
-that omits the environment. YAML changes alone cannot close that exposure.
+A repository- or organization-scoped signing key remains accessible to another
+permitted branch workflow that omits the environment. YAML changes alone cannot
+close that exposure. A future move to environment-only credentials requires
+re-entering their values directly in GitHub, confirming the replacements, then
+removing broader copies or this repository's access to them; the API cannot
+retrieve existing values. Preserve other projects' access when changing shared
+organization-secret policy.
 GitHub also creates an unprotected environment when a workflow first references
 an absent name, so the administrator must configure it explicitly. See GitHub's
 [environment management documentation](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)

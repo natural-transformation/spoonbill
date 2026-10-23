@@ -22,6 +22,7 @@ nix develop --no-write-lock-file --command node --test \
   misc/browser-protocol-tests.mjs \
   misc/browser-auth-schema-tests.mjs \
   misc/replacement-bootstrap-tests.mjs \
+  misc/browser-auth-completion-loss-tests.mjs misc/release-ref-tests.mjs \
   misc/core-purity-tests.mjs \
   misc/browser-auth-baseline/*.test.mjs
 ```
@@ -96,6 +97,36 @@ page actions and navigation have 10-second limits; each browser launch has a
 for the Scala server to become ready. Cleanup starts adapter-owned transport
 shutdown before releasing response resources, closes the guard, and releases
 held output and owned processes, including on failure.
+
+## Public authentication example and delivery loss
+
+`scripts/test-browser-auth.sh` runs `misc/browser-auth-native-tests.cjs` against
+the actual public example in Chromium and WebKit. Set `SPOONBILL_AUTH_PROVIDER`
+to `memory` (the default), `io`, or `jdbc`; JDBC runs inside the disposable
+PostgreSQL wrapper:
+
+```bash
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  bash scripts/with-test-postgres.sh env SPOONBILL_AUTH_PROVIDER=jdbc \
+  bash scripts/test-browser-auth.sh
+```
+
+Replacement delivery can use `/auth/complete` or checked `/auth/recover` when
+the predecessor closes before sending its completion control. Cookie-loss
+injection therefore captures one real 204/new HttpOnly cookie on either path.
+Request-loss injection intercepts exactly three attempts on one path, preserving
+the same completion handle when present; mixed paths or excess attempts fail.
+
+After the positive fault witness, the fixture takes only its owned browser
+context offline, explicitly aborts the held request while its page still exists,
+closes that page, and restores the network. This prevents automatic fallback
+from racing the controlled loss. A fresh page then exercises actual bootstrap
+and activation. Binding/session cookies must survive teardown unchanged. A
+missing completion control is accepted only with a witnessed predecessor close
+captured before the fixture's teardown. The assertions retain predecessor denial,
+one-time disclosure, exact delivery counts, held-cookie recovery without another
+Set-Cookie, and exhausted-delivery refusal. No authentication frames or successful
+server responses are fabricated.
 
 ## ZIO HTTP transport
 

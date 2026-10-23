@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (for example, 5.0.0)"
+        description: "Release version (for example, 8.0.0)"
         required: true
   release:
     types: [published]
@@ -36,7 +36,8 @@ jobs:
   scala-3:
     needs: resolve
     runs-on: ubuntu-latest
-    # This environment MUST have required reviewers and environment-only secrets.
+    # This environment requires release approval. The owner intentionally uses
+    # organization secrets shared across projects, with the existing repo override.
     # See docs/pr-17-review-resolution.md before enabling releases.
     environment: release
     env:
@@ -47,7 +48,7 @@ jobs:
           RELEASE_PROTECTION_READY: ${{ vars.RELEASE_PROTECTION_READY }}
         run: |
           if [[ "$RELEASE_PROTECTION_READY" != true ]]; then
-            echo 'Configure release environment protection and migrate repository secrets first.' >&2
+            echo 'Configure the approved release protections and credential scope first.' >&2
             exit 1
           fi
 

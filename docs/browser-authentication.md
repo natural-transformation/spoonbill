@@ -15,8 +15,9 @@ not deployment defaults.
 For multiple live web nodes and rolling handoff, use the explicit
 [shared PostgreSQL mode and presentation projection](clustered-browser-authentication.md).
 Explicit exclusive mode retains its single-owner deployment contract.
-Use matching **7.0.0** versions for all Spoonbill modules and recompile application
-integrations. Start with this guide and the [7.0 migration guide](migration-v7.md);
+Use matching **8.0.0** versions for all Spoonbill
+modules and recompile application integrations. Start with this guide and the
+[8.0 migration guide](migration-v8.md);
 the earlier snapshot guides remain historical testing records.
 
 ## Install the coordinator
@@ -149,7 +150,12 @@ shows the complete typed forms and outcomes:
 session expiry and transport-only `BrowserSessionToken`. The provider assigns
 the browser completion identity separately. Generate a fresh token through
 `BrowserCredentials.generate[F]` before entering the transaction, or retain an
-existing host issuer with the required entropy and encoding. Keep credentials,
+existing host issuer with the required entropy and encoding. In 8.0.0, built-in
+providers derive the delivered browser cookie from this preparation material;
+`HostSessionPrepared.credential` is not itself the delivered cookie. Integrations
+must use the actual provider-delivered cookie and respect the configured maximum
+session lifetime. See the [issuance and retention contract](request-admission-lifecycle.md).
+Keep credentials,
 transaction handles, live ceremonies and view capabilities out of UI state,
 snapshots and logs. `Secret.withValue` is an explicit trusted-code boundary;
 JVM strings cannot promise secure erasure.
@@ -300,8 +306,10 @@ encryption key and results are process-local. The JDBC example keeps encrypted
 results in host tables and uses deployment-owned vault keys. Applications must
 bound and expire their own results; the reference `Accounts.maintenance` does so.
 
-For current deployments, use **7.0.0** for every Spoonbill module and rebuild
-consumers; the 7.0 outcome API is not source or binary compatible with 6.x.
+For current deployments, use **8.0.0** for every Spoonbill module and rebuild
+consumers; public configuration and transport signatures have changed. Follow the
+[8.0 migration guide](migration-v8.md), including the required V6 schema cutover
+and exclusion of older writers before retention-aware providers start.
 Deploy compatible serving binaries and refresh browser pages onto their client
 bundle. When upgrading an installation that predates authenticated replacement,
 follow the [V5 schema and deployment upgrade](browser-auth-v4-deployment.md#upgrade-an-existing-browser-authentication-deployment)
@@ -399,7 +407,11 @@ transaction's committed disposition.
 `BrowserPersistenceLimits`, coordinator admission and
 `BoundedPresentationStore.Limits` bound their respective resources. Exhaustion
 fails closed; security history is not silently evicted. Schedule
-`browser.maintenance()` with one owned, nonoverlapping timer. Stop new work and
+`browser.maintenance()` with one owned, nonoverlapping timer on every coordinator;
+construction starts no scheduler, and provider-only maintenance is insufficient.
+With default retention windows, start with a 30-second interval and monitor failed
+or delayed ticks. Review the [lease, reclamation, and capacity contract](request-admission-lifecycle.md#required-application-maintenance-and-observability)
+when changing these windows. Stop new work and
 the timer, drain application proof work, then await `browser.close()` before
 shutting down its worker pool. JDBC close waits for admitted work and
 conditionally releases its own view owners, preserving successor owners and
