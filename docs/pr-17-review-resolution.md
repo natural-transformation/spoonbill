@@ -344,15 +344,28 @@ for different peer names even when their resolved IP addresses match.
 
 ## Release setup deferred to final review
 
-The user explicitly requested that GitHub environment and secret setup be left
-documented for final review. No environment, protection rule, or secret was
-created, changed, retrieved, or deleted. Metadata inspection found no existing
+At completion of PR #17, the user had explicitly requested that GitHub
+environment and secret setup be left documented for final review. No environment,
+protection rule, or secret had been changed. Metadata inspection found no existing
 environments and a repository-scoped secret named `GPG_PRIVATE_KEY`.
+
+During 8.0.0 release preparation on 2026-10-23, the owner selected `Zhen-hao` as
+the required release reviewer and explicitly allowed that account to approve
+runs it initiates. This is an intentional exception to the no-self-review
+recommendation below. The `release` environment now requires that reviewer and
+permits only branch `main` and tags matching `v*`. Main requires a pull request
+and successful GitHub Actions `build` and `native-browser` checks, including for
+administrators; force pushes and deletion are disabled. PR approval count is
+zero; the explicit release approval remains the environment gate. Release-tag
+creation, modification and deletion are restricted to repository administrators.
+Credential migration and verification must finish before the readiness latch is
+enabled; setting the latch alone does not establish those protections.
 
 Before enabling releases, a repository administrator must:
 
 1. Create the `release` environment with trusted required reviewers and prevent
-   self-review. Review both the workflow revision and resolved source SHA before
+   self-review unless the owner explicitly permits it, as recorded above for
+   8.0.0. Review both the workflow revision and resolved source SHA before
    approval. Maintain reviewed, protected `main` history, disallow force pushes,
    and restrict release-tag creation, update, and deletion to release owners.
 2. Configure environment deployment rules for branch `main` and the intended
