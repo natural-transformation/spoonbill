@@ -1,7 +1,7 @@
 # Migrating to Spoonbill 8: bounded request and browser lifecycles
 
-This guide targets **8.0.0**, prepared on 2026-10-23. It covers the changes from
-7.0.0; it is not confirmation that release artifacts have been published.
+Spoonbill **8.0.0** adds bounded request handling and guarded browser retention.
+This guide covers upgrading from 7.0.0.
 
 Update every Spoonbill module to `8.0.0` together and recompile all consumers.
 Public configuration case classes and method signatures have changed, including

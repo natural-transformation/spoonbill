@@ -1,6 +1,6 @@
 # Shared PostgreSQL browser authentication
 
-The Spoonbill 8.0.0 release target supports an opt-in shared-store mode through the ordinary
+Spoonbill 8.0.0 supports an opt-in shared-store mode through the ordinary
 `JdbcBrowserPersistence` / `BrowserAuthentication` integration. Multiple web
 processes can use the same realm, cookie namespace, host database and credential
 vault. Each physical view has one current database owner. A reconnect claims a
@@ -12,7 +12,7 @@ Shared-store mode has been available since 5.0.0. Existing single-owner
 applications keep their explicit exclusive mode and do not acquire the clustered
 snapshot cost unless they opt into it.
 
-For this release target, use matching **8.0.0** Spoonbill modules, the
+For current applications, use matching **8.0.0** Spoonbill modules, the
 [browser authentication guide](browser-authentication.md), and the
 [8.0 migration guide](migration-v8.md). Recompile custom integrations before
 running the correctness fixture below. Release-specific measurements in the

@@ -15,7 +15,7 @@ not deployment defaults.
 For multiple live web nodes and rolling handoff, use the explicit
 [shared PostgreSQL mode and presentation projection](clustered-browser-authentication.md).
 Explicit exclusive mode retains its single-owner deployment contract.
-For the 8.0.0 release target, use matching **8.0.0** versions for all Spoonbill
+Use matching **8.0.0** versions for all Spoonbill
 modules and recompile application integrations. Start with this guide and the
 [8.0 migration guide](migration-v8.md);
 the earlier snapshot guides remain historical testing records.
@@ -306,7 +306,7 @@ encryption key and results are process-local. The JDBC example keeps encrypted
 results in host tables and uses deployment-owned vault keys. Applications must
 bound and expire their own results; the reference `Accounts.maintenance` does so.
 
-For the 8.0.0 release target, use **8.0.0** for every Spoonbill module and rebuild
+For current deployments, use **8.0.0** for every Spoonbill module and rebuild
 consumers; public configuration and transport signatures have changed. Follow the
 [8.0 migration guide](migration-v8.md), including the required V6 schema cutover
 and exclusion of older writers before retention-aware providers start.
