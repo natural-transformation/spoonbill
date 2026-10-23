@@ -1,6 +1,7 @@
 package spoonbill.security.jdbc
 
 import java.io.PrintWriter
+import java.lang.management.ManagementFactory
 import java.lang.reflect.{InvocationHandler, InvocationTargetException, Method, Proxy}
 import java.net.URI
 import java.security.MessageDigest
@@ -11,8 +12,10 @@ import java.util.concurrent.{Callable, CountDownLatch, ExecutorService, Executor
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
+import org.scalatest.concurrent.Eventually
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
+import org.scalatest.time.{Millis, Seconds, Span}
 import scala.util.Using
 import spoonbill.performance.PerformanceProbe
 import spoonbill.security.*
@@ -23,7 +26,7 @@ import spoonbill.security.store.{GrantDefinition, InvocationStatus}
 /** Real PostgreSQL only. Every fixture owns a random schema and uses synthetic
   * authority/domain rows. No production URL or shared-table cleanup is allowed.
   */
-class JdbcOperationAuthorizationsSpec extends AnyFlatSpec with Matchers {
+class JdbcOperationAuthorizationsSpec extends AnyFlatSpec with Matchers with Eventually {
   private val initialTime = Instant.parse("2026-10-07T12:00:00Z")
   private val waitSeconds = 10L
   private def accepted[E, A](result: Either[E, A]): A = result.fold(error => fail(error.toString), identity)
@@ -825,9 +828,18 @@ class JdbcOperationAuthorizationsSpec extends AnyFlatSpec with Matchers {
     try {
       ready.await(waitSeconds, TimeUnit.SECONDS) shouldBe true
       val beginning = probe.start()
+      beginning.threadIds should contain(worker.threadId())
       release.countDown()
       worker.join(waitSeconds * 1000)
       worker.isAlive shouldBe false
+      // Thread.join can return before HotSpot transfers the worker's allocation
+      // counter to its retired-thread total. Wait for that approximate JVM
+      // counter to catch up before taking the probe's single final sample.
+      val threadBean = ManagementFactory.getPlatformMXBean(classOf[com.sun.management.ThreadMXBean])
+      val beforeBytes = beginning.allocations.getOrElse(fail("JVM allocation measurement is unavailable"))
+      eventually(timeout(Span(waitSeconds, Seconds)), interval(Span(1, Millis))) {
+        threadBean.getTotalThreadAllocatedBytes - beforeBytes should be >= (8L * 1024 * 1024)
+      }
       val sample = probe.finish(beginning)
       retained.get().length shouldBe 8 * 1024 * 1024
       sample.allocationTrackedThreadsLost should be >= 1L
