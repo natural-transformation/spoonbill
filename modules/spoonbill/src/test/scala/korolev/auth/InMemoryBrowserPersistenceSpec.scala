@@ -133,6 +133,35 @@ class InMemoryBrowserPersistenceSpec extends BrowserReplacementConformance {
   }
   protected def fixture(): BrowserReplacementConformance.Fixture = new MemoryFixture
 
+  "Memory HTTP principal observation" should "leave history unchanged under repeated misses and preserve current authority" in
+    Using.resource(new MemoryFixture(BrowserPersistenceLimits(retainedBindings = 1))) { db =>
+      (1 to 1000).foreach { index =>
+        val binding = f"$index%043d"
+        accepted(await(db.persistence.inspectPrincipal(binding, None))) shouldBe None
+      }
+      accepted(await(db.persistence.usage())).retainedBindings shouldBe 0
+      val signedIn = db.login()
+      val binding  = BrowserPersistenceConformance.binding
+      accepted(await(db.persistence.inspectPrincipal(binding, signedIn.identity.token))) shouldBe Some("name")
+      await(db.persistence.inspectPrincipal(binding, None)).isLeft shouldBe true
+      await(db.persistence.inspectPrincipal("invalid", None)).isLeft shouldBe true
+      await(db.persistence.inspectPrincipal("x" * 43, Some("t" * 43))).isLeft shouldBe true
+      accepted(await(db.persistence.inspectPrincipal("x" * 43, None))) shouldBe None
+      await(db.persistence.capture("x" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+      accepted(await(db.persistence.authorize(signedIn))).principal.map(_.value) shouldBe Some("name")
+      val usage = accepted(await(db.persistence.usage()))
+      usage.retainedBindings shouldBe 1
+      usage.retainedViews shouldBe 1
+      usage.retainedCeremonies shouldBe 1
+      usage.warnings().find(_.resource == "retainedBindings").get.exhausted shouldBe true
+      await(db.persistence.release(signedIn))
+      val released = accepted(await(db.persistence.usage()))
+      released.activeViews shouldBe 0
+      released.retainedViews shouldBe 1
+      released.retainedCeremonies shouldBe 1
+      await(db.persistence.authorize(signedIn)).isLeft shouldBe true
+    }
+
   "Memory replacement retention" should "store ownership metadata without retaining credential-bearing view capabilities" in
     Using.resource(new MemoryFixture) { db =>
       val records = db.persistence.getClass.getDeclaredClasses.filter(kind =>

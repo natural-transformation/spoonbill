@@ -10,6 +10,7 @@ import spoonbill.effect
 import spoonbill.effect.Effect
 import spoonbill.effect.syntax._
 import scala.collection.mutable
+import scala.util.control.NonFatal
 
 class SecureDataSocket[F[_]: Effect, B: BytesLike] private (engine: SSLEngine, socket: RawDataSocket[F, B])
     extends DataSocket[F, B] {
@@ -55,6 +56,9 @@ class SecureDataSocket[F[_]: Effect, B: BytesLike] private (engine: SSLEngine, s
 
   def onClose(): F[DataSocket.CloseReason] =
     socket.onClose()
+
+  override def shutdown(): F[Unit] =
+    socket.shutdown() *> stream.cancel()
 
   private val appBuffer: ByteBuffer               = ByteBuffer.allocate(engine.getSession.getApplicationBufferSize)
   @volatile private var netBuffer: ByteBuffer     = ByteBuffer.allocate(engine.getSession.getPacketBufferSize)
@@ -184,6 +188,16 @@ class SecureDataSocket[F[_]: Effect, B: BytesLike] private (engine: SSLEngine, s
 
 object SecureDataSocket {
 
+  /** The caller owns failure cleanup and must close the raw socket. */
+  private[spoonbill] def setupClient[F[_]: Effect, B: BytesLike](
+    socket: RawDataSocket[F, B],
+    engine: SSLEngine,
+    blockingExecutor: Executor
+  ): F[SecureDataSocket[F, B]] = Effect[F].delayAsync {
+    engine.setUseClientMode(true)
+    handshake(socket, engine, blockingExecutor)
+  }
+
   def forClientMode[F[_]: Effect, B: BytesLike](
     socket: RawDataSocket[F, B],
     engine: SSLEngine,
@@ -197,11 +211,21 @@ object SecureDataSocket {
     socket: RawDataSocket[F, B],
     engine: SSLEngine,
     blockingExecutor: Executor
-  ): F[SecureDataSocket[F, B]] = {
-    engine.beginHandshake()
-    val secureSocket = new SecureDataSocket[F, B](engine, socket)
-    secureSocket.handshake(blockingExecutor).as(secureSocket)
-  }
+  ): F[SecureDataSocket[F, B]] =
+    handshake(socket, engine, blockingExecutor).recoverF { case NonFatal(error) =>
+      socket.shutdown().recover { case NonFatal(_) => () } *> Effect[F].fail(error)
+    }
+
+  private def handshake[F[_]: Effect, B: BytesLike](
+    socket: RawDataSocket[F, B],
+    engine: SSLEngine,
+    blockingExecutor: Executor
+  ): F[SecureDataSocket[F, B]] =
+    Effect[F].delayAsync {
+      engine.beginHandshake()
+      val secureSocket = new SecureDataSocket[F, B](engine, socket)
+      secureSocket.handshake(blockingExecutor).as(secureSocket)
+    }
 
   private sealed trait UnwrapStatus
 

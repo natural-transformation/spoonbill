@@ -35,7 +35,7 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
 ) extends SpoonbillService[F] {
 
   def http(request: HttpRequest[F]): F[HttpResponse[F]] =
-    (request.cookie(Cookies.DeviceId), request.pq) match {
+    (request.cookie(Cookies.DeviceId).filter(Cookies.validDeviceId), request.pq) match {
 
       case (_, Root / "auth" / "complete") if authenticationService.nonEmpty =>
         authenticationService.fold(commonService.notFoundResponseF)(_.complete(request))
@@ -92,7 +92,7 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
     if (guardedSessions && !authenticationService.exists(_.acceptsOrigin(wsRequest.httpRequest)))
       Effect[F].fail(BadRequestException("WebSocket origin rejected"))
     else
-      (wsRequest.httpRequest.cookie(Cookies.DeviceId), wsRequest.httpRequest.pq) match {
+      (wsRequest.httpRequest.cookie(Cookies.DeviceId).filter(Cookies.validDeviceId), wsRequest.httpRequest.pq) match {
         case (_, Root / "auth" / "activate") if authenticationService.nonEmpty =>
           authenticationService.get.activateReplacement(wsRequest)
         case (Some(deviceId), Root / "bridge" / "web-socket" / sessionId) =>

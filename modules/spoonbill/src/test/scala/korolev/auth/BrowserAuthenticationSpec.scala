@@ -49,13 +49,20 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
     case ApplicationStateInitialization.Reconstructed(complete) => await(complete())
   }
 
-  private final class Fixture(reconnectSeconds: Long = BoundedPresentationStore.Limits().reconnectSeconds) {
+  private final class Fixture(
+    reconnectSeconds: Long = BoundedPresentationStore.Limits().reconnectSeconds,
+    providerLimits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
+    presentationLimits: BoundedPresentationStore.Limits = BoundedPresentationStore.Limits(),
+    warningPercent: Int = 80,
+    warning: BrowserCapacityWarning => Unit = _ => ()
+  ) {
     private val ids                = new AtomicLong()
     def id(): UUID                 = new UUID(0L, ids.incrementAndGet())
     def connection(): ConnectionId = ConnectionId.fromUuid(id())
     val time                       = new AtomicReference(start)
     val freshPages                 = new AtomicInteger()
-    val configuration              = BrowserConfiguration(BrowserProviderScope("test", "browser"), Set(origin))
+    val configuration              = BrowserConfiguration(BrowserProviderScope("test", "browser"), Set(origin),
+      capacityWarningPercent = warningPercent)
     val provider = new InMemoryBrowserPersistence[Future, Map[UUID, HostPrincipal[String]], String](
       Map.empty,
       new InMemoryBrowserPersistence.Host[Map[UUID, HostPrincipal[String]], String] {
@@ -68,6 +75,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       },
       () => time.get(),
       () => id(),
+      limits = providerLimits,
       scope = configuration.scope
     )
     val browser = new BrowserAuthentication[Future, Page, String](
@@ -78,8 +86,9 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
         (page, principal, continuation) => page.copy(user = principal, continuation = continuation)
       ),
       configuration,
-      storageLimits = BoundedPresentationStore.Limits(reconnectSeconds = reconnectSeconds),
-      clock = () => time.get()
+      storageLimits = presentationLimits.copy(reconnectSeconds = reconnectSeconds),
+      clock = () => time.get(),
+      onCapacityWarning = warning
     )
     val base = SpoonbillServiceConfig[Future, Page, Any](
       stateLoader = StateLoader.default(Page()),
@@ -131,6 +140,8 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
         new HostSessionPrepared(session, id(), expiry, right(BrowserSessionToken.fromString(rawToken)))
       }))
     }
+    def delivered(receipt: CommittedAuthentication): String =
+      await(provider.deliver(receipt.completionId, browserBinding)).get.value
     def close(): Unit = await(browser.close())
   }
 
@@ -182,7 +193,27 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
     seen.get() shouldBe Some(cookie)
     seenCredential.get() shouldBe None
     await(response.body.fold(Bytes.empty)(_ ++ _)).asUtf8String should include("initial public page")
-    await(f.provider.resources).bindings shouldBe 1
+    await(f.provider.resources).bindings shouldBe 0
+  }
+
+  it should "serve repeated cookie-free pages and deny protected pages without retaining admissions" in withFixture {
+    f =>
+      val service = spoonbillService(f.configured)
+      (1 to 100).foreach { _ =>
+        val response = await(service.http(f.request(binding = None)))
+        response.status.code shouldBe 200
+        await(response.body.cancel())
+      }
+      val deniedService =
+        spoonbillService(f.configured.copy(stateLoader = StateLoader.default(Page(protectedPage = true))))
+      (1 to 100).foreach { _ =>
+        intercept[SessionAccessDenied](await(deniedService.http(f.request(binding = None))))
+      }
+      await(f.provider.resources).bindings shouldBe 0
+      await(f.provider.resources).views shouldBe 0
+      val guard = f.open(f.connection())
+      await(f.provider.resources).bindings shouldBe 1
+      await(guard.close())
   }
 
   "Browser authentication authority" should "enforce public/protected presentation and default-deny sensitive disclosure" in withFixture {
@@ -240,7 +271,8 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       val receipt = f.prepare(oldOwner)
       f.browser.complete(receipt) shouldBe UiOutcome.CommitAuthentication(receipt.completionId)
       val delivered = await(f.configured.authenticationCompletion.get.deliver(receipt.completionId, browserBinding)).get
-      delivered.value shouldBe "t" * 43
+      delivered.value should fullyMatch regex "[A-Za-z0-9_-]{43}"
+      delivered.value should not be ("t" * 43)
       await(f.browser.authority.resolve(f.binding(oldOwner))) shouldBe Left(AccessDenied.Unauthenticated)
       await(oldGuard.close())
       val newOwner = f.connection()
@@ -500,8 +532,135 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       } shouldBe true
       await(f.provider.resources).bindings shouldBe 0
       await(f.browser.currentPrincipal(f.request())) shouldBe Right(None)
-      await(f.provider.resources).bindings shouldBe 1
+      await(f.provider.resources).bindings shouldBe 0
       await(f.access.authorizeHttp(f.request(), Page()))
+  }
+
+  it should "bound local ownership history across repeated reconnects while retaining a live authenticated view" in {
+    val f = new Fixture(
+      reconnectSeconds = 1,
+      providerLimits = BrowserPersistenceLimits(retainedBindings = 3, retainedViews = 3, anonymousBindings = 2,
+        retention = BrowserRetentionPolicy(idleBindingSeconds = 2, idleViewSeconds = 2)),
+      presentationLimits = BoundedPresentationStore.Limits(active = 2, pending = 2, history = 2)
+    )
+    try {
+      val initialOwner = f.connection()
+      val initial = f.open(initialOwner)
+      val token = f.delivered(f.prepare(initialOwner))
+      await(initial.close())
+      val keeper = f.open(f.connection(), Some(token))
+      for (index <- 1 to 25) {
+        val temporary = Qsid("temporary", index.toString)
+        val request = f.request(binding = Some(f"$index%043d"))
+        val first = await(f.access.open(temporary, request, f.connection()))
+        acknowledge(first)
+        val old = await(f.configured.stateStorage.get(temporary.deviceId, temporary.sessionId))
+        await(first.close())
+        val resumed = await(f.access.resume(temporary, request, f.connection()).get)
+        acknowledge(resumed)
+        intercept[BoundedPresentationStore.Rejected](await(old.read[Page](Id.TopLevel)))
+        await(resumed.close())
+        f.time.updateAndGet(_.plusSeconds(1))
+        await(keeper.authorize(Page(protectedPage = true)))
+        f.time.updateAndGet(_.plusSeconds(1))
+        await(f.browser.maintenance())
+        await(f.browser.localHistoryUsage) shouldBe ((1, 1))
+        await(f.provider.resources).bindings shouldBe 1
+        await(f.provider.resources).views shouldBe 1
+        await(keeper.authorize(Page(protectedPage = true)))
+        await(first.close())
+      }
+      await(keeper.close())
+    } finally f.close()
+  }
+
+  it should "detach expired provider leases during maintenance and keep late cleanup away from a fresh owner" in {
+    val f = new Fixture(
+      providerLimits = BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleBindingSeconds = 2, idleViewSeconds = 2)),
+      presentationLimits = BoundedPresentationStore.Limits(active = 1, pending = 1, history = 1)
+    )
+    try {
+      val expired = f.open(f.connection())
+      val manager = f.manager
+      f.time.set(start.plusSeconds(2))
+      await(f.browser.maintenance())
+      await(f.browser.localHistoryUsage) shouldBe ((0, 0))
+      await(f.provider.resources).ownedViews shouldBe 0
+      intercept[SessionAccessDenied](await(expired.authorize(Page())))
+      intercept[BoundedPresentationStore.Rejected](await(manager.read[Page](Id.TopLevel)))
+      val fresh = f.open(f.connection())
+      await(expired.close())
+      await(fresh.authorize(Page()))
+      await(f.provider.resources).ownedViews shouldBe 1
+      await(f.browser.localHistoryUsage) shouldBe ((1, 1))
+      await(fresh.close())
+    } finally f.close()
+  }
+
+  it should "emit capacity transitions once and rearm warnings after retained capacity recovers" in {
+    val observed = new AtomicReference(Vector.empty[BrowserCapacityWarning])
+    val f = new Fixture(
+      reconnectSeconds = 1,
+      providerLimits = BrowserPersistenceLimits(retainedBindings = 4, anonymousBindings = 10,
+        retention = BrowserRetentionPolicy(idleBindingSeconds = 2, idleViewSeconds = 2)),
+      warningPercent = 50,
+      warning = value => { observed.updateAndGet(_ :+ value); () }
+    )
+    def open(index: Int): SessionGuard[Future, Page] = {
+      val guard = await(f.access.open(Qsid("capacity", index.toString),
+        f.request(binding = Some(f"$index%043d")), f.connection()))
+      acknowledge(guard)
+      guard
+    }
+    def bindings = observed.get().filter(_.resource == "retainedBindings")
+    try {
+      val guards = (1 to 4).map(open)
+      bindings shouldBe Vector(BrowserCapacityWarning("retainedBindings", 2, 4),
+        BrowserCapacityWarning("retainedBindings", 4, 4))
+      intercept[SessionAccessDenied](open(5))
+      await(f.browser.maintenance())
+      await(f.browser.maintenance())
+      bindings.size shouldBe 2
+      guards.foreach(guard => await(guard.close()))
+      f.time.set(start.plusSeconds(3))
+      await(f.browser.maintenance())
+      await(f.provider.resources).bindings shouldBe 0
+      await(f.browser.localHistoryUsage) shouldBe ((0, 0))
+      bindings.size shouldBe 2
+      val recovered = (6 to 7).map(open)
+      bindings shouldBe Vector(BrowserCapacityWarning("retainedBindings", 2, 4),
+        BrowserCapacityWarning("retainedBindings", 4, 4), BrowserCapacityWarning("retainedBindings", 2, 4))
+      await(f.browser.maintenance())
+      bindings.size shouldBe 3
+      recovered.foreach(guard => await(guard.close()))
+    } finally f.close()
+  }
+
+  it should "observe ceremony warning and exhaustion at admission and recover after expiry" in {
+    val observed = new AtomicReference(Vector.empty[BrowserCapacityWarning])
+    val f = new Fixture(
+      providerLimits = BrowserPersistenceLimits(retainedCeremonies = 2, ceremoniesPerBinding = 2, ceremonySeconds = 2,
+        retention = BrowserRetentionPolicy(historySeconds = 1, idleViewSeconds = 10)),
+      warningPercent = 50,
+      warning = value => { observed.updateAndGet(_ :+ value); () }
+    )
+    def ceremonies = observed.get().filter(_.resource == "retainedCeremonies")
+    try {
+      val owner = f.connection()
+      val guard = f.open(owner)
+      val context = f.context(owner)
+      right(await(f.browser.begin(context)))
+      right(await(f.browser.begin(context)))
+      await(f.browser.begin(context)).isLeft shouldBe true
+      ceremonies shouldBe Vector(BrowserCapacityWarning("retainedCeremonies", 1, 2),
+        BrowserCapacityWarning("retainedCeremonies", 2, 2))
+      f.time.set(start.plusSeconds(3))
+      await(f.browser.maintenance())
+      right(await(f.browser.begin(context)))
+      ceremonies.last shouldBe BrowserCapacityWarning("retainedCeremonies", 1, 2)
+      ceremonies.size shouldBe 3
+      await(guard.close())
+    } finally f.close()
   }
 
   "Replacement transport" should "capture disclosure invocations without a retirement hint while marking replacement intent" in withFixture {
@@ -509,10 +668,10 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       val anonymousOwner = f.connection()
       val anonymous      = f.open(anonymousOwner)
       val signedIn       = f.prepare(anonymousOwner)
-      await(f.provider.deliver(signedIn.completionId, browserBinding)).nonEmpty shouldBe true
+      val token = f.delivered(signedIn)
       await(anonymous.close())
       val owner = f.connection()
-      val guard = f.open(owner, Some("t" * 43))
+      val guard = f.open(owner, Some(token))
 
       def suppressed(
         binding: InvocationBinding,
@@ -568,11 +727,10 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
       val anonymousOwner = f.connection()
       val anonymous      = f.open(anonymousOwner)
       val signedIn       = f.prepare(anonymousOwner)
-      await(f.provider.deliver(signedIn.completionId, browserBinding)).nonEmpty shouldBe true
+      val predecessorToken = f.delivered(signedIn)
       await(anonymous.close())
       val owner            = f.connection()
-      val predecessorToken = "t" * 43
-      val successorToken   = "r" * 43
+      val successorSecret  = "r" * 43
       val guard            = f.open(owner, Some(predecessorToken))
       val predecessor =
         right(await(f.provider.capture(browserBinding, Some(predecessorToken), activate = false))).sessionId.get
@@ -598,7 +756,7 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
                           successor,
                           f.id(),
                           expiry,
-                          right(BrowserSessionToken.fromString(successorToken))
+                          right(BrowserSessionToken.fromString(successorSecret))
                         )
                       }
         } yield f.browser.completeReplacement(right(prepared))
@@ -629,7 +787,10 @@ final class BrowserAuthenticationSpec extends AnyFlatSpec with Matchers {
         .copy(pq = PathAndQuery.fromString("/auth/recover"))
       val delivered = await(service.http(recover))
       delivered.status.code shouldBe 204
-      delivered.header("Set-Cookie").get should include(successorToken)
+      val successorToken = delivered.header("Set-Cookie").get
+        .stripPrefix(f.configuration.sessionCookieName + "=").takeWhile(_ != ';')
+      successorToken should fullyMatch regex "[A-Za-z0-9_-]{43}"
+      successorToken should not be successorSecret
       // Exhaust delivery while retaining the already accepted cookie. Bootstrap
       // must still reach activation without requiring another delivery allowance.
       (1 until BrowserPersistenceLimits().maxDeliveries).foreach { _ =>

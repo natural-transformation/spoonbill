@@ -1,14 +1,24 @@
 package spoonbill.http.protocol
 
+import scala.collection.mutable
+import scala.concurrent.ExecutionContext
 import spoonbill.data.BytesLike
 import spoonbill.data.syntax._
 import spoonbill.effect.{Decoder, Effect, Stream}
 import spoonbill.effect.syntax._
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 import spoonbill.web.Response.Status
-import scala.collection.mutable
 
-class Http11[B: BytesLike] {
+class Http11[B: BytesLike](
+  maxRequestHeaderBytes: Int = 16 * 1024,
+  maxChunkLineBytes: Int = 1024,
+  maxTrailerBytes: Int = 16 * 1024,
+  maxResponseHeaderBytes: Int = 16 * 1024
+) {
+
+  require(maxRequestHeaderBytes >= 4, "maxRequestHeaderBytes must include the four-byte header delimiter")
+  require(maxResponseHeaderBytes >= 4, "maxResponseHeaderBytes must include the four-byte header delimiter")
+  require(maxChunkLineBytes >= 3 && maxTrailerBytes >= 2, "Invalid chunk framing limits")
 
   import Http11._
 
@@ -24,56 +34,110 @@ class Http11[B: BytesLike] {
 //      .replaceAll("\n", s"${Console.RESET}${Console.YELLOW_B}\\\\n${Console.RESET}${Console.YELLOW}\n$prefix")
 //  )
 
-  def decodeRequest[F[_]: Effect](decoder: Decoder[F, B]): Stream[F, Request[Stream[F, B]]] = decoder
+  def decodeRequest[F[_]: Effect](
+    decoder: Decoder[F, B],
+    onBodyStarted: () => Unit = () => (),
+    onBodyCompleted: () => Unit = () => ()
+  ): Stream[F, Request[Stream[F, B]]] = decoder
     .decode(BytesLike[B].empty)(decodeRequest)
     .map { request =>
-      request.copy(
-        body = request.contentLength match {
+      def framed(make: (() => Unit) => Stream[F, B]): Stream[F, B] = {
+        var completed = false
+        var notified = false
+        onBodyStarted()
+        val body = make(() => { completed = true })
+        new Stream[F, B] {
+          def pull(): F[Option[B]] = body.pull().map { value =>
+            if (value.isEmpty && !completed) throw new InvalidFraming("Incomplete HTTP request body")
+            // Decoder has now installed its take-back tail. Only then can the
+            // connection safely move on to a pipelined request.
+            if (completed && !notified) { onBodyCompleted(); notified = true }
+            value
+          }
+          def cancel(): F[Unit] = body.cancel()
+        }
+      }
+      val body = request.contentLength match {
           case Some(0) =>
             Stream.empty
           case Some(contentLength) =>
-            decoder.decode(0L)(decodeLimitedBody(_, _, contentLength))
+            framed { complete => decoder.decode(0L) { (count, incoming) =>
+              val result = decodeLimitedBody(count, incoming, contentLength)
+              result._2 match {
+                case _: Decoder.Action.PushFinish[?] | _: Decoder.Action.ForkFinish[?, ?] => complete()
+                case _ => ()
+              }
+              result
+            } }
           case None if request.header(Headers.TransferEncoding).contains("chunked") =>
-            decoder.decode((Option.empty[Long], BytesLike[B].empty))(decodeChunkedBody)
-          case None =>
-            decoder
-        }
-      )
+            framed(complete => decodeChunkedBody(decoder, complete))
+          case None => Stream.empty
+      }
+      request.copy(body = body)
     }
 
   def decodeRequest(buffer: B, incoming: B): (B, Decoder.Action[B, Request[Unit]]) = {
-    val allBytes = buffer ++ incoming
+    // Inspect only the remaining header budget before concatenating. A socket
+    // read may also contain a large body, which is not part of this limit.
+    require(buffer.length < maxRequestHeaderBytes, "HTTP request header too large")
+    val accepted = math.min(incoming.length, maxRequestHeaderBytes.toLong - buffer.length)
+    val allBytes = buffer ++ incoming.slice(0, accepted)
     findLastHeaderEnd(allBytes) match {
-      case -1 => (allBytes, Decoder.Action.TakeNext)
+      case -1 =>
+        require(allBytes.length < maxRequestHeaderBytes, "HTTP request header too large")
+        (allBytes, Decoder.Action.TakeNext)
       case lastByteOfHeader =>
         val (bodyBytes, request) = parseRequest(allBytes, lastByteOfHeader)
-        (BytesLike[B].empty, Decoder.Action.Fork(request, bodyBytes))
+        (BytesLike[B].empty, Decoder.Action.Fork(request, bodyBytes ++ incoming.slice(accepted)))
     }
   }
 
-  def decodeResponse[F[_]: Effect](decoder: Decoder[F, B]): Stream[F, Response[Stream[F, B]]] = decoder
-    .decode(BytesLike[B].empty)(decodeResponse)
+  def decodeResponse[F[_]: Effect](
+    decoder: Decoder[F, B],
+    requestMethod: Request.Method = Request.Method.Get
+  ): Stream[F, Response[Stream[F, B]]] = finalResponseHeaders(decoder.decode(BytesLike[B].empty)(decodeResponse))
     .map { response =>
       response.copy(
-        body = response.contentLength match {
+        body = if (response.status.code == 101) decoder
+        else if (isBodylessResponse(requestMethod, response.status)) Stream.empty
+        else response.contentLength match {
+          case Some(0) => Stream.empty
           case Some(contentLength) =>
             decoder.decode(0L)(decodeLimitedBody(_, _, contentLength))
           case None if response.header(Headers.TransferEncoding).contains("chunked") =>
-            decoder.decode((Option.empty[Long], BytesLike[B].empty))(decodeChunkedBody)
+            decodeChunkedBody(decoder)
           case None =>
             decoder
         }
       )
     }
 
+  private def finalResponseHeaders[F[_]: Effect](headers: Stream[F, Response[Unit]]): Stream[F, Response[Unit]] =
+    new Stream[F, Response[Unit]] {
+      def pull(): F[Option[Response[Unit]]] = Effect[F].fork {
+        headers.pull().flatMap {
+          case Some(response) if response.status.code >= 100 && response.status.code < 200 && response.status.code != 101 =>
+            // Eager Future continuations need a trampoline at each skipped
+            // response. Keep the whole step inside fork, including flatMap.
+            pull()
+          // Return 101 immediately; its unread bytes remain in the decoder.
+          case result => Effect[F].pure(result)
+        }
+      }(ExecutionContext.parasitic)
+      def cancel(): F[Unit] = headers.cancel()
+    }
+
   def decodeResponse(buffer: B, incoming: B): (B, Decoder.Action[B, Response[Unit]]) = {
-    val allBytes = buffer ++ incoming
+    require(buffer.length < maxResponseHeaderBytes, "HTTP response header too large")
+    val accepted = math.min(incoming.length, maxResponseHeaderBytes.toLong - buffer.length)
+    val allBytes = buffer ++ incoming.slice(0, accepted)
     findLastHeaderEnd(allBytes) match {
       case -1 =>
+        require(allBytes.length < maxResponseHeaderBytes, "HTTP response header too large")
         (allBytes, Decoder.Action.TakeNext)
       case lastByteOfHeader =>
         val (bodyBytes, response) = parseResponse(allBytes, lastByteOfHeader)
-        (BytesLike[B].empty, Decoder.Action.Fork(response, bodyBytes))
+        (BytesLike[B].empty, Decoder.Action.Fork(response, bodyBytes ++ incoming.slice(accepted)))
     }
   }
 
@@ -96,68 +160,87 @@ class Http11[B: BytesLike] {
         (total, Decoder.Action.Push(incoming))
     }
 
-  def decodeChunkedBody(state: (Option[Long], B), incoming: B): ((Option[Long], B), Decoder.Action[B, B]) =
-    state match {
-      case (maybeChunkSize @ Some(chunkSize), buffer) =>
-        val allBytes       = buffer ++ incoming
-        val expectedLength = chunkSize + CRLF.length
-        if (allBytes.length >= expectedLength) {
-          if (chunkSize > 0) {
-            val chunk = allBytes.slice(0, chunkSize)
-            val rest  = allBytes.slice(expectedLength)
-            ((None, BytesLike[B].empty), Decoder.Action.Fork(chunk, rest))
-          } else {
-            val rest = allBytes.slice(expectedLength)
-            ((None, BytesLike[B].empty), Decoder.Action.TakeBackFinish(rest))
-          }
-        } else {
-          ((maybeChunkSize, allBytes), Decoder.Action.TakeNext)
-        }
-      case (None, buffer) =>
-        val allBytes = buffer ++ incoming
-        val index    = allBytes.indexOfSlice(CRLF)
-        if (index < 0) {
-          ((None, allBytes), Decoder.Action.TakeNext)
-        } else {
-          val chunkSizeHex = allBytes.slice(0, index).asAsciiString
-          val chunkSize    = java.lang.Long.parseLong(chunkSizeHex, 16)
-          val restBytes    = allBytes.slice(index + CRLF.length)
-          ((Some(chunkSize), BytesLike[B].empty), Decoder.Action.TakeBack(restBytes))
-        }
+  def decodeChunkedBody[F[_]: Effect](decoder: Decoder[F, B], complete: () => Unit = () => ()): Stream[F, B] = {
+    val framing = new ChunkedBodyDecoder[B](maxChunkLineBytes, maxTrailerBytes)
+    val stream = decoder.decode(()) { (_, incoming) =>
+      val result = framing.decode(incoming)
+      if (framing.completed) complete()
+      ((), result)
     }
+    new Stream[F, B] {
+      def pull(): F[Option[B]] = stream.pull().map { value =>
+        if (value.isEmpty && !framing.completed) throw new InvalidFraming("Incomplete chunked HTTP body")
+        value
+      }
+      def cancel(): F[Unit] = stream.cancel()
+    }
+  }
 
   def parseRequest(allBytes: B, lastByteOfHeader: Long): (B, Request[Unit]) = {
-    // Buffer contains header.
-    // Lets parse it.
-    val methodEnd          = allBytes.indexOf(' ')
-    val paramsStart        = allBytes.indexOf('?', methodEnd + 1)
-    val pathEnd            = allBytes.indexOf(' ', methodEnd + 1)
+    require(lastByteOfHeader >= 0 && lastByteOfHeader <= allBytes.length - 4 &&
+      allBytes(lastByteOfHeader) == '\r' && allBytes(lastByteOfHeader + 1) == '\n' &&
+      allBytes(lastByteOfHeader + 2) == '\r' && allBytes(lastByteOfHeader + 3) == '\n',
+      "Malformed HTTP header delimiter")
     val protocolVersionEnd = allBytes.indexOf('\r')
-    val hasParams          = paramsStart > -1 && paramsStart < protocolVersionEnd
-    val method             = allBytes.slice(0, methodEnd).asAsciiString
-    val path               = allBytes.slice(methodEnd + 1, if (hasParams) paramsStart else pathEnd).asAsciiString
-    val params =
-      if (hasParams) allBytes.slice(paramsStart + 1, pathEnd).asAsciiString
-      else null
-    //val protocolVersion = allBytes.slice(pathEnd + 1, protocolVersionEnd).asciiString
+    require(protocolVersionEnd > 0 && protocolVersionEnd <= lastByteOfHeader &&
+      allBytes(protocolVersionEnd + 1) == '\n', "Malformed HTTP request line")
+    val line = allBytes.slice(0, protocolVersionEnd).asAsciiString
+    val methodEnd = line.indexOf(' ')
+    val pathEnd = line.indexOf(' ', methodEnd + 1)
+    require(methodEnd > 0 && pathEnd > methodEnd + 1 && pathEnd < line.length - 1,
+      "Malformed HTTP request line")
+    val method = line.substring(0, methodEnd)
+    Headers.validate(method, "") // HTTP methods use the same token syntax as field names.
+    val target = line.substring(methodEnd + 1, pathEnd)
+    require(target.forall(c => c > ' ' && c < 127), "Malformed HTTP request target")
+    val version = line.substring(pathEnd + 1)
+    require(version == "HTTP/1.1" || version == "HTTP/1.0", "Unsupported HTTP request version")
+    val paramsStart = target.indexOf('?')
+    val path = if (paramsStart < 0) target else target.substring(0, paramsStart)
+    val params = if (paramsStart < 0) null else target.substring(paramsStart + 1)
     // Parse headers.
     val headers               = mutable.Buffer.empty[(String, String)]
     var headerStart           = protocolVersionEnd + 2 // first line end plus \r\n chars
     var cookie: String        = null
     var contentLength: String = null
+    var transferEncoding: String = null
     while (headerStart < lastByteOfHeader) {
+      // Bound each field to its own CRLF before searching/slicing its value.
+      // A missing colon must never send the parser back to the request line.
+      val valueEnd = allBytes.indexOf('\r', headerStart)
+      require(valueEnd >= headerStart && valueEnd <= lastByteOfHeader && allBytes(valueEnd + 1) == '\n',
+        "Malformed HTTP header line")
       val nameEnd  = allBytes.indexOf(':', headerStart)
-      val valueEnd = allBytes.indexOf('\r', nameEnd)
+      require(nameEnd > headerStart && nameEnd < valueEnd, "Malformed HTTP header field")
       val name     = allBytes.slice(headerStart, nameEnd).asAsciiString
       val value =
         if (allBytes(nameEnd + 1) == ' ') allBytes.slice(nameEnd + 2, valueEnd).asAsciiString
         else allBytes.slice(nameEnd + 1, valueEnd).asAsciiString
+      Headers.validate(name, value)
       name match {
-        case _ if name.equalsIgnoreCase(Headers.Cookie)        => cookie = value
-        case _ if name.equalsIgnoreCase(Headers.ContentLength) => contentLength = value
+        case _ if name.equalsIgnoreCase(Headers.Cookie)        => cookie = if (cookie == null) value else cookie + "; " + value
+        case _ if name.equalsIgnoreCase(Headers.ContentLength) =>
+          if (contentLength != null) throw new InvalidFraming("Repeated Content-Length")
+          contentLength = value.trim
+        case _ if name.equalsIgnoreCase(Headers.TransferEncoding) =>
+          if (transferEncoding != null) throw new InvalidFraming("Repeated Transfer-Encoding")
+          transferEncoding = value.trim.toLowerCase(java.util.Locale.ROOT)
         case _                                                 => headers += ((name, value))
       }
-      headerStart = valueEnd + 2
+      val nextHeader = valueEnd + 2
+      require(nextHeader > headerStart, "HTTP header parser made no progress")
+      headerStart = nextHeader
+    }
+    require(headerStart == lastByteOfHeader + 2, "Malformed HTTP header boundary")
+    if (transferEncoding != null) {
+      if (contentLength != null || transferEncoding != "chunked" || version != "HTTP/1.1")
+        throw new InvalidFraming("Ambiguous or unsupported HTTP transfer framing")
+      headers += Headers.TransferEncoding -> "chunked"
+    }
+    val length = Option(contentLength).map { value =>
+      if (value.isEmpty || !value.forall(c => c >= '0' && c <= '9'))
+        throw new InvalidFraming("Invalid Content-Length")
+      value.toLongOption.getOrElse(throw new InvalidFraming("Content-Length overflow"))
     }
     val request = Request(
       method = Request.Method.fromString(method),
@@ -165,9 +248,7 @@ class Http11[B: BytesLike] {
       renderedCookie = cookie,
       headers = headers.toVector,
       body = (),
-      contentLength =
-        if (contentLength == null) None
-        else Some(contentLength.toLong)
+      contentLength = length
     )
     val bodyBytes = allBytes.slice(lastByteOfHeader + 4, allBytes.length)
     (bodyBytes, request)
@@ -183,6 +264,11 @@ class Http11[B: BytesLike] {
     val statusCodeEnd      = bytes.indexOf(' ', statusCodeStart)
     val statusPhraseStart  = statusCodeEnd + 1
     val statusPhraseEnd    = bytes.indexOf('\r', statusPhraseStart)
+    require(protocolVersionEnd > 0 && statusCodeEnd == statusCodeStart + 3 &&
+      statusPhraseEnd >= statusPhraseStart && statusPhraseEnd <= lastHeaderEnd &&
+      bytes(statusPhraseEnd + 1) == '\n', "Malformed HTTP response line")
+    val version = bytes.slice(0, protocolVersionEnd).asAsciiString
+    require(version == "HTTP/1.1" || version == "HTTP/1.0", "Unsupported HTTP response version")
     val statusCode         = bytes.slice(statusCodeStart, statusCodeEnd)
     val statusPhrase       = bytes.slice(statusPhraseStart, statusPhraseEnd)
     // Headers
@@ -190,24 +276,38 @@ class Http11[B: BytesLike] {
     val headers               = mutable.Buffer.empty[(String, String)]
     var cookie: String        = null
     var contentLength: String = null
+    var transferEncoding: String = null
     while (headerStart < lastHeaderEnd) {
+      val valueEnd = bytes.indexOf('\r', headerStart)
+      require(valueEnd >= headerStart && valueEnd <= lastHeaderEnd && bytes(valueEnd + 1) == '\n',
+        "Malformed HTTP response header line")
       val nameEnd  = bytes.indexOf(':', headerStart)
-      val valueEnd = bytes.indexOf('\r', nameEnd)
+      require(nameEnd > headerStart && nameEnd < valueEnd, "Malformed HTTP response header field")
       val name     = bytes.slice(headerStart, nameEnd).asAsciiString
       val value =
         if (bytes(nameEnd + 1) == ' ') bytes.slice(nameEnd + 2, valueEnd).asAsciiString
         else bytes.slice(nameEnd + 1, valueEnd).asAsciiString
+      Headers.validate(name, value)
       name match {
         case _ if name.equalsIgnoreCase(Headers.Cookie) =>
           cookie = value
           headers += ((name, value))
         case _ if name.equalsIgnoreCase(Headers.ContentLength) =>
-          contentLength = value
+          require(contentLength == null, "Repeated response Content-Length")
+          contentLength = value.trim
+          require(contentLength.nonEmpty && contentLength.forall(c => c >= '0' && c <= '9'),
+            "Invalid response Content-Length")
+        case _ if name.equalsIgnoreCase(Headers.TransferEncoding) =>
+          require(transferEncoding == null && value.trim.equalsIgnoreCase("chunked"),
+            "Unsupported response Transfer-Encoding")
+          transferEncoding = "chunked"
+          headers += ((Headers.TransferEncoding, transferEncoding))
         case _ =>
           headers += ((name, value))
       }
       headerStart = valueEnd + 2
     }
+    require(contentLength == null || transferEncoding == null, "Ambiguous HTTP response framing")
     val response = Response(
       status = Status(statusCode.asAsciiString.toInt, statusPhrase.asAsciiString),
       headers = headers.toVector,
@@ -221,6 +321,8 @@ class Http11[B: BytesLike] {
   }
 
   def renderResponseHeader(status: Status, headers: Seq[(String, String)]): String = {
+    Headers.validateValue(status.phrase)
+    headers.foreach { case (name, value) => Headers.validate(name, value) }
     val builder = new java.lang.StringBuilder()
 
     builder
@@ -287,11 +389,11 @@ class Http11[B: BytesLike] {
   }
 
   def renderResponse[F[_]: Effect](response: Response[Stream[F, B]]): F[Stream[F, B]] = {
-    def go(readers: Seq[(String, String)], body: Stream[F, B]) = {
+    def go(readers: Seq[(String, String)], body: Stream[F, B]) =
+      Effect[F].delay {
       val fullHeaderString = renderResponseHeader(response.status, readers)
-      val fullHeaderBytes  = BytesLike[B].ascii(fullHeaderString)
-      Stream(fullHeaderBytes).mat().map(_ ++ body)
-    }
+        BytesLike[B].ascii(fullHeaderString)
+      }.flatMap(bytes => Stream(bytes).mat().map(_ ++ body))
     response.contentLength match {
       case Some(s)                                              => go((Headers.ContentLength -> s.toString) +: response.headers, response.body)
       case None if response.status == Status.SwitchingProtocols => go(response.headers, response.body)
@@ -316,6 +418,14 @@ class Http11[B: BytesLike] {
 }
 
 object Http11 {
+
+  final class InvalidFraming(message: String) extends IllegalArgumentException(message)
+
+  // Content-Length on HEAD and 304 describes the representation, not bytes on
+  // this connection (RFC 9112, section 6.3). 101 exposes the upgraded stream.
+  def isBodylessResponse(method: Request.Method, status: Status): Boolean =
+    status.code != 101 && (method == Request.Method.Head ||
+      (status.code >= 100 && status.code < 200) || status.code == 204 || status.code == 304)
 
   private implicit final class StringBuilderOps(val builder: StringBuilder) extends AnyVal {
     def newLine(): StringBuilder = builder

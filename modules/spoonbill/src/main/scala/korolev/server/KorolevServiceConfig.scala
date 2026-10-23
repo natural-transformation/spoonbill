@@ -51,7 +51,8 @@ case class SpoonbillServiceConfig[F[_], S, M](
   webSocketCompressionEnabled: Boolean = false,
   sessionAccessControl: Option[SessionAccessControl[F, S]] = None,
   authenticationCompletion: Option[AuthenticationCompletionConfig[F]] = None,
-  private[spoonbill] val browserSecurityInstallation: Option[spoonbill.auth.BrowserSecurityInstallation[F, S]] = None
+  private[spoonbill] val browserSecurityInstallation: Option[spoonbill.auth.BrowserSecurityInstallation[F, S]] = None,
+  staticResourceLimits: StaticResourceLimits = StaticResourceLimits()
 )(implicit val executionContext: ExecutionContext)
 
 object SpoonbillServiceConfig {

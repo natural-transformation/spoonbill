@@ -1,6 +1,7 @@
 // Public v4 example correctness against the actual server and browser engines.
 // No client authentication implementation, fabricated frames, or performance sampling.
 const assert = require('node:assert/strict');
+const {createCompletionLoss} = require('./browser-auth-completion-loss.cjs');
 
 assert.ok(process.env.PLAYWRIGHT_DRIVER_PATH, 'Use nix develop .#browser');
 assert.ok(process.env.SPOONBILL_AUTH_ORIGIN, 'Start the public example through scripts/test-browser-auth.sh');
@@ -198,14 +199,20 @@ async function exercise(browser, engine, username, factor) {
 
     const predecessorView = new URL(sockets.at(-1).url).pathname;
     const replacementSocket = nextSocket();
+    // A committed replacement can lose its completion command when the old
+    // owner closes. Checked recovery is a supported delivery path; the fresh
+    // socket, changed cookie and predecessor-denial assertions below still apply.
     const replacementResponse = page.waitForResponse(response => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === '/auth/complete');
+      response.status() === 204 &&
+      ['/auth/complete', '/auth/recover'].includes(new URL(response.url()).pathname));
     replacementResponse.catch(() => {});
     phase = 'replacement-submit';
     await page.locator('select[name="securityChange"]').selectOption('regenerate-recovery');
     await page.locator('input[name="replacementPassword"]').fill('password');
     await page.getByRole('button', {name: 'Apply security change', exact: true}).click();
-    assert.equal((await replacementResponse).status(), 204);
+    const replacementDelivery = await replacementResponse;
+    assert.equal(replacementDelivery.status(), 204);
+    const replacementDeliveryPath = new URL(replacementDelivery.url()).pathname;
     await replacementSocket;
     phase = 'replacement-activated'; await ready();
     await page.getByText(`Authenticated account: ${username}`, {exact: true}).waitFor({state: 'visible'});
@@ -238,7 +245,7 @@ async function exercise(browser, engine, username, factor) {
     assert.deepEqual(errors, [], `${engine}: browser runtime errors`);
     console.log(JSON.stringify({provider, engine, flow: factor ? 'factor' : 'password',
       realCookieDelivery: true, sameViewActivation: true, protectedAction: true,
-      protectedHttpAndReload: true, replacementSameView: true, predecessorDenied: true,
+      protectedHttpAndReload: true, replacementSameView: true, replacementDeliveryPath, predecessorDenied: true,
       successorDisclosureOnce: true, logout: true, staleCookieDenied: true, foreignOriginDenied: true}));
   } catch (error) {
     const failure = /Socket closed/.test(error.message) ? 'socket-closed-before-ready'
@@ -309,6 +316,11 @@ async function replacementRecovery(browser, engine, scenario, username) {
   const routeErrors = [], errors = [];
   let phase = 'login', armed = false, replacementStarted = false, completionRequests = 0, fetchedResponses = 0;
   let replacementControls = 0, completionHandle;
+  let latestRoutedTransport;
+  const completionLoss = createCompletionLoss(() => {
+    armed = false;
+    fault.resolve();
+  });
   let routingActive = false;
   let binding, predecessor, initialReplacementView;
   const paths = [], recoveries = [], recoveryCookies = [], activations = [];
@@ -347,14 +359,16 @@ async function replacementRecovery(browser, engine, scenario, username) {
     const routed = scenario === 'lost-command' || scenario === 'second-tab';
     observe(page, routed);
     async function installFaultRoute(routedReady) {
-      // Transparent transport fault injection forwards real traffic and drops
-      // only the next real framework completion after the replacement submit.
+      // Forward real traffic, dropping the armed predecessor's completion or
+      // witnessing its close before that command. Both are supported loss paths.
       await page.routeWebSocket('**', socket => {
+        const transport = {ready: false};
+        latestRoutedTransport = transport;
         paths.push(new URL(socket.url()).pathname);
         const replacementConnection = replacementStarted;
         const server = socket.connectToServer();
         let clientClosing = false, serverClosed = false, upstreamClosed = false;
-        let downstreamClosed = false, lost = false, serverCloseOptions;
+        let downstreamClosed = false, serverCloseOptions;
         function closeUpstream(code, reason) {
           if (upstreamClosed) return;
           upstreamClosed = true;
@@ -374,20 +388,20 @@ async function replacementRecovery(browser, engine, scenario, username) {
         server.onClose((code, reason) => {
           serverClosed = true;
           serverCloseOptions = {code, reason};
-          if (clientClosing || (lost && scenario === 'lost-command')) closeDownstream();
-          // Keep other closes pending until the real final frame or browser
-          // close: pinned WebKit may deliver Blob frames after the close event.
+          const targetLost = completionLoss.upstreamClosed(transport);
+          if (clientClosing || (targetLost && scenario === 'lost-command')) closeDownstream();
+          // A committed replacement may retire before emitting its command.
+          // Second-tab loss deliberately leaves the original browser side
+          // disconnected; that scenario recovers through a fresh document.
         });
         socket.onMessage(message => { if (!serverClosed) server.send(message); });
         server.onMessage(message => {
           const code = frameCode({payload: message});
+          if (code === 21) transport.ready = true;
           if (!replacementConnection && code === 21) routedReady.resolve();
           if (replacementStarted && code === 18) replacementControls++;
           if (replacementConnection && code === 21) successorReady.resolve();
-          if (armed && code === 18) {
-            armed = false;
-            lost = true;
-            fault.resolve();
+          if (code === 18 && completionLoss.dropCompletion(transport)) {
             if (scenario === 'lost-command') {
               if (serverClosed) closeDownstream();
               else closeUpstream(4001, 'Synthetic completion loss');
@@ -490,6 +504,10 @@ async function replacementRecovery(browser, engine, scenario, username) {
     successorReady = checkpoint('Replacement successor readiness checkpoint expired');
     replacementStarted = true;
     armed = true;
+    if (routed) {
+      assert.ok(latestRoutedTransport?.ready, 'Arm only the latest ready predecessor transport');
+      completionLoss.arm(latestRoutedTransport);
+    }
     await page.getByRole('button', {name: 'Apply security change', exact: true}).click();
     await fault.promise;
     let recovered = page;
@@ -541,10 +559,22 @@ async function replacementRecovery(browser, engine, scenario, username) {
     }
     assert.ok(completionRequests <= 3, 'Completion attempts must stay within the bridge retry bound');
     if (scenario === 'request-loss') assert.equal(completionRequests, 3, 'Exhaust pre-delivery retries before bootstrap');
-    assert.equal(replacementControls, 1, 'Recovery must not submit another replacement completion');
+    if (routed) {
+      const loss = completionLoss.snapshot();
+      assert.equal(loss.faultCount, 1, 'Exactly one predecessor transport fault must be observed');
+      assert.equal(loss.forwardedControls, 0, 'No replacement completion may reach the browser during command loss');
+      assert.equal(loss.observedControls, replacementControls);
+      assert.equal(loss.droppedControls, replacementControls, 'Every observed completion must be dropped');
+      assert.ok(replacementControls <= 1, 'Recovery must not submit another replacement completion');
+      if (replacementControls === 0) {
+        assert.equal(loss.faultSource, 'upstream-close');
+        assert.equal(loss.witnessedTargetClose, true, 'Zero controls require a real armed predecessor close');
+      }
+    } else assert.equal(replacementControls, 1, 'Recovery must not submit another replacement completion');
     assert.deepEqual(errors, []);
     assert.deepEqual(routeErrors, []);
     console.log(JSON.stringify({provider, engine, scenario, predecessorDenied: true,
+      transportFault: routed ? completionLoss.snapshot() : undefined,
       successorDisclosureOnce: scenario !== 'unaccepted-cookie-loss', boundedDelivery: true}));
   } catch (error) {
     const failure = error.name === 'TimeoutError' ? 'timeout' : error.name === 'AssertionError' ? 'assertion' : 'runtime-error';
@@ -552,6 +582,7 @@ async function replacementRecovery(browser, engine, scenario, username) {
     // explicitly non-secret phase/counter evidence.
     console.error(JSON.stringify({kind: 'replacement-recovery-failure', provider, engine, scenario, phase,
       failure, completionRequests, fetchedResponses, recoveries, activationCount: activations.length,
+      transportFault: completionLoss.snapshot(),
       setupElapsedMs: (operationStartedAt ?? Date.now()) - setupStartedAt,
       operationElapsedMs: operationStartedAt === undefined ? undefined : Date.now() - operationStartedAt,
       pageErrors: errors, routeErrors, diagnostic: pageErrorInfo(error, phase)}));

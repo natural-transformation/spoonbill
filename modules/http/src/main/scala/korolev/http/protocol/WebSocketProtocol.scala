@@ -4,20 +4,23 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.{MessageDigest, SecureRandom}
 import java.util.Base64
+import scala.annotation.{switch, tailrec}
 import spoonbill.data.{BytesLike, BytesReader}
 import spoonbill.data.syntax._
 import spoonbill.effect.{Decoder, Effect, Stream}
 import spoonbill.effect.syntax._
-import spoonbill.web.{Headers, Request, Response}
+import spoonbill.http.HttpUpgradeInput
+import spoonbill.web.{Headers, Request, Response, WebSocketLimits}
 import spoonbill.web.Request.Head
 import spoonbill.web.Response.Status
-import scala.annotation.{switch, tailrec}
 
 /**
  * @see
  *   https://tools.ietf.org/html/rfc6455
  */
-final class WebSocketProtocol[B: BytesLike] {
+final class WebSocketProtocol[B: BytesLike](maxMessageBytes: Int = WebSocketLimits.DefaultMaxMessageBytes) {
+
+  require(maxMessageBytes > 0, "maxMessageBytes must be positive")
 
   import WebSocketProtocol._
   import WebSocketProtocol.DecodingState._
@@ -74,6 +77,9 @@ final class WebSocketProtocol[B: BytesLike] {
         val length    = BytesReader.readLong(bytes, 0)
         val nextState = Payload(s.fin, s.mask, s.opcode, length)
         decodeFrames(bytes.slice(8), nextState, BytesLike[B].empty)
+      case s: Payload if s.length < 0 || s.length > maxMessageBytes =>
+        // Reject the advertised length before retaining any payload chunks.
+        throw new WebSocketLimits.Exceeded
       case s: Payload if bytes.length >= s.fullLength =>
         val payloadBytes = decodePayload(bytes, s)
         val frame = (s.opcode: @switch) match {
@@ -104,7 +110,15 @@ final class WebSocketProtocol[B: BytesLike] {
   def mergeFrames(
     buffer: Option[Frame.Merged[B]],
     incoming: Frame[B]
-  ): (Option[Frame.Merged[B]], Decoder.Action[Frame[B], Frame.Merged[B]]) =
+  ): (Option[Frame.Merged[B]], Decoder.Action[Frame[B], Frame.Merged[B]]) = {
+    def payloadLength(frame: Frame[B]): Long = frame match {
+      case Frame.Binary(payload, _)         => BytesLike[B].length(payload)
+      case Frame.Text(payload, _)           => BytesLike[B].length(payload)
+      case Frame.Continuation(payload, _)   => BytesLike[B].length(payload)
+      case Frame.Unspecified(_, _, payload) => BytesLike[B].length(payload)
+      case _                                => 0L
+    }
+    WebSocketLimits.check(buffer.fold(0L)(payloadLength) + payloadLength(incoming), maxMessageBytes)
     (buffer, incoming) match {
       case (_, controlFrame: Frame.Control[B] @unchecked) =>
         // Control frames MAY be injected in the middle of a fragmented message.
@@ -120,6 +134,7 @@ final class WebSocketProtocol[B: BytesLike] {
       case _ =>
         throw new IllegalStateException(s"Fragmentation in WebSocket is invalid. Received $incoming after $buffer")
     }
+  }
 
   def encodeFrame(frame: Frame[B], maybeMask: Option[Int]): B = frame match {
     case Frame.Pong | Frame.Ping | Frame.ConnectionClose =>
@@ -158,7 +173,19 @@ final class WebSocketProtocol[B: BytesLike] {
   }
 
   def findIntention(request: Head): Option[Intention] =
-    request.header(Headers.SecWebSocketKey).map(Intention(_))
+    request.header(Headers.SecWebSocketKey).map(value => Intention(value.trim)).filter(validHandshake(request, _))
+
+  private def validHandshake(request: Head, intention: Intention): Boolean = {
+    def values(name: String): Seq[String] = request.headers.collect {
+      case (key, value) if key.equalsIgnoreCase(name) => value.trim
+    }
+    def containsToken(name: String, token: String): Boolean =
+      values(name).flatMap(_.split(',')).exists(_.trim.equalsIgnoreCase(token))
+    request.method == Request.Method.Get && values(Headers.SecWebSocketVersion) == Seq("13") &&
+      values(Headers.SecWebSocketKey) == Seq(intention.key) &&
+      containsToken(Headers.Connection, "upgrade") && containsToken(Headers.Upgrade, "websocket") &&
+      scala.util.Try(Base64.getDecoder.decode(intention.key).length == 16).getOrElse(false)
+  }
 
   def addIntention[T](request: Request[T], intention: Intention): Request[T] =
     request.withHeaders(
@@ -186,23 +213,53 @@ final class WebSocketProtocol[B: BytesLike] {
    * Upgrade Request/Response with raw bytes to WebSocket protocol and insert
    * handshake headers. Fragments will be merged to single frames.
    */
-  def upgrade[F[_]: Effect](intention: Intention)(
+  def upgrade[F[_]: Effect](
+    intention: Intention,
+    onMessageStarted: () => Unit = () => (),
+    onMessageCompleted: () => Unit = () => ()
+  )(
     f: Request[Stream[F, Frame.Merged[B]]] => F[Response[Stream[F, Frame.Merged[B]]]]
-  ): Request[Stream[F, B]] => F[Response[Stream[F, B]]] = f
-    .compose[Request[Stream[F, B]]] { request =>
-      val messages = Decoder(request.body)
+  ): Request[Stream[F, B]] => F[Response[Stream[F, B]]] = request => Effect[F].delayAsync {
+    if (!validHandshake(request, intention) || request.contentLength.exists(_ != 0L) ||
+      request.header(Headers.TransferEncoding).nonEmpty)
+      Effect[F].pure(Response(Status.BadRequest, Stream.empty[F, B], Nil, Some(0L)))
+    else {
+      val transport = request.body match {
+        case input: HttpUpgradeInput[F, B] @unchecked => input.claim()
+        // Trusted adapters can supply their transport directly, without the
+        // public HTTP-body facade. Validation above still applies.
+        case input => Effect[F].pure(input)
+      }
+      transport.flatMap { input =>
+      var pendingFrameBytes = false
+      val messages = Decoder(input)
         .decode((BytesLike[B].empty, DecodingState.begin)) { case ((buffer, state), incoming) =>
-          decodeFrames(buffer, state, incoming)
+          if (BytesLike[B].length(incoming) > 0) onMessageStarted()
+          val result = decodeFrames(buffer, state, incoming)
+          pendingFrameBytes = result._2 match {
+            case Decoder.Action.Fork(_, remaining) => BytesLike[B].length(remaining) > 0
+            case _ => false
+          }
+          result
         }
-        .decode(Option.empty[Frame.Merged[B]])(mergeFrames)
-      request.copy(body = messages)
-    }
-    .andThen[F[Response[Stream[F, B]]]] { responseF =>
-      responseF.map { response =>
+        .decode(Option.empty[Frame.Merged[B]]) { (buffer, incoming) =>
+          val result = mergeFrames(buffer, incoming)
+          // Control frames do not finish an outstanding fragmented message.
+          if (result._1.isEmpty) {
+            onMessageCompleted()
+            // A complete preceding message can leave an unconsumed tail in
+            // the decoder; keep that tail bounded even if the app pauses.
+            if (pendingFrameBytes) onMessageStarted()
+          }
+          result
+        }
+      Effect[F].delayAsync(f(request.copy(body = messages))).map { response =>
         val upgradedBody = response.body.map(m => encodeFrame(m, None))
         handshake(response, intention).copy(body = upgradedBody)
       }
+      }
     }
+  }
 }
 
 object WebSocketProtocol {

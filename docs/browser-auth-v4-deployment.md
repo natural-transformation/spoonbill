@@ -6,6 +6,15 @@ explicit deployment procedure, never a request-time migration. The
 example's `--initialize`, synthetic users, public vault key and loopback database
 are development fixtures and must not be used for production users.
 
+**Current-source V6 retention update:** the historical V4/V5 lifetime-history
+policy below is superseded for the built-in providers by
+[browser admission, retention, and recovery](request-admission-lifecycle.md).
+Apply the forward [V6 migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V6__browser_retention.sql)
+after draining all old writers. It introduces permanent issuance/fence metadata,
+finite browser leases and session lifetimes, and guarded reclamation. V4 and V5
+artifacts remain unchanged. Once reclamation starts, old binaries cannot safely
+serve or provide rollback; follow the V6 migration and maintenance procedure.
+
 ## Supported boundary
 
 | Component | Supported boundary |
@@ -203,6 +212,11 @@ no rotation envelope; deployments needing rotation must implement
 keys. Keep keys required by still-valid ciphertext across restart and rollback.
 Never log token plaintext. Missing/corrupt key material must deny delivery,
 not create a substitute session or repeat proof consumption.
+
+The following paragraphs describe the historical V4/V5 policy. Current-source
+built-in providers use the [V6 retention policy](request-admission-lifecycle.md),
+whose permanent floors and issuance state replace lifetime retention of eligible
+inactive rows. Do not apply these newer deletion rules to a pre-V6 writer.
 
 The initial providers deliberately retain replay/fencing history to finite
 limits. In particular, `ceremoniesPerBinding` (default **16**) counts all retained

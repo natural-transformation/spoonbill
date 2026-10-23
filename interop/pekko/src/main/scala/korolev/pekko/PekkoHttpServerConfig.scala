@@ -18,10 +18,11 @@ package spoonbill.pekko
 
 import scala.concurrent.duration._
 
-/** `wsSetupTimeout` bounds resources held before WebSocket materialization,
+/**
+ * `wsSetupTimeout` bounds resources held before WebSocket materialization,
   * including abandoned upgrades when HTTP request timeouts are disabled. A
-  * shorter configured HTTP request timeout is also respected. This deadline
-  * does not replace the application's HTTP timeout handler. An uninterruptible
+ * shorter configured HTTP request timeout is also respected. This deadline does
+ * not replace the application's HTTP timeout handler. An uninterruptible
   * service effect may finish later; its result is then released without output.
   */
 case class PekkoHttpServerConfig(
@@ -29,8 +30,12 @@ case class PekkoHttpServerConfig(
   outputBufferSize: Int = PekkoHttpServerConfig.DefaultOutputBufferSize,
   wsStreamedCompletionTimeout: FiniteDuration = PekkoHttpServerConfig.DefaultWsStreamedCompletionTimeout,
   wsStreamedParallelism: Int = PekkoHttpServerConfig.DefaultWsStreamedParallelism,
-  wsSetupTimeout: FiniteDuration = 30.seconds
+  wsSetupTimeout: FiniteDuration = 30.seconds,
+  wsMaxMessageBytes: Int = spoonbill.web.WebSocketLimits.DefaultMaxMessageBytes
 ) {
+  require(wsMaxMessageBytes > 0, "wsMaxMessageBytes must be positive")
+  require(wsStreamedParallelism > 0, "wsStreamedParallelism must be positive")
+  require(wsStreamedCompletionTimeout > Duration.Zero, "wsStreamedCompletionTimeout must be positive")
   require(wsSetupTimeout > Duration.Zero, "wsSetupTimeout must be positive")
 }
 

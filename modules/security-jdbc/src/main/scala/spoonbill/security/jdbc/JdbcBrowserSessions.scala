@@ -32,6 +32,23 @@ final class JdbcBrowserSessions(
   require(realm.matches("[A-Za-z0-9_.-]{1,96}"), "Invalid browser authentication realm")
   require(cookieNamespace.matches("[A-Za-z0-9_.-]{1,96}"), "Invalid browser authentication namespace")
   require(maxActiveViews > 0, "Active view limit must be positive")
+  private var managedLifecycle = false
+  private[jdbc] def useManagedLifecycle(): Unit = managedLifecycle = true
+
+  private def checkManagedCreation(connection: Connection): Unit =
+    if (!managedLifecycle) {
+      // Enrollment must exclude an older low-level writer which checked the
+      // marker before waiting on a slot or view row.
+      statement(connection, "SELECT pg_advisory_xact_lock(hashtextextended(?,0))") { query =>
+        query.setString(1, s"spoonbill-auth:${realm.length}:$realm$cookieNamespace")
+        Using.resource(query.executeQuery())(_.next()); ()
+      }
+      val managed = statement(connection,
+        "SELECT 1 FROM spoonbill_browser_retention WHERE realm=? AND namespace=?") { query =>
+        scope(query); Using.resource(query.executeQuery())(_.next())
+      }
+      if (managed) throw new JdbcAuthException(JdbcAuthError.HostDenied)
+    }
 
   private case class Slot(generation: Long, current: Option[UUID])
   private case class Row(
@@ -81,6 +98,7 @@ final class JdbcBrowserSessions(
         ViewSnapshotError.StorageFailure
       ) { connection =>
         try {
+          checkManagedCreation(connection)
           def refuse(error: ViewSnapshotError): Nothing = throw new SnapshotStorageException(error)
           def verify(row: Row, now: Instant): Unit = {
             checkHost(connection, row, bindingHash, now).fold(_ => refuse(ViewSnapshotError.AccessDenied), _ => ())
@@ -125,7 +143,10 @@ final class JdbcBrowserSessions(
 
   /** Explicit migration/bootstrap step. Never called implicitly by requests. */
   def initialize(connection: Connection): Unit =
-    try schema.foreach(sql => Using.resource(connection.createStatement())(_.executeUpdate(sql)))
+    try {
+      schema.foreach(sql => Using.resource(connection.createStatement())(_.executeUpdate(sql)))
+      JdbcBrowserRetention.initialize(connection)
+    }
     catch { case _: SQLException => throw new JdbcAuthException(JdbcAuthError.StorageFailure) }
 
   /**
@@ -136,6 +157,7 @@ final class JdbcBrowserSessions(
    * lineage.
    */
   def openSlot(bindingHash: Digest256): Either[JdbcAuthError, Long] = transaction { connection =>
+    checkManagedCreation(connection)
     statement(
       connection,
       """INSERT INTO spoonbill_browser_slot
@@ -189,6 +211,7 @@ final class JdbcBrowserSessions(
   def prepare(connection: Connection, prepared: PreparedBrowserSession): PreparedReceipt =
     try {
       if (connection.getAutoCommit) throw new JdbcAuthException(JdbcAuthError.TransactionRequired)
+      checkManagedCreation(connection)
       val normalized = prepared.copy(
         sessionExpiresAt = micros(prepared.sessionExpiresAt),
         completionExpiresAt = micros(prepared.completionExpiresAt)
@@ -219,6 +242,7 @@ final class JdbcBrowserSessions(
   def prepareNew(connection: Connection, prepared: PreparedBrowserSession): PreparedReceipt =
     try {
       if (connection.getAutoCommit) throw new JdbcAuthException(JdbcAuthError.TransactionRequired)
+      checkManagedCreation(connection)
       val normalized = prepared.copy(
         sessionExpiresAt = micros(prepared.sessionExpiresAt),
         completionExpiresAt = micros(prepared.completionExpiresAt)
@@ -287,6 +311,7 @@ final class JdbcBrowserSessions(
    */
   def delivery(completionId: UUID, bindingHash: Digest256): Either[JdbcAuthError, DeliveryPermit] = transaction {
     connection =>
+      checkManagedCreation(connection)
       val now = clock()
       rowByCompletion(connection, completionId).toRight(JdbcAuthError.NotFound).flatMap { row =>
         checkHost(connection, row, bindingHash, now).flatMap { _ =>
@@ -312,6 +337,7 @@ final class JdbcBrowserSessions(
 
   /** Activate within a supplied outer transaction. Refusal must abort it. */
   def activateIn(connection: Connection, tokenHash: Digest256, bindingHash: Digest256): ActiveBrowserSession = {
+    checkManagedCreation(connection)
     if (connection.getAutoCommit) throw new JdbcAuthException(JdbcAuthError.TransactionRequired)
     val now = clock()
     val result = rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound).flatMap { row =>
@@ -388,6 +414,7 @@ final class JdbcBrowserSessions(
 
   def validate(tokenHash: Digest256, bindingHash: Digest256): Either[JdbcAuthError, ActiveBrowserSession] =
     transaction { connection =>
+      checkManagedCreation(connection)
       val now = clock()
       rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound).flatMap { row =>
         checkHost(connection, row, bindingHash, now).flatMap { _ =>
@@ -434,6 +461,7 @@ final class JdbcBrowserSessions(
     viewFence: Option[JdbcViewFence] = None,
     allowPending: Boolean = false
   ): JdbcBrowserAuthorization[P] = {
+    checkManagedCreation(connection)
     def reject(error: JdbcAuthError): Nothing            = throw new JdbcAuthException(error)
     def required[A](result: Either[JdbcAuthError, A]): A = result.fold(reject, identity)
     def principal(row: Row): P = {
@@ -565,6 +593,7 @@ final class JdbcBrowserSessions(
     if (!validViewId(viewId)) Left(JdbcAuthError.InvalidViewId)
     else
       transaction { connection =>
+        checkManagedCreation(connection)
         slot(connection, bindingHash).toRight(JdbcAuthError.NotFound).flatMap { _ =>
           val existing = view(connection, viewId)
           if (existingOnly && existing.isEmpty) Left(JdbcAuthError.NotFound)
@@ -608,6 +637,7 @@ final class JdbcBrowserSessions(
     if (!validViewId(viewId)) Left(JdbcAuthError.InvalidViewId)
     else
       transaction { connection =>
+        checkManagedCreation(connection)
         slot(connection, bindingHash).toRight(JdbcAuthError.NotFound).flatMap { _ =>
           view(connection, viewId)
             .toRight(JdbcAuthError.NotFound)

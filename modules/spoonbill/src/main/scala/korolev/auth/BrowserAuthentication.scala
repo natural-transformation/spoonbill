@@ -47,7 +47,8 @@ final class BrowserAuthentication[F[_], S, P](
     Option.empty[SensitiveAccess[F, S]],
   snapshots: BrowserView[P] => Option[ViewSnapshotSession[F, S]] = (_: BrowserView[P]) =>
     Option.empty[ViewSnapshotSession[F, S]],
-  samePrincipal: (P, P) => Boolean = (left: P, right: P) => left == right
+  samePrincipal: (P, P) => Boolean = (left: P, right: P) => left == right,
+  onCapacityWarning: BrowserCapacityWarning => Unit = (_: BrowserCapacityWarning) => ()
 )(using F: Effect[F]) {
   require(configuration.errors.isEmpty, configuration.errors.mkString("; "))
   require(configuration.scope == persistence.scope, "Browser/provider scope mismatch")
@@ -68,9 +69,26 @@ final class BrowserAuthentication[F[_], S, P](
   // Claims stay owned until acknowledged cleanup, including failed setup and
   // uncertain release. The bound is enforced before dispatching provider claim.
   private var owned = Map.empty[ConnectionId, Attached]
-  // Non-secret stamps share the bounded view history's lifetime, never bearer tokens.
+  // Non-secret stamps live only while corresponding local presentation remains.
   private var previous = Map.empty[Qsid, (BrowserAuthorityStamp, spoonbill.security.ViewFence)]
   private val stopped  = new AtomicBoolean()
+  private var reporter: spoonbill.effect.Reporter = spoonbill.effect.Reporter.PrintReporter
+  private var warned = Map.empty[String, Boolean]
+
+  private def observeCapacity(): F[Unit] = persistence.capacity.flatMap {
+    case Right(Some(usage)) => F.delay {
+      val warnings = usage.warnings(configuration.capacityWarningPercent)
+      warnings.foreach { warning =>
+        if (!warned.get(warning.resource).contains(warning.exhausted)) {
+          reporter.warning(s"Browser capacity ${warning.resource}: ${warning.used}/${warning.limit}; exhausted=${warning.exhausted}")
+          onCapacityWarning(warning)
+        }
+      }
+      warned = warnings.map(value => value.resource -> value.exhausted).toMap
+    }
+    case Right(None) => F.unit
+    case Left(_) => F.delay(reporter.warning("Browser capacity observation unavailable"))
+  }.recover { case scala.util.control.NonFatal(error) => reporter.error("Browser capacity observer failed", error) }
 
   private def denied[A]: F[A]                                           = F.fail(new SessionAccessDenied)
   private def requireResult[A](result: Either[BrowserFailure, A]): F[A] = result.fold(_ => denied, F.pure)
@@ -94,6 +112,12 @@ final class BrowserAuthentication[F[_], S, P](
       persistence.capture(binding, token, activate).flatMap(requireResult)
     }
   private def invalidate(value: Attached): F[Unit] = value.lease.fold(F.unit)(_.invalidate())
+  private def reclaimLocalHistory(): F[Unit] = store.reclaimAbsentHistory().map { retained =>
+    previous = previous.filter { case (qsid, _) => retained.contains(qsid) }
+  }
+  private[auth] def localHistoryUsage: F[(Int, Int)] = gate {
+    store.resources.map(resources => resources.history -> previous.size)
+  }
   private def detach(value: Attached, retain: Boolean = false): F[Unit] =
     if (!owned.get(value.view.connectionId).contains(value)) F.unit
     else {
@@ -154,16 +178,28 @@ final class BrowserAuthentication[F[_], S, P](
   private val access: SessionAccessControl[F, S] = new SessionAccessControl[F, S] {
     override private[spoonbill] def securityInstallation: Option[BrowserSecurityInstallation[F, S]] = Some(installation)
     def authorizeHttp(request: Request.Head, state: S): F[Unit] = gate {
-      capture(request, activate = false).flatMap { identity =>
-        if (presentation.allowed(state, principal(identity))) F.unit else denied
-      }
+      tokens(request)
+        .fold(denied[Option[P]]) { case (binding, token) =>
+          persistence.inspectPrincipal(binding, token).flatMap(requireResult)
+        }
+        .flatMap { observed =>
+          if (presentation.allowed(state, observed)) F.unit else denied
+        }
     }
     override def prepareHttp(qsid: Qsid, request: Request.Head, state: S): Option[F[Unit]] =
       Option.when(shared)(gate {
-        capture(request, activate = false).flatMap { identity =>
-          if (!presentation.allowed(state, principal(identity))) denied
-          else persistence.registerView(identity, qsid).flatMap(requireResult)
-        }
+        tokens(request)
+          .fold(denied[Option[P]]) { case (binding, token) =>
+            persistence.inspectPrincipal(binding, token).flatMap(requireResult)
+          }
+          .flatMap { observed =>
+            if (!presentation.allowed(state, observed)) denied
+            else
+              capture(request, activate = false).flatMap { identity =>
+                if (!presentation.allowed(state, principal(identity))) denied
+                else persistence.registerView(identity, qsid).flatMap(requireResult).flatMap(_ => observeCapacity())
+              }
+          }
       })
     def open(qsid: Qsid, request: Request.Head, owner: ConnectionId): F[SessionGuard[F, S]] =
       acquire(qsid, request, owner, existingOnly = false)
@@ -182,7 +218,7 @@ final class BrowserAuthentication[F[_], S, P](
     else if (owned.contains(owner) || owned.size.toLong >= storageLimits.active.toLong + storageLimits.pending.toLong)
       denied
     else
-      capture(request, activate = true).flatMap { identity =>
+      reclaimLocalHistory().flatMap(_ => capture(request, activate = true)).flatMap { identity =>
         persistence.claim(identity, qsid, owner, existingOnly).flatMap(requireResult).flatMap { view =>
           val value = new Attached(view)
           owned += owner -> value
@@ -298,6 +334,7 @@ final class BrowserAuthentication[F[_], S, P](
                   attached += owner -> value
                   guard
                 }
+                .flatMap(guard => observeCapacity().map(_ => guard))
             }
             .recoverF { case error =>
               old
@@ -367,6 +404,7 @@ final class BrowserAuthentication[F[_], S, P](
         base.browserSecurityInstallation.isEmpty,
       "Browser security must be installed once as one coherent bundle"
     )
+    reporter = base.reporter
     val result = base.copy(
       sessionAccessControl = Some(access),
       authenticationCompletion = Some(completion),
@@ -377,7 +415,8 @@ final class BrowserAuthentication[F[_], S, P](
     result
   }
   def begin(context: PublicActionContext, purpose: String = "sign-in"): F[Either[BrowserFailure, BrowserCeremony]] =
-    withView(context.connectionId)(value => check(value).flatMap(_ => persistence.begin(value.view, purpose))).recover {
+    withView(context.connectionId)(value => check(value).flatMap(_ => persistence.begin(value.view, purpose))
+      .flatMap(result => observeCapacity().map(_ => result))).recover {
       case _: SessionAccessDenied => Left(BrowserFailure.Denied)
     }
 
@@ -455,7 +494,7 @@ final class BrowserAuthentication[F[_], S, P](
   def currentPrincipal(request: Request.Head): F[Either[BrowserFailure, Option[P]]] = gate {
     tokens(request) match {
       case None                   => F.pure(Left(BrowserFailure.Denied))
-      case Some((binding, token)) => persistence.capture(binding, token, activate = false).map(_.map(principal))
+      case Some((binding, token)) => persistence.inspectPrincipal(binding, token)
     }
   }
   def complete(receipt: CommittedAuthentication): UiOutcome[S] = {
@@ -470,6 +509,7 @@ final class BrowserAuthentication[F[_], S, P](
       provider =>
         withView(context.connectionId)(value =>
           check(value).flatMap(_ => provider.beginReplacement(value.view, purpose))
+            .flatMap(result => observeCapacity().map(_ => result))
         ).recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
     }
   def resumeReplacement(
@@ -522,7 +562,11 @@ final class BrowserAuthentication[F[_], S, P](
     retiring
       .foldLeft(F.unit)((done, value) => done.flatMap(_ => detach(value)))
       .flatMap(_ => persistence.maintenance())
-      .flatMap(_ => store.resources.map(_ => ()))
+      .flatMap(_ => owned.values.toVector.foldLeft(F.unit) { (done, value) =>
+        done.flatMap(_ => check(value).map(_ => ()).recover { case _: SessionAccessDenied => () })
+      })
+      .flatMap(_ => reclaimLocalHistory())
+      .flatMap(_ => observeCapacity())
   }
   def close(): F[Unit] = gate.close {
     stopped.set(true)

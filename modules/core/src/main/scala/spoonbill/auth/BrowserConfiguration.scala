@@ -34,7 +34,8 @@ final case class BrowserConfiguration(
   secureCookies: Boolean = true,
   cookieMaxAgeSeconds: Long = 3600,
   maxPendingOperations: Int = 256,
-  logoutRedirect: String = "/"
+  logoutRedirect: String = "/",
+  capacityWarningPercent: Int = 80
 ) {
   def errors: Vector[String] = {
     val scopeValid = Vector(scope.realm, scope.cookieNamespace).forall(_.matches("[A-Za-z0-9_.-]{1,96}"))
@@ -61,6 +62,7 @@ final case class BrowserConfiguration(
       Option.when(!originsValid)("Exact HTTPS origins are required; insecure mode is loopback only"),
       Option.when(cookieMaxAgeSeconds <= 0 || cookieMaxAgeSeconds > 31536000L)("Invalid browser cookie lifetime"),
       Option.when(maxPendingOperations <= 0)("Pending operation capacity must be positive"),
+      Option.when(capacityWarningPercent <= 0 || capacityWarningPercent >= 100)("Capacity warning percentage must be between 1 and 99"),
       Option.when(!redirectValid)("Logout redirect must be an origin-relative path")
     ).flatten
   }

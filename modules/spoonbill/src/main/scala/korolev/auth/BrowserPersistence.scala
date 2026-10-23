@@ -124,6 +124,24 @@ trait BrowserPersistence[F[_], P] {
   def capabilities: BrowserProviderCapabilities
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
+  /**
+   * Aggregate monitoring only. None means no new sample (unsupported or
+   * deliberately throttled); consumers preserve their previous warning state.
+   * This observation is never an authorization or admission decision.
+   */
+  def capacity(using F: spoonbill.effect.Effect[F]): F[Either[BrowserFailure, Option[BrowserPersistenceUsage]]] =
+    F.pure(Right(None))
+
+  /**
+   * Observe HTTP presentation authority without admitting a new binding or
+   * issuing a view capability. Built-in providers override this to avoid
+   * retaining history for ordinary public/denied HTTP requests. The fallback
+   * preserves the contract of existing third-party providers.
+   */
+  def inspectPrincipal(binding: String, token: Option[String])(using
+    F: spoonbill.effect.Effect[F]
+  ): F[Either[BrowserFailure, Option[P]]] =
+    F.map(capture(binding, token, activate = false))(_.map(_.principal.map(_.value)))
 
   /**
    * Register a server-generated HTTP bootstrap for first attachment on another

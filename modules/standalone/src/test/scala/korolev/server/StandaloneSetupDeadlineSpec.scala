@@ -24,7 +24,8 @@ final class StandaloneSetupDeadlineSpec extends AnyFlatSpec with Matchers {
     val deadline = new SetupDeadline[Future](
       1.hour,
       () => effect.delay { inputs.incrementAndGet(); () },
-      () => effect.delay { sockets.incrementAndGet(); () }
+      () => effect.delay { sockets.incrementAndGet(); () },
+      () => { sockets.incrementAndGet(); () }
     )
     val release: () => Future[Unit] = () => effect.delay { responses.incrementAndGet(); () }
   }
@@ -87,6 +88,25 @@ final class StandaloneSetupDeadlineSpec extends AnyFlatSpec with Matchers {
       probe.deadline.onFinished(() => { detached.incrementAndGet(); () })
       detached.get() shouldBe 1
     } finally Await.result(probe.deadline.transportEnded(), timeout)
+  }
+
+  it should "leave application cleanup to the close notification after a timer expiry" in {
+    val physicallyClosed = Promise[Unit]()
+    val cleanup = new AtomicInteger()
+    val deadline = new SetupDeadline[Future](100.millis,
+      () => effect.delay { cleanup.incrementAndGet(); () },
+      () => Future.unit,
+      () => { physicallyClosed.trySuccess(()); () })
+    try {
+      Await.result(deadline.acquire(() => effect.delay { cleanup.incrementAndGet(); () }), timeout) shouldBe true
+      Await.result(physicallyClosed.future, timeout)
+      cleanup.get() shouldBe 0
+      Await.result(deadline.attach(), timeout) shouldBe false
+      Await.result(deadline.transportEnded(), timeout)
+      cleanup.get() shouldBe 2
+      Await.result(deadline.transportEnded(), timeout)
+      cleanup.get() shouldBe 2
+    } finally Await.result(deadline.transportEnded(), timeout)
   }
 
   private def withPendingSetup(f: (Socket, Promise[WebSocketResponse[Future]], Future[Option[Bytes]]) => Unit): Unit = {

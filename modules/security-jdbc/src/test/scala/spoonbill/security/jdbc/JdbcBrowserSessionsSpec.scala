@@ -373,7 +373,7 @@ class JdbcBrowserSessionsSpec extends AsyncFlatSpec with Matchers {
     db.store.delivery(prepared.completionId, binding) shouldBe Left(JdbcAuthError.NotFound)
   }
 
-  it should "prepare session and completion with three statements and preserve exact idempotency" in {
+  it should "prepare session and completion with five statements including enrollment fencing and preserve exact idempotency" in {
     val db = new Fixture
     val binding = digest()
     val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
@@ -384,18 +384,20 @@ class JdbcBrowserSessionsSpec extends AsyncFlatSpec with Matchers {
       try {
         db.insertHost(connection, prepared)
         val (receipt, measured) = probe.measure(store.prepare(connection, prepared))
-        measured.counts.sqlExecutions shouldBe 3L // slot lock, existing completion, dependent session/completion append
+        // Two enrollment-fence executions (realm advisory lock and managed-scope
+        // lookup), then slot lock, existing completion and dependent append.
+        measured.counts.sqlExecutions shouldBe 5L
         measured.counts.commits shouldBe 0L
         val (repeated, replayed) = probe.measure(store.prepare(connection, prepared))
         repeated shouldBe receipt
-        replayed.counts.sqlExecutions shouldBe 2L
+        replayed.counts.sqlExecutions shouldBe 4L // Same enrollment fence, slot lock and existing completion.
         connection.commit()
       } catch { case error: Throwable => connection.rollback(); throw error }
     }
     db.store.delivery(prepared.completionId, binding).isRight shouldBe true
   }
 
-  it should "prepare new browser records in two statements while retaining caller transaction ownership" in {
+  it should "prepare new browser records in four statements including enrollment fencing while retaining caller transaction ownership" in {
     val db = new Fixture
     val binding = digest()
     val prepared = db.prepared(binding, accepted(db.store.openSlot(binding)))
@@ -407,7 +409,9 @@ class JdbcBrowserSessionsSpec extends AsyncFlatSpec with Matchers {
       try {
         db.insertHost(connection, prepared)
         val (receipt, measured) = probe.measure(store.prepareNew(connection, prepared))
-        measured.counts.sqlExecutions shouldBe 2L
+        // The enrollment advisory lock and marker lookup add two executions to
+        // the slot lock and dependent session/completion append.
+        measured.counts.sqlExecutions shouldBe 4L
         measured.counts.commits shouldBe 0L
         measured.counts.rollbacks shouldBe 0L
         measured.counts.autoCommitChanges shouldBe 0L

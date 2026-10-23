@@ -20,6 +20,8 @@ import java.security.SecureRandom
 import spoonbill.effect.Effect
 
 trait IdGenerator[F[_]] {
+
+  /** Device IDs must contain 1–128 ASCII letters, digits, or `._~-`. */
   def generateDeviceId()(implicit F: Effect[F]): F[DeviceId]
   def generateSessionId()(implicit F: Effect[F]): F[SessionId]
 }

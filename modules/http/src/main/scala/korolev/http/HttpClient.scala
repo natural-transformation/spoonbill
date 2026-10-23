@@ -3,20 +3,23 @@ package spoonbill.http
 import java.net.{InetSocketAddress, URI}
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
-import java.util.concurrent.{Executor, Executors}
+import java.util.concurrent.{Executor, Executors, TimeoutException}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import javax.net.ssl.SSLContext
+import scala.collection.concurrent.TrieMap
+import scala.concurrent.{ExecutionContext, Promise}
+import scala.concurrent.duration._
+import scala.util.Random
+import scala.util.control.NonFatal
 import spoonbill.data.BytesLike
-import spoonbill.effect.{AsyncResourcePool, Decoder, Effect, Reporter, Scheduler, Stream}
+import spoonbill.data.syntax._
+import spoonbill.effect.{AsyncResourcePool, Close, Decoder, Effect, Reporter, Scheduler, Stream}
 import spoonbill.effect.AsyncResourcePool.Borrow
-import spoonbill.effect.io.{DataSocket, RawDataSocket, SecureDataSocket}
+import spoonbill.effect.io.{DataSocket, RawDataSocket, SecureDataSocket, SocketCloseDispatcher}
 import spoonbill.effect.syntax._
 import spoonbill.http.protocol.{Http11, WebSocketProtocol}
 import spoonbill.http.protocol.WebSocketProtocol.Frame
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
-import scala.collection.concurrent.TrieMap
-import scala.concurrent.ExecutionContext
-import scala.concurrent.duration._
-import scala.util.Random
 
 class HttpClient[F[_]: Effect, B: BytesLike] private (
   name: String,
@@ -26,7 +29,13 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   group: AsynchronousChannelGroup,
   bufferSize: Int,
   sslContext: SSLContext,
-  cleanupTicks: Stream[F, Unit]
+  cleanupTicks: Stream[F, Unit],
+  maxWebSocketMessageBytes: Int,
+  maxResponseHeaderBytes: Int,
+  responseHeaderTimeout: FiniteDuration,
+  maxTotalConnections: Int,
+  closeNotificationWorkers: Int,
+  connectionSetupTimeout: FiniteDuration
 )(implicit executor: ExecutionContext, reporter: Reporter) {
   def apply(
     method: Request.Method,
@@ -63,33 +72,113 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     } yield response
 
   private def http(
-    borrow: Borrow[F, DataSocket[F, B]],
+    borrow: Borrow[F, ClientConnection],
     host: String,
-    request: Request[Stream[F, B]]
-  ): F[Response[Stream[F, B]]] =
-    for {
-      requestStream <- http11.renderRequest(request.withHeader(Headers.Host, host))
-      socket         = borrow.value
-      writeBytesFiber <- requestStream.foreach(socket.write).start // Write response asynchronously
-      maybeResponse <- http11.decodeResponse(Decoder(socket.stream)).pull()
-      response <-
-        maybeResponse match {
-          case Some(response) =>
-            val (consumed, consumableBody) = response.body.handleConsumed
-            consumed
-              .after(writeBytesFiber.join())
-              // Give back connection when body was consumed
-              .after(borrow.give())
-              .start
-              .as(response.copy(body = consumableBody))
-          case None =>
-            Effect[F].fail[Response[Stream[F, B]]](
-              new IllegalStateException("Peer has closed connection before sending response.")
-            )
-        }
-    } yield {
-      response
+    request: Request[Stream[F, B]],
+    recycleAfterBody: Boolean = true
+  ): F[Response[Stream[F, B]]] = Effect[F].delayAsync {
+    val connection = borrow.value
+    val writer = Promise[Unit]()
+    val failure = new AtomicReference[Throwable]()
+    val settled = new AtomicBoolean()
+    val retired = new AtomicBoolean()
+    val deadline = new RequestDeadline(responseHeaderTimeout, () => connection.abort())
+    def writerDone: F[Unit] = awaitPromise(writer)
+    // This is invoked only by the reserved close dispatcher. It may await the
+    // failed response itself; publishing that response never waits for cleanup.
+    val cleanup = () => Effect[F].delayAsync(request.body.cancel()).recover { case NonFatal(_) => () } *>
+      writerDone.recover { case NonFatal(_) => () }
+    def discard(): Unit = {
+      connection.abort()
+      if (retired.compareAndSet(false, true)) borrow.discard().runAsyncForget
     }
+    def failed(error: Throwable): Unit = {
+      failure.compareAndSet(null, error)
+      discard()
+    }
+    def guarded(response: Response[Stream[F, B]]): Response[Stream[F, B]] = {
+      if (!recycleAfterBody) response
+      else {
+        var count = 0L
+        val finished = new AtomicBoolean()
+        val closes = response.headers.exists { case (name, value) =>
+          name.equalsIgnoreCase(Headers.Connection) && value.split(',').exists(_.trim.equalsIgnoreCase("close"))
+        }
+        val upgraded = response.status.code == 101
+        val bodyless = Http11.isBodylessResponse(request.method, response.status)
+        val expectedLength = if (upgraded) None else if (bodyless) Some(0L) else response.contentLength
+        val reusable = !closes && !upgraded &&
+          (bodyless || response.contentLength.isDefined || response.header(Headers.TransferEncoding).contains("chunked"))
+        response.copy(body = new Stream[F, B] {
+          def pull(): F[Option[B]] = Effect[F].delayAsync {
+            if (finished.get()) Effect[F].none
+            else Option(failure.get()) match {
+              case Some(error) => Effect[F].fail(error)
+              case None => response.body.pull().flatMap {
+                case value @ Some(bytes) => count += bytes.length; Effect[F].pure(value)
+                case None =>
+                  if (expectedLength.exists(_ != count))
+                    Effect[F].fail(new IllegalStateException("Incomplete HTTP response body"))
+                  else if (!finished.compareAndSet(false, true)) Effect[F].none
+                  else if (!reusable) { discard(); Effect[F].none }
+                  else {
+                    // A final response can finish before its request upload.
+                    // Deliver EOF now, retaining ownership until the writer
+                    // settles. A failed writer retires rather than recycles.
+                    Effect[F].start {
+                      writerDone.flatMap { _ =>
+                        if (connection.finish(cleanup)) borrow.give()
+                        else { discard(); Effect[F].unit }
+                      }.recover { case NonFatal(error) => failed(error) }
+                    }.as(None)
+                  }
+              }
+            }
+          }.recoverF { case NonFatal(error) => failed(error); Effect[F].fail(error) }
+          def cancel(): F[Unit] = Effect[F].delayAsync {
+            if (finished.compareAndSet(false, true)) { discard(); borrow.discard() }
+            else Effect[F].unit
+          }
+        })
+      }
+    }
+    Effect[F].promise[Response[Stream[F, B]]] { callback =>
+      var writerObserved = false
+      var deadlineStarted = false
+      def complete(result: Either[Throwable, Response[Stream[F, B]]]): Unit = {
+        if (settled.compareAndSet(false, true)) {
+          val timely = if (deadlineStarted) deadline.complete() else { deadline.close(); true }
+          val outcome = if (!timely) Left(new TimeoutException("HTTP response header deadline exceeded")) else result
+          outcome match {
+            case Left(error) => failed(error)
+            case Right(_) => ()
+          }
+          callback(outcome)
+        } else result.left.foreach(failed)
+      }
+      try {
+        connection.begin(cleanup)
+        deadline.start()
+        deadlineStarted = true
+        Effect[F].start {
+          http11.renderRequest(request.withHeader(Headers.Host, host)).flatMap(_.foreach(connection.socket.write))
+        }.flatMap(_.join()).runAsync { result =>
+          writer.tryComplete(result.toTry)
+          result.left.foreach(error => complete(Left(error)))
+        }
+        writerObserved = true
+        http11.decodeResponse(Decoder(connection.socket.stream), request.method).pull().runAsync {
+          case Right(Some(response)) => complete(Right(guarded(response)))
+          case Right(None) => complete(Left(new IllegalStateException("Peer has closed connection before sending response.")))
+          case Left(error) => complete(Left(error))
+        }
+      } catch { case NonFatal(error) =>
+        // A synchronous launch failure means the runtime did not take ownership.
+        if (!writerObserved) writer.tryFailure(error)
+        complete(Left(error))
+      }
+    }
+  }
 
   def secureWebSocket(
     address: InetSocketAddress,
@@ -99,7 +188,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     headers: Map[String, String]
   ): F[Response[Stream[F, Frame.Merged[B]]]] =
     for {
-      borrow <- takeRawConnection(address)
+      borrow <- takeSecureConnection(address)
       frames <- webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers)
     } yield frames
 
@@ -142,25 +231,44 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     } yield frames
 
   private def webSocket(
-    borrow: Borrow[F, DataSocket[F, B]],
+    borrow: Borrow[F, ClientConnection],
     host: String,
     path: PathAndQuery,
     outgoingFrames: Stream[F, WebSocketProtocol.Frame[B]],
     cookie: Map[String, String],
     headers: Map[String, String]
-  ): F[Response[Stream[F, WebSocketProtocol.Frame.Merged[B]]]] =
-    for {
+  ): F[Response[Stream[F, WebSocketProtocol.Frame.Merged[B]]]] = {
+    val closed = new AtomicBoolean(false)
+    def close(): F[Unit] = Effect[F].uncancelable {
+      Effect[F].delayAsync {
+        if (!closed.compareAndSet(false, true)) Effect[F].unit
+        else { borrow.value.abort(); borrow.discard() }
+      }
+    }
+    val response = for {
       intention            <- WebSocketProtocol.Intention.random
       encodedOutgoingFrames = outgoingFrames.map(frame => webSocketProtocol.encodeFrame(frame, Some(123)))
       requestRaw            = Request(Request.Method.Get, path, headers.toSeq, None, encodedOutgoingFrames)
       requestWithCookie     = cookie.foldLeft(requestRaw) { case (acc, (k, v)) => acc.withCookie(k, v) }
       requestWithIntention  = webSocketProtocol.addIntention(requestWithCookie, intention)
-      rawResponse          <- http(borrow, host, requestWithIntention)
+      rawResponse          <- http(borrow, host, requestWithIntention, recycleAfterBody = false)
       frameDecoder          = Decoder(rawResponse.body)
       frames                = webSocketProtocol.mergeFrames(webSocketProtocol.decodeFrames(frameDecoder))
     } yield {
-      rawResponse.copy(body = frames)
+      val boundedInput = new Stream[F, Frame.Merged[B]] {
+        def pull(): F[Option[Frame.Merged[B]]] = frames.pull().flatMap {
+          case None => close().start.as(None)
+          case value => Effect[F].pure(value)
+        }.recoverF { case NonFatal(error) =>
+          // A user output finalizer may await this read; settle the read first.
+          close().start *> Effect[F].fail(error)
+        }
+        def cancel(): F[Unit] = close()
+      }
+      rawResponse.copy(body = boundedInput)
     }
+    response.recoverF { case NonFatal(error) => close().start *> Effect[F].fail(error) }
+  }
 
   private def pqFromUri(uri: URI) = {
     val path  = if (uri.getPath == null) "" else uri.getPath
@@ -168,18 +276,78 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     PathAndQuery.fromString(s"$path$query")
   }
 
+  private def awaitPromise[A](promise: Promise[A]): F[A] = Effect[F].promise { callback =>
+    promise.future.onComplete(result => callback(result.toEither))(ExecutionContext.parasitic)
+  }
+
+  /** The slot belongs to the physical connection, including its finalizers. */
+  private class ClientConnection(val raw: RawDataSocket[F, B], val reservation: SocketCloseDispatcher.Reservation) {
+    var socket: DataSocket[F, B] = raw
+    private var closed = false
+    private var active: Option[() => F[Unit]] = None
+    def begin(cleanup: () => F[Unit]): Unit = synchronized {
+      require(!closed && active.isEmpty, "HTTP connection is closed or already in use")
+      active = Some(cleanup)
+    }
+    def finish(cleanup: () => F[Unit]): Boolean = synchronized {
+      if (!closed && active.contains(cleanup)) { active = None; true } else false
+    }
+    def onPhysicalClose(): F[Unit] = Effect[F].delayAsync {
+      val cleanup = synchronized { closed = true; val previous = active; active = None; previous }
+      cleanup.fold(Effect[F].unit)(_.apply())
+    }
+    def abort(): Unit = raw.shutdownFromDeadline()
+  }
+
+  private implicit val connectionClose: Close[F, ClientConnection] = new Close[F, ClientConnection] {
+    def onClose(connection: ClientConnection): F[Unit] =
+      connection.raw.onClose().flatMap(_ => connection.reservation.awaitReleased[F]())
+    def close(connection: ClientConnection): F[Unit] =
+      Effect[F].delay(connection.abort()).flatMap(_ => connection.reservation.awaitReleased[F]())
+  }
+
+  private def connect(address: InetSocketAddress, secure: Boolean): F[ClientConnection] = Effect[F].delayAsync {
+    closeDispatcher.reserve() match {
+      case None => Effect[F].fail(new IllegalStateException("HTTP client connection and cleanup capacity exhausted"))
+      case Some(reservation) =>
+        Effect[F].delay {
+          RawDataSocket.open[F, B](ByteBuffer.allocate(bufferSize), ByteBuffer.allocate(bufferSize), group)
+        }.recoverF { case NonFatal(error) =>
+          reservation.cancel()
+          Effect[F].fail(error)
+        }.flatMap { raw =>
+          if (!raw.admitCloseNotifications(reservation)) {
+            reservation.cancel()
+            raw.shutdown() *> Effect[F].fail(new IllegalStateException("HTTP connection closed during creation"))
+          } else {
+            reservation.connectionFinished()
+            val value = new ClientConnection(raw, reservation)
+            HttpClient.withSetupDeadline(raw, reservation, connectionSetupTimeout) {
+              raw.subscribeCloseEffect(_ => value.onPhysicalClose()) *> raw.connect(address).flatMap { _ =>
+                if (!secure) Effect[F].pure(value)
+                else {
+                  val engine = sslContext.createSSLEngine(address.getHostString, address.getPort)
+                  val parameters = engine.getSSLParameters
+                  parameters.setEndpointIdentificationAlgorithm("HTTPS")
+                  engine.setSSLParameters(parameters)
+                  SecureDataSocket.setupClient(raw, engine, blockingExecutor).map { socket =>
+                    value.socket = socket
+                    value
+                  }
+                }
+              }
+            }
+          }
+        }
+    }
+  }
+
   private def takeRawConnection(address: InetSocketAddress) = {
-    def factory = RawDataSocket.connect(
-      address,
-      readBuffer = ByteBuffer.allocate(bufferSize),
-      writeBuffer = ByteBuffer.allocate(bufferSize),
-      group
-    )
     val pool = rawConnectionsPools.getOrElseUpdate(
       address,
       new AsyncResourcePool(
         s"$name-raw-socket-pool",
-        factory,
+        connect(address, secure = false),
         () => Effect[F].delay(System.nanoTime()),
         maxConnectionsPerAddress,
         maxIdleTime
@@ -189,24 +357,12 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   }
 
   private def takeSecureConnection(address: InetSocketAddress) = {
-    def factory =
-      for {
-        rawSocket <- RawDataSocket.connect(
-                       address,
-                       readBuffer = ByteBuffer.allocate(bufferSize),
-                       writeBuffer = ByteBuffer.allocate(bufferSize),
-                       group
-                     )
-        _       = reporter.debug("%s - Connection established", name)
-        engine  = sslContext.createSSLEngine(address.getHostName, address.getPort)
-        socket <- SecureDataSocket.forClientMode(rawSocket, engine, blockingExecutor)
-        _       = reporter.debug("%s - TLS handshake finished", name)
-      } yield socket
     val pool = secureConnectionsPools.getOrElseUpdate(
-      address,
+      // InetSocketAddress equality collapses names sharing an IP; TLS identity must not.
+      (address.getHostString.toLowerCase(java.util.Locale.ROOT), address),
       new AsyncResourcePool(
         s"$name-tls-socket-pool",
-        factory,
+        connect(address, secure = true),
         () => Effect[F].delay(System.nanoTime()),
         maxConnectionsPerAddress,
         maxIdleTime
@@ -214,6 +370,12 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     )
     pool.borrow()
   }
+
+  private val closeDispatcher       = new SocketCloseDispatcher(maxTotalConnections, closeNotificationWorkers)
+  private val http11                = new Http11[B](maxResponseHeaderBytes = maxResponseHeaderBytes)
+  private val webSocketProtocol     = new WebSocketProtocol[B](maxWebSocketMessageBytes)
+  private val rawConnectionsPools   = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, ClientConnection]]
+  private val secureConnectionsPools = TrieMap.empty[(String, InetSocketAddress), AsyncResourcePool[F, ClientConnection]]
 
   cleanupTicks.foreach { _ =>
     (rawConnectionsPools.values ++ secureConnectionsPools.values).toList
@@ -227,16 +389,56 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
       }
   }.runAsyncForget
 
-  private val http11                 = new Http11[B]()
-  private val webSocketProtocol      = new WebSocketProtocol[B]()
-  private val rawConnectionsPools    = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, RawDataSocket[F, B]]]
-  private val secureConnectionsPools = TrieMap.empty[InetSocketAddress, AsyncResourcePool[F, SecureDataSocket[F, B]]]
 }
 
 object HttpClient {
 
   private lazy val defaultBlockingExecutor = Executors.newCachedThreadPool()
 
+  /** The reserved close worker publishes timeout; the timer only closes transport.
+    * Package visibility permits a deterministic pending-TCP test without relying
+    * on operating-system routing or SYN retry behavior.
+    */
+  private[http] def withSetupDeadline[F[_]: Effect, B: BytesLike, A](
+    raw: RawDataSocket[F, B],
+    reservation: SocketCloseDispatcher.Reservation,
+    timeout: FiniteDuration,
+    clockNanos: () => Long = () => System.nanoTime()
+  )(setup: => F[A]): F[A] = Effect[F].delayAsync {
+    val settled = new AtomicBoolean()
+    val deadline = new RequestDeadline(timeout, () => raw.shutdownFromDeadline(), clockNanos)
+    var detach: () => Unit = () => ()
+    Effect[F].promise[A] { callback =>
+      def complete(result: Either[Throwable, A]): Unit = {
+        if (settled.compareAndSet(false, true)) {
+          val timely = deadline.complete()
+          detach()
+          callback(if (timely) result else Left(new TimeoutException("HTTP connection setup deadline exceeded")))
+        }
+      }
+      try {
+        // Install before TCP starts. A timeout cannot depend on connect or TLS
+        // completing, including a delegated handshake task that never returns.
+        detach = raw.subscribeClose(_ => complete(Left(new java.nio.channels.AsynchronousCloseException)))
+        deadline.start()
+        Effect[F].delayAsync(setup).runAsync(complete)
+      } catch { case NonFatal(error) => complete(Left(error)) }
+    }.recoverF { case NonFatal(error) =>
+      deadline.close()
+      detach()
+      raw.shutdownFromDeadline()
+      reservation.awaitReleased[F]() *> Effect[F].fail(error)
+    }
+  }
+
+  /** Response-header limits apply after a connection is borrowed, excluding
+    * pool wait and connection setup. connectionSetupTimeout is a separate
+    * absolute TCP-connect plus TLS-handshake deadline; DNS resolution and pool
+    * wait are excluded. maxTotalConnections bounds physical connections
+    * across destinations, including those awaiting request-body cleanup; new
+    * connections fail admission when that capacity is exhausted. A response
+    * failure is published without waiting for user cleanup.
+    */
   def create[F[_]: Effect: Scheduler, B: BytesLike](
     name: String = null,
     maxIdleTime: FiniteDuration = 10.seconds,
@@ -245,9 +447,23 @@ object HttpClient {
     blockingExecutor: Executor = null,
     group: AsynchronousChannelGroup = null,
     incomingBufferSize: Int = 8096,
-    sslContext: SSLContext = SSLContext.getDefault
+    sslContext: SSLContext = SSLContext.getDefault,
+    maxWebSocketMessageBytes: Int = 16 * 1024 * 1024,
+    maxResponseHeaderBytes: Int = 16 * 1024,
+    responseHeaderTimeout: FiniteDuration = 30.seconds,
+    maxTotalConnections: Int = 1024,
+    closeNotificationWorkers: Int = 2,
+    connectionSetupTimeout: FiniteDuration = 30.seconds
   )(implicit executor: ExecutionContext, reporter: Reporter): F[HttpClient[F, B]] =
     for {
+      _     <- Effect[F].delay(require(maxWebSocketMessageBytes > 0, "maxWebSocketMessageBytes must be positive"))
+      _ <- Effect[F].delay {
+        require(maxResponseHeaderBytes >= 4, "maxResponseHeaderBytes must include the header delimiter")
+        require(responseHeaderTimeout > Duration.Zero, "responseHeaderTimeout must be positive")
+        require(connectionSetupTimeout > Duration.Zero, "connectionSetupTimeout must be positive")
+        require(maxTotalConnections > 0 && closeNotificationWorkers > 0 && maxConnectionsPerAddress > 0,
+          "HTTP connection and cleanup limits must be positive")
+      }
       ticks <- Scheduler[F].schedule(poolCleanupInterval)
     } yield {
       val safeName = Option(name).getOrElse(s"${Random.alphanumeric.take(5).mkString}-http-client")
@@ -262,7 +478,13 @@ object HttpClient {
         group,
         incomingBufferSize,
         sslContext,
-        ticks
+        ticks,
+        maxWebSocketMessageBytes,
+        maxResponseHeaderBytes,
+        responseHeaderTimeout,
+        maxTotalConnections,
+        closeNotificationWorkers,
+        connectionSetupTimeout
       )
     }
 }

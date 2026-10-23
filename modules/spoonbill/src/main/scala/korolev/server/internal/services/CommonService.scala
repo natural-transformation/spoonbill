@@ -22,7 +22,8 @@ import spoonbill.web.Response
 
 private[spoonbill] final class CommonService[F[_]: Effect] {
 
-  val notFoundResponseF: F[HttpResponse[F]] =
+  // Eager effects must materialize a fresh single-use body for every request.
+  def notFoundResponseF: F[HttpResponse[F]] =
     HttpResponse(Response.Status.NotFound, "Not found", Nil)
 
   def badRequest(message: String): F[HttpResponse[F]] =

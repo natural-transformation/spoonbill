@@ -61,10 +61,12 @@ object InMemoryBrowserPersistence {
  *
  * There is no persistence or clock recovery across restart: a fresh instance
  * has no browser records, rejects old cookies/capabilities, and requires login.
- * Replay/fencing records are retained to explicit limits, never silently
- * evicted. Host state itself is application-owned immutable data; its size is
- * the host's responsibility. No account model or password/factor policy is
- * supplied here.
+ * Expired browser history is reclaimed behind instance-lifetime issuance/fence
+ * floors. Renewable owner leases and a finite browser-session lifetime bound
+ * inactive retention; live authority is never evicted merely for admission.
+ * Host state is application-owned immutable data; its size and durable proof
+ * replay policy remain the host's responsibility. No account model or
+ * password/factor policy is supplied here.
  */
 final class InMemoryBrowserPersistence[F[_], H, P](
   initialHost: H,
@@ -114,7 +116,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     material: Option[BrowserSessionToken],
     deliveries: Int = 0
   )
-  private case class View(binding: Key, owner: Option[UUID], epoch: Long, connectionId: ConnectionId)
+  private case class View(binding: Key, owner: Option[UUID], epoch: Long, connectionId: ConnectionId, touchedAt: Instant)
   private case class State(
     host: H,
     slots: Map[Key, Slot] = Map.empty,
@@ -123,7 +125,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     completions: Map[UUID, Completion] = Map.empty,
     ceremonies: Map[CeremonyId, BrowserCeremonyRecord] = Map.empty,
     views: Map[Qsid, View] = Map.empty,
-    replacements: Map[CeremonyId, Replacement] = Map.empty
+    replacements: Map[CeremonyId, Replacement] = Map.empty,
+    bindingActivity: Map[Key, Instant] = Map.empty
   )
   private final class Refused(val failure: BrowserFailure) extends RuntimeException("Browser operation refused")
   private val monitor           = new Object
@@ -131,6 +134,11 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private var pendingOperations = 0
   private var accepting         = true
   private val issuer            = new BrowserCapabilityScope[P]
+  private val issuancePrefix = BrowserIssuance.newPrefix()
+  private val issuanceKey = BrowserIssuance.newKey()
+  private var issuanceSequence = 0L
+  private var bindingGenerationFloor = 0L
+  private var viewEpochFloor = 1L
   private val inTransaction = new ThreadLocal[Boolean] {
     override def initialValue(): Boolean = false
   }
@@ -147,6 +155,70 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private def digest(value: String): Key              = MessageDigest.getInstance("SHA-256").digest(value.getBytes(UTF_8)).toVector
   private def validCredential(value: String): Boolean = value != null && value.matches("[A-Za-z0-9_-]{43}")
   private def next(value: Long): Long                 = if (value == Long.MaxValue) deny(BrowserFailure.Capacity) else value + 1
+  private def nextIdentifier(): UUID = {
+    if (issuanceSequence >= BrowserIssuance.MaxSequence) deny(BrowserFailure.Capacity)
+    issuanceSequence += 1
+    BrowserIssuance.identifier(issuancePrefix, issuanceSequence)
+  }
+
+  private def elapsed(since: Instant, seconds: Long, time: Instant): Boolean =
+    !time.isBefore(since.plusSeconds(seconds))
+
+  /** Called only while owning monitor, excluding all host transactions. */
+  private def reap(): Unit = {
+    val time = now()
+    val before = state
+    val expiredCurrent = before.slots.iterator.collect {
+      case (key, slot) if slot.replacement.isEmpty && slot.current.exists(id => before.sessions.get(id).exists(s => !time.isBefore(s.expires))) ||
+        slot.replacement.exists(id => before.replacements.get(id).flatMap(_.reservation)
+          .exists(r => !time.isBefore(r.successor.expiresAt))) => key
+    }.toSet
+    // An expired committed replacement never restores its predecessor.
+    val slots = before.slots.map { case (key, slot) =>
+      key -> (if (expiredCurrent(key)) Slot(next(slot.generation), None) else slot)
+    }
+    val sessions = before.sessions.filterNot { case (_, session) =>
+      elapsed(session.expires, limits.retention.historySeconds, time)
+    }
+    val completions = before.completions.collect {
+      case (id, completion) if sessions.contains(completion.sessionId) =>
+        id -> (if (!time.isBefore(completion.expires)) completion.copy(material = None) else completion)
+    }
+    val ceremonies = before.ceremonies.filter { case (_, record) =>
+      !elapsed(record.expiresAt, limits.retention.historySeconds, time) || completions.contains(record.completionId)
+    }
+    val replacements = before.replacements.filter { case (id, _) => ceremonies.contains(id) }
+    val retiredViews = before.views.map { case (id, view) =>
+      val expired = expiredCurrent(view.binding) || elapsed(view.touchedAt, limits.retention.idleViewSeconds, time)
+      id -> (if (view.owner.nonEmpty && expired) view.copy(owner = None) else view)
+    }
+    val removedViews = retiredViews.filter { case (_, view) =>
+      view.owner.isEmpty && elapsed(view.touchedAt, limits.retention.idleViewSeconds, time)
+    }
+    val views = retiredViews -- removedViews.keySet
+    val activity = before.bindingActivity ++ expiredCurrent.iterator.map(_ -> time)
+    val referencedBindings = sessions.valuesIterator.map(_.binding).toSet ++
+      ceremonies.valuesIterator.map(_.bindingKey) ++ views.valuesIterator.map(_.binding)
+    val removedBindings = slots.filter { case (key, slot) =>
+      slot.current.isEmpty && slot.replacement.isEmpty && !referencedBindings(key) &&
+        activity.get(key).exists(elapsed(_, limits.retention.idleBindingSeconds, time))
+    }
+    val nextBindingFloor = removedBindings.valuesIterator.map(slot => next(slot.generation))
+      .foldLeft(bindingGenerationFloor)(math.max)
+    val nextViewFloor = removedViews.valuesIterator.map(view => next(view.epoch)).foldLeft(viewEpochFloor)(math.max)
+    bindingGenerationFloor = nextBindingFloor
+    viewEpochFloor = nextViewFloor
+    save(before.copy(
+      slots = slots -- removedBindings.keySet,
+      sessions = sessions,
+      credentials = before.credentials.filter { case (_, id) => sessions.contains(id) },
+      completions = completions,
+      ceremonies = ceremonies,
+      replacements = replacements,
+      views = views,
+      bindingActivity = activity -- removedBindings.keySet
+    ))
+  }
   private def entry(): Unit = {
     if (inTransaction.get()) throw new OperationProtocolException(OperationError.TransactionRequired)
     if (issuer.isClosed) deny(BrowserFailure.Closed)
@@ -232,7 +304,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     val found = s.views.getOrElse(view.qsid, deny(BrowserFailure.Missing))
     if (
       !found.owner.contains(view.ownerId) || found.epoch != view.epoch ||
-      found.connectionId != view.connectionId || found.binding != digest(view.identity.binding)
+      found.connectionId != view.connectionId || found.binding != digest(view.identity.binding) ||
+      elapsed(found.touchedAt, limits.retention.idleViewSeconds, now())
     ) deny()
     val slot = s.slots.getOrElse(found.binding, deny())
     if (slot.generation != view.identity.generation || slot.current != view.identity.sessionId) deny()
@@ -240,7 +313,16 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private def authorizeView(s: State, view: BrowserView[P]): BrowserIdentity[P] = {
     structuralView(s, view)
     if (s.slots(digest(view.identity.binding)).replacement.nonEmpty) deny()
-    authorizeIdentity(s, view.identity)
+    val authorized = authorizeIdentity(s, view.identity)
+    structuralView(s, view)
+    if (s eq state) {
+      val time = now()
+      save(state.copy(
+        views = state.views.updated(view.qsid, state.views(view.qsid).copy(touchedAt = time)),
+        bindingActivity = state.bindingActivity.updated(digest(authorized.binding), time)
+      ))
+    }
+    authorized
   }
   private def structuralReplacementView(s: State, replacement: Replacement): Unit = {
     val expected  = replacement.view
@@ -249,7 +331,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     if (
       !found.owner.exists(id => ViewOwnerId.fromUuid(id) == expected.fence.ownerId) ||
       !ViewOwnershipEpoch.fromLong(found.epoch).contains(expected.fence.epoch) ||
-      found.connectionId != expected.connectionId || found.binding != authority.bindingKey
+      found.connectionId != expected.connectionId || found.binding != authority.bindingKey ||
+      elapsed(found.touchedAt, limits.retention.idleViewSeconds, now())
     ) deny()
     val slot = s.slots.getOrElse(found.binding, deny())
     if (slot.generation != authority.generation || slot.current != authority.sessionId) deny()
@@ -269,18 +352,28 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   }
   def accepts(receipt: CommittedAuthentication): Boolean = issuer.owns(receipt)
 
+  override def inspectPrincipal(binding: String, token: Option[String])(using
+    Effect[F]
+  ): F[Either[BrowserFailure, Option[P]]] = result {
+    if (!validCredential(binding) || token.exists(value => !validCredential(value))) deny()
+    if (token.isEmpty && !state.slots.contains(digest(binding))) None
+    else identityFor(state, binding, token, pending = true).principal.map(_.value)
+  }
+
   def capture(
     binding: String,
     token: Option[String],
     activate: Boolean
   ): F[Either[BrowserFailure, BrowserIdentity[P]]] = result {
     if (!validCredential(binding) || token.exists(value => !validCredential(value))) deny()
+    reap()
     val key    = digest(binding)
     var staged = state
     if (!staged.slots.contains(key)) {
       if (token.nonEmpty) deny()
       if (staged.slots.size >= limits.retainedBindings) deny(BrowserFailure.Capacity)
-      staged = staged.copy(slots = staged.slots.updated(key, Slot(0L, None)))
+      if (staged.slots.valuesIterator.count(_.current.isEmpty) >= limits.anonymousBindings) deny(BrowserFailure.Capacity)
+      staged = staged.copy(slots = staged.slots.updated(key, Slot(bindingGenerationFloor, None)))
     }
     if (activate) token.foreach { raw =>
       val session = staged.credentials.get(digest(raw)).flatMap(staged.sessions.get).getOrElse(deny())
@@ -324,7 +417,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       }
     }
     val captured = identityFor(staged, binding, token, pending = !activate)
-    save(staged)
+    save(staged.copy(bindingActivity = staged.bindingActivity.updated(key, now())))
     captured
   }
 
@@ -334,6 +427,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     connectionId: ConnectionId,
     existingOnly: Boolean
   ): F[Either[BrowserFailure, BrowserView[P]]] = result {
+    reap()
     val authorized = authorizeIdentity(state, value)
     if (qsid.deviceId.isEmpty || qsid.sessionId.isEmpty || BrowserView.key(qsid).length > 192) deny()
     val binding  = digest(authorized.binding)
@@ -347,9 +441,10 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     )
       deny(BrowserFailure.Capacity)
     if (state.views.valuesIterator.exists(v => v.owner.nonEmpty && v.connectionId == connectionId)) deny()
-    val epoch = previous.fold(1L)(row => next(row.epoch))
+    val epoch = previous.fold(viewEpochFloor)(row => next(row.epoch))
     val owner = newId()
-    save(state.copy(views = state.views.updated(qsid, View(binding, Some(owner), epoch, connectionId))))
+    save(state.copy(views = state.views.updated(qsid, View(binding, Some(owner), epoch, connectionId, now())),
+      bindingActivity = state.bindingActivity.updated(binding, now())))
     issuer.view(authorized, qsid, connectionId, owner, epoch)
   }
   def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]] = result {
@@ -360,11 +455,12 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       if (inTransaction.get()) throw new OperationProtocolException(OperationError.TransactionRequired)
       if (issuer.owns(view)) state.views.get(view.qsid).foreach { row =>
         if (row.owner.contains(view.ownerId) && row.epoch == view.epoch)
-          save(state.copy(views = state.views.updated(view.qsid, row.copy(owner = None))))
+          save(state.copy(views = state.views.updated(view.qsid, row.copy(owner = None, touchedAt = now()))))
       }
     }
   }
   def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = result {
+    reap()
     val authorized = authorizeView(state, view)
     if (purpose.isEmpty || purpose.length > 96) deny()
     val binding = digest(authorized.binding)
@@ -373,8 +469,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       state.ceremonies.valuesIterator.count(_.bindingKey == binding) >= limits.ceremoniesPerBinding
     )
       deny(BrowserFailure.Capacity)
-    val id         = CeremonyId(newId())
-    val completion = newId()
+    val id         = CeremonyId(nextIdentifier())
+    val completion = nextIdentifier()
     if (state.ceremonies.contains(id) || state.ceremonies.valuesIterator.exists(_.completionId == completion)) deny()
     val record = BrowserCeremonyRecord(
       id,
@@ -432,7 +528,11 @@ final class InMemoryBrowserPersistence[F[_], H, P](
           try {
             val prepared = prepareHost(tx)
             ceremony(state, value)
-            val credential = digest(prepared.credential.value)
+            if (prepared.expiresAt.isAfter(now().plusSeconds(limits.retention.maxSessionSeconds))) deny(BrowserFailure.Expired)
+            val suppliedCredential = digest(prepared.credential.value)
+            if (state.sessions.valuesIterator.exists(_.credential == suppliedCredential)) deny()
+            val browserCredential = BrowserIssuance.credential(issuanceKey, prepared.credential, scope, admitted.bindingKey, admitted.completionId)
+            val credential = digest(browserCredential.value)
             if (
               state.sessions.contains(prepared.sessionId) || state.sessions.valuesIterator
                 .exists(_.credential == credential) ||
@@ -473,7 +573,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
                     session.id,
                     prepared.completionId,
                     if (prepared.expiresAt.isBefore(expires)) prepared.expiresAt else expires,
-                    Some(prepared.credential)
+                    Some(browserCredential)
                   )
                 ),
                 ceremonies = staged.ceremonies.updated(value.id, committed)
@@ -503,6 +603,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
 
   def beginReplacement(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserReplacementCeremony]] =
     result {
+      reap()
       val authorized = authorizeView(state, view)
       if (authorized.host.isEmpty || authorized.sessionId.isEmpty || purpose.isEmpty || purpose.length > 96) deny()
       val binding = digest(authorized.binding)
@@ -511,8 +612,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
         state.ceremonies.valuesIterator.count(_.bindingKey == binding) >= limits.ceremoniesPerBinding
       )
         deny(BrowserFailure.Capacity)
-      val id         = CeremonyId(newId())
-      val completion = newId()
+      val id         = CeremonyId(nextIdentifier())
+      val completion = nextIdentifier()
       if (state.ceremonies.contains(id) || state.ceremonies.valuesIterator.exists(_.completionId == completion)) deny()
       val record = BrowserCeremonyRecord(
         id,
@@ -596,7 +697,11 @@ final class InMemoryBrowserPersistence[F[_], H, P](
           inTransaction.set(true)
           try {
             val prepared   = prepareHost(tx)
-            val credential = digest(prepared.credential.value)
+            if (prepared.expiresAt.isAfter(now().plusSeconds(limits.retention.maxSessionSeconds))) deny(BrowserFailure.Expired)
+            val suppliedCredential = digest(prepared.credential.value)
+            if (state.sessions.valuesIterator.exists(_.credential == suppliedCredential)) deny()
+            val browserCredential = BrowserIssuance.credential(issuanceKey, prepared.credential, scope, admitted.bindingKey, admitted.completionId)
+            val credential = digest(browserCredential.value)
             if (
               state.sessions.contains(prepared.sessionId) || state.sessions.valuesIterator
                 .exists(_.credential == credential) ||
@@ -633,7 +738,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
                 credentials = (staged.credentials - row.predecessor.credentialHash).updated(credential, session.id),
                 completions = staged.completions.updated(
                   admitted.completionId,
-                  Completion(session.id, prepared.completionId, deadline, Some(prepared.credential))
+                  Completion(session.id, prepared.completionId, deadline, Some(browserCredential))
                 ),
                 ceremonies = staged.ceremonies.updated(value.id, reservation.attempt.ceremony),
                 replacements = staged.replacements.updated(value.id, row.copy(reservation = Some(reservation)))
@@ -958,6 +1063,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     monitor.synchronized {
       if (inTransaction.get()) throw new OperationProtocolException(OperationError.TransactionRequired)
       if (!issuer.isClosed) {
+        reap()
         val time = now()
         save(
           state.copy(
@@ -971,6 +1077,31 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     }
   }
   def inspectHost: F[Either[BrowserFailure, H]] = result(state.host)
+  override def capacity(using Effect[F]): F[Either[BrowserFailure, Option[BrowserPersistenceUsage]]] =
+    F.map(usage())(_.map(Some(_)))
+
+  /**
+   * Aggregate observation under the same owner as admission; never grants
+   * authority.
+   */
+  def usage(): F[Either[BrowserFailure, BrowserPersistenceUsage]] = result {
+    val active = state.views.valuesIterator.filter(_.owner.nonEmpty).toVector
+    BrowserPersistenceUsage(
+      state.slots.size.toLong,
+      state.views.size.toLong,
+      active.size.toLong,
+      state.ceremonies.size.toLong,
+      state.completions.valuesIterator.count(_.material.nonEmpty).toLong,
+      active.groupMapReduce(_.binding)(_ => 1L)(_ + _).valuesIterator.maxOption.getOrElse(0L),
+      state.ceremonies.valuesIterator.toVector
+        .groupMapReduce(_.bindingKey)(_ => 1L)(_ + _)
+        .valuesIterator
+        .maxOption
+        .getOrElse(0L),
+      limits,
+      state.slots.valuesIterator.count(_.current.isEmpty).toLong
+    )
+  }
   def resources: F[Resources] = F.delay {
     monitor.synchronized {
       currentState.fold(Resources(0, 0, 0, 0, 0, 0)) { s =>
@@ -993,6 +1124,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     }
     monitor.synchronized {
       issuer.close()
+      java.util.Arrays.fill(issuanceKey, 0.toByte)
       currentState = None
     }
   }

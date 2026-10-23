@@ -17,7 +17,6 @@
 package spoonbill.web
 
 import java.net.{URLDecoder, URLEncoder}
-import java.nio.charset.StandardCharsets
 
 /**
  * @param body
@@ -33,17 +32,21 @@ final case class Request[Body](
 ) extends Request.Head {
 
   private lazy val parsedCookie = {
-    def d(s: String) = URLDecoder.decode(s.trim, "UTF-8")
     if (renderedCookie == null || renderedCookie.isEmpty) Map.empty[String, String]
-    else
-      renderedCookie
+    else {
+      val pairs = renderedCookie
         .split(';')
-        .map(_.split('='))
-        .collect {
-          case Array(k, v) => (d(k), d(v))
-          case Array(k)    => (d(k), "")
+        .iterator
+        .flatMap { pair =>
+          val parts = pair.split("=", 2)
+          Request.decodeCookiePart(parts(0)).map { name =>
+            name -> Request.decodeCookiePart(if (parts.length == 2) parts(1) else "")
+          }
         }
-        .toMap
+        .toVector
+      // Ambiguous names never select an authority based on transport ordering.
+      pairs.groupMap(_._1)(_._2).collect { case (name, Vector(Some(value))) => name -> value }
+    }
   }
 
   def param(name: String): Option[String] =
@@ -63,11 +66,10 @@ final case class Request[Body](
   def withCookie(name: String, value: String): Request[Body] = {
     val ek = URLEncoder.encode(name, "UTF-8")
     val ev = URLEncoder.encode(value, "UTF-8")
-    if (renderedCookie == null || renderedCookie.isEmpty) {
-      copy(renderedCookie = s"$ek=$ev")
-    } else {
-      copy(renderedCookie = s"${renderedCookie};$ek=$ev")
+    val retained = Option(renderedCookie).toSeq.flatMap(_.split(';')).filterNot { pair =>
+      Request.decodeCookiePart(pair.takeWhile(_ != '=')).contains(name)
     }
+    copy(renderedCookie = (retained :+ s"$ek=$ev").mkString(";"))
   }
 
   def withHeader(key: String, value: String): Request[Body] =
@@ -81,6 +83,10 @@ final case class Request[Body](
 }
 
 object Request {
+
+  private def decodeCookiePart(value: String): Option[String] =
+    try Some(URLDecoder.decode(value.trim, "UTF-8"))
+    catch { case _: IllegalArgumentException => None }
 
   /** Route a fresh request using presentation context without retaining an old
     * request's cookies or headers. Path/query values never establish authority.

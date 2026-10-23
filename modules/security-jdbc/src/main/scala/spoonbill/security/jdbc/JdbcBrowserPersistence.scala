@@ -78,6 +78,7 @@ final class JdbcBrowserPersistence[F[_], P](
       ownership = ownership
     )
   private val issuer = new BrowserCapabilityScope[P]
+  private val retention = new JdbcBrowserRetention(realm, namespace, limits.retention, vault, () => now(), clockSource.getOrElse(source))
   private val runner = existingRunner.getOrElse(new JdbcTransactionExecutor[F](source, blockingContext))
   private val durableClock = new JdbcBrowserClock(
     clockSource.getOrElse(source),
@@ -94,6 +95,8 @@ final class JdbcBrowserPersistence[F[_], P](
   private val maintaining      = new AtomicBoolean()
   private case class OwnedView(binding: Digest256, owner: UUID, epoch: Long)
   private var ownedViews = Map.empty[(String, UUID), OwnedView]
+  private val ownedViewLimit = limits.retainedViews.toLong + limits.pendingJobs.toLong
+  private[jdbc] def ownedViewCount: Int = lifecycle.synchronized(ownedViews.size)
   private val closing    = new AtomicBoolean()
   private val closed     = Promise[Unit]()
 
@@ -174,12 +177,24 @@ final class JdbcBrowserPersistence[F[_], P](
     runner.transact { connection =>
       if (!evaluated.compareAndSet(false, true)) reject(OperationError.PermitUsed)
       if (connection.getAutoCommit) reject(OperationError.TransactionRequired)
-      try { realmLock(connection); body(connection) }
+      try { realmLock(connection); retention.enable(connection); body(connection) }
       catch { case error: JdbcAuthException => reject(browserError(error.error)) }
     }
   }
   private def run[A](body: Connection => A): F[Either[BrowserFailure, A]] =
     F.map(owned()(transaction(body)))(_.left.map(failure))
+
+  /** Retry only pure admission after a separately settled pressure cleanup. */
+  private def admission[A](body: Connection => A): F[Either[BrowserFailure, A]] =
+    F.flatMap(run(body)) {
+      case Left(BrowserFailure.Capacity) =>
+        F.flatMap(run(connection => reap(connection, pressure = true))) {
+          case Right(true) => run(body)
+          case Right(false) => F.pure(Left(BrowserFailure.Capacity))
+          case Left(error) => F.pure(Left(error))
+        }
+      case result => F.pure(result)
+    }
 
   private val authorization = new HostSessionAuthorization[HostPrincipal[P]] {
     def authorize(connection: Connection, sessionId: UUID, time: Instant): Option[HostPrincipal[P]] =
@@ -210,12 +225,65 @@ final class JdbcBrowserPersistence[F[_], P](
   }
   private val browser =
     new JdbcBrowserSessions(source, realm, namespace, () => now(), hooks, limits.activeViewsPerBinding)
+  browser.useManagedLifecycle()
 
   /** Explicit deployment migration; never run implicitly from a request. */
   def initialize(connection: Connection): Unit = {
     durableClock.initialize(connection)
     browser.initialize(connection)
     schema.foreach(text => Using.resource(connection.createStatement())(_.executeUpdate(text)))
+    retention.initialize(connection)
+  }
+
+  /** Check committed loss before this transaction stages any ownership changes. */
+  private def reconcileOwnedViews(connection: Connection): Unit = {
+    // A peer can expire or retire ownership while this process remains alive.
+    // Do not let its local cleanup bookkeeping become a new retained-history cap.
+    val candidates = lifecycle.synchronized(ownedViews.toVector)
+    if (candidates.nonEmpty) {
+      // One bounded query, not a round trip for every active connection.
+      val owners = connection.createArrayOf("uuid", candidates.map(_._1._2).distinct.map(_.asInstanceOf[AnyRef]).toArray)
+      val current = try sql(connection,
+        "SELECT view_id,owner_id,epoch FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace=? AND owner_id=ANY(?)") { query =>
+        scope(query); query.setArray(3, owners)
+        Using.resource(query.executeQuery()) { rows =>
+          val result = Set.newBuilder[(String, UUID, Long)]
+          while (rows.next()) result += ((rows.getString(1), rows.getObject(2, classOf[UUID]), rows.getLong(3)))
+          result.result()
+        }
+      } finally owners.free()
+      lifecycle.synchronized {
+        candidates.foreach { case (id @ (viewId, owner), value) =>
+          if (!current((viewId, owner, value.epoch)) && ownedViews.get(id).contains(value)) ownedViews -= id
+        }
+      }
+    }
+  }
+
+  private def reap(connection: Connection, pressure: Boolean = false): Boolean = {
+    val time = now()
+    if (!retention.reserveSweep(time, pressure)) return false
+    retention.reap(connection, time)
+    true
+  }
+
+  private def touchBinding(connection: Connection, binding: String): Unit = sql(connection,
+    "UPDATE spoonbill_browser_slot SET last_seen=? WHERE realm=? AND cookie_namespace=? AND binding_hash=?") { query =>
+    query.setTimestamp(1, Timestamp.from(now())); query.setString(2, realm); query.setString(3, namespace)
+    query.setBytes(4, digest(binding).bytes); query.executeUpdate(); ()
+  }
+
+  private def issueCredential(connection: Connection, prepared: HostSessionPrepared, record: BrowserCeremonyRecord): BrowserSessionToken = {
+    // Never accept an already exposed browser cookie as a new host secret.
+    val exposed = sql(connection,
+      "SELECT 1 FROM spoonbill_browser_session WHERE realm=? AND cookie_namespace=? AND token_hash=?") { query =>
+      scope(query); query.setBytes(3, digest(prepared.credential.value).bytes)
+      Using.resource(query.executeQuery())(_.next())
+    }
+    if (exposed) reject()
+    val key = retention.credentialKey(connection)
+    try BrowserIssuance.credential(key, prepared.credential, scope, record.bindingKey, record.completionId)
+    finally java.util.Arrays.fill(key, 0.toByte)
   }
 
   private def count(connection: Connection, table: String, column: String = "namespace"): Long =
@@ -263,15 +331,45 @@ final class JdbcBrowserPersistence[F[_], P](
       Some(JdbcViewFence(BrowserView.key(view.qsid), view.ownerId, view.epoch))
     )
     if (!captured.sameAuthority(fresh)) reject()
+    renewOwnerLease(connection, BrowserView.key(view.qsid), view.ownerId, view.epoch)
+    touchBinding(connection, captured.binding)
     fresh
+  }
+
+  private def renewOwnerLease(connection: Connection, view: String, owner: UUID, epoch: Long): Unit = {
+    val time = now()
+    val renewed = sql(connection,
+      """UPDATE spoonbill_browser_view SET last_seen=? WHERE realm=? AND cookie_namespace=?
+      AND view_id=? AND owner_id=? AND epoch=? AND last_seen>?""") { query =>
+      query.setTimestamp(1, Timestamp.from(time)); query.setString(2, realm); query.setString(3, namespace)
+      query.setString(4, view); query.setObject(5, owner); query.setLong(6, epoch)
+      query.setTimestamp(7, Timestamp.from(time.minusSeconds(limits.retention.idleViewSeconds)))
+      query.executeUpdate()
+    }
+    if (renewed != 1) reject(OperationError.Expired)
+  }
+
+  override def inspectPrincipal(binding: String, token: Option[String])(using
+    Effect[F]
+  ): F[Either[BrowserFailure, Option[P]]] = run { connection =>
+    if (!validSecret(binding) || token.exists(value => !validSecret(value))) reject()
+    val exists = sql(
+      connection,
+      "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace=? AND binding_hash=?"
+    ) { query =>
+      scope(query); query.setBytes(3, digest(binding).bytes); Using.resource(query.executeQuery())(_.next())
+    }
+    if (token.isEmpty && !exists) None
+    else captureIn(connection, binding, token, activate = false).principal.map(_.value)
   }
 
   def capture(
     binding: String,
     token: Option[String],
     activate: Boolean
-  ): F[Either[BrowserFailure, BrowserIdentity[P]]] = run { connection =>
+  ): F[Either[BrowserFailure, BrowserIdentity[P]]] = admission { connection =>
     if (!validSecret(binding) || token.exists(value => !validSecret(value))) reject()
+    reap(connection)
     if (token.isEmpty) {
       val exists = sql(
         connection,
@@ -282,15 +380,23 @@ final class JdbcBrowserPersistence[F[_], P](
       if (!exists) {
         if (count(connection, "spoonbill_browser_slot", "cookie_namespace") >= limits.retainedBindings)
           reject(OperationError.CapacityExceeded)
+        val anonymous = sql(connection,
+          "SELECT count(*) FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace=? AND current_session_id IS NULL") { query =>
+          scope(query); Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+        }
+        if (anonymous >= limits.anonymousBindings) reject(OperationError.CapacityExceeded)
         sql(
           connection,
-          "INSERT INTO spoonbill_browser_slot(realm,cookie_namespace,binding_hash,generation) VALUES (?,?,?,0)"
+          "INSERT INTO spoonbill_browser_slot(realm,cookie_namespace,binding_hash,generation,last_seen) VALUES (?,?,?,?,?)"
         ) { query =>
-          scope(query); query.setBytes(3, digest(binding).bytes); query.executeUpdate()
+          scope(query); query.setBytes(3, digest(binding).bytes); query.setLong(4, retention.bindingFloor(connection))
+          query.setTimestamp(5, Timestamp.from(now())); query.executeUpdate()
         }
       }
     }
-    captureIn(connection, binding, token, activate)
+    val captured = captureIn(connection, binding, token, activate)
+    touchBinding(connection, binding)
+    captured
   }
 
   private case class ClaimState(
@@ -306,6 +412,11 @@ final class JdbcBrowserPersistence[F[_], P](
     existingOnly: Boolean
   ): ClaimState = {
     if (!issuer.owns(identity)) reject(OperationError.ForeignPermit)
+    // Peers cannot reconcile this process's uncertain claim tuples. Recover
+    // local capacity independently of their shared sweep reservation, and
+    // before reap can stage an expiry that might subsequently roll back.
+    if (lifecycle.synchronized(ownedViews.size.toLong >= ownedViewLimit)) reconcileOwnedViews(connection)
+    reap(connection)
     val fresh = captureIn(connection, identity.binding, identity.token, false, Some(identity.generation))
     if (!identity.sameAuthority(fresh)) reject()
     val id = BrowserView.key(qsid)
@@ -331,17 +442,18 @@ final class JdbcBrowserPersistence[F[_], P](
   override def registerView(identity: BrowserIdentity[P], qsid: Qsid)(using
     Effect[F]
   ): F[Either[BrowserFailure, Unit]] =
-    run { connection =>
+    admission { connection =>
       val state = claimState(connection, identity, qsid, existingOnly = false)
       if (state.previous.isEmpty) {
         if (count(connection, "spoonbill_browser_view", "cookie_namespace") >= limits.retainedViews)
           reject(OperationError.CapacityExceeded)
         sql(
           connection,
-          """INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch)
-          VALUES (?,?,?,?,NULL,1)"""
+          """INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch,last_seen)
+          VALUES (?,?,?,?,NULL,?,?)"""
         ) { query =>
           scope(query); query.setString(3, state.id); query.setBytes(4, digest(identity.binding).bytes)
+          query.setLong(5, retention.viewFloor(connection)); query.setTimestamp(6, Timestamp.from(now()))
           query.executeUpdate(); ()
         }
       }
@@ -353,7 +465,7 @@ final class JdbcBrowserPersistence[F[_], P](
     connectionId: ConnectionId,
     existingOnly: Boolean
   ): F[Either[BrowserFailure, BrowserView[P]]] = {
-    def acquire(admitted: Option[Option[Long]]): F[Either[BrowserFailure, BrowserView[P]]] = run { connection =>
+    def acquire(admitted: Option[Option[Long]]): F[Either[BrowserFailure, BrowserView[P]]] = admission { connection =>
       val state = claimState(connection, identity, qsid, existingOnly)
       if (admitted.exists(_ != state.previous.map(_._2))) reject()
       claimIn(connection, state, connectionId, qsid)
@@ -390,21 +502,24 @@ final class JdbcBrowserPersistence[F[_], P](
       }
       if (active >= limits.activeViewsPerBinding) reject(OperationError.CapacityExceeded)
     }
-    val epoch = previous.fold(1L)(_._2 + 1)
+    val epoch = previous.fold(retention.viewFloor(connection))(_._2 + 1)
     val owner = newId()
     lifecycle.synchronized {
-      if (ownedViews.size >= limits.retainedViews) reject(OperationError.CapacityExceeded)
+      // Keep the predecessor until settlement is known: a same-view takeover
+      // needs one pending tuple without consuming another durable view slot.
+      if (ownedViews.size.toLong >= ownedViewLimit)
+        reject(OperationError.CapacityExceeded)
       // Register before dispatch so unknown commit can still be conditionally
       // released. Failed claims are harmless candidates for final cleanup.
       ownedViews += (id -> owner) -> OwnedView(digest(identity.binding), owner, epoch)
     }
     sql(
       connection,
-      """INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch)
-      VALUES (?,?,?,?,?,?) ON CONFLICT(realm,cookie_namespace,view_id) DO UPDATE SET owner_id=EXCLUDED.owner_id,epoch=EXCLUDED.epoch"""
+      """INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch,last_seen)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(realm,cookie_namespace,view_id) DO UPDATE SET owner_id=EXCLUDED.owner_id,epoch=EXCLUDED.epoch,last_seen=EXCLUDED.last_seen"""
     ) { query =>
       scope(query); query.setString(3, id); query.setBytes(4, digest(identity.binding).bytes);
-      query.setObject(5, owner); query.setLong(6, epoch); query.executeUpdate()
+      query.setObject(5, owner); query.setLong(6, epoch); query.setTimestamp(7, Timestamp.from(now())); query.executeUpdate()
     }
     issuer.view(identity, qsid, connectionId, owner, epoch)
   }
@@ -460,8 +575,21 @@ final class JdbcBrowserPersistence[F[_], P](
    * Counts share one authoritative transaction; applications control who may
    * see them. Local in-flight resources are bounded separately by pendingJobs.
    */
+  override def capacity(using Effect[F]): F[Either[BrowserFailure, Option[BrowserPersistenceUsage]]] =
+    F.map(owned() {
+      // Do not acquire the realm lock for an unsampled observation. The
+      // independently committed reservation also survives a failed sample.
+      F.flatMap(F.blocking(retention.reserveCapacity(now()))(blockingContext)) {
+        case true => transaction[Option[BrowserPersistenceUsage]](connection => Some(usageIn(connection)))
+        case false => F.pure[Either[TransactionFailure, Option[BrowserPersistenceUsage]]](Right(None))
+      }
+    })(_.left.map(failure))
+
   def usage(): F[Either[TransactionFailure, BrowserPersistenceUsage]] = owned() {
-    transaction { connection =>
+    transaction(usageIn)
+  }
+
+  private def usageIn(connection: Connection): BrowserPersistenceUsage = {
       def views(active: Boolean): Long = sql(
         connection,
         "SELECT count(*) FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace=?" +
@@ -490,9 +618,11 @@ final class JdbcBrowserPersistence[F[_], P](
         count(connection, "spoonbill_auth_material"),
         maximum("spoonbill_browser_view", "cookie_namespace", "AND owner_id IS NOT NULL"),
         maximum("spoonbill_auth_ceremony", "namespace", ""),
-        limits
+        limits,
+        sql(connection, "SELECT count(*) FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace=? AND current_session_id IS NULL") { query =>
+          scope(query); Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+        }
       )
-    }
   }
 
   /**
@@ -567,11 +697,12 @@ final class JdbcBrowserPersistence[F[_], P](
           case Some(currentEpoch) =>
             sql(
               connection,
-              """UPDATE spoonbill_browser_view SET owner_id=NULL,epoch=? WHERE realm=? AND cookie_namespace=?
+              """UPDATE spoonbill_browser_view SET owner_id=NULL,epoch=?,last_seen=? WHERE realm=? AND cookie_namespace=?
               AND view_id=? AND owner_id=? AND epoch=?"""
             ) { query =>
-              query.setLong(1, currentEpoch + 1); query.setString(2, realm); query.setString(3, namespace)
-              query.setString(4, target.viewId); query.setObject(5, target.ownerId); query.setLong(6, currentEpoch)
+              query.setLong(1, currentEpoch + 1); query.setTimestamp(2, Timestamp.from(now()))
+              query.setString(3, realm); query.setString(4, namespace)
+              query.setString(5, target.viewId); query.setObject(6, target.ownerId); query.setLong(7, currentEpoch)
               if (query.executeUpdate() != 1) reject(OperationError.StorageFailure)
               true
             }
@@ -591,12 +722,12 @@ final class JdbcBrowserPersistence[F[_], P](
         sql(
           connection,
           """UPDATE spoonbill_browser_view SET owner_id=NULL,
-        epoch=CASE WHEN epoch<9223372036854775807 THEN epoch+1 ELSE epoch END
+        epoch=CASE WHEN epoch<9223372036854775807 THEN epoch+1 ELSE epoch END,last_seen=?
         WHERE realm=? AND cookie_namespace=? AND view_id=? AND binding_hash=? AND owner_id=? AND epoch=?"""
         ) { query =>
-          scope(query); query.setString(3, BrowserView.key(view.qsid));
-          query.setBytes(4, digest(view.identity.binding).bytes)
-          query.setObject(5, view.ownerId); query.setLong(6, view.epoch); query.executeUpdate()
+          query.setTimestamp(1, Timestamp.from(now())); query.setString(2, realm); query.setString(3, namespace)
+          query.setString(4, BrowserView.key(view.qsid)); query.setBytes(5, digest(view.identity.binding).bytes)
+          query.setObject(6, view.ownerId); query.setLong(7, view.epoch); query.executeUpdate()
         }
       ()
     }
@@ -657,12 +788,13 @@ final class JdbcBrowserPersistence[F[_], P](
     value.view.asInstanceOf[BrowserView[P]]
   }
 
-  def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = run(
+  def begin(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserCeremony]] = admission(
     beginIn(_, view, purpose)
   )
 
   private def beginIn(connection: Connection, view: BrowserView[P], purpose: String): BrowserCeremony = {
     if (purpose.isEmpty || purpose.length > 96) reject()
+    reap(connection)
     current(connection, view)
     if (count(connection, "spoonbill_auth_ceremony") >= limits.retainedCeremonies)
       reject(OperationError.CapacityExceeded)
@@ -676,8 +808,8 @@ final class JdbcBrowserPersistence[F[_], P](
       }
     if (perBinding >= limits.ceremoniesPerBinding) reject(OperationError.CapacityExceeded)
     val record = BrowserCeremonyRecord(
-      CeremonyId(newId()),
-      newId(),
+      CeremonyId(retention.identifier(connection)),
+      retention.identifier(connection),
       key(view.identity.binding),
       view.identity.generation,
       purpose,
@@ -763,7 +895,7 @@ final class JdbcBrowserPersistence[F[_], P](
         val record = readCeremony(connection, ceremony.id)
         requireOrdinary(connection, record.id)
         current(connection, view); validate(record, view, ceremony.purpose)
-        if (record.challenge != ceremony.challenge) reject()
+        if (record.challenge != ceremony.challenge || record.expiresAt != ceremony.expiresAt) reject()
         save(connection, pureRequired(record.admit))
       }
   )
@@ -865,7 +997,7 @@ final class JdbcBrowserPersistence[F[_], P](
         ) reject()
       }
     }
-    if (checkOwner)
+    if (checkOwner) {
       sql(
         connection,
         """SELECT binding_hash,owner_id,epoch FROM spoonbill_browser_view
@@ -881,10 +1013,26 @@ final class JdbcBrowserPersistence[F[_], P](
           ) reject()
         }
       }
+      // Same authoritative renewal as ordinary output, sampled after row locks.
+      renewOwnerLease(connection, value.view, value.owner, value.epoch)
+    }
+  }
+
+  /** Before host work, inspect the lease without reversing host -> slot -> view lock order. */
+  private def requireReplacementOwnerLease(connection: Connection, value: Replacement): Unit = sql(connection,
+    """SELECT binding_hash,owner_id,epoch,last_seen FROM spoonbill_browser_view
+    WHERE realm=? AND cookie_namespace=? AND view_id=?""") { query =>
+    scope(query); query.setString(3, value.view)
+    Using.resource(query.executeQuery()) { rows =>
+      if (!rows.next() || rows.getBytes(1).toVector != value.binding ||
+        rows.getObject(2, classOf[UUID]) != value.owner || rows.getLong(3) != value.epoch) reject()
+      if (!now().isBefore(rows.getTimestamp(4).toInstant.plusSeconds(limits.retention.idleViewSeconds)))
+        reject(OperationError.Expired)
+    }
   }
 
   def beginReplacement(view: BrowserView[P], purpose: String): F[Either[BrowserFailure, BrowserReplacementCeremony]] =
-    run { connection =>
+    admission { connection =>
       if (view.identity.host.isEmpty || view.identity.sessionId.isEmpty || view.identity.token.isEmpty) reject()
       val ceremony  = beginIn(connection, view, purpose)
       val principal = view.identity.host.get.stamp
@@ -960,7 +1108,7 @@ final class JdbcBrowserPersistence[F[_], P](
         val record = readCeremony(connection, ceremony.id)
         matchReplacement(requiredReplacement(connection, record.id), view)
         current(connection, view); validate(record, view, ceremony.purpose)
-        if (record.challenge != ceremony.challenge) reject()
+        if (record.challenge != ceremony.challenge || record.expiresAt != ceremony.expiresAt) reject()
         save(connection, pureRequired(record.admit))
       }
   )
@@ -974,7 +1122,8 @@ final class JdbcBrowserPersistence[F[_], P](
       val captured = requiredReplacement(connection, record.id)
       matchReplacement(captured, view); validate(record, view, ceremony.purpose)
       if (
-        record.phase != BrowserCeremonyPhase.Admitted || record.challenge != ceremony.challenge || captured.successor.nonEmpty
+        record.phase != BrowserCeremonyPhase.Admitted || record.challenge != ceremony.challenge ||
+        record.expiresAt != ceremony.expiresAt || captured.successor.nonEmpty
       )
         reject(OperationError.PermitUsed)
       if (record.generation == Long.MaxValue) reject(OperationError.CapacityExceeded)
@@ -991,18 +1140,21 @@ final class JdbcBrowserPersistence[F[_], P](
           if (!rows.next() || rows.getBoolean(2) || rows.getLong(1) != captured.generation) reject()
         }
       }
+      requireReplacementOwnerLease(connection, captured)
       val prepared              = withHostTransaction(connection)(consume)
       val successor             = host.resolve(connection, prepared.sessionId, now()).getOrElse(reject())
       val predecessorAuthorized = host.resolve(connection, captured.predecessor, now()).nonEmpty
       val time                  = now()
       val sessionExpiry         = prepared.expiresAt.truncatedTo(ChronoUnit.MICROS)
+      if (sessionExpiry.isAfter(time.plusSeconds(limits.retention.maxSessionSeconds))) reject(OperationError.Expired)
+      val credential = issueCredential(connection, prepared, record)
       val deadline = Vector(record.expiresAt, sessionExpiry, time.plusSeconds(limits.deliverySeconds)).min
         .truncatedTo(ChronoUnit.MICROS)
       pureRequired(
         BrowserReplacementAttempt(record, captured.captured).prepare(
           BrowserReplacementSuccessor(
             prepared.sessionId,
-            key(prepared.credential.value),
+            key(credential.value),
             successor.stamp,
             sessionExpiry
           ),
@@ -1022,7 +1174,7 @@ final class JdbcBrowserPersistence[F[_], P](
           prepared.completionId,
           prepared.sessionId,
           digest(view.identity.binding),
-          digest(prepared.credential.value),
+          digest(credential.value),
           record.generation,
           sessionExpiry,
           deadline
@@ -1047,7 +1199,7 @@ final class JdbcBrowserPersistence[F[_], P](
         query.setString(6, realm); query.setString(7, namespace); query.setObject(8, record.id.value);
         query.executeUpdate()
       }
-      val plaintext = prepared.credential.value.getBytes(UTF_8)
+      val plaintext = credential.value.getBytes(UTF_8)
       val encrypted =
         try
           Array(1.toByte) ++ vault.seal(
@@ -1238,6 +1390,7 @@ final class JdbcBrowserPersistence[F[_], P](
       Using.resource(query.executeQuery())(rows => if (!rows.next()) reject())
     }
     if (!captured.deadline.exists(now().isBefore)) reject(OperationError.Expired)
+    renewOwnerLease(connection, captured.view, captured.owner, captured.epoch)
     issuer.replacementControl(handoff, invocation).getOrElse(reject())
   }
   def withSuccessorCompletion[A](
@@ -1283,7 +1436,7 @@ final class JdbcBrowserPersistence[F[_], P](
       val record = readCeremony(connection, ceremony.id)
       requireOrdinary(connection, record.id)
       validate(record, view, ceremony.purpose)
-      if (record.phase != BrowserCeremonyPhase.Admitted || record.challenge != ceremony.challenge)
+      if (record.phase != BrowserCeremonyPhase.Admitted || record.challenge != ceremony.challenge || record.expiresAt != ceremony.expiresAt)
         reject(OperationError.PermitUsed)
       // Proof/host-session work precedes framework slot/view locks. The
       // exact physical owner is rechecked before committing all writes.
@@ -1297,6 +1450,8 @@ final class JdbcBrowserPersistence[F[_], P](
       val time          = now()
       val sessionExpiry = prepared.expiresAt.truncatedTo(ChronoUnit.MICROS)
       if (!time.isBefore(sessionExpiry) || sessionExpiry.isAfter(principal.expiresAt)) reject(OperationError.Expired)
+      if (sessionExpiry.isAfter(time.plusSeconds(limits.retention.maxSessionSeconds))) reject(OperationError.Expired)
+      val credential = issueCredential(connection, prepared, record)
       validate(record, view, ceremony.purpose)
       retire(connection, time)
       if (count(connection, "spoonbill_auth_material") >= limits.deliveryMaterials)
@@ -1310,13 +1465,13 @@ final class JdbcBrowserPersistence[F[_], P](
           prepared.completionId,
           prepared.sessionId,
           digest(view.identity.binding),
-          digest(prepared.credential.value),
+          digest(credential.value),
           record.generation,
           sessionExpiry,
           deadline
         )
       )
-      val plaintext = prepared.credential.value.getBytes(UTF_8)
+      val plaintext = credential.value.getBytes(UTF_8)
       val ciphertext =
         try vault.seal(plaintext, associated(record.completionId, record.bindingKey))
         finally java.util.Arrays.fill(plaintext, 0.toByte)
@@ -1538,7 +1693,8 @@ final class JdbcBrowserPersistence[F[_], P](
     case false => F.unit
     case true =>
       F.recoverF(F.map(owned(cleanup = true)(transaction { connection =>
-        retire(connection, now()); retirePolicy(connection)
+        reconcileOwnedViews(connection)
+        retire(connection, now()); retirePolicy(connection); reap(connection)
       })) { result =>
         maintaining.set(false)
         result match {

@@ -89,7 +89,7 @@ final class ZioHttpKeepAliveSpec extends AnyFlatSpec with Matchers {
 
   "Logout" should "redirect with 303, expire the session cookie and keep the connection usable" in {
     val (Vector(logout), health) = onOneSocket()(
-      _.exchange("POST", "/auth/logout", authHeaders("Cookie" -> s"$BindingCookie=$Binding; $SessionCookie=$Token"))
+      _.exchange("POST", "/auth/logout", Seq("Origin" -> Origin, "Cookie" -> s"$BindingCookie=$Binding; $SessionCookie=$Token"))
     ): @unchecked
     logout.status shouldBe 303
     logout.header("Location") shouldBe Some("/")
@@ -105,6 +105,15 @@ final class ZioHttpKeepAliveSpec extends AnyFlatSpec with Matchers {
     logout.status shouldBe 204
     logout.header("Location") shouldBe None
     logout.all("Set-Cookie") should contain(s"$SessionCookie=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+    assertHealthy(health)
+  }
+
+  it should "reject duplicate credential fields and keep the connection usable" in {
+    val (Vector(logout), health) = onOneSocket()(
+      _.exchange("POST", "/auth/logout", authHeaders("Cookie" -> s"$BindingCookie=$Binding; $SessionCookie=$Token"))
+    ): @unchecked
+    logout.status shouldBe 403
+    logout.all("Set-Cookie") shouldBe empty
     assertHealthy(health)
   }
 

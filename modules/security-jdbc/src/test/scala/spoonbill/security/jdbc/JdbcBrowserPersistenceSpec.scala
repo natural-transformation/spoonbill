@@ -4,26 +4,29 @@ import avocet.Id
 import avocet.dsl.*
 import avocet.dsl.html.*
 import java.io.PrintWriter
+import java.lang.reflect.{InvocationHandler, InvocationTargetException, Method, Proxy}
 import java.security.{MessageDigest, SecureRandom}
 import java.sql.{Connection, SQLException, SQLFeatureNotSupportedException, Timestamp}
 import java.time.Instant
 import java.util.{Base64, Properties, UUID}
-import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
 import scala.util.Using
+import scala.jdk.CollectionConverters.*
 import spoonbill.Qsid
 import spoonbill.action.*
 import spoonbill.auth.*
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Stream}
 import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
+import spoonbill.security.Versions.{SecurityGeneration, SlotGeneration, ViewOwnershipEpoch}
 import spoonbill.security.transaction.*
 import spoonbill.server.*
-import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotFormat, ViewSnapshotException}
+import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotFormat, SnapshotIdentity, SnapshotKeys, ViewSnapshotError, ViewSnapshotException}
 import spoonbill.state.BoundedPresentationStore
 import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
@@ -150,6 +153,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     val domainTransactions    = new AtomicInteger()
     val hostResolutions       = new AtomicInteger()
     val replacementCallbacks  = new AtomicInteger()
+    val recordSql = new AtomicBoolean()
+    val statements = new ConcurrentLinkedQueue[String]()
     val source: DataSource = new DataSource {
       // sbt can reload the test classloader after DriverManager's discovery.
       // Use this fixture's explicit driver instead of that ambient registry.
@@ -167,7 +172,15 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           connection.setSchema(name)
         }
         openedConnections.incrementAndGet()
-        connection
+        Proxy.newProxyInstance(getClass.getClassLoader, Array(classOf[Connection]), new InvocationHandler {
+          def invoke(proxy: Object, method: Method, args: Array[Object]): Object = {
+            val arguments = Option(args).getOrElse(Array.empty[Object])
+            if (recordSql.get() && method.getName == "prepareStatement" && arguments.nonEmpty)
+              statements.add(arguments(0).toString.replaceAll("\\s+", " ").trim)
+            try method.invoke(connection, arguments*)
+            catch { case error: InvocationTargetException => throw error.getCause }
+          }
+        }).asInstanceOf[Connection]
       }
       def getConnection(user: String, password: String): Connection = throw new SQLFeatureNotSupportedException()
       def getLogWriter: PrintWriter                                 = throw new SQLFeatureNotSupportedException()
@@ -254,7 +267,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       )
     def withRunner(
       runner: TransactionExecutor[Future, Direct, Connection],
-      limits: BrowserPersistenceLimits = BrowserPersistenceLimits()
+      limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
+      newId: () => UUID = () => UUID.randomUUID()
     ): JdbcBrowserPersistence[Future, String] =
       new JdbcBrowserPersistence(
         source,
@@ -266,12 +280,13 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         vault,
         ownership = if (exclusive) BrowserOwnership.ExclusiveScope else BrowserOwnership.SharedViews,
         limits = limits,
-        existingRunner = Some(runner)
+        existingRunner = Some(runner),
+        newId = newId
       )
     def withViewLimit(value: Int): JdbcBrowserPersistence[Future, String] =
       withRunner(observed, BrowserPersistenceLimits(retainedViews = value))
-    def withLimits(limits: BrowserPersistenceLimits): JdbcBrowserPersistence[Future, String] =
-      withRunner(observed, limits)
+    def withLimits(limits: BrowserPersistenceLimits, newId: () => UUID = () => UUID.randomUUID()): JdbcBrowserPersistence[Future, String] =
+      withRunner(observed, limits, newId)
     val persistence: JdbcBrowserPersistence[Future, String]               = fresh()
     def replacementPersistence: BrowserReplacementSupport[Future, String] = persistence
     Using.resource(source.getConnection) { connection =>
@@ -293,7 +308,9 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       ceremony: BrowserCeremony,
       fail: Boolean = false,
       unknown: Boolean = false,
-      revokePrevious: Option[UUID] = None
+      revokePrevious: Option[UUID] = None,
+      sessionSeconds: Long = 600,
+      rawCredential: Option[String] = None
     ): Future[Either[TransactionFailure, CommittedAuthentication]] = provider.prepare(ceremony) { tx =>
       val connection = tx.connection
       revokePrevious.foreach { previous =>
@@ -308,7 +325,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       }
       val session    = UUID.randomUUID()
       val completion = UUID.randomUUID()
-      val expiry     = clock.get().plusSeconds(600)
+      val expiry     = clock.get().plusSeconds(sessionSeconds)
       Using.resource(
         connection.prepareStatement(
           "INSERT INTO spoonbill_auth_test_host(realm,id,completion,subject,version,expires_at,enabled) VALUES (?,?,?,'subject',1,?,TRUE)"
@@ -325,7 +342,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         session,
         completion,
         expiry,
-        BrowserSessionToken.fromString(Base64.getUrlEncoder.withoutPadding().encodeToString(bytes)).toOption.get
+        BrowserSessionToken.fromString(rawCredential.getOrElse(Base64.getUrlEncoder.withoutPadding().encodeToString(bytes))).toOption.get
       )
     }
     def prepareReplacement(
@@ -346,7 +363,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       revoke: Boolean = true,
       subject: String = "subject",
       version: Long = 1L,
-      afterHost: () => Unit = () => ()
+      afterHost: () => Unit = () => (),
+      sessionSeconds: Long = 600
     ): Future[Either[TransactionFailure, CommittedReplacement]] = provider.prepareReplacement(ceremony, invocation) {
       tx =>
         replacementCallbacks.incrementAndGet()
@@ -358,7 +376,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           }
         val session    = UUID.randomUUID()
         val completion = UUID.randomUUID()
-        val expiry     = clock.get().plusSeconds(600)
+        val expiry     = clock.get().plusSeconds(sessionSeconds)
         Using.resource(
           tx.connection.prepareStatement(
             "INSERT INTO spoonbill_auth_test_host(realm,id,completion,subject,version,expires_at,enabled) VALUES (?,?,?,?,?,?,TRUE)"
@@ -399,7 +417,10 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           "spoonbill_browser_view",
           "spoonbill_auth_material",
           "spoonbill_browser_session",
-          "spoonbill_browser_replacement"
+          "spoonbill_browser_replacement",
+          "spoonbill_auth_ceremony",
+          "spoonbill_browser_slot",
+          "spoonbill_browser_retention"
         ).contains(table)
       )
       require(Set("TRUE", "owner_id IS NOT NULL", "successor_session_id IS NOT NULL").contains(condition))
@@ -430,6 +451,498 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
   }
   protected def fixture(): BrowserReplacementConformance.Fixture = new Fixture
   private val qsid                                               = Qsid("provider-device", "provider-view")
+
+  private val tinyRetention = BrowserPersistenceLimits(
+    retainedBindings = 2, retainedViews = 2, retainedCeremonies = 2, ceremoniesPerBinding = 2,
+    anonymousBindings = 1, ceremonySeconds = 3, deliverySeconds = 2,
+    retention = BrowserRetentionPolicy(idleBindingSeconds = 5, idleViewSeconds = 5, historySeconds = 2, maxSessionSeconds = 1000)
+  )
+
+  private def retentionLogin(db: Fixture, provider: JdbcBrowserPersistence[Future, String], rawBinding: String,
+    id: Qsid, seconds: Long, credential: Option[String] = None): (BrowserView[String], BrowserSessionToken, CommittedAuthentication) = {
+    val anonymous = withClue("anonymous capture: ")(accepted(await(provider.capture(rawBinding, None, activate = false))))
+    val initial = withClue("initial claim: ")(accepted(await(provider.claim(anonymous, id, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false))))
+    val ceremony = withClue("begin login: ")(accepted(await(provider.begin(initial, "login"))))
+    val receipt = withClue("prepare login: ")(accepted(await(db.prepareWith(provider, ceremony, sessionSeconds = seconds, rawCredential = credential))))
+    val token = await(provider.deliver(receipt.completionId, rawBinding)).get
+    val identity = withClue("activation: ")(accepted(await(provider.capture(rawBinding, Some(token.value), activate = true))))
+    val view = withClue("authenticated claim: ")(accepted(await(provider.claim(identity, id, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true))))
+    (view, token, receipt)
+  }
+
+  private def retentionCounters(db: Fixture): (Long, Long, Long, Long) = Using.resource(db.source.getConnection) { connection =>
+    Using.resource(connection.prepareStatement(
+      "SELECT id_prefix,id_counter,binding_floor,view_floor FROM spoonbill_browser_retention WHERE realm=? AND namespace='session'"
+    )) { query =>
+      query.setString(1, db.realm)
+      Using.resource(query.executeQuery()) { rows =>
+        rows.next() shouldBe true
+        (rows.getLong(1), rows.getLong(2), rows.getLong(3), rows.getLong(4))
+      }
+    }
+  }
+
+  private def retainedCeremonyIds(db: Fixture): Set[UUID] = Using.resource(db.source.getConnection) { connection =>
+    Using.resource(connection.prepareStatement("SELECT id,attempt FROM spoonbill_auth_ceremony WHERE realm=? AND namespace='session'")) { query =>
+      query.setString(1, db.realm)
+      Using.resource(query.executeQuery()) { rows =>
+        val result = Set.newBuilder[UUID]
+        while (rows.next()) { result += rows.getObject(1, classOf[UUID]); result += rows.getObject(2, classOf[UUID]) }
+        result.result()
+      }
+    }
+  }
+
+  "JDBC retention" should "sustain more login cycles than every tiny capacity while preserving an active keeper" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val provider = db.withLimits(tinyRetention)
+    try {
+      val (keeper, _, _) = retentionLogin(db, provider, "k" * 43, Qsid("keeper", "view"), 600)
+      for (index <- 0 until 8) {
+        val rawBinding = (('a' + index).toChar.toString * 43)
+        val (view, token, _) = retentionLogin(db, provider, rawBinding, Qsid("cycling", s"view-$index"), 1)
+        accepted(await(provider.logout(rawBinding, Some(token.value))))
+        await(provider.release(view))
+        for (_ <- 0 until 2) {
+          db.clock.set(db.clock.get().plusSeconds(3))
+          accepted(await(provider.authorize(keeper))).principal.map(_.subject) shouldBe Some("subject")
+        }
+        await(provider.maintenance())
+        val usage = accepted(await(provider.usage()))
+        usage.retainedBindings should be <= 2L
+        usage.retainedViews should be <= 2L
+        usage.retainedCeremonies should be <= 2L
+      }
+      db.committedSessions shouldBe 9
+      accepted(await(provider.authorize(keeper))).principal.map(_.subject) shouldBe Some("subject")
+    } finally await(provider.close())
+  }
+
+  it should "reject old same-binding identities views ceremonies delivery and late release after reclamation" in Using.resource(new Fixture) { db =>
+    val repeated = UUID.fromString("00000000-0000-4000-8000-000000000001")
+    val provider = db.withLimits(tinyRetention.copy(retainedCeremonies = 4), () => repeated)
+    try {
+      val oldIdentity = accepted(await(provider.capture(binding, None, activate = false)))
+      val oldView = accepted(await(provider.claim(oldIdentity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), false)))
+      val oldCeremony = accepted(await(provider.begin(oldView, "unused")))
+      val login = accepted(await(provider.begin(oldView, "login")))
+      val receipt = accepted(await(db.prepareWith(provider, login, sessionSeconds = 1)))
+      val oldToken = await(provider.deliver(receipt.completionId, binding)).get
+      accepted(await(provider.capture(binding, Some(oldToken.value), activate = true)))
+      accepted(await(provider.logout(binding, Some(oldToken.value))))
+      await(provider.release(oldView))
+      db.clock.set(db.clock.get().plusSeconds(8))
+      await(provider.maintenance())
+      val freshIdentity = accepted(await(provider.capture(binding, None, activate = false)))
+      val freshView = accepted(await(provider.claim(freshIdentity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), false)))
+      freshIdentity.generation should be > oldIdentity.generation
+      freshView.epoch should be > oldView.epoch
+      await(provider.claim(oldIdentity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)).isLeft shouldBe true
+      await(provider.authorize(oldView)).isLeft shouldBe true
+      await(provider.release(oldView))
+      await(provider.authorize(freshView)).isRight shouldBe true
+      val callbacks = new AtomicInteger()
+      await(provider.prepare(oldCeremony) { _ => callbacks.incrementAndGet(); throw new AssertionError("Stale proof ran") }).isLeft shouldBe true
+      callbacks.get() shouldBe 0
+      await(provider.deliver(receipt.completionId, binding)) shouldBe None
+      await(provider.capture(binding, Some(oldToken.value), activate = true)).isLeft shouldBe true
+    } finally await(provider.close())
+  }
+
+  it should "persist issuance floors and derive distinct credentials across restart clock rollback and repeated entropy" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val repeated = () => UUID.fromString("00000000-0000-4000-8000-000000000002")
+    val first = db.withLimits(tinyRetention, repeated)
+    val initialTime = db.clock.get()
+    val (view, token, receipt) = retentionLogin(db, first, binding, qsid, 1, Some("r" * 43))
+    val originalIds = retainedCeremonyIds(db)
+    originalIds.size shouldBe 2
+    val before = retentionCounters(db)
+    accepted(await(first.logout(binding, Some(token.value))))
+    await(first.release(view))
+    db.clock.set(initialTime.plusSeconds(8))
+    await(first.maintenance())
+    val reclaimed = retentionCounters(db)
+    reclaimed._3 should be > before._3
+    reclaimed._4 should be > before._4
+    await(first.close())
+    db.clock.set(initialTime)
+    val second = db.withLimits(tinyRetention, repeated)
+    try {
+      val (fresh, freshToken, freshReceipt) = retentionLogin(db, second, binding, qsid, 100, Some("r" * 43))
+      val after = retentionCounters(db)
+      after._1 shouldBe before._1
+      after._2 should be > before._2
+      after._3 should be >= reclaimed._3
+      after._4 should be >= reclaimed._4
+      fresh.identity.generation should be >= reclaimed._3
+      fresh.epoch should be >= reclaimed._4
+      freshReceipt.completionId should not be receipt.completionId
+      retainedCeremonyIds(db).intersect(originalIds) shouldBe empty
+      freshToken.value should not be token.value
+      freshToken.value should not be ("r" * 43)
+      await(second.capture(binding, Some(token.value), activate = true)).isLeft shouldBe true
+      await(second.deliver(receipt.completionId, binding)) shouldBe None
+    } finally await(second.close())
+  }
+
+  it should "recover anonymous quota and expire abandoned ownership without reviving an old lease" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val provider = db.withLimits(tinyRetention)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, false)))
+      val old = accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), false)))
+      await(provider.capture("z" * 43, None, false)) shouldBe Left(BrowserFailure.Capacity)
+      db.clock.set(db.clock.get().plusSeconds(6))
+      await(provider.maintenance())
+      val next = accepted(await(provider.capture("z" * 43, None, false)))
+      val view = accepted(await(provider.claim(next, qsid, ConnectionId.fromUuid(UUID.randomUUID()), false)))
+      await(provider.authorize(old)).isLeft shouldBe true
+      await(provider.release(old))
+      await(provider.authorize(view)).isRight shouldBe true
+      accepted(await(provider.usage())).anonymousBindings shouldBe 1L
+      db.retained("spoonbill_browser_retention") shouldBe 1
+    } finally await(provider.close())
+  }
+
+  it should "refuse a delayed admitted stage after maintenance removes its expired proof fence" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val pause = new AtomicBoolean()
+    val admitted = Promise[Unit]()
+    val release = Promise[Unit]()
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).flatMap { result =>
+        if (result == Right(()) && pause.compareAndSet(true, false)) {
+          admitted.trySuccess(())
+          release.future.map(_ => result)
+        } else Future.successful(result)
+      }
+    }
+    val provider = db.withRunner(runner, tinyRetention)
+    val other = db.withLimits(tinyRetention)
+    try {
+      val ceremony = accepted(await(provider.begin(open(provider), "login")))
+      val callbacks = new AtomicInteger()
+      pause.set(true)
+      val pending = provider.prepare(ceremony) { _ => callbacks.incrementAndGet(); throw new AssertionError("Expired proof ran") }
+      await(admitted.future)
+      db.clock.set(db.clock.get().plusSeconds(8))
+      await(other.maintenance())
+      db.retained("spoonbill_auth_ceremony") shouldBe 0
+      release.trySuccess(())
+      await(pending).isLeft shouldBe true
+      callbacks.get() shouldBe 0
+      db.committedSessions shouldBe 0
+    } finally { release.trySuccess(()); await(provider.close()); await(other.close()) }
+  }
+
+  it should "make maintenance wait for a held host transaction before reclaiming its history" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val provider = db.withLimits(tinyRetention)
+    val other = db.withLimits(tinyRetention)
+    val entered = new CountDownLatch(1)
+    val release = new CountDownLatch(1)
+    try {
+      val ceremony = accepted(await(provider.begin(open(provider), "login")))
+      val callbacks = new AtomicInteger()
+      val pending = provider.prepare(ceremony) { _ =>
+        callbacks.incrementAndGet(); entered.countDown()
+        if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Host barrier timed out")
+        throw new OperationProtocolException(OperationError.HostDenied)
+      }
+      entered.await(5, TimeUnit.SECONDS) shouldBe true
+      db.clock.set(db.clock.get().plusSeconds(8))
+      val maintenance = other.maintenance()
+      maintenance.isCompleted shouldBe false
+      release.countDown()
+      await(pending).isLeft shouldBe true
+      await(maintenance)
+      callbacks.get() shouldBe 1
+      db.retained("spoonbill_auth_ceremony") shouldBe 0
+      await(other.capture("z" * 43, None, false)).isRight shouldBe true
+    } finally { release.countDown(); await(provider.close()); await(other.close()) }
+  }
+
+  it should "serialize the final anonymous slot across nodes and admit again after its lease is reclaimed" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val first = db.withLimits(tinyRetention)
+    val second = db.withLimits(tinyRetention)
+    try {
+      val attempts = await(Future.sequence(Vector(first.capture(binding, None, false), second.capture("z" * 43, None, false))))
+      attempts.count(_.isRight) shouldBe 1
+      attempts.count(_ == Left(BrowserFailure.Capacity)) shouldBe 1
+      accepted(await(first.usage())).anonymousBindings shouldBe 1L
+      db.clock.set(db.clock.get().plusSeconds(6))
+      await(second.maintenance())
+      await(first.capture("y" * 43, None, false)).isRight shouldBe true
+      accepted(await(second.usage())).anonymousBindings shouldBe 1L
+    } finally { await(first.close()); await(second.close()) }
+  }
+
+  it should "retain live replacement linkage until session expiry and never revive an expired successor's predecessor" in {
+    Seq(false, true).foreach { successorLivesLonger =>
+      Using.resource(new Fixture(exclusive = false)) { db =>
+        val provider = db.withLimits(tinyRetention.copy(retainedCeremonies = 4))
+        try {
+          val predecessorSeconds = if (successorLivesLonger) 1L else 100L
+          val successorSeconds = if (successorLivesLonger) 100L else 1L
+          val (view, oldToken, _) = retentionLogin(db, provider, binding, qsid, predecessorSeconds)
+          val ceremony = accepted(await(provider.beginReplacement(view, "replace")))
+          accepted(await(db.replaceWith(provider, ceremony, replacementInvocation(view), view.identity.sessionId.get,
+            sessionSeconds = successorSeconds)))
+          val request = new BrowserReplacementRequest(binding, Some(oldToken.value), Some(ceremony.id))
+          val delivery = accepted(await(provider.recoverReplacement(request))) match {
+            case BrowserReplacementRecovery.Deliver(value) => value
+            case result => fail(s"Expected replacement delivery: $result")
+          }
+          val successor = accepted(await(provider.deliverReplacement(request, delivery)))
+          if (successorLivesLonger) accepted(await(provider.capture(binding, Some(successor.value), true)))
+          db.clock.set(db.clock.get().plusSeconds(8))
+          await(provider.maintenance())
+          db.retained("spoonbill_browser_replacement") shouldBe 1
+          await(provider.capture(binding, Some(oldToken.value), true)).isLeft shouldBe true
+          if (successorLivesLonger) {
+            accepted(await(provider.capture(binding, Some(successor.value), true))).principal.map(_.subject) shouldBe Some("subject")
+          } else await(provider.capture(binding, Some(successor.value), true)).isLeft shouldBe true
+          db.clock.set(db.clock.get().plusSeconds(100))
+          await(provider.maintenance())
+          db.retained("spoonbill_browser_replacement") shouldBe 0
+          db.retained("spoonbill_auth_ceremony") shouldBe 0
+          await(provider.capture(binding, Some(oldToken.value), true)).isLeft shouldBe true
+          await(provider.capture(binding, Some(successor.value), true)).isLeft shouldBe true
+          await(provider.capture(binding, None, false)).isRight shouldBe true
+        } finally await(provider.close())
+      }
+    }
+  }
+
+  it should "exclude low-level creation while a scope is being enrolled for managed reclamation" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val entered = new CountDownLatch(1)
+    val release = new CountDownLatch(1)
+    val pause = new AtomicBoolean(true)
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact { connection =>
+        val result = body(connection)
+        if (pause.compareAndSet(true, false)) {
+          entered.countDown()
+          if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Enrollment barrier timed out")
+        }
+        result
+      }
+    }
+    val provider = db.withRunner(runner, tinyRetention)
+    val lower = new JdbcBrowserSessions(db.source, db.realm, "session", () => db.clock.get(), new HostSessionHooks {
+      def isCurrent(connection: Connection, sessionId: UUID, time: Instant): Boolean = true
+      def acknowledge(connection: Connection, completionId: UUID, sessionId: UUID, time: Instant): Unit = ()
+    })
+    def digest(value: String): Digest256 = Digest256.fromBytes(MessageDigest.getInstance("SHA-256").digest(value.getBytes("UTF-8"))).toOption.get
+    try {
+      val enrollment = provider.capture(binding, None, false)
+      entered.await(5, TimeUnit.SECONDS) shouldBe true
+      val attempting = new CountDownLatch(1)
+      val lowWrite = Future { attempting.countDown(); lower.openSlot(digest("z" * 43)) }
+      attempting.await(5, TimeUnit.SECONDS) shouldBe true
+      intercept[scala.concurrent.TimeoutException](Await.result(lowWrite, 150.millis))
+      release.countDown()
+      await(enrollment).isRight shouldBe true
+      await(lowWrite) shouldBe Left(JdbcAuthError.HostDenied)
+      lower.claimView("external-view", digest(binding), UUID.randomUUID()) shouldBe Left(JdbcAuthError.HostDenied)
+      Using.resource(db.source.getConnection) { connection =>
+        connection.setAutoCommit(false)
+        try {
+          val prepared = PreparedBrowserSession(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+            digest(binding), digest("q" * 43), 0L, db.clock.get().plusSeconds(100), db.clock.get().plusSeconds(10))
+          intercept[JdbcAuthException](lower.prepareNew(connection, prepared)).error shouldBe JdbcAuthError.HostDenied
+        } finally connection.rollback()
+      }
+      accepted(await(provider.usage())).retainedBindings shouldBe 1L
+      accepted(await(provider.usage())).retainedViews shouldBe 0L
+    } finally { release.countDown(); await(provider.close()) }
+  }
+
+  it should "reject overlong host sessions atomically and accept the configured lifetime boundary" in Using.resource(new Fixture) { db =>
+    val provider = db.withLimits(tinyRetention)
+    try {
+      val view = open(provider)
+      val overlong = accepted(await(provider.begin(view, "overlong")))
+      await(db.prepareWith(provider, overlong, sessionSeconds = 1001)).isLeft shouldBe true
+      db.committedSessions shouldBe 0
+      db.retained("spoonbill_browser_session") shouldBe 0
+      val boundary = accepted(await(provider.begin(view, "boundary")))
+      val receipt = accepted(await(db.prepareWith(provider, boundary, sessionSeconds = 1000)))
+      await(provider.deliver(receipt.completionId, binding)).isDefined shouldBe true
+      db.committedSessions shouldBe 1
+    } finally await(provider.close())
+  }
+
+  it should "retain close ownership when an operation rolls back staged reclamation" in Using.resource(new Fixture) { db =>
+    val provider = db.withLimits(tinyRetention)
+    try {
+      val old = open(provider)
+      db.clock.set(db.clock.get().plusSeconds(6))
+      // claimState stages expiry/deletion, then rejects this now-missing identity.
+      // The transaction rolls back, so close still owes the original ownership.
+      await(provider.claim(old.identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)).isLeft shouldBe true
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      await(provider.close())
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally await(provider.close())
+  }
+
+  it should "clamp legacy browser lifetimes on enrollment and deny low-level authority and snapshots afterwards" in Using.resource(new Fixture(exclusive = false)) { db =>
+    def digest(value: String): Digest256 = accepted(Digest256.fromBytes(MessageDigest.getInstance("SHA-256").digest(value.getBytes("UTF-8"))))
+    val hooks = new HostSessionHooks {
+      def isCurrent(connection: Connection, sessionId: UUID, time: Instant): Boolean = true
+      def acknowledge(connection: Connection, completionId: UUID, sessionId: UUID, time: Instant): Unit = ()
+    }
+    val lower = new JdbcBrowserSessions(db.source, db.realm, "session", () => db.clock.get(), hooks)
+    val tokenHash = digest("r" * 43)
+    val bindingHash = digest(binding)
+    val session = UUID.randomUUID()
+    val completion = UUID.randomUUID()
+    val hostCompletion = UUID.randomUUID()
+    val started = db.clock.get()
+    val legacyExpiry = started.plusSeconds(10000)
+    val generation = accepted(lower.openSlot(bindingHash))
+    Using.resource(db.source.getConnection) { connection =>
+      connection.setAutoCommit(false)
+      try {
+        Using.resource(connection.prepareStatement(
+          "INSERT INTO spoonbill_auth_test_host(realm,id,completion,subject,version,expires_at,enabled) VALUES (?,?,?,'subject',1,?,TRUE)"
+        )) { query =>
+          query.setString(1, db.realm); query.setObject(2, session); query.setObject(3, hostCompletion)
+          query.setTimestamp(4, Timestamp.from(legacyExpiry)); query.executeUpdate()
+        }
+        lower.prepareNew(connection, PreparedBrowserSession(completion, hostCompletion, session, bindingHash,
+          tokenHash, generation, legacyExpiry, legacyExpiry))
+        connection.commit()
+      } catch { case error: Throwable => connection.rollback(); throw error }
+    }
+    val active = accepted(lower.activate(tokenHash, bindingHash))
+    val owner = UUID.randomUUID()
+    val viewId = "legacy-view"
+    val epoch = accepted(ViewOwnershipEpoch.fromLong(accepted(lower.claimView(viewId, bindingHash, owner))))
+    val snapshotIdentity = SnapshotIdentity(accepted(SnapshotKeys.Subject.parse("subject")),
+      accepted(SnapshotKeys.Scope.parse("legacy")), session, SecurityGeneration.initial,
+      accepted(SlotGeneration.fromLong(active.generation)))
+    val identityCheck = new HostSnapshotIdentity {
+      def isCurrent(connection: Connection, sessionId: UUID, expected: SnapshotIdentity, now: Instant): Boolean = true
+    }
+    def snapshot(): Either[ViewSnapshotError, String] = lower.withSnapshotView(viewId, bindingHash, owner,
+      epoch, tokenHash, snapshotIdentity, identityCheck)((_, _) => Right("owned"))
+    snapshot() shouldBe Right("owned")
+    lower.validate(tokenHash, bindingHash).isRight shouldBe true
+    val provider = db.withLimits(tinyRetention)
+    try {
+      await(provider.maintenance())
+      Using.resource(db.source.getConnection) { connection =>
+        Using.resource(connection.prepareStatement(
+          "SELECT b.expires_at,h.expires_at FROM spoonbill_browser_session b JOIN spoonbill_auth_test_host h ON h.realm=b.realm AND h.id=b.host_session_id WHERE b.realm=?"
+        )) { query =>
+          query.setString(1, db.realm)
+          Using.resource(query.executeQuery()) { rows =>
+            rows.next() shouldBe true
+            rows.getTimestamp(1).toInstant shouldBe started.plusSeconds(1000)
+            rows.getTimestamp(2).toInstant shouldBe legacyExpiry
+          }
+        }
+      }
+      lower.validate(tokenHash, bindingHash) shouldBe Left(JdbcAuthError.HostDenied)
+      lower.activate(tokenHash, bindingHash) shouldBe Left(JdbcAuthError.HostDenied)
+      lower.delivery(completion, bindingHash) shouldBe Left(JdbcAuthError.HostDenied)
+      lower.validateView(viewId, bindingHash, owner, epoch.toLong) shouldBe Left(JdbcAuthError.HostDenied)
+      val authority = new HostSessionAuthorization[String] {
+        def authorize(connection: Connection, sessionId: UUID, now: Instant): Option[String] = Some("subject")
+      }
+      lower.authorize(bindingHash, Some(tokenHash), authority) shouldBe Left(JdbcAuthError.HostDenied)
+      snapshot().isLeft shouldBe true
+      accepted(await(provider.capture(binding, Some("r" * 43), true))).principal.map(_.expiresAt) shouldBe Some(legacyExpiry)
+      db.clock.set(started.plusSeconds(1001))
+      await(provider.capture(binding, Some("r" * 43), true)).isLeft shouldBe true
+    } finally await(provider.close())
+  }
+
+  "JDBC anonymous HTTP admission" should "deny cookie-free presentation without allocating in either ownership mode" in {
+    Vector(true, false).foreach { exclusive =>
+      Using.resource(new Fixture(exclusive = exclusive)) { db =>
+        val provider = db.withLimits(BrowserPersistenceLimits(retainedBindings = 1, retainedViews = 1))
+        val browser = new BrowserAuthentication[Future, Int, String](
+          provider,
+          BrowserPresentation(() => 0, (_, _) => false, (state, _, _) => state),
+          BrowserConfiguration(provider.scope, Set("https://app.example"))
+        )
+        try {
+          val service = spoonbillService(
+            browser.configure(
+              SpoonbillServiceConfig[Future, Int, Any](
+                stateLoader = StateLoader.default(0),
+                document = _ => Html(body(div("denied")))
+              )
+            )
+          )
+          (1 to 50).foreach { _ =>
+            val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, Stream.empty[Future, Bytes], "")
+            intercept[SessionAccessDenied](await(service.http(request)))
+          }
+          val usage = accepted(await(provider.usage()))
+          usage.retainedBindings shouldBe 0
+          usage.retainedViews shouldBe 0
+        } finally await(browser.close())
+      }
+    }
+  }
+
+  it should "serialize the last retained binding admission across shared providers" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedBindings = 1)
+    val first  = db.withLimits(limits)
+    val peer   = db.withLimits(limits)
+    try {
+      val attempts = Vector(
+        first.capture("a" * 43, None, activate = true),
+        peer.capture("b" * 43, None, activate = true)
+      )
+      val outcomes = await(Future.sequence(attempts))
+      outcomes.count(_.isRight) shouldBe 1
+      outcomes.count(_ == Left(BrowserFailure.Capacity)) shouldBe 1
+      accepted(await(first.usage())).retainedBindings shouldBe 1
+      accepted(await(peer.usage())).retainedBindings shouldBe 1
+    } finally { await(first.close()); await(peer.close()) }
+  }
+
+  "JDBC HTTP principal observation" should "avoid retained admissions across ownership modes and provider restart" in {
+    Vector(true, false).foreach { exclusive =>
+      Using.resource(new Fixture(exclusive = exclusive)) { db =>
+        val limits   = BrowserPersistenceLimits(retainedBindings = 1)
+        val provider = db.withLimits(limits)
+        try {
+          (1 to 100).foreach { index =>
+            accepted(await(provider.inspectPrincipal(f"$index%043d", None))) shouldBe None
+          }
+          accepted(await(provider.usage())).retainedBindings shouldBe 0
+          val (view, token) = signedIn(db, provider)
+          accepted(await(provider.inspectPrincipal(binding, Some(token.value)))).isDefined shouldBe true
+          await(provider.inspectPrincipal(binding, None)).isLeft shouldBe true
+          await(provider.inspectPrincipal("bad", None)).isLeft shouldBe true
+          await(provider.inspectPrincipal("x" * 43, Some("t" * 43))).isLeft shouldBe true
+          accepted(await(provider.inspectPrincipal("x" * 43, None))) shouldBe None
+          await(provider.capture("x" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+          accepted(await(provider.authorize(view))).principal.isDefined shouldBe true
+          accepted(await(provider.usage())).retainedBindings shouldBe 1
+        } finally await(provider.close())
+        val restarted = db.withLimits(limits)
+        try {
+          accepted(await(restarted.inspectPrincipal("y" * 43, None))) shouldBe None
+          await(restarted.capture("y" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+          val usage = accepted(await(restarted.usage()))
+          usage.retainedBindings shouldBe 1
+          usage.retainedCeremonies shouldBe 1
+          usage.warnings().find(_.resource == "retainedBindings").get.exhausted shouldBe true
+        } finally await(restarted.close())
+      }
+    }
+  }
   private def open(provider: BrowserPersistence[Future, String], existing: Boolean = false): BrowserView[String] = {
     val identity = accepted(await(provider.capture(binding, None, activate = false)))
     accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existing)))
@@ -1997,7 +2510,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.committedSessions shouldBe 1
     }
 
-  it should "install frozen V4 then V5 with the same schema as runtime initialization" in Using
+  it should "install frozen V4 then V5 and V6 with the same schema as runtime initialization" in Using
     .resource(new Fixture(isolatedSchema = true)) { db =>
       Using.resource(db.source.getConnection) { connection =>
         val runtimeSchema = connection.getSchema
@@ -2006,7 +2519,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         Using.resource(connection.createStatement())(_.executeUpdate(s"CREATE SCHEMA $freshSchema"))
         try {
           connection.setSchema(freshSchema)
-          applyMigrations(connection, "V4__browser_auth.sql", "V5__authenticated_session_replacement.sql")
+          applyMigrations(connection, "V4__browser_auth.sql", "V5__authenticated_session_replacement.sql", "V6__browser_retention.sql")
           val installed = frameworkSchema(connection)
           assertSuccessorIndex(installed)
           installed shouldBe expected
@@ -2050,5 +2563,301 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       provider.accepts(receipt) shouldBe true
       db.committedSessions shouldBe 1
     } finally { release.countDown(); await(provider.close()) }
+  }
+
+  "Local ownership reconciliation" should "recover bookkeeping capacity even when a peer wins every full sweep" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(workIntervalSeconds = 1))
+    val provider = db.withLimits(limits)
+    val peer = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)))
+      for (_ <- 1 to 8) {
+        db.clock.set(db.clock.get().plusSeconds(1))
+        await(peer.maintenance())
+        accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)))
+        provider.ownedViewCount should be <= (limits.retainedViews + limits.pendingJobs)
+        db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      }
+      await(provider.close())
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally { await(provider.close()); await(peer.close()) }
+  }
+
+  it should "recover after lost claim acknowledgements without depending on winning a peer's sweep reservation" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(workIntervalSeconds = 1))
+    val loseClaimAcknowledgement = new AtomicBoolean(true)
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).map {
+        case Right(_: BrowserView[?]) if loseClaimAcknowledgement.get() => Left(TransactionFailure.CommitUnknown)
+        case result => result
+      }
+    }
+    val provider = db.withRunner(runner, limits)
+    val peer = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      for (_ <- 1 to 2) {
+        db.clock.set(db.clock.get().plusSeconds(1))
+        await(peer.maintenance())
+        await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)) shouldBe
+          Left(BrowserFailure.Settlement(TransactionFailure.CommitUnknown))
+      }
+      provider.ownedViewCount shouldBe 2
+      loseClaimAcknowledgement.set(false)
+      for (_ <- 1 to 5) {
+        db.clock.set(db.clock.get().plusSeconds(1))
+        await(peer.maintenance())
+        accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)))
+        provider.ownedViewCount should be <= 2
+      }
+      db.retained("spoonbill_browser_view") shouldBe 1
+    } finally { await(provider.close()); await(peer.close()) }
+  }
+
+  it should "reconcile on local maintenance without forgetting a still-current uncertain owner" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(workIntervalSeconds = 1))
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).map {
+        case Right(_: BrowserView[?]) => Left(TransactionFailure.CommitUnknown)
+        case result => result
+      }
+    }
+    val provider = db.withRunner(runner, limits)
+    val peer = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      (1 to 2).foreach { _ =>
+        await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)) shouldBe
+          Left(BrowserFailure.Settlement(TransactionFailure.CommitUnknown))
+      }
+      provider.ownedViewCount shouldBe 2
+      db.clock.set(db.clock.get().plusSeconds(1))
+      await(peer.maintenance())
+      db.statements.clear()
+      db.recordSql.set(true)
+      await(provider.maintenance())
+      db.recordSql.set(false)
+      db.statements.asScala.count(_.contains("owner_id=ANY(?)")) shouldBe 1
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 0
+      provider.ownedViewCount shouldBe 1
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      await(provider.close())
+      provider.ownedViewCount shouldBe 0
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally { db.recordSql.set(false); await(provider.close()); await(peer.close()) }
+  }
+
+  it should "retain shutdown ownership when capacity reconciliation precedes an expiry that rolls back" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val limits = BrowserPersistenceLimits(retainedViews = 1, pendingJobs = 1,
+      retention = BrowserRetentionPolicy(idleBindingSeconds = 1, idleViewSeconds = 1, workIntervalSeconds = 1))
+    val provider = db.withLimits(limits)
+    try {
+      val identity = accepted(await(provider.capture(binding, None, activate = false)))
+      (1 to 2).foreach { _ =>
+        accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)))
+      }
+      provider.ownedViewCount shouldBe 2
+      db.clock.set(db.clock.get().plusSeconds(2))
+      // This transaction stages expiry/deletion, then its stale identity check
+      // rejects. Reconciliation must have retained the last committed owner.
+      await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)).isLeft shouldBe true
+      provider.ownedViewCount shouldBe 1
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 1
+      await(provider.close())
+      db.retained("spoonbill_browser_view", "owner_id IS NOT NULL") shouldBe 0
+    } finally await(provider.close())
+  }
+
+  "Shared maintenance cadence" should "skip sampled capacity before the realm lock across peers, restart, and backward clocks" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val first = db.fresh()
+    val peer = db.fresh()
+    try {
+      accepted(await(first.capacity)).isDefined shouldBe true
+      accepted(await(peer.capacity)) shouldBe None
+      accepted(await(first.capture(binding, None, activate = false)))
+      accepted(await(peer.usage())).retainedBindings shouldBe 1L
+      val restarted = db.fresh()
+      try Using.resource(db.source.getConnection) { held =>
+        held.setAutoCommit(false)
+        Using.resource(held.prepareStatement("SELECT pg_advisory_xact_lock(hashtextextended(?,0))")) { query =>
+          query.setString(1, s"spoonbill-auth:${db.realm.length}:${db.realm}session")
+          Using.resource(query.executeQuery())(_.next())
+        }
+        try {
+          db.clock.set(BrowserPersistenceConformance.start.minusSeconds(60))
+          accepted(Await.result(restarted.capacity, 2.seconds)) shouldBe None
+        } finally held.rollback()
+      } finally await(restarted.close())
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(30))
+      accepted(await(peer.capacity)).get.retainedBindings shouldBe 1L
+      accepted(await(first.capacity)) shouldBe None
+    } finally { await(first.close()); await(peer.close()) }
+  }
+
+  it should "retain a sweep reservation after denied admission and recover pressure capacity without waiting for the normal interval" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val provider = db.withLimits(BrowserPersistenceLimits(retainedBindings = 1, anonymousBindings = 1))
+    try {
+      val old = accepted(await(provider.capture(binding, None, activate = false)))
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(31))
+      db.recordSql.set(true)
+      (1 to 20).foreach { _ =>
+        await(provider.capture("z" * 43, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+      }
+      db.recordSql.set(false)
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
+      db.retained("spoonbill_browser_slot") shouldBe 1
+      // Sweep just before eligibility, then hit pressure one second later.
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(599))
+      await(provider.maintenance())
+      db.clock.set(BrowserPersistenceConformance.start.plusSeconds(600))
+      val fresh = accepted(await(provider.capture("z" * 43, None, activate = false)))
+      fresh.generation should be > old.generation
+      db.retained("spoonbill_browser_slot") shouldBe 1
+      await(provider.claim(old, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false)).isLeft shouldBe true
+    } finally { db.recordSql.set(false); await(provider.close()) }
+  }
+
+  it should "bound full sweep and monitoring work for public GETs over a realistic retained working set" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val rows = 8192
+    val limits = BrowserPersistenceLimits(anonymousBindings = 16384)
+    val first = db.withLimits(limits)
+    val second = db.withLimits(limits)
+    def coordinator(provider: JdbcBrowserPersistence[Future, String]) = new BrowserAuthentication[Future, Int, String](
+      provider, BrowserPresentation(() => 0, (_, _) => true, (state, _, _) => state),
+      BrowserConfiguration(provider.scope, Set("https://app.example")), clock = () => db.clock.get())
+    val browsers = Vector(coordinator(first), coordinator(second))
+    val services = browsers.map(browser => spoonbillService(browser.configure(SpoonbillServiceConfig[Future, Int, Any](
+      stateLoader = StateLoader.default(0), document = _ => Html(body(div("public")))))))
+    def get(index: Int): Double = {
+      val started = System.nanoTime()
+      val response = await(services(index % services.size).http(Request(Request.Method.Get, PathAndQuery.Root,
+        Nil, None, Stream.empty[Future, Bytes])))
+      response.status.code shouldBe 200
+      await(response.body.cancel())
+      (System.nanoTime() - started).toDouble / 1000000.0
+    }
+    try {
+      accepted(await(first.inspectPrincipal(binding, None)))
+      Using.resource(db.source.getConnection) { connection =>
+        def seed(statement: String, deadline: Instant): Unit = Using.resource(connection.prepareStatement(statement)) { query =>
+          query.setString(1, db.realm); query.setTimestamp(2, Timestamp.from(deadline)); query.setInt(3, rows)
+          query.executeUpdate() shouldBe rows
+        }
+        seed("""INSERT INTO spoonbill_browser_slot(realm,cookie_namespace,binding_hash,generation,last_seen)
+          SELECT ?,'session',decode(repeat(md5(i::text),2),'hex'),0,? FROM generate_series(1,?) ids(i)""", db.clock.get())
+        seed("""INSERT INTO spoonbill_browser_view(realm,cookie_namespace,view_id,binding_hash,owner_id,epoch,last_seen)
+          SELECT ?,'session','seed-'||i,decode(repeat(md5(i::text),2),'hex'),NULL,1,? FROM generate_series(1,?) ids(i)""", db.clock.get())
+        seed("""INSERT INTO spoonbill_auth_ceremony(realm,namespace,id,attempt,binding_hash,generation,purpose,phase,expires_at)
+          SELECT ?,'session',md5('ceremony-'||i)::uuid,md5('attempt-'||i)::uuid,
+          decode(repeat(md5(i::text),2),'hex'),0,'login','Begun',? FROM generate_series(1,?) ids(i)""", db.clock.get().plusSeconds(7200))
+      }
+      // Keep real local ownership so this also detects a reconciliation scan
+      // accidentally added to every public bootstrap or shared sweep.
+      open(first)
+      first.ownedViewCount shouldBe 1
+      db.clock.set(db.clock.get().plusSeconds(limits.retention.workIntervalSeconds))
+      db.recordSql.set(true)
+      val warm = Vector(get(0), get(1))
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
+      db.statements.asScala.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 2
+      db.statements.asScala.count(_.contains("owner_id=ANY(?)")) shouldBe 0
+      db.statements.clear()
+      val elapsed = (0 until 100).map(get).sorted
+      val statements = db.statements.asScala.toVector
+      db.recordSql.set(false)
+      statements.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 0
+      statements.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 0
+      statements.count(_.contains("owner_id=ANY(?)")) shouldBe 0
+      // Admission counts and authority reads remain on each request; unrelated
+      // cleanup/monitoring queries must not grow with the retained row count.
+      statements.size should be <= 8000
+      accepted(await(first.usage())).retainedBindings shouldBe rows + 103L
+      info(f"Public GET cadence fixture: peers=2 rowsPerTable=$rows requests=100 SQL=${statements.size} " +
+        f"sweeps=0 aggregateScans=0 p50Ms=${elapsed(49)}%.2f p95Ms=${elapsed(94)}%.2f maxMs=${elapsed.last}%.2f " +
+        f"initialSampleMs=${warm.head}%.2f; instrumented disposable PostgreSQL, not a production throughput claim")
+      db.statements.clear()
+      db.clock.set(db.clock.get().plusSeconds(limits.retention.workIntervalSeconds))
+      db.recordSql.set(true)
+      get(0)
+      get(1)
+      db.recordSql.set(false)
+      db.statements.asScala.count(_.startsWith("UPDATE spoonbill_browser_slot b SET generation=b.generation+1")) shouldBe 1
+      db.statements.asScala.count(_.startsWith("SELECT COALESCE(MAX(amount),0)")) shouldBe 2
+      db.statements.asScala.count(_.contains("owner_id=ANY(?)")) shouldBe 0
+      info("Next shared interval: two public GETs on different peers performed one full sweep and one capacity sample")
+    } finally { db.recordSql.set(false); browsers.foreach(browser => await(browser.close())) }
+  }
+
+  "Replacement owner leases" should "reject completion after lease expiry without a maintenance sweep" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val provider = db.withLimits(BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleViewSeconds = 1)))
+    try {
+      val (view, _, _) = retentionLogin(db, provider, binding, qsid, 600)
+      val ceremony = accepted(await(provider.beginReplacement(view, "replace")))
+      val invocation = replacementInvocation(view)
+      val receipt = accepted(await(db.replaceWith(provider, ceremony, invocation, view.identity.sessionId.get)))
+      db.clock.set(db.clock.get().plusSeconds(2))
+      await(provider.admitReplacementCompletion(receipt, invocation)).isLeft shouldBe true
+      db.replacementCallbacks.get() shouldBe 1
+      db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe 1
+    } finally await(provider.close())
+  }
+
+  it should "reject a delayed admitted replacement before invoking its host callback" in Using.resource(
+    new Fixture(exclusive = false)
+  ) { db =>
+    val pause = new AtomicBoolean()
+    val admitted = Promise[Unit]()
+    val release = Promise[Unit]()
+    val outer = new JdbcTransactionExecutor[Future](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact(body).flatMap { result =>
+        if (result == Right(()) && pause.compareAndSet(true, false)) {
+          admitted.trySuccess(())
+          release.future.map(_ => result)
+        } else Future.successful(result)
+      }
+    }
+    val provider = db.withRunner(runner, BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleViewSeconds = 1)))
+    try {
+      val (view, _, _) = retentionLogin(db, provider, binding, qsid, 600)
+      val ceremony = accepted(await(provider.beginReplacement(view, "replace")))
+      pause.set(true)
+      val pending = db.replaceWith(provider, ceremony, replacementInvocation(view), view.identity.sessionId.get)
+      await(admitted.future)
+      db.clock.set(db.clock.get().plusSeconds(2))
+      release.trySuccess(())
+      await(pending) shouldBe Left(TransactionFailure.Rejected(OperationError.Expired))
+      db.replacementCallbacks.get() shouldBe 0
+      db.committedSessions shouldBe 1
+      db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe 0
+    } finally { release.trySuccess(()); await(provider.close()) }
   }
 }

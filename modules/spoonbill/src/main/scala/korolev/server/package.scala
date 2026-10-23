@@ -107,7 +107,7 @@ package object server {
     implicit val exeContext: ExecutionContext = config.executionContext
 
     val commonService   = new CommonService[F]()
-    val filesService    = new FilesService[F](commonService)
+    val filesService    = new FilesService[F](commonService, config.staticResourceLimits)
     val pageService     = new PageService[F, S, M](config)
     val sessionsService = new SessionsService[F, S, M](config, pageService)
     val messagingService =

@@ -1,14 +1,14 @@
 package spoonbill.http.protocol
 
-import spoonbill.data.Bytes
-import spoonbill.effect.Decoder
-import spoonbill.web.{Request, Response}
-import spoonbill.web.PathAndQuery.Root
 import org.scalatest.Assertion
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.annotation.tailrec
 import scala.util.Random
+import spoonbill.data.Bytes
+import spoonbill.effect.Decoder
+import spoonbill.web.{Request, Response}
+import spoonbill.web.PathAndQuery.Root
 
 class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
 
@@ -23,6 +23,7 @@ class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
     pq = Root,
     headers = Seq(
       "connection"            -> "upgrade",
+      "upgrade"               -> "websocket",
       "sec-websocket-key"     -> HandshakeKey,
       "sec-websocket-version" -> "13"
     ),
@@ -153,6 +154,10 @@ class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
     maybeIntention shouldEqual None
   }
 
+  it should "reject a key-bearing request without the WebSocket Upgrade header" in {
+    findIntention(HandshakeRequest.copy(headers = HandshakeRequest.headers.filterNot(_._1 == "upgrade"))) shouldBe None
+  }
+
   "handshake" should "add right headers (example from RFC (from RFC https://tools.ietf.org/html/rfc6455 1.2)" in {
     val upgrade = handshake(BasicHttpResponse, Intention(HandshakeKey))
     upgrade.status.code shouldEqual 101
@@ -171,11 +176,13 @@ class WebSocketProtocolSpec extends AnyFlatSpec with Matchers {
    * decode(encode(frame)) == frame
    */
   private def isoCheck(size: Int, masked: Boolean): Assertion = {
+    // Exercise all wire length encodings with an explicitly sufficient budget.
+    val protocol = new WebSocketProtocol[Bytes](math.max(1, size))
     val random = new Random(0)
     val frame  = randomFrame(random, size)
     val mask   = if (masked) Some(random.nextInt()) else None
     val bytes  = encodeFrame(frame, mask)
-    decodeFrame(bytes) should matchPattern { case (_, Decoder.Action.Push(`frame`)) =>
+    protocol.decodeFrame(bytes) should matchPattern { case (_, Decoder.Action.Push(`frame`)) =>
       ()
     }
   }

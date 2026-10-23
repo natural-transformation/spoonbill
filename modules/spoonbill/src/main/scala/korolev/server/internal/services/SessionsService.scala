@@ -111,10 +111,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
   def initSession(rh: Head): F[Qsid] =
     for {
-      deviceId <- rh.cookie(Cookies.DeviceId) match {
+      deviceId <- rh.cookie(Cookies.DeviceId).filter(Cookies.validDeviceId) match {
                     case Some(d) => Effect[F].pure(d)
                     case None    => config.idGenerator.generateDeviceId()
                   }
+      _ <- Effect[F].delay {
+             require(
+               Cookies.validDeviceId(deviceId),
+               "Device ID generator must produce 1–128 ASCII letters, digits, or ._~-"
+             )
+           }
       sessionId <- config.idGenerator.generateSessionId()
     } yield {
       Qsid(deviceId, sessionId)

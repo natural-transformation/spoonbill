@@ -484,13 +484,15 @@ class JdbcReferenceHostSpec extends AnyFlatSpec with Matchers {
     db.count("baseline_session") shouldBe 1L
   }
 
-  it should "freeze full preparation SQL costs including host glue and release every connection" in Using.resource(
+  it should "freeze full preparation SQL costs including host glue and enrollment fencing and release every connection" in Using.resource(
     new Fixture
   ) { db =>
     val proof                    = db.proof(db.ceremony())
     val (completed, measurement) = db.probe.measure(result(db.app.complete(proof)))
     completed.isRight shouldBe true
-    measurement.counts.sqlExecutions shouldBe 11L
+    // Eleven domain executions plus the realm advisory lock and managed-scope
+    // lookup required before low-level preparation can join this transaction.
+    measurement.counts.sqlExecutions shouldBe 13L
     measurement.counts.connections shouldBe 1L
     measurement.counts.commits shouldBe 1L
     measurement.counts.rollbacks shouldBe 0L
@@ -791,7 +793,9 @@ class JdbcReferenceHostSpec extends AnyFlatSpec with Matchers {
     runner.writeAfterProgram.set(true)
     val (completed, measurement) = db.probe.measure(result(app.complete(proof)))
     completed.isRight shouldBe true
-    measurement.counts.sqlExecutions shouldBe 12L
+    // Thirteen preparation executions, including the two enrollment-fence
+    // checks, plus one host outbox insert on the same outer transaction.
+    measurement.counts.sqlExecutions shouldBe 14L
     measurement.counts.connections shouldBe 1L
     measurement.counts.commits shouldBe 1L
     measurement.activeConnectionsAfter shouldBe 0L
