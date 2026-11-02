@@ -1,6 +1,6 @@
 # Changelog
 
-## 8.0.1 — Unreleased
+## 8.0.1 — 2026-11-02
 
 This patch release changes how guarded connections treat obsolete browser
 events. Its only public API addition is one metric.
