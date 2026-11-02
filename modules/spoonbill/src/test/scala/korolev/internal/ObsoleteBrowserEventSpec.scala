@@ -87,7 +87,9 @@ class ObsoleteBrowserEventSpec extends AsyncFlatSpec with Matchers {
     })
   }
 
-  it should "discard after an authority yield without selecting either DOM handler" in {
+  // The queue's post-authorization check discards this event before its operation
+  // runs. ObsoleteDomEventSelectionSpec covers the later handler-selection check.
+  it should "discard at the queue's revision check when a render wins during its authorization" in {
     val pauseNext = new AtomicBoolean(false)
     val entered   = Promise[Unit]()
     val release   = Promise[Unit]()
