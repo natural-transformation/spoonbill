@@ -3,7 +3,7 @@ Aleksey Fomkin <a@fomkin.org>
 :source-highlighter: highlight.js
 :sectnums:
 :toc:
-:version: 8.0.0
+:version: 8.0.1
 :scala-version: 3.3.8
 :code: https://github.com/natural-transformation/spoonbill/blob/v{version}/
 
