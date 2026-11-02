@@ -15,4 +15,7 @@ object Metrics {
   // Diff time includes changes inference and preparation of the message for a browser.
   final val MinDiffNanos = new LongMetric("min-diff-nanos")
   final val MaxDiffNanos = new LongMetric("max-diff-nanos")
+
+  // Guarded browser events discarded because a newer render was published before they ran.
+  final val ObsoleteBrowserEvents = new LongMetric("obsolete-browser-events")
 }

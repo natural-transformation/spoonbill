@@ -79,16 +79,44 @@ final class Frontend[F[_]: Effect](
   private val renderPublication                = new Object
 
   private[spoonbill] def selectFromPublishedView[A](expected: Option[Long])(select: => A): F[A] =
+    selectPublishedRevision(expected, ObsoleteRevision.Deny)(select)
+
+  /**
+   * Browser DOM events and custom callbacks can become obsolete while a newer
+   * render is in flight. Such an event fails with [[Frontend.ObsoleteBrowserEvent]]
+   * and is discarded: it never runs an old handler, is never rebound to a newer
+   * one, and does not close the valid connection.
+   */
+  private[spoonbill] def selectFromPublishedBrowserView[A](expected: Option[Long])(select: => A): F[A] =
+    selectPublishedRevision(expected, ObsoleteRevision.Discard)(select)
+
+  private def selectPublishedRevision[A](expected: Option[Long], obsolete: ObsoleteRevision)(select: => A): F[A] =
     Effect[F].delay {
       renderPublication.synchronized {
         expected.foreach { value =>
-          if (!recoveryStarted.get() || value != renderRevision.get()) throw new SessionAccessDenied
+          val published = renderRevision.get()
+          // This connection never published a future revision to the browser.
+          if (!recoveryStarted.get() || value < 0 || value > published) throw new SessionAccessDenied
+          if (value < published) obsolete match {
+            case ObsoleteRevision.Deny       => throw new SessionAccessDenied
+            case ObsoleteRevision.Discard    => throw ObsoleteBrowserEvent
+            case ObsoleteRevision.BoundsOnly => ()
+          }
         }
         select
       }
-    }.recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
+    }.recoverF {
+      case ObsoleteBrowserEvent =>
+        Effect[F].delay {
+          Metrics.ObsoleteBrowserEvents.update(_ + 1)
+          // Metadata only: browser actions can carry credentials.
+          reporter.debug("Obsolete browser event discarded")
+        }.flatMap(_ => Effect[F].fail(ObsoleteBrowserEvent))
+      case error => close().flatMap(_ => Effect[F].fail(error))
+    }
 
-  private def checkRenderRevision(expected: Option[Long]): F[Unit] = selectFromPublishedView(expected)(())
+  private def checkRenderRevision(expected: Option[Long], obsolete: ObsoleteRevision): F[Unit] =
+    selectPublishedRevision(expected, obsolete)(())
 
   private def requireOpen(): F[Unit] = Effect[F].delay {
     if (outputClosed.get()) throw new SessionAccessDenied
@@ -224,19 +252,31 @@ final class Frontend[F[_]: Effect](
    * A queued browser action from before departure is discarded before selecting
    * its revision or constructing a domain effect. Already running actions
    * finish before the serialized recovery barrier; browser RPC replies remain
-   * live.
+   * live. An action made obsolete by a newer render is discarded as well, after
+   * it has observed current authority.
    */
   private[spoonbill] def runBrowserAction(
     operation: => F[Unit],
     expectedRevision: Option[Long],
     departure: Long
   ): F[Unit] =
-    enqueueUserAction(operation, expectedRevision, () => Option.when(departure != sensitiveDeparture.get())(()))
+    enqueueUserAction(
+      operation,
+      expectedRevision,
+      () => Option.when(departure != sensitiveDeparture.get())(()),
+      obsoleteResult = Some(())
+    )
 
+  /**
+   * `obsoleteResult` is the outcome of a discarded obsolete browser event. Without
+   * it, an older revision is denied and closes the connection, as history and
+   * programmatic transitions require.
+   */
   private def enqueueUserAction[A](
     operation: => F[A],
     expectedRevision: Option[Long],
-    staleResult: () => Option[A]
+    staleResult: () => Option[A],
+    obsoleteResult: Option[A] = None
   ): F[A] =
     if (!guarded) Effect[F].delayAsync(operation)
     else
@@ -257,9 +297,21 @@ final class Frontend[F[_]: Effect](
               case None =>
                 beforeUserCallback
                   .fold(Effect[F].unit)(ready => Effect[F].delayAsync(ready()))
-                  .flatMap(_ => checkRenderRevision(expectedRevision))
+                  // Obsolete browser input must still observe revoked authority
+                  // before it is discarded. Future/invalid revisions close now.
+                  .flatMap(_ =>
+                    checkRenderRevision(
+                      expectedRevision,
+                      if (obsoleteResult.nonEmpty) ObsoleteRevision.BoundsOnly else ObsoleteRevision.Deny
+                    )
+                  )
                   .flatMap(_ => authorizeInteraction())
-                  .flatMap(_ => checkRenderRevision(expectedRevision))
+                  .flatMap(_ =>
+                    checkRenderRevision(
+                      expectedRevision,
+                      if (obsoleteResult.nonEmpty) ObsoleteRevision.Discard else ObsoleteRevision.Deny
+                    )
+                  )
                   .flatMap(_ =>
                     Effect[F].delayAsync {
                       // Readiness/authorization may have yielded to departure. This last
@@ -272,7 +324,14 @@ final class Frontend[F[_]: Effect](
                   )
             }
             .map(result => finish(Right(result)))
-            .recover { case error => finish(Left(error)) }
+            .recover {
+              case ObsoleteBrowserEvent =>
+                obsoleteResult match {
+                  case Some(value) => finish(Right(value))
+                  case None        => finish(Left(ObsoleteBrowserEvent))
+                }
+              case error => finish(Left(error))
+            }
         if (outputClosed.get() || !userActions.offerUnsafe(job)) {
           close().runAsyncForget
           finish(Left(new SessionAccessDenied))
@@ -950,6 +1009,28 @@ final class Frontend[F[_]: Effect](
 }
 
 object Frontend {
+
+  /**
+   * A browser event stamped with a revision older than the published view. It
+   * is discarded, never rebound to the newer DOM. It is distinct from a future
+   * or invalid revision and from failed authorization, which close.
+   */
+  private[spoonbill] case object ObsoleteBrowserEvent
+      extends RuntimeException("Obsolete browser event")
+      with scala.util.control.NoStackTrace
+
+  /** How a revision older than the published view is handled. */
+  private enum ObsoleteRevision {
+
+    /** Deny and close: history and programmatic transitions stay strict. */
+    case Deny
+
+    /** Discard the browser event; the valid connection stays open. */
+    case Discard
+
+    /** Check only that this connection published the revision. */
+    case BoundsOnly
+  }
 
   /** Receives one materialized output; never a reusable permission. */
   trait OutputAdmission[F[_]] {

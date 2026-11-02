@@ -7,13 +7,13 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
 import java.util.concurrent.{Executors, TimeoutException, TimeUnit}
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong, AtomicReference}
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.collection.mutable
 import scala.concurrent.{Future, Promise}
 import scala.concurrent.duration.*
-import spoonbill.{ActionForms, Context, Qsid, SensitiveRegion}
+import spoonbill.{ActionForms, Context, Metrics, Qsid, SensitiveRegion}
 import spoonbill.action.*
 import spoonbill.effect.{Effect, Queue}
 import spoonbill.internal.{jsonEscape, ApplicationInstance, Frontend}
@@ -80,20 +80,23 @@ class NoOpSensitiveAcknowledgementSpec extends AsyncFlatSpec with Matchers {
       result.future
     }
 
-    val appRef                 = new AtomicReference(Option.empty[ApplicationInstance[Future, String, Any]])
-    val guardClosed            = Promise[Unit]()
-    val authorityValid         = new AtomicBoolean(true)
-    val owner                  = new AtomicReference(ViewOwnershipEpoch.initial)
-    val revealInvoked          = new AtomicInteger()
-    val completionInvoked      = new AtomicInteger()
-    val reducerInvoked         = new AtomicInteger()
-    val confirmInvoked         = new AtomicInteger()
-    val rejected               = new AtomicInteger()
-    val priorTransitionEntered = Promise[Unit]()
-    val releasePriorTransition = Promise[String]()
-    val region                 = accepted(RegionId.parse("setup"))
-    val purpose                = accepted(Purpose.parse("setup"))
-    val audience               = Audience.fromUuid(UUID.randomUUID())
+    val appRef                     = new AtomicReference(Option.empty[ApplicationInstance[Future, String, Any]])
+    val guardClosed                = Promise[Unit]()
+    val authorityValid             = new AtomicBoolean(true)
+    val owner                      = new AtomicReference(ViewOwnershipEpoch.initial)
+    val revealInvoked              = new AtomicInteger()
+    val completionInvoked          = new AtomicInteger()
+    val reducerInvoked             = new AtomicInteger()
+    val confirmInvoked             = new AtomicInteger()
+    val oldConfirmationInvoked     = new AtomicInteger()
+    val currentConfirmationInvoked = new AtomicInteger()
+    val publishedRevision          = new AtomicLong(0L)
+    val rejected                   = new AtomicInteger()
+    val priorTransitionEntered     = Promise[Unit]()
+    val releasePriorTransition     = Promise[String]()
+    val region                     = accepted(RegionId.parse("setup"))
+    val purpose                    = accepted(Purpose.parse("setup"))
+    val audience                   = Audience.fromUuid(UUID.randomUUID())
     val control = new SessionAccessControl[Future, String] {
       def authorizeHttp(request: Request.Head, state: String) = Future.unit
       def open(qsid: Qsid, request: Request.Head, connection: ConnectionId) = {
@@ -139,12 +142,17 @@ class NoOpSensitiveAcknowledgementSpec extends AsyncFlatSpec with Matchers {
           }
         )
     }
-    val fieldName    = FieldName.parse("confirmation").fold(error => fail(error.toString), identity)
-    val confirmation = "synthetic + &: \"confirmation\""
+    val fieldName           = FieldName.parse("confirmation").fold(error => fail(error.toString), identity)
+    val confirmation        = "synthetic + &: \"confirmation\""
+    val currentConfirmation = "synthetic current confirmation"
     val confirm =
       actions.public(name("setup.confirm"), InputSchema.text(fieldName, 128), PublicPolicy.allow[Future, String]) {
         (value, _) =>
-          value shouldBe confirmation
+          value match {
+            case `confirmation`        => oldConfirmationInvoked.incrementAndGet()
+            case `currentConfirmation` => currentConfirmationInvoked.incrementAndGet()
+            case _                     => fail("Unexpected synthetic confirmation")
+          }
           confirmInvoked.incrementAndGet()
           Future.successful(UiOutcome.noUpdate[String])
       }
@@ -168,7 +176,10 @@ class NoOpSensitiveAcknowledgementSpec extends AsyncFlatSpec with Matchers {
     val service  = new SessionsService(config, new PageService(config))
     val qsid     = Qsid("noop-ack-device", UUID.randomUUID().toString)
     val request  = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
-    val incoming = Queue[Future, String]()
+    val incoming       = Queue[Future, String]()
+    val initialization = """^\[19,"[^"]+","([^"]+)","0",.*""".r
+    val patch          = """^\[20,"[^"]+","[0-9]+","([0-9]+)",.*""".r
+    val sensitive      = """^\[22,"([^"]+)","([^"]+)","([^"]+)",.*""".r
     def until(
       frontend: Frontend[Future],
       prefix: String,
@@ -178,13 +189,16 @@ class NoOpSensitiveAcknowledgementSpec extends AsyncFlatSpec with Matchers {
       if (remaining == 0) Future.failed(new AssertionError("Expected test frame was not published"))
       else
         frontend.outgoingMessages.pull().flatMap {
-          case Some(value) if value.startsWith(prefix) => Future.successful(seen :+ value)
-          case Some(value)                             => until(frontend, prefix, remaining - 1, seen :+ value)
-          case None                                    => Future.failed(new AssertionError("Transport closed before expected test frame"))
+          case Some(value) =>
+            // Track the newest published revision so a later submit can be current.
+            value match {
+              case patch(next) => publishedRevision.set(next.toLong)
+              case _           => ()
+            }
+            if (value.startsWith(prefix)) Future.successful(seen :+ value)
+            else until(frontend, prefix, remaining - 1, seen :+ value)
+          case None => Future.failed(new AssertionError("Transport closed before expected test frame"))
         }
-    val initialization = """^\[19,"[^"]+","([^"]+)","0",.*""".r
-    val patch          = """^\[20,"[^"]+","[0-9]+","([0-9]+)",.*""".r
-    val sensitive      = """^\[22,"([^"]+)","([^"]+)","([^"]+)",.*""".r
     def revision(frames: Vector[String]): Option[Long] =
       frames.collect { case patch(next) => next.toLong }.lastOption
     def counter(target: String) = s"""[0,"$target","submit","""
@@ -268,6 +282,7 @@ class NoOpSensitiveAcknowledgementSpec extends AsyncFlatSpec with Matchers {
       _ = if (scenario == Scenario.ReplacedOwner) owner.set(attachedNextOwner)
       // Inspected post-ack patches have deliberately not been delivered. The
       // second, distinct form therefore still submits the original revision.
+      discardsBefore = Metrics.ObsoleteBrowserEvents.get
       _ <-
         incoming.enqueue(submit(connection, deliveredRevision, confirmTarget, Vector(fieldName.value -> confirmation)))
       _ <- if (scenario == Scenario.NoUpdate) until(app.frontend, counter(confirmTarget)).map { completed =>
@@ -275,7 +290,39 @@ class NoOpSensitiveAcknowledgementSpec extends AsyncFlatSpec with Matchers {
              guardClosed.isCompleted shouldBe false
              confirmInvoked.get() shouldBe 1
            }
-           else guardClosed.future.map(_ => confirmInvoked.get() shouldBe 0)
+           else if (
+             Set(Scenario.IdentityModification, Scenario.StateModification, Scenario.QueuedModification).contains(
+               scenario
+             )
+           ) {
+             // A root resize from the same delivered view is obsolete as well. It
+             // uses the window listener's wire shape and has no application handler.
+             // The next submit is a same-rack barrier and carries a distinct
+             // value. It can succeed only if the obsolete submit did not run
+             // or advance this form's event counter, and the guard stayed open.
+             incoming
+               .enqueue(frame(7, s"$connection:$deliveredRevision:0:0:1:resize"))
+               .flatMap(_ =>
+                 incoming.enqueue(
+                   submit(
+                     connection,
+                     publishedRevision.get(),
+                     confirmTarget,
+                     Vector(fieldName.value -> currentConfirmation)
+                   )
+                 )
+               )
+               .flatMap(_ => until(app.frontend, counter(confirmTarget)))
+               .map { completed =>
+                 completed.last.stripSuffix("]").trim should endWith("1")
+                 oldConfirmationInvoked.get() shouldBe 0
+                 currentConfirmationInvoked.get() shouldBe 1
+                 confirmInvoked.get() shouldBe 1
+                 guardClosed.isCompleted shouldBe false
+                 // Other suites can only add to this process-wide counter.
+                 Metrics.ObsoleteBrowserEvents.get should be >= discardsBefore + 2
+               }
+           } else guardClosed.future.map(_ => confirmInvoked.get() shouldBe 0)
     } yield {
       revealInvoked.get() shouldBe 1
       completionInvoked.get() shouldBe 1
