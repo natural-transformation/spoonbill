@@ -1,5 +1,6 @@
 // Actual Scala service + assembled client; all actions are native DOM submits.
 const assert = require('node:assert/strict');
+const {setTimeout: pause} = require('node:timers/promises');
 assert.ok(process.env.PLAYWRIGHT_DRIVER_PATH, 'Use nix develop .#browser');
 assert.ok(process.env.SPOONBILL_UPDATE_TEST_ORIGIN, 'Start through test-sensitive-acknowledgement.sh');
 const {chromium, webkit} = require(process.env.PLAYWRIGHT_DRIVER_PATH);
@@ -12,6 +13,14 @@ async function control(context, command) {
   assert.equal(response.status(), 200, `Control ${command} must finish within its bound`);
   const text = await response.text();
   return text === 'ready' ? null : JSON.parse(text);
+}
+
+async function waitFor(condition, message, timeout = 10000) {
+  const deadline = Date.now() + timeout;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, message);
+    await pause(20);
+  }
 }
 
 async function exercise(browser, engine, mode) {
@@ -65,20 +74,46 @@ async function exercise(browser, engine, mode) {
     assert.equal(socket.revision, delivered.revision, 'Held patches must not advance the browser view');
     phase = 'confirm';
     await page.getByRole('button', {name: 'Confirm setup', exact: true}).click();
-    const result = await control(context, mode === 'no-update' ? 'await-confirm' : 'await-close');
+    // A newer publication makes the delivered view obsolete: its confirm is
+    // discarded without running, and the valid connection stays open.
+    const published = mode === 'identity' || mode === 'modify';
+    let result = await control(context,
+      mode === 'no-update' ? 'await-confirm' : published ? 'await-discard' : 'await-close');
     assert.equal(result.confirmations, mode === 'no-update' ? 1 : 0);
     if (mode === 'no-update') {
       assert.equal(result.completed, 2);
       assert.equal(result.closed, false);
       assert.equal(result.patches, 0);
-      assert.equal(socket.closed, false);
-      assert.equal(sockets.length, 1, 'No reconnect may stand in for the next action');
     }
     assert.equal(result.submissionCount, 2, 'The service must receive exactly the two actual UI submits');
     assert.deepEqual(result.submissions, [delivered, delivered], 'Both actual UI submits use the delivered view');
+    if (published) {
+      assert.equal(result.discarded, 1, 'Exactly the obsolete confirm is discarded');
+      assert.equal(result.closed, false, 'An obsolete browser event must not close the connection');
+      phase = 'delivery';
+      await control(context, 'deliver');
+      await waitFor(() => socket.revision !== delivered.revision, 'Delivered patches must reach the browser');
+      if (mode === 'modify') await page.waitForFunction(() => document.querySelector('#value')?.textContent === '1');
+      // The patch is applied by its message task; let a rendering opportunity pass.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve())));
+      phase = 'current-confirm';
+      await page.getByRole('button', {name: 'Confirm setup', exact: true}).click();
+      result = await control(context, 'await-confirm');
+      assert.equal(result.confirmations, 1, 'The current confirm runs once on the same connection');
+      assert.equal(result.discarded, 1);
+      assert.equal(result.closed, false);
+      assert.equal(result.submissionCount, 3, 'The service must receive exactly the three actual UI submits');
+      assert.deepEqual(result.submissions,
+        [delivered, delivered, {connection: delivered.connection, revision: socket.revision}],
+        'Only the last submit uses the newly delivered view');
+    }
+    if (mode === 'no-update' || published) {
+      assert.equal(socket.closed, false);
+      assert.equal(sockets.length, 1, 'No reconnect may stand in for the next action');
+    }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({engine, mode, acknowledged: true, admitted: result.confirmations === 1,
-      publicationHeld: result.patches > 0, closed: result.closed}));
+      publicationHeld: result.patches > 0, discarded: result.discarded, closed: result.closed}));
   } catch (error) {
     // Only bounded metadata; never log WebSocket payloads, documents or cookies.
     console.error(JSON.stringify({engine, mode, phase, failure: error.name,

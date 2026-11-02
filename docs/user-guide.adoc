@@ -846,6 +846,16 @@ not itself advance the guarded revision. A genuine modification still can.
 Inspect connection/revision metadata and completion signals without replaying
 action frames or weakening stale-view checks.
 
+A DOM event or custom callback that the browser sent before it applied a newer
+guarded patch is obsolete. Spoonbill discards it without running a handler and
+keeps the connection open. Each discard is counted in
+`Metrics.ObsoleteBrowserEvents` and logged at debug level without event data.
+The browser does not resend the event. A one-shot event, such as a `change` or a
+form submit, from that moment has no effect and must be repeated, and the
+browser can still show a value the server never received. Browser history
+changes keep the strict check: an obsolete one reconnects, and the new
+connection reads the current URL.
+
 For client protocol debugging, the browser exposes:
 
 [source,javascript]

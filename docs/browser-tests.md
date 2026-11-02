@@ -66,8 +66,9 @@ stop unrelated browsers or services.
 
 ## Sensitive acknowledgement against the Scala service
 
-Spoonbill 7.0.0's explicit `NoUpdate` behavior is checked through the actual
-standalone Scala service and assembled browser client:
+Spoonbill 7.0.0's explicit `NoUpdate` behavior and 8.0.1's handling of obsolete
+browser events are checked through the actual standalone Scala service and
+assembled browser client:
 
 ```bash
 env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop . --no-write-lock-file --command \
@@ -82,13 +83,15 @@ each run four cases:
 | Completion or authority change | Expected next action |
 | --- | --- |
 | `NoUpdate` | Confirm runs once at the delivered revision, with zero new patches and the same live connection. |
-| `Modify(identity)` | A patch is published; confirm from the old delivered revision is denied. |
-| State-changing `Modify` | A patch is published; confirm from the old delivered revision is denied. |
+| `Modify(identity)` | A patch is published and held. Confirm from the old delivered revision is discarded without running, and the connection stays open. After delivery, a current confirm runs once on the same connection. |
+| State-changing `Modify` | As for `Modify(identity)`; the delivered patch also shows the new state before the current confirm. |
 | Authority revocation after `NoUpdate` | Confirm is denied even without a publication. |
 
 The browser receives a real disclosure and sends its normal acknowledgement.
 An ordered, bounded output gate can withhold patch delivery while separate
-loopback control requests observe publication and completed event counters.
+loopback control requests observe publication, completed event counters and
+discarded obsolete events (`Metrics.ObsoleteBrowserEvents`). A later control
+request delivers the held patches without closing the connection.
 The test submits the still-visible confirm form through native UI interaction;
 it does not replay a captured action frame. The 250-second limit covers the whole
 Node runner across both browsers and all eight cases. Individual control requests,

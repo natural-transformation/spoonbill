@@ -1,5 +1,27 @@
 # Changelog
 
+## 8.0.1 — Unreleased
+
+This patch release changes how guarded connections treat obsolete browser
+events. Its only public API addition is one metric.
+
+- Keep a guarded connection open when a valid browser sends a DOM event or
+  custom callback for a view that a newer render has already replaced. This
+  happens in ordinary use: an input or window resize can cross a server-pushed
+  patch, or follow an earlier event whose handler rendered. The obsolete event
+  is discarded without running an old handler or selecting a newer one; the
+  next current event and heartbeats continue on the same connection.
+  Previously the server closed the connection and the browser reconnected.
+- Future or invalid revisions, revoked authority and replaced view ownership
+  still deny and close. Browser history and programmatic transitions keep their
+  strict check: an obsolete history change still reconnects, and the new
+  connection reads the current URL.
+- A discarded event is not replayed. A one-shot event, such as a `change` or a
+  form submit, sent before the newer view arrived has no effect and must be
+  repeated.
+- Count discarded events in `Metrics.ObsoleteBrowserEvents` and log each one at
+  debug level without event data.
+
 ## 8.0.0 — 2026-10-23
 
 This is a major release with public Scala signature/binary compatibility changes

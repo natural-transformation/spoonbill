@@ -10,7 +10,7 @@ import java.util.concurrent.{Executors, TimeoutException, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
-import spoonbill.{ActionForms, Context, Qsid, SensitiveRegion}
+import spoonbill.{ActionForms, Context, Metrics, Qsid, SensitiveRegion}
 import spoonbill.action.*
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Queue, Reporter, Stream}
@@ -85,6 +85,25 @@ object SensitiveAcknowledgementBrowserFixture {
       @volatile var connection = ""
       @volatile var revision   = "0"
       private val audience     = Audience.fromUuid(UUID.randomUUID())
+      // Runs are sequential in this JVM, so the process-wide counter's delta
+      // belongs to this run's single guarded connection.
+      private val discardsAtStart = Metrics.ObsoleteBrowserEvents.get
+      def discarded: Long         = Metrics.ObsoleteBrowserEvents.get - discardsAtStart
+
+      // Polls the counter until the browser's obsolete action has been discarded.
+      def awaitDiscard(): Future[Unit] = {
+        val seen     = Promise[Unit]()
+        val deadline = System.nanoTime() + 9.seconds.toNanos
+        def poll(): Unit =
+          if (discarded > 0) { seen.trySuccess(()); () }
+          else if (cancelled.get() || System.nanoTime() > deadline) {
+            seen.tryFailure(new TimeoutException("No obsolete browser event was discarded")); ()
+          } else {
+            timer.schedule(new Runnable { def run(): Unit = poll() }, 10, TimeUnit.MILLISECONDS); ()
+          }
+        poll()
+        seen.future
+      }
       private val control = new SessionAccessControl[Future, Int] {
         def authorizeHttp(request: Request.Head, state: Int): Future[Unit] = Future.unit
         def open(qsid: Qsid, request: Request.Head, id: ConnectionId): Future[SessionGuard[Future, Int]] =
@@ -187,12 +206,12 @@ object SensitiveAcknowledgementBrowserFixture {
       private val submission = """^\[7,"([0-9a-f-]{36}):([0-9]+):0:[0-9]+:[^:"]+:submit:.*""".r
 
       // Observe actual input without replacing, reordering or replaying it.
-      // Retain only two sanitized stamps; fields and payloads are never saved.
+      // Retain only three sanitized stamps; fields and payloads are never saved.
       def observeInput(bytes: Bytes): Bytes = {
         if (bytes.length <= 16384) bytes.asUtf8String match {
           case submission(id, atRevision) =>
             submissionCount.incrementAndGet()
-            submissions.updateAndGet(previous => (previous :+ (id -> atRevision)).take(2))
+            submissions.updateAndGet(previous => (previous :+ (id -> atRevision)).take(3))
           case _ => ()
         }
         bytes
@@ -204,7 +223,7 @@ object SensitiveAcknowledgementBrowserFixture {
         }.mkString("[", ",", "]")
         s"""{"acknowledgements":${acknowledgements.get()},"confirmations":${confirmations
           .get()},"modifications":${modifications.get()},"completed":${completed.get()},"patches":${patches
-          .get()},"connection":"$connection","revision":"$revision","closed":${guardClosed.isCompleted},"submissionCount":${submissionCount.get()},"submissions":$observed}"""
+          .get()},"connection":"$connection","revision":"$revision","closed":${guardClosed.isCompleted},"discarded":$discarded,"submissionCount":${submissionCount.get()},"submissions":$observed}"""
       }
 
       def gate(source: Stream[Future, Bytes]): Stream[Future, Bytes] = new Stream[Future, Bytes] {
@@ -278,9 +297,12 @@ object SensitiveAcknowledgementBrowserFixture {
             case "/fixture/arm"           => run.armed.set(true); Future.unit
             case "/fixture/revoke"        => run.revoked.set(true); Future.unit
             case "/fixture/release"       => run.close()
+            // Deliver held patches without closing, so the browser can act on the newer view.
+            case "/fixture/deliver"       => run.gateReleased.trySuccess(()); Future.unit
             case "/fixture/await-reveal"  => run.revealDone.future
             case "/fixture/await-patch"   => run.patchSeen.future
             case "/fixture/await-confirm" => run.confirmDone.future
+            case "/fixture/await-discard" => run.awaitDiscard()
             case "/fixture/await-close"   => run.guardClosed.future
             case "/fixture/status"        => Future.unit
             case _                        => Future.failed(new IllegalArgumentException("Unknown fixture control"))

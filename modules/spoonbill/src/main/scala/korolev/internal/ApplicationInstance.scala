@@ -208,7 +208,7 @@ final class ApplicationInstance[
         if (eventCounter == dem.eventCounter) {
           // Capture bindings for the admitted revision atomically with render
           // publication. Release the lock before any user effect/browser RPC.
-          frontend.selectFromPublishedView(dem.renderRevision) {
+          frontend.selectFromPublishedBrowserView(dem.renderRevision) {
             val propagation = calculateEventPropagation(dem.target, dem.eventType)
             if (frontend.recoversView) {
               val allHandlers = publishedEventHandlers.get()
@@ -231,7 +231,12 @@ final class ApplicationInstance[
           Effect[F].unit
         }
       }
-      .recover { case error => reporter.error(s"Unable to process event $dem", error) })
+      .recover {
+        // A newer render won during authorization. The event was discarded and
+        // counted by the frontend; it is not an application error.
+        case Frontend.ObsoleteBrowserEvent => ()
+        case error                         => reporter.error(s"Unable to process event $dem", error)
+      })
     if (frontend.guarded) frontend.runBrowserAction(process, dem.renderRevision, dem.sensitiveDeparture) else process.start.unit
   }
 
