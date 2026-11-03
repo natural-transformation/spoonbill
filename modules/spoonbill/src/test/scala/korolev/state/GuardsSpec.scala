@@ -1,11 +1,13 @@
 package spoonbill.state
 
 import avocet.Id
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, Future, Promise}
 import scala.concurrent.duration.*
+import scala.jdk.CollectionConverters.*
 import spoonbill.effect.{Effect, Queue, Reporter, Stream}
 import spoonbill.internal.Frontend
 import spoonbill.server.SessionAccessDenied
@@ -106,7 +108,98 @@ class GuardsSpec extends AnyFlatSpec with Matchers {
     await(drained)
   }
 
-  "Frontend" should "revalidate queued protected output when authority is revoked before pull" in {
+  it should "check a top-level write's current and candidate presentation with one observation" in {
+    val current    = new AtomicBoolean(true)
+    val single     = new AtomicInteger(0)
+    val observed   = new ConcurrentLinkedQueue[List[GuardState]]()
+    val underlying = new CountingStateManager(GuardState(1, permitted = true))
+    val guarded = new GuardedStateManager[Future, GuardState](
+      underlying,
+      state => { single.incrementAndGet(); allowed(state, current) },
+      authorizeEach = Some { states =>
+        observed.add(states)
+        states.foldLeft(Future.unit)((checked, state) => checked.flatMap(_ => allowed(state, current)))
+      }
+    )
+
+    await(guarded.write(Id.TopLevel, GuardState(2, permitted = true)))
+    observed.asScala.toList shouldBe List(List(GuardState(1, permitted = true), GuardState(2, permitted = true)))
+    single.get() shouldBe 0
+    // The fused observation still rejects a disallowed candidate before writing it.
+    intercept[SessionAccessDenied](await(guarded.write(Id.TopLevel, GuardState(3, permitted = false))))
+    await(underlying.delegate.read[GuardState](Id.TopLevel)) shouldBe Some(GuardState(2, permitted = true))
+  }
+
+  it should "observe authority once for a snapshot whose root is the checked current state" in {
+    val current    = new AtomicBoolean(true)
+    val checks     = new AtomicInteger(0)
+    val underlying = new CountingStateManager(GuardState(1, permitted = true))
+    val guarded = new GuardedStateManager[Future, GuardState](
+      underlying,
+      state => { checks.incrementAndGet(); allowed(state, current) }
+    )
+
+    await(guarded.snapshot)[GuardState](Id.TopLevel) shouldBe Some(GuardState(1, permitted = true))
+    checks.get() shouldBe 1
+  }
+
+  it should "still check a snapshot root that differs from the checked current state" in {
+    val current = new AtomicBoolean(true)
+    val checked = new ConcurrentLinkedQueue[GuardState]()
+    // A write between the current-state read and the snapshot replaces the root.
+    val underlying = new StateManager[Future] {
+      def snapshot: Future[StateManager.Snapshot] = Future.successful(new StateManager.Snapshot {
+        def apply[T: StateDeserializer](nodeId: Id): Option[T] =
+          Option.when(nodeId == Id.TopLevel)(GuardState(2, permitted = false).asInstanceOf[T])
+      })
+      def read[T: StateDeserializer](nodeId: Id): Future[Option[T]] =
+        Future.successful(Option.when(nodeId == Id.TopLevel)(GuardState(1, permitted = true).asInstanceOf[T]))
+      def write[T: StateSerializer](nodeId: Id, value: T): Future[Unit] = Future.unit
+      def delete(nodeId: Id): Future[Unit]                              = Future.unit
+    }
+    val guarded = new GuardedStateManager[Future, GuardState](
+      underlying,
+      state => { checked.add(state); allowed(state, current) }
+    )
+
+    intercept[SessionAccessDenied](await(guarded.snapshot))
+    checked.asScala.toList shouldBe List(GuardState(1, permitted = true), GuardState(2, permitted = false))
+  }
+
+  "Frontend" should "check a complete output producer once, at release" in {
+    val currentChecks  = new AtomicInteger(0)
+    val producerChecks = new AtomicInteger(0)
+    val permitted      = new AtomicBoolean(true)
+    val incoming       = Queue[Future, String](8)
+    val frontend = new Frontend[Future](
+      incomingMessages = incoming.stream,
+      heartbeatLimit = None,
+      authorize = Some(() => { currentChecks.incrementAndGet(); Future.successful(()) }),
+      captureOutputAuthorization = Some(() =>
+        Future.successful(new Frontend.CompleteOutputAuthorization[Future] {
+          def apply(): Future[Unit] = {
+            producerChecks.incrementAndGet()
+            if (permitted.get()) Future.successful(()) else Future.failed(new SessionAccessDenied)
+          }
+        })
+      )
+    )
+    try {
+      await(frontend.focus(Id("1")))
+      producerChecks.get() shouldBe 0
+      await(frontend.outgoingMessages.pull()) shouldBe Some("[5,\"1\" ]")
+      // One observation covered current and produced presentation.
+      producerChecks.get() shouldBe 1
+      currentChecks.get() shouldBe 0
+
+      await(frontend.focus(Id("1")))
+      permitted.set(false)
+      intercept[SessionAccessDenied](await(frontend.outgoingMessages.pull()))
+      producerChecks.get() shouldBe 2
+    } finally await(frontend.close())
+  }
+
+  it should "revalidate queued protected output when authority is revoked before pull" in {
     val current                = new AtomicBoolean(true)
     val revokedAuthorityDenied = new AtomicBoolean(false)
     val incoming               = Queue[Future, String](8)

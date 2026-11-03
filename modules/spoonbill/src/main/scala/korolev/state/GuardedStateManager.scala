@@ -17,8 +17,16 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
   underlying: StateManager[F],
   authorize: S => F[Unit],
   persist: Option[S => F[Unit]] = None,
-  onPersistenceFailure: Option[Throwable => F[Unit]] = None
+  onPersistenceFailure: Option[Throwable => F[Unit]] = None,
+  authorizeEach: Option[List[S] => F[Unit]] = None
 ) extends StateManager[F] {
+  // A top-level write's current and candidate presentation share one fresh
+  // authority observation when the guard supports it; otherwise each one is
+  // checked in order. Either way both are checked on every write.
+  private def authorizeAll(states: List[S]): F[Unit] = authorizeEach match {
+    case Some(check) => check(states)
+    case None        => states.foldLeft(Effect[F].unit)((checked, state) => checked.flatMap(_ => authorize(state)))
+  }
   private case class Writes(closing: Boolean, count: Int, waiters: List[Effect.Promise[Unit]])
   private val writes = new AtomicReference(Writes(false, 0, Nil))
   private val persistentWrites = persist.map { _ =>
@@ -44,29 +52,37 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
   }
   private def check: F[Unit] = current.flatMap(authorize)
 
-  def snapshot: F[StateManager.Snapshot] = check.flatMap(_ => underlying.snapshot).flatMap { snapshot =>
-    snapshot[S](Id.TopLevel) match {
-      case Some(state) => authorize(state).as(new StateManager.Snapshot {
-        // Legacy in-memory snapshots may be live views; pin the authorized root
-        // so rendering and its producer guard refer to the same presentation.
-        def apply[T: StateDeserializer](nodeId: Id): Option[T] =
-          if (nodeId == Id.TopLevel) Some(state.asInstanceOf[T]) else snapshot[T](nodeId)
-      })
-      case None => Effect[F].fail(new SessionAccessDenied)
+  def snapshot: F[StateManager.Snapshot] = current.flatMap { live =>
+    // Deny before taking a snapshot. The root is normally the same object as
+    // the checked current state; only a concurrently written root needs its
+    // own observation.
+    authorize(live).flatMap(_ => underlying.snapshot).flatMap { snapshot =>
+      snapshot[S](Id.TopLevel) match {
+        case Some(state) =>
+          val checked =
+            if (state.asInstanceOf[AnyRef] eq live.asInstanceOf[AnyRef]) Effect[F].unit else authorize(state)
+          checked.as(new StateManager.Snapshot {
+            // Legacy in-memory snapshots may be live views; pin the authorized root
+            // so rendering and its producer guard refer to the same presentation.
+            def apply[T: StateDeserializer](nodeId: Id): Option[T] =
+              if (nodeId == Id.TopLevel) Some(state.asInstanceOf[T]) else snapshot[T](nodeId)
+          })
+        case None => Effect[F].fail(new SessionAccessDenied)
+      }
     }
   }
 
   def read[T: StateDeserializer](nodeId: Id): F[Option[T]] = check.flatMap(_ => underlying.read[T](nodeId))
 
   def write[T: StateSerializer](nodeId: Id, value: T): F[Unit] = mutation(inWriteOrder {
-    check.flatMap { _ =>
-      // Top-level identity is the runtime's existing StateManager type boundary.
-      val candidate = if (nodeId == Id.TopLevel) authorize(value.asInstanceOf[S]) else Effect[F].unit
-      candidate.flatMap { _ =>
-        if (nodeId == Id.TopLevel) persist.fold(Effect[F].unit)(save => save(value.asInstanceOf[S]))
-        else Effect[F].unit
-      }.flatMap(_ => Effect[F].delayAsync(underlying.write(nodeId, value)))
-    }
+    // Top-level identity is the runtime's existing StateManager type boundary.
+    val checked =
+      if (nodeId == Id.TopLevel) current.flatMap(live => authorizeAll(List(live, value.asInstanceOf[S])))
+      else check
+    checked.flatMap { _ =>
+      if (nodeId == Id.TopLevel) persist.fold(Effect[F].unit)(save => save(value.asInstanceOf[S]))
+      else Effect[F].unit
+    }.flatMap(_ => Effect[F].delayAsync(underlying.write(nodeId, value)))
   })
 
   def delete(nodeId: Id): F[Unit] = mutation(inWriteOrder(check.flatMap { _ =>

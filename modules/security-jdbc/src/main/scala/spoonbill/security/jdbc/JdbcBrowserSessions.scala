@@ -508,7 +508,8 @@ final class JdbcBrowserSessions(
       }
     } catch {
       case error: JdbcAuthException => throw error
-      case NonFatal(_)              => throw new JdbcAuthException(JdbcAuthError.StorageFailure)
+      // Keep the cause: a deadlock abort is recognized by its SQLSTATE and retried.
+      case NonFatal(cause) => throw new JdbcAuthException(JdbcAuthError.StorageFailure, cause)
     }
   }
 

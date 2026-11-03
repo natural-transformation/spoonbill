@@ -112,6 +112,18 @@ final class HostSessionPrepared(
 }
 
 /**
+ * A provider's opt-in to concurrent authority checks. The coordinator then
+ * runs checks in concurrent read turns keyed by the browser binding, at most
+ * maxConcurrentChecks at once plus one for maintenance revalidation, which
+ * revalidates one view at a time. Every other coordinator turn stays
+ * exclusive. A provider returns it only when its own calls and the host's
+ * session resolution are safe to run concurrently.
+ */
+private[spoonbill] final case class BrowserCheckConcurrency(maxConcurrentChecks: Int) {
+  require(maxConcurrentChecks > 0, "maxConcurrentChecks must be positive")
+}
+
+/**
  * SPI implemented by authority providers, not application action handlers. All
  * captures derive from transport cookies; browser lookup IDs never grant
  * authentication. Every returned principal is current at its transaction's
@@ -122,6 +134,12 @@ final class HostSessionPrepared(
 trait BrowserPersistence[F[_], P] {
   def scope: BrowserProviderScope
   def capabilities: BrowserProviderCapabilities
+  /**
+   * Concurrent checks are an opt-in, never inherited: None keeps every
+   * coordinator turn exclusive. A provider returns a setting only when its
+   * checks, and the host's session resolution, are safe to run concurrently.
+   */
+  private[spoonbill] def checkConcurrency: Option[BrowserCheckConcurrency] = None
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
   /**

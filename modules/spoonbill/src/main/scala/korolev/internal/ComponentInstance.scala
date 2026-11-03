@@ -411,14 +411,14 @@ final class ComponentInstance[
   private def eventHandlersSnapshot: HandlerSnapshot =
     handlerSnapshot
 
+  // ApplicationInstance.onEvent observes current authority before each handler
+  // (the first one through the event's admission check).
   private def mapHandlers(handlers: Vector[Event[F, CS, E]]): EventHandlers =
     handlers.map { handler => (dem: DomEventMessage) =>
-      frontend.authorizeInteraction().flatMap { _ =>
-        frontend.browserAdmission(dem.sensitiveDeparture).invoke[F, Boolean](true) {
-          // Superseded events stop propagation without invoking any application
-          // handler. Synthetic lifecycle access has no browser generation.
-          handler.effect(BrowserAccess(dem, Some(dem.sensitiveDeparture))).as(handler.stopPropagation)
-        }
+      frontend.browserAdmission(dem.sensitiveDeparture).invoke[F, Boolean](true) {
+        // Superseded events stop propagation without invoking any application
+        // handler. Synthetic lifecycle access has no browser generation.
+        handler.effect(BrowserAccess(dem, Some(dem.sensitiveDeparture))).as(handler.stopPropagation)
       }
     }
 

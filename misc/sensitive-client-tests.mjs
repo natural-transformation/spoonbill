@@ -93,6 +93,28 @@ test('sensitive browser protocol', async t => {
       } finally { f.restore(); }
     });
 
+    await t.test('document mutations are observed only while a region is active', () => {
+      // An idle observer would queue a record for every application DOM patch.
+      const calls = [];
+      globalThis.MutationObserver = class {
+        observe() { calls.push('observe'); }
+        disconnect() { calls.push('disconnect'); }
+      };
+      const f = fixture(SensitiveRegions);
+      try {
+        assert.deepEqual(calls, []);
+        show(f, 1);
+        show(f, 2, 'b');
+        assert.deepEqual(calls, ['observe']);
+        f.regions.clear(connection, presentation(1), 'a');
+        assert.deepEqual(calls, ['observe']);
+        f.regions.clear(connection, presentation(2), 'b');
+        assert.deepEqual(calls, ['observe', 'disconnect']);
+        show(f, 3);
+        assert.deepEqual(calls, ['observe', 'disconnect', 'observe']);
+      } finally { f.restore(); delete globalThis.MutationObserver; }
+    });
+
     await t.test('unrelated mutations preserve output but ancestor replacement clears before detach', () => {
       const f = fixture(SensitiveRegions);
       try {

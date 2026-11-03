@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+This release reduces guarded event latency and timer memory, and adds an
+opt-in for concurrent authority checks with the JDBC provider. See the
+[event latency report](docs/event-latency-performance.md) and the
+[concurrent authorization design](docs/concurrent-authorization-design.md).
+
+- A guarded click that changes state now makes 5 authority observations instead
+  of 14: event admission, the transition's read, its write, the render's
+  snapshot and the patch's release. Each boundary still observes current
+  authority. A duplicate check that immediately followed another one with no
+  application code in between is removed, and checks of two presentations at one
+  boundary share one observation. With the JDBC provider this cuts PostgreSQL
+  round trips per click from 243 to 47. A custom `SessionGuard` sees 7
+  `authorize` calls, one per presentation checked.
+- Single-owner (exclusive) output is checked once, immediately before transport
+  handoff, for both the current and the produced presentation. This matches the
+  shared-ownership output admission. A rendered frame's presentation is still
+  authorized by the guarded snapshot it was rendered from.
+- Guarded sessions without extensions no longer authorize every state change
+  and published message only to invoke no callback.
+- An exclusive `JdbcBrowserClock` commits at most one checkpoint per second
+  instead of one per observation. Concurrent observations share one renewal; a
+  caller that waits for it samples time again, and fails closed after five
+  seconds. Returned times never exceed an acknowledged durable checkpoint; after
+  a quick restart, time can run up to one second ahead. Shared clock writers
+  still consult storage on every observation.
+- The scheduler removes canceled timers at once. Previously every canceled
+  bounded wait, idle timeout or RPC deadline kept its callback until its original
+  due time, retaining thousands of timer objects per busy guarded session.
+- `BrowserAuthentication.maintenance()` takes one short coordinator turn per
+  owned view instead of one turn for the whole sweep. Clicks and other
+  operations now interleave with a sweep instead of waiting for it. A sweep is
+  no longer atomic with respect to other coordinator operations: a view closed
+  during it is skipped, and a sweep that overlaps `close()` ends quietly.
+- `JdbcBrowserPersistence` takes an optional
+  `JdbcConcurrentChecks(clockSource, maxConcurrentChecks)` setting. With it,
+  authority checks run concurrently: the coordinator runs them in read turns
+  keyed by the browser binding, at most the cap at once plus one for
+  maintenance, and the provider takes the realm advisory lock in shared mode
+  for checks, so checks exclude only writers. Every writer keeps the exclusive
+  lock, and every other coordinator operation stays exclusive. A check denied
+  in a read turn is final at once, a check aborted by a database deadlock is
+  retried once, checks have their own admission budget, and lease renewals
+  never move a lease backward. The setting requires a reserved clock data
+  source, refuses `SharedViews`, and runs the host's session resolution
+  concurrently, so hosts must lock their rows in one global order. Without the
+  setting nothing changes; the previous constructor is kept for binary
+  compatibility.
+- With that setting, a provider-owned daemon thread renews the exclusive clock
+  lease ahead of its expiry while observations happen, so checks perform no
+  clock I/O inside their transactions in the normal case. An idle provider
+  commits nothing in the background. A lease that has expired anyway, because
+  the renewal fell behind, is still renewed by the caller inside its own
+  transaction as before, so bound the clock source's pool, statement, lock and
+  socket timeouts. `close()` stops the thread.
+- The browser client observes document mutations only while a sensitive region
+  is shown, instead of recording every DOM patch.
+
 ## 8.0.1 — 2026-11-02
 
 This patch release changes how guarded connections treat obsolete browser

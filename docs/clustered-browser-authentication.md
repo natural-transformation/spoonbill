@@ -259,6 +259,14 @@ state requires authoritative checks. The local coordinator also serializes
 these operations. This is a capacity consideration for simultaneous reloads or
 node-restart reconnects, not a measured throughput guarantee.
 
+Authority checks take the same realm lock. With the JDBC
+[concurrent-checks opt-in](browser-authentication.md#concurrent-authority-checks),
+an `ExclusiveScope` node holds it in shared mode for checks and excludes only
+writers. The lock is realm-wide, so a writer on any node pauses checks on every
+node, and a node of an earlier release, which still takes the exclusive lock
+for its checks, stays compatible during an upgrade. `SharedViews` nodes cannot
+opt in.
+
 An eligible unexpected socket close awaits one recovery probe with a five-second
 client timeout before reconnect backoff. The cap of three probes spans failed
 reconnect cycles and resets on application readiness. Successful intentional

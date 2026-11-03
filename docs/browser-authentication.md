@@ -351,13 +351,61 @@ The JDBC constructor requires an explicit `BrowserOwnership` mode. Selecting
 explicit deployment promise that authority changes and presentation ownership
 are coordinated through the owning integration; it is not automatic distributed
 cache invalidation. Realm-level transaction advisory locking serializes provider
-admission and retained-capacity checks. Raw authority writes outside that
-contract are unsupported.
+admission and retained-capacity checks; with the
+[concurrent-checks opt-in](#concurrent-authority-checks), authority checks hold
+that lock in shared mode and exclude only writers. Raw authority writes outside
+that contract are unsupported.
 
 Select `BrowserOwnership.SharedViews` for overlapping web nodes using the
 supported shared PostgreSQL integration. It revalidates shared authority and
 fences ownership per view; the [clustered guide](clustered-browser-authentication.md)
 describes publication, recovery and explicit presentation projections.
+
+### Concurrent authority checks
+
+By default every coordinator operation, including every authority check, takes
+one exclusive coordinator turn and one exclusive realm lock, so the guarded
+clicks of one realm serialize on their checks. An `ExclusiveScope` JDBC
+deployment can opt in to concurrent checks by passing
+`concurrentChecks = Some(JdbcConcurrentChecks(clockSource, maxConcurrentChecks))`
+to `JdbcBrowserPersistence`. Then:
+
+- The coordinator runs checks in read turns keyed by the browser binding: at
+  most `maxConcurrentChecks` at once plus one for maintenance revalidation, one
+  at a time per binding, and never beside a write turn. Turns are granted first
+  come, first served, so a waiting writer blocks later checks and cannot
+  starve. Over the cap a check waits in the coordinator's queue;
+  `maxPendingOperations` stays the only rejection point.
+- The provider takes the realm lock in shared mode for checks once the realm is
+  enrolled. Writers keep the exclusive lock, so logout, takeover, replacement
+  and reclamation still wait for running checks and block new ones. The lock is
+  realm-wide: a writer on any node pauses checks on every node. Checks have
+  their own admission budget, the cap plus one, so they cannot make host
+  business writes fail with capacity errors.
+- A check denied in a read turn is final at once: every later operation on that
+  view is denied on entry, and the view is detached right after. A check
+  aborted by a database deadlock is retried once; any other failure fails
+  closed. Every check is still a fresh transaction, and nothing is cached.
+- Host `resolve` runs concurrently. It must be safe for concurrent calls and
+  lock host rows in one global order, account before session as the example
+  does. A host that locks inconsistently can deadlock two checks, which the
+  database resolves by aborting one. Checks that take host rows `FOR UPDATE`
+  serialize on a hot account; prefer `FOR SHARE` where `resolve` only verifies.
+- A provider-owned daemon thread renews the clock lease ahead of its expiry
+  while observations happen, so checks perform no clock I/O inside their
+  transactions in the normal case. A lease that expired anyway is still renewed
+  by the caller inside its transaction. `close()` stops the thread.
+
+Size the main pool for the cap plus one, plus one exclusive writer, and reserve
+`clockSource` with bounded pool, statement, lock and socket timeouts: a stalled
+checkpoint otherwise keeps its caller's realm lock. Any failed check, including
+a coordinator rejection or the ten-second bound on a guard call, closes the
+session, and the reconnect is an exclusive turn with exclusive provider
+transactions. The queue bound is therefore an overload limit, not a load
+shedder: size the cap so that rejections stay rare. `SharedViews` deployments
+cannot opt in. Without the setting nothing changes. The
+[design](concurrent-authorization-design.md) records the reasoning and the
+measurements.
 
 ## JDBC deployment and credential custody
 
@@ -381,13 +429,25 @@ maintenance retires unusable material.
 
 `JdbcBrowserClock` durably checkpoints observed time independently of domain
 rollback. A new instance reads the checkpoint before using its clock. Under the
-provider's exclusive writer contract, equal/backward samples reuse only a locally
-acknowledged checkpoint; newer samples must commit another checkpoint. Shared
+provider's exclusive writer contract, observations reuse only a locally
+acknowledged checkpoint. After the first exact checkpoint, each new checkpoint
+is committed one second ahead of the observation it returns, so later
+observations within that second need no transaction. Concurrent observations
+share one checkpoint, so an exclusive writer uses at most one clock connection
+at a time. A caller that waits for another caller's checkpoint samples time
+again afterwards; it waits at most five seconds and then fails closed, as does
+a caller whose awaited checkpoint failed. Every returned time stays
+at or below an acknowledged checkpoint. After a quick restart, observed time can
+therefore run up to one second ahead of the system clock, which expires
+authority slightly early rather than late. Shared
 clock writers without that opt-in consult storage on every observation. An earlier
 clock after restart therefore cannot revive already observed expiry. A domain transaction may
 hold its connection while that checkpoint runs: provide a reserved `clockSource`
 or enough pool capacity for domain transactions plus a clock connection. These
-are real additional transactions, not a free or implicit clock guarantee.
+are real additional transactions, not a free or implicit clock guarantee. With
+[concurrent checks](#concurrent-authority-checks), the provider renews the lease
+ahead of its expiry from its own thread while observations happen, and the
+reserved `clockSource` is required.
 
 ## Recovery and release
 
@@ -409,8 +469,9 @@ transaction's committed disposition.
 fails closed; security history is not silently evicted. Schedule
 `browser.maintenance()` with one owned, nonoverlapping timer on every coordinator;
 construction starts no scheduler, and provider-only maintenance is insufficient.
-With default retention windows, start with a 30-second interval and monitor failed
-or delayed ticks. Review the [lease, reclamation, and capacity contract](request-admission-lifecycle.md#required-application-maintenance-and-observability)
+A sweep takes one short coordinator turn per owned view, so clicks do not wait
+for a whole sweep. With default retention windows, start with a 30-second
+interval and monitor failed or delayed ticks. Review the [lease, reclamation, and capacity contract](request-admission-lifecycle.md#required-application-maintenance-and-observability)
 when changing these windows. Stop new work and
 the timer, drain application proof work, then await `browser.close()` before
 shutting down its worker pool. JDBC close waits for admitted work and

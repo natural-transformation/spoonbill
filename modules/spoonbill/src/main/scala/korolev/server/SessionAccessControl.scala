@@ -100,6 +100,15 @@ trait SessionGuard[F[_], S] {
   def authorize(state: S): F[Unit]
 
   /**
+   * Authorize every presentation against one fresh authority observation, for
+   * example the current and the produced presentation of one frame. Nothing is
+   * cached between calls. The default makes one `authorize` call per state, in
+   * order; the coordinator's guard makes a single provider observation.
+   */
+  private[spoonbill] def authorizeEach(states: List[S])(using effect: spoonbill.effect.Effect[F]): F[Unit] =
+    states.foldLeft(effect.unit)((checked, state) => effect.flatMap(checked)(_ => authorize(state)))
+
+  /**
    * Derive connected presentation from freshly verified server authority.
    * Called after rebuilding the existing DOM baseline and before user events.
    */
