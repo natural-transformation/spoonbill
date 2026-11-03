@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 8.1.0 — 2026-11-03
 
 This release reduces guarded event latency and timer memory, and adds an
 opt-in for concurrent authority checks with the JDBC provider. See the

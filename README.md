@@ -23,10 +23,10 @@ Client and server are combined into a single app without any REST protocol in th
 
 ```scala
 // build.sbt
-libraryDependencies += "com.natural-transformation" %% "spoonbill" % "8.0.1"
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "8.1.0"
 ```
 
-The latest release is [Spoonbill 8.0.1](https://github.com/natural-transformation/spoonbill/releases/tag/v8.0.1),
+The latest release is [Spoonbill 8.1.0](https://github.com/natural-transformation/spoonbill/releases/tag/v8.1.0),
 published for Scala 3. Keep every Spoonbill module on the same version and
 recompile when upgrading from an earlier major release. Start with the
 [user guide](docs/user-guide.adoc) and [working examples](examples/). See the
