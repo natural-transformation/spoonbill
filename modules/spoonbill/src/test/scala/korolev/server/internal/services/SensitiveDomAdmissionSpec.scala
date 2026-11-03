@@ -21,7 +21,11 @@ import spoonbill.web.{PathAndQuery, Request}
 class SensitiveDomAdmissionSpec extends AsyncFlatSpec with Matchers {
   private implicit val effect: Effect[Future] = Effect.futureEffect
 
-  private def suspendedGuard(checkToHold: Int): Future[org.scalatest.Assertion] = {
+  /**
+   * Holds one guard check of a bubbling click while a sensitive departure
+   * arrives. `childBeforeHold` is the number of handlers that already ran.
+   */
+  private def suspendedGuard(checkToHold: Int, childBeforeHold: Int): Future[org.scalatest.Assertion] = {
     val timeoutExecutor = Executors.newSingleThreadScheduledExecutor((run: Runnable) => {
       val thread = new Thread(run, "sensitive-dom-admission-test-timeout")
       thread.setDaemon(true)
@@ -109,21 +113,21 @@ class SensitiveDomAdmissionSpec extends AsyncFlatSpec with Matchers {
       _ = armed.set(true)
       _ <- incoming.enqueue(s"""[0,"0:$target:click"]""")
       _ <- entered.future
-      // The queue's initial guard has returned. Hold either the application
-      // dispatch guard (2) or the component handler's final guard (3).
+      // Hold either the queue's admission guard (1), which also authorizes the
+      // first handler, or the guard before the second, bubbling handler (2).
       _ = checks.get() shouldBe checkToHold
-      _ = childInvoked.get() shouldBe 0
+      _ = childInvoked.get() shouldBe childBeforeHold
       _ = parentInvoked.get() shouldBe 0
       _ <- incoming.enqueue("[10,\"1\"]")
       _ <- incoming.enqueue("[6]")
       heartbeat <- until(app.frontend, "[16]")
       _ = heartbeat.last shouldBe "[16]"
-      _ = childInvoked.get() shouldBe 0
+      _ = childInvoked.get() shouldBe childBeforeHold
       _ = parentInvoked.get() shouldBe 0
       _ = release.success(())
       recovered <- until(app.frontend, "[25,")
       _ = recovered.last shouldBe "[25,1]"
-      _ = childInvoked.get() shouldBe 0
+      _ = childInvoked.get() shouldBe childBeforeHold
       _ = parentInvoked.get() shouldBe 0
       // Use the event counter actually published by this dispatch. Superseded
       // work may be discarded before or after selecting its handler chain.
@@ -138,7 +142,7 @@ class SensitiveDomAdmissionSpec extends AsyncFlatSpec with Matchers {
       binding <- app.topLevelComponentInstance.browserAccess.actionBinding
       programmatic <- ActionDispatcher.public(programmaticAction, Vector.empty, binding)
     } yield {
-      childInvoked.get() shouldBe 1
+      childInvoked.get() shouldBe childBeforeHold + 1
       parentInvoked.get() shouldBe 1
       programmatic match {
         case InvocationResult.Completed(_) => succeed
@@ -159,11 +163,11 @@ class SensitiveDomAdmissionSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
-  "Sensitive DOM admission" should "discard an event waiting for the application guard and admit a fresh post-barrier event" in {
-    suspendedGuard(checkToHold = 2)
+  "Sensitive DOM admission" should "discard an event waiting for its admission guard and admit a fresh post-barrier event" in {
+    suspendedGuard(checkToHold = 1, childBeforeHold = 0)
   }
 
-  it should "stop the handler and propagation while the component guard waits across departure" in {
-    suspendedGuard(checkToHold = 3)
+  it should "stop propagation while the next handler's guard waits across departure" in {
+    suspendedGuard(checkToHold = 2, childBeforeHold = 1)
   }
 }

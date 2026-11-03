@@ -16,7 +16,8 @@
 
 package spoonbill.effect
 
-import java.util.{Timer, TimerTask}
+import java.util.concurrent.{ScheduledFuture, ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
 import spoonbill.effect.Effect.Promise
 import spoonbill.effect.syntax._
 import scala.collection.concurrent.TrieMap
@@ -27,25 +28,34 @@ final class Scheduler[F[_]: Effect] {
 
   import Scheduler._
 
-  private val timer = new Timer()
+  // One timer thread, like java.util.Timer, but a canceled task leaves the queue
+  // at once. Frequent short-lived deadlines then retain neither queue slots nor
+  // the callbacks they close over until their original due time.
+  private val timer = {
+    val executor = new ScheduledThreadPoolExecutor(1, Scheduler.timerThreads)
+    executor.setRemoveOnCancelPolicy(true)
+    executor
+  }
+
+  private def after(delay: FiniteDuration)(run: => Unit): ScheduledFuture[?] =
+    timer.schedule((() => run): Runnable, delay.toMillis, TimeUnit.MILLISECONDS)
 
   def schedule(delay: FiniteDuration): F[Stream[F, Unit]] = Effect[F].delay {
     new Stream[F, Unit] {
       var canceled                                    = false
       var cb: Either[Throwable, Option[Unit]] => Unit = _
-      var task: TimerTask                             = _
+      var task: ScheduledFuture[?]                    = _
       def pull(): F[Option[Unit]] = Effect[F].promise { cb =>
         if (canceled) cb(Right(None))
         else {
           this.cb = cb
-          this.task = new TimerTask { def run(): Unit = cb(Right(Some(()))) }
-          timer.schedule(task, delay.toMillis)
+          this.task = after(delay)(cb(Right(Some(()))))
         }
       }
       def cancel(): F[Unit] = Effect[F].delay {
         if (task != null) {
           canceled = true
-          task.cancel()
+          task.cancel(false)
           task = null
           cb(Right(None))
         }
@@ -54,8 +64,8 @@ final class Scheduler[F[_]: Effect] {
   }
 
   def sleep(delay: FiniteDuration): F[Unit] = Effect[F].promise { cb =>
-    val task: TimerTask = new TimerTask { def run(): Unit = cb(Right(())) }
-    timer.schedule(task, delay.toMillis)
+    after(delay)(cb(Right(())))
+    ()
   }
 
   def scheduleOnce[T](delay: FiniteDuration)(job: => F[T]): F[JobHandler[F, T]] =
@@ -67,12 +77,11 @@ final class Scheduler[F[_]: Effect] {
       @volatile private var completed: Either[Throwable, T] = _
       @volatile private var promise: Promise[T]             = _
 
-      private val task = new TimerTask {
-        def run(): Unit =
-          job.runAsync { errorOrResult =>
-            if (promise != null) promise(errorOrResult)
-            else completed = errorOrResult
-          }
+      private val task = after(delay) {
+        job.runAsync { errorOrResult =>
+          if (promise != null) promise(errorOrResult)
+          else completed = errorOrResult
+        }
       }
 
       def result: F[T] = Effect[F].promise { cb =>
@@ -83,17 +92,21 @@ final class Scheduler[F[_]: Effect] {
       def cancel(): F[Unit] = Effect[F].delay(unsafeCancel())
 
       def unsafeCancel(): Unit = {
-        task.cancel()
+        task.cancel(false)
         ()
       }
-
-      timer.schedule(task, delay.toMillis)
     }
 }
 
 object Scheduler {
 
   private val cache = TrieMap.empty[AnyRef, Scheduler[List]]
+
+  // Non-daemon, as the java.util.Timer thread it replaces.
+  private val timerThreads: ThreadFactory = new ThreadFactory {
+    private val count = new AtomicInteger(0)
+    def newThread(task: Runnable): Thread = new Thread(task, s"spoonbill-scheduler-${count.incrementAndGet()}")
+  }
 
   implicit def schedulerF[F[_]: Effect]: Scheduler[F] = cache
     .getOrElseUpdate(Effect[F], new Scheduler[F].asInstanceOf[Scheduler[List]])

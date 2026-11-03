@@ -122,10 +122,17 @@ final class Frontend[F[_]: Effect](
     if (outputClosed.get()) throw new SessionAccessDenied
   }
 
-  private[spoonbill] def authorizeInteraction(): F[Unit] =
+  private[spoonbill] def authorizeInteraction(): F[Unit] = authorizeWith(authorize)
+
+  /**
+   * The interaction check with a selected authority observation. A complete
+   * output producer replaces the separate current-authority check because its
+   * single observation covers the current presentation as well.
+   */
+  private def authorizeWith(check: Option[() => F[Unit]]): F[Unit] =
     requireOpen().flatMap { _ =>
       if (replacementPending.get()) Effect[F].fail(new SessionAccessDenied)
-      else authorize.fold(Effect[F].unit)(check => Effect[F].delayAsync(check()))
+      else check.fold(Effect[F].unit)(run => Effect[F].delayAsync(run()))
     }.flatMap(_ => requireOpen()).recoverF {
       case error if replacementPending.get() => Effect[F].fail(error)
       case error                             => close().flatMap(_ => Effect[F].fail(error))
@@ -281,7 +288,8 @@ final class Frontend[F[_]: Effect](
     if (!guarded) Effect[F].delayAsync(operation)
     else
       Effect[F].promise[A] { callback =>
-        val id        = UUID.randomUUID()
+        // A local key, not an identifier; avoids the shared SecureRandom per action.
+        val id        = userActionKeys.incrementAndGet()
         val completed = new AtomicBoolean(false)
         def finish(result: Either[Throwable, A]): Unit =
           if (completed.compareAndSet(false, true)) {
@@ -409,7 +417,8 @@ final class Frontend[F[_]: Effect](
         rejectIfFull = true
       ).recoverF { case _ => close() }
   )
-  private val pendingUserActions = TrieMap.empty[UUID, () => Unit]
+  private val pendingUserActions = TrieMap.empty[Long, () => Unit]
+  private val userActionKeys     = new AtomicLong(0L)
   private val userActions        = Queue[F, () => F[Unit]](128)
   if (guarded) userActions.stream.foreach(job => job()).runAsyncForget
 
@@ -445,6 +454,9 @@ final class Frontend[F[_]: Effect](
         else outgoing.producer.collect { case value: FusedOutputAuthorization[F] @unchecked => value }
       val allowed = outgoing.producer match {
         case Some(_: FusedOutputAuthorization[F] @unchecked) if fused.nonEmpty => requireOpen()
+        // The release barrier: one fresh observation for current and produced
+        // presentation, immediately before transport handoff.
+        case Some(check: CompleteOutputAuthorization[F] @unchecked) => authorizeWith(Some(check))
         case Some(check) =>
           authorizeInteraction().flatMap(_ => Effect[F].delayAsync(check())).flatMap(_ => requireOpen())
         case None => requireOpen()
@@ -553,7 +565,10 @@ final class Frontend[F[_]: Effect](
           // Current and produced presentation are checked together when this
           // fixed frame is admitted, before any transport receives it.
           case _: FusedOutputAuthorization[F] @unchecked if outputAdmission.nonEmpty => requireOpen()
-          case _                                                                     => authorizeInteraction().flatMap(_ => Effect[F].delayAsync(check()))
+          // Likewise checked once at release. A rendered frame's presentation
+          // was already authorized by the guarded snapshot it was rendered from.
+          case _: CompleteOutputAuthorization[F] @unchecked => requireOpen()
+          case _                                            => authorizeInteraction().flatMap(_ => Effect[F].delayAsync(check()))
         }
         allowed.flatMap { _ =>
           if (!pending()) Effect[F].unit
@@ -588,7 +603,7 @@ final class Frontend[F[_]: Effect](
     sb.update(sb.length - 1, ' ') // replace last comma to space
     sb.append(']')
     val control = args.headOption.exists {
-      case code: Int => Set(0, 1, 9, 16, 17).contains(code)
+      case code: Int => ControlProcedureCodes.contains(code)
       case _         => false
     }
     sendRaw(sb.result(), protectedOutput = !control, producer = producer, pending = pending, rejectIfFull = rpc)
@@ -875,11 +890,11 @@ final class Frontend[F[_]: Effect](
           .filter(value => value >= 0L && value <= 9007199254740991L)
           .getOrElse(throw new IllegalArgumentException("Invalid view revision"))
         val innerCode = fields(2).toIntOption
-          .filter(Set(0, 1, 3).contains)
+          .filter(ViewCallbackCodes.contains)
           .getOrElse(throw new IllegalArgumentException("Invalid view callback"))
         Incoming(innerCode, fields(3), Some(revision))
       } else {
-        if (recoversView && Set(0, 1, 3).contains(callbackType))
+        if (recoversView && ViewCallbackCodes.contains(callbackType))
           throw new IllegalArgumentException("View callback requires a revision")
         Incoming(callbackType, args)
       }
@@ -1044,6 +1059,13 @@ object Frontend {
   private[spoonbill] trait FusedOutputAuthorization[F[_]] extends (() => F[Unit]) with OutputAdmission[F]
 
   /**
+   * Installed only by the guarded runtime for single-owner views. One fresh
+   * authority observation checks both the current and the produced
+   * presentation, so the release barrier needs no separate current check.
+   */
+  private[spoonbill] trait CompleteOutputAuthorization[F[_]] extends (() => F[Unit])
+
+  /**
    * Positive bounded waits; zero/negative values never disable RPC deadlines.
    * The file timeout covers waiting for an incoming transfer to be supplied,
    * not the application-controlled duration of consuming its stream.
@@ -1086,13 +1108,19 @@ object Frontend {
     fileTimeout = positiveTimeout("spoonbill.fileRpcTimeoutMillis", 30.seconds)
   )
 
+  // Compiled once: these run for every browser event and outgoing frame.
+  private val DomEventTarget        = java.util.regex.Pattern.compile("[0-9]+(_[0-9]+)*")
+  private val DomEventType          = java.util.regex.Pattern.compile("[A-Za-z][A-Za-z0-9_.-]*")
+  private val ControlProcedureCodes = Set(0, 1, 9, 16, 17)
+  private val ViewCallbackCodes     = Set(0, 1, 3)
+
   /** Header/parser failures must never include the credential-bearing frame. */
   private[spoonbill] def decodeDomEvent(args: String): DomEventMessage = {
     val parts   = args.split(":", 4)
     def invalid = new IllegalArgumentException("Invalid DOM event")
     if (
       parts.length < 3 || parts(1).length > 128 || parts(2).length > 96 ||
-      !parts(1).matches("[0-9]+(_[0-9]+)*") || !parts(2).matches("[A-Za-z][A-Za-z0-9_.-]*")
+      !DomEventTarget.matcher(parts(1)).matches() || !DomEventType.matcher(parts(2)).matches()
     )
       throw invalid
     val counter = parts(0).toIntOption.filter(_ >= 0).getOrElse(throw invalid)

@@ -59,16 +59,26 @@ final class BrowserAuthentication[F[_], S, P](
     case _                                                 => None
   }
 
-  private val gate  = new BrowserCoordinatorGate[F](configuration.maxPendingOperations)
+  // Concurrent checks are the provider's opt-in: with it, checks take read
+  // turns keyed by the browser binding; without it, every turn is exclusive.
+  private val concurrency = persistence.checkConcurrency
+  private val gate = new BrowserCoordinatorGate[F](
+    configuration.maxPendingOperations,
+    // One slot beyond the cap for maintenance, which revalidates one view at a time.
+    readCapacity = concurrency.fold(1)(_.maxConcurrentChecks + 1)
+  )
   private val store = new BoundedPresentationStore[F, S](storageLimits, clock)
   private final class Attached(val view: BrowserView[P]) {
-    var lease    = Option.empty[store.Lease]
-    var retiring = false
+    var lease = Option.empty[store.Lease]
+    // Only ever goes from false to true. A read turn may set it while other
+    // read turns run, so it is atomic; every turn denies a retiring view on entry.
+    val retiring = new AtomicBoolean()
   }
-  private var attached = Map.empty[ConnectionId, Attached]
+  // Mutated only in write turns; read turns read them concurrently.
+  @volatile private var attached = Map.empty[ConnectionId, Attached]
   // Claims stay owned until acknowledged cleanup, including failed setup and
   // uncertain release. The bound is enforced before dispatching provider claim.
-  private var owned = Map.empty[ConnectionId, Attached]
+  @volatile private var owned = Map.empty[ConnectionId, Attached]
   // Non-secret stamps live only while corresponding local presentation remains.
   private var previous = Map.empty[Qsid, (BrowserAuthorityStamp, spoonbill.security.ViewFence)]
   private val stopped  = new AtomicBoolean()
@@ -121,7 +131,7 @@ final class BrowserAuthentication[F[_], S, P](
   private def detach(value: Attached, retain: Boolean = false): F[Unit] =
     if (!owned.get(value.view.connectionId).contains(value)) F.unit
     else {
-      value.retiring = true
+      value.retiring.set(true)
       if (attached.get(value.view.connectionId).contains(value)) attached -= value.view.connectionId
       // Fence local managers before waiting for SQL. If settlement fails, discard
       // retained presentation but keep the owned resource available for retry.
@@ -135,20 +145,70 @@ final class BrowserAuthentication[F[_], S, P](
           invalidate(value).recover { case _ => () }.flatMap(_ => F.fail(error))
         }
     }
-  private def check(value: Attached): F[BrowserIdentity[P]] =
-    persistence
-      .authorize(value.view)
-      .recoverF { case error =>
-        detach(value).recover { case _ => () }.flatMap(_ => F.fail(error))
-      }
-      .flatMap {
+  /**
+   * One fresh observation of a view's authority inside a turn, and how a
+   * denial is settled there. In a write turn a denial detaches inline, as
+   * before. In a read turn it only marks the view retiring, which every later
+   * turn denies on entry; the detach then runs as a write turn after the read
+   * turn, scheduled by `observed`, so no turn ever waits for it.
+   */
+  private final class Observation(val value: Attached, read: Boolean) {
+    // True once this observation marked the view retiring and so owes it a detach.
+    var scheduled = false
+    def fail[A](error: Throwable): F[A] =
+      if (read) {
+        if (value.retiring.compareAndSet(false, true)) scheduled = true
+        F.fail(error)
+      } else detach(value).recover { case _ => () }.flatMap(_ => F.fail(error))
+    def deny[A]: F[A] = fail(new SessionAccessDenied)
+    def authority: F[BrowserIdentity[P]] =
+      persistence.authorize(value.view).recoverF { case error => fail(error) }.flatMap {
         case Right(identity) if value.view.identity.sameAuthority(identity) => F.pure(identity)
-        case _ =>
-          detach(value).recover { case _ => () }.flatMap(_ => denied)
+        case _                                                              => deny
       }
-  private def withView[A](id: ConnectionId)(run: Attached => F[A]): F[A] = gate {
-    attached.get(id).fold(denied[A])(run)
   }
+  private def check(value: Attached): F[BrowserIdentity[P]] = new Observation(value, read = false).authority
+  private def withView[A](id: ConnectionId)(run: Attached => F[A]): F[A] = gate {
+    attached.get(id) match {
+      case Some(value) if !value.retiring.get() => run(value)
+      case _                                    => denied
+    }
+  }
+
+  /**
+   * A check of an attached view: a read turn keyed by its binding when the
+   * provider allows concurrent checks, otherwise an exclusive turn as before.
+   * After a read turn that marked the view retiring, the detach runs as a
+   * write turn before the outcome is returned; a detach the gate rejects is
+   * left to the next maintenance sweep, which detaches every retiring view.
+   */
+  private def observed[A](id: ConnectionId)(run: Observation => F[A]): F[A] =
+    if (concurrency.isEmpty) withView(id)(value => run(new Observation(value, read = false)))
+    else
+      attached.get(id) match {
+        case None => denied
+        case Some(value) =>
+          val observation = new Observation(value, read = true)
+          val turn = gate.read(value.view.identity.binding) {
+            attached.get(id) match {
+              case Some(current) if (current eq value) && !value.retiring.get() => run(observation)
+              case _                                                             => denied
+            }
+          }
+          // One mask over the read turn and its settlement: a cancellation
+          // requested during the check cannot skip the detach the view is owed.
+          F.uncancelable {
+            turn.map(result => Right(result): Either[Throwable, A]).recover { case error => Left(error) }.flatMap {
+              result =>
+                val settled = if (observation.scheduled) gate(detach(value)).recover { case _ => () } else F.unit
+                settled.flatMap(_ => result.fold(F.fail, F.pure))
+            }
+          }
+      }
+
+  /** A turn for a check with no attachment, such as an HTTP check keyed by the binding cookie. */
+  private def checkTurn[A](binding: String)(operation: => F[A]): F[A] =
+    if (concurrency.isEmpty) gate(operation) else gate.read(binding)(operation)
 
   val authority: SessionAuthority[F, P] = new SessionAuthority[F, P] {
     override private[spoonbill] val replacement = replacementSupport.map {
@@ -156,7 +216,7 @@ final class BrowserAuthentication[F[_], S, P](
         gate {
           F.delay {
             val valid = attached.get(binding.connectionId).exists { actual =>
-              !actual.retiring && (handoff.issuer eq actual.view.issuer) &&
+              !actual.retiring.get() && (handoff.issuer eq actual.view.issuer) &&
               (handoff.invocationKey eq binding.replacementIdentity) &&
               handoff.connectionId == binding.connectionId && handoff.fence == actual.view.fence &&
               handoff.authority == actual.view.identity.authorityStamp && clock().isBefore(handoff.expiresAt)
@@ -166,7 +226,7 @@ final class BrowserAuthentication[F[_], S, P](
         }
     }
     def resolve(binding: InvocationBinding): F[Either[AccessDenied, P]] =
-      withView(binding.connectionId)(check)
+      observed(binding.connectionId)(_.authority)
         .map(identity => principal(identity).toRight(AccessDenied.Unauthenticated))
         .recover { case _: SessionAccessDenied => Left(AccessDenied.StaleAuthority) }
     def revalidate(binding: InvocationBinding, captured: P): F[AccessDecision] = resolve(binding).map {
@@ -177,13 +237,13 @@ final class BrowserAuthentication[F[_], S, P](
 
   private val access: SessionAccessControl[F, S] = new SessionAccessControl[F, S] {
     override private[spoonbill] def securityInstallation: Option[BrowserSecurityInstallation[F, S]] = Some(installation)
-    def authorizeHttp(request: Request.Head, state: S): F[Unit] = gate {
-      tokens(request)
-        .fold(denied[Option[P]]) { case (binding, token) =>
-          persistence.inspectPrincipal(binding, token).flatMap(requireResult)
-        }
-        .flatMap { observed =>
-          if (presentation.allowed(state, observed)) F.unit else denied
+    def authorizeHttp(request: Request.Head, state: S): F[Unit] = tokens(request) match {
+      case None => denied
+      case Some((binding, token)) =>
+        checkTurn(binding) {
+          persistence.inspectPrincipal(binding, token).flatMap(requireResult).flatMap { current =>
+            if (presentation.allowed(state, current)) F.unit else denied
+          }
         }
     }
     override def prepareHttp(qsid: Qsid, request: Request.Head, state: S): Option[F[Unit]] =
@@ -225,13 +285,16 @@ final class BrowserAuthentication[F[_], S, P](
           val old     = attached.values.find(_.view.qsid == qsid)
           val prior   = previous.get(qsid)
           val changed = prior.exists(_._1 != identity.authorityStamp)
+          // A denied predecessor whose deferred detach has not run yet must not
+          // hand its presentation to the successor: discard it like a changed identity.
+          val discard = changed || old.exists(_.retiring.get())
           // Same-identity takeover transfers the node map directly in claim; it
           // must not round-trip through the independently bounded disconnect cache.
-          val retire = if (changed) old.fold(F.unit)(previous => detach(previous)) else F.unit
+          val retire = if (discard) old.fold(F.unit)(previous => detach(previous)) else F.unit
           val prepare = retire.flatMap { _ =>
-            if (changed) store.invalidate(qsid, prior.get._2) else F.unit
+            if (discard) prior.fold(F.unit)(value => store.invalidate(qsid, value._2)) else F.unit
           }.flatMap(_ => store.storage.exists(qsid.deviceId, qsid.sessionId)).flatMap { exists =>
-            if (!exists || changed) {
+            if (!exists || discard) {
               // A changed identity cannot inherit any previous presentation nodes.
               if (exists) denied[Boolean]
               else
@@ -261,7 +324,7 @@ final class BrowserAuthentication[F[_], S, P](
                     override private[spoonbill] val replacementCompletion = replacementSupport.map {
                       provider => (handoff: CommittedReplacement, binding: InvocationBinding) =>
                         withView(owner) { actual =>
-                          if (binding.connectionId != owner || actual.retiring) denied[BrowserReplacementControl]
+                          if (binding.connectionId != owner || actual.retiring.get()) denied[BrowserReplacementControl]
                           else
                             provider
                               .admitReplacementCompletion(
@@ -270,7 +333,7 @@ final class BrowserAuthentication[F[_], S, P](
                               )
                               .flatMap(requireResult)
                               .map { control =>
-                                actual.retiring = true
+                                actual.retiring.set(true)
                                 control
                               }
                         }
@@ -288,7 +351,8 @@ final class BrowserAuthentication[F[_], S, P](
                       Option.when(shared || lease.resetBrowser)(view.fence.epoch)
                     override val outputAdmission: Option[SessionOutputAdmission[F, S]] =
                       Option.when(shared)(new SessionOutputAdmission[F, S] {
-                        def apply[A](output: A, produced: S, current: S): F[A] = withView(owner) { actual =>
+                        def apply[A](output: A, produced: S, current: S): F[A] = observed(owner) { observation =>
+                          val actual = observation.value
                           persistence
                             .admitOutputIf(actual.view, output) { identity =>
                               val who = principal(identity)
@@ -296,19 +360,24 @@ final class BrowserAuthentication[F[_], S, P](
                               presentation.allowed(produced, who) && presentation.allowed(current, who)
                             }
                             .flatMap(requireResult)
-                            .recoverF { case error =>
-                              detach(actual).recover { case _ => () }.flatMap(_ => F.fail(error))
-                            }
+                            .recoverF { case error => observation.fail(error) }
                         }
                       })
-                    def authorize(state: S): F[Unit] = withView(owner) { actual =>
-                      check(actual).flatMap { fresh =>
-                        if (presentation.allowed(state, principal(fresh))) F.unit
-                        else {
-                          detach(actual).flatMap(_ => denied)
-                        }
+                    def authorize(state: S): F[Unit] = observed(owner) { observation =>
+                      observation.authority.flatMap { fresh =>
+                        if (presentation.allowed(state, principal(fresh))) F.unit else observation.deny
                       }
                     }
+                    // One fresh provider observation admits every presentation.
+                    // A disallowed one detaches the view exactly like authorize.
+                    override private[spoonbill] def authorizeEach(states: List[S])(using Effect[F]): F[Unit] =
+                      observed(owner) { observation =>
+                        observation.authority.flatMap { fresh =>
+                          val who = principal(fresh)
+                          if (states.forall(state => presentation.allowed(state, who))) F.unit
+                          else observation.deny
+                        }
+                      }
                     def connected(state: S): F[S] = withView(owner) { actual =>
                       check(actual).flatMap { fresh =>
                         persistence.pending(view).flatMap(requireResult).flatMap { continuation =>
@@ -324,7 +393,7 @@ final class BrowserAuthentication[F[_], S, P](
                         gate.cleanup {
                           owned.get(owner) match {
                             case Some(current) if current eq value =>
-                              detach(value, retain = !value.retiring && applicationInitialized.get())
+                              detach(value, retain = !value.retiring.get() && applicationInitialized.get())
                             case _ => F.unit
                           }
                         }.recoverF { case error => F.delay(released.set(false)).flatMap(_ => F.fail(error)) }
@@ -483,19 +552,16 @@ final class BrowserAuthentication[F[_], S, P](
    * reauthorize it inside that transaction; this capture is not a write permit.
    */
   def currentView(context: PublicActionContext): F[Either[BrowserFailure, BrowserView[P]]] =
-    withView(context.connectionId)(value => check(value).map(_ => Right(value.view))).recover {
-      case _: SessionAccessDenied => Left(BrowserFailure.Denied)
-    }
+    observed(context.connectionId)(observation => observation.authority.map(_ => Right(observation.value.view)))
+      .recover { case _: SessionAccessDenied => Left(BrowserFailure.Denied) }
 
   /**
    * HTTP state loaders may derive display data from this current observation;
    * the mandatory HTTP guard still authorizes the resulting presentation.
    */
-  def currentPrincipal(request: Request.Head): F[Either[BrowserFailure, Option[P]]] = gate {
-    tokens(request) match {
-      case None                   => F.pure(Left(BrowserFailure.Denied))
-      case Some((binding, token)) => persistence.inspectPrincipal(binding, token)
-    }
+  def currentPrincipal(request: Request.Head): F[Either[BrowserFailure, Option[P]]] = tokens(request) match {
+    case None                   => F.pure(Left(BrowserFailure.Denied))
+    case Some((binding, token)) => checkTurn(binding)(persistence.inspectPrincipal(binding, token))
   }
   def complete(receipt: CommittedAuthentication): UiOutcome[S] = {
     require(persistence.accepts(receipt), "Completion receipt belongs to another or closed provider")
@@ -557,16 +623,56 @@ final class BrowserAuthentication[F[_], S, P](
     require(replacementSupport.nonEmpty, "Provider does not support replacement recovery")
     UiOutcome.RecoverReplacement(id)
   }
-  def maintenance(): F[Unit] = gate {
-    val retiring = owned.valuesIterator.filter(_.retiring).toVector
-    retiring
-      .foldLeft(F.unit)((done, value) => done.flatMap(_ => detach(value)))
-      .flatMap(_ => persistence.maintenance())
-      .flatMap(_ => owned.values.toVector.foldLeft(F.unit) { (done, value) =>
-        done.flatMap(_ => check(value).map(_ => ()).recover { case _: SessionAccessDenied => () })
-      })
-      .flatMap(_ => reclaimLocalHistory())
-      .flatMap(_ => observeCapacity())
+  /**
+   * A sweep takes short coordinator turns, so other operations interleave with
+   * it instead of waiting for all of it. The first turn detaches retiring
+   * views and runs provider maintenance. Each owned view is then revalidated
+   * in its own turn; a view closed or detached since that first turn is
+   * skipped. A last turn reclaims absent local history and observes capacity.
+   * A sweep that overlaps close ends quietly.
+   */
+  def maintenance(): F[Unit] =
+    gate {
+      val retiring = owned.valuesIterator.filter(_.retiring.get()).toVector
+      retiring
+        .foldLeft(F.unit)((done, value) => done.flatMap(_ => detach(value)))
+        .flatMap(_ => persistence.maintenance())
+        .map(_ => owned.values.toVector)
+    }
+      .flatMap(views => views.foldLeft(F.unit)((done, value) => done.flatMap(_ => revalidate(value))))
+      .flatMap(_ => unlessClosing(reclaimLocalHistory().flatMap(_ => observeCapacity())))
+
+  /** One owned view's revalidation in its own turn; a failed check detaches, inline or deferred. */
+  private def revalidate(value: Attached): F[Unit] =
+    if (gate.isClosing) F.unit
+    else {
+      val id = value.view.connectionId
+      def live = !value.retiring.get() && owned.get(id).contains(value) && attached.get(id).contains(value)
+      if (concurrency.isEmpty)
+        gate(if (live) check(value).map(_ => ()).recover { case _: SessionAccessDenied => () } else F.unit)
+      else if (!live) F.unit
+      else observed(id)(_.authority.map(_ => ())).recover { case _: SessionAccessDenied => () }
+    }
+
+  /** Skip a maintenance turn once close was requested, instead of being rejected by it. */
+  private def unlessClosing(turn: => F[Unit]): F[Unit] = if (gate.isClosing) F.unit else gate(turn)
+  /**
+   * A snapshot of the coordinator's counters, for sizing the concurrent-check
+   * cap and diagnosing overload: the read turns running and queued now, the
+   * write turns queued now, and, accumulated since construction, the checks
+   * that waited for their binding, the turns the queue bound rejected, and
+   * the time writers spent waiting.
+   */
+  def coordinatorStatistics: BrowserCoordinatorStatistics = {
+    val stats = gate.stats
+    BrowserCoordinatorStatistics(
+      runningReads = stats.runningReads,
+      queuedReads = stats.queuedReads,
+      queuedWrites = stats.queuedWrites,
+      bindingWaits = stats.bindingWaits,
+      rejections = stats.rejections,
+      writerWaitNanos = stats.writerWaitNanos
+    )
   }
   def close(): F[Unit] = gate.close {
     stopped.set(true)
@@ -589,3 +695,13 @@ final class BrowserAuthentication[F[_], S, P](
       .recoverF { case error => store.close().flatMap(_ => F.fail(error)) }
   }
 }
+
+/** Counters of the browser coordinator; see `BrowserAuthentication.coordinatorStatistics`. */
+final case class BrowserCoordinatorStatistics(
+  runningReads: Int,
+  queuedReads: Int,
+  queuedWrites: Int,
+  bindingWaits: Long,
+  rejections: Long,
+  writerWaitNanos: Long
+)

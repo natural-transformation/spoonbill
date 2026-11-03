@@ -9,7 +9,7 @@ import java.security.{MessageDigest, SecureRandom}
 import java.sql.{Connection, SQLException, SQLFeatureNotSupportedException, Timestamp}
 import java.time.Instant
 import java.util.{Base64, Properties, UUID}
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit, TimeoutException}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
@@ -282,6 +282,22 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         limits = limits,
         existingRunner = Some(runner),
         newId = newId
+      )
+    def withConcurrentChecks(
+      cap: Int,
+      ownership: BrowserOwnership = BrowserOwnership.ExclusiveScope
+    ): JdbcBrowserPersistence[Future, String] =
+      new JdbcBrowserPersistence(
+        source,
+        ExecutionContext.global,
+        realm,
+        "session",
+        () => clock.get(),
+        host,
+        vault,
+        ownership = ownership,
+        existingRunner = Some(observed),
+        concurrentChecks = Some(JdbcConcurrentChecks(source, cap))
       )
     def withViewLimit(value: Int): JdbcBrowserPersistence[Future, String] =
       withRunner(observed, BrowserPersistenceLimits(retainedViews = value))
@@ -2859,5 +2875,138 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.committedSessions shouldBe 1
       db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe 0
     } finally { release.trySuccess(()); await(provider.close()) }
+  }
+
+  "Concurrent checks" should "be an explicit opt-in that refuses shared views" in Using.resource(new Fixture) { db =>
+    db.persistence.checkConcurrency shouldBe None
+    val provider = db.withConcurrentChecks(4)
+    try provider.checkConcurrency shouldBe Some(BrowserCheckConcurrency(4))
+    finally await(provider.close())
+    intercept[IllegalArgumentException](db.withConcurrentChecks(4, BrowserOwnership.SharedViews))
+  }
+
+  it should "mark enrollment only after observing the retention row" in Using.resource(new Fixture) { db =>
+    val provider = db.withConcurrentChecks(2)
+    try {
+      provider.isEnrolled shouldBe false
+      // A rejected first transaction rolls its enrollment back and leaves the flag unset.
+      await(provider.inspectPrincipal("!" * 43, None)).isLeft shouldBe true
+      provider.isEnrolled shouldBe false
+      // The first accepted transaction inserts the row; the flag is never set on insert.
+      accepted(await(provider.inspectPrincipal(binding, None))) shouldBe None
+      provider.isEnrolled shouldBe false
+      accepted(await(provider.inspectPrincipal(binding, None))) shouldBe None
+      provider.isEnrolled shouldBe true
+    } finally await(provider.close())
+  }
+
+  it should "take the realm lock in shared mode for checks and exclusively for writers" in Using.resource(
+    new Fixture
+  ) { db =>
+    val provider = db.withConcurrentChecks(2)
+    try {
+      val view = open(provider)
+      provider.isEnrolled shouldBe true
+      Using.resource(db.source.getConnection) { held =>
+        def advisory(function: String): Unit =
+          Using.resource(held.prepareStatement(s"SELECT $function(hashtextextended(?,0))")) { query =>
+            query.setString(1, s"spoonbill-auth:${db.realm.length}:${db.realm}session")
+            Using.resource(query.executeQuery())(_.next()); ()
+          }
+        advisory("pg_advisory_lock_shared")
+        try {
+          // A shared holder admits a check and blocks a writer until it unlocks.
+          accepted(Await.result(provider.authorize(view), 3.seconds))
+          val writer = provider.capture("z" * 43, None, activate = false)
+          intercept[TimeoutException](Await.result(writer, 500.millis))
+          advisory("pg_advisory_unlock_shared")
+          accepted(await(writer))
+        } finally advisory("pg_advisory_unlock_shared")
+      }
+    } finally await(provider.close())
+  }
+
+  it should "never move a lease backward" in Using.resource(new Fixture) { db =>
+    val provider = db.withConcurrentChecks(2)
+    try {
+      val view   = open(provider)
+      val future = BrowserPersistenceConformance.start.plusSeconds(3600)
+      Using.resource(db.source.getConnection) { connection =>
+        Using.resource(
+          connection.prepareStatement("UPDATE spoonbill_browser_view SET last_seen=? WHERE realm=? AND view_id=?")
+        ) { update =>
+          update.setTimestamp(1, Timestamp.from(future)); update.setString(2, db.realm)
+          update.setString(3, BrowserView.key(qsid))
+          update.executeUpdate() shouldBe 1
+        }
+      }
+      accepted(await(provider.authorize(view)))
+      Using.resource(db.source.getConnection) { connection =>
+        Using.resource(connection.prepareStatement("SELECT last_seen FROM spoonbill_browser_view WHERE realm=? AND view_id=?")) {
+          query =>
+            query.setString(1, db.realm); query.setString(2, BrowserView.key(qsid))
+            Using.resource(query.executeQuery()) { rows =>
+              rows.next() shouldBe true
+              rows.getTimestamp(1).toInstant shouldBe future
+            }
+        }
+      }
+    } finally await(provider.close())
+  }
+
+  it should "retry a check once after a deadlock abort" in Using.resource(new Fixture) { db =>
+    val provider = db.withConcurrentChecks(2)
+    try {
+      val view = open(provider)
+      provider.isEnrolled shouldBe true
+      val before = db.domainTransactions.get()
+      Using.resource(db.source.getConnection) { held =>
+        held.setAutoCommit(false)
+        // Lock the view row first, the reverse of a check's slot-then-view order.
+        Using.resource(held.prepareStatement(
+          "SELECT 1 FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace=? AND view_id=? FOR UPDATE"
+        )) { query =>
+          query.setString(1, db.realm); query.setString(2, "session"); query.setString(3, BrowserView.key(qsid))
+          Using.resource(query.executeQuery())(_.next()) shouldBe true
+        }
+        val checked = provider.authorize(view)
+        // Wait until the check holds the slot row and waits for the view row.
+        def waiting: Boolean =
+          Using.resource(held.prepareStatement("SELECT count(*) FROM pg_locks WHERE NOT granted")) { query =>
+            Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) > 0 }
+          }
+        val deadline = System.nanoTime() + 5000000000L
+        while (!waiting && System.nanoTime() < deadline) Thread.sleep(20)
+        waiting shouldBe true
+        // Waiting for the slot row now closes the cycle; PostgreSQL aborts the check, which retries.
+        Using.resource(held.prepareStatement(
+          "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace=? AND binding_hash=? FOR UPDATE"
+        )) { query =>
+          query.setString(1, db.realm); query.setString(2, "session")
+          query.setBytes(3, MessageDigest.getInstance("SHA-256").digest(binding.getBytes("UTF-8")))
+          Using.resource(query.executeQuery())(_.next()) shouldBe true
+        }
+        held.rollback()
+        accepted(await(checked))
+      }
+      db.domainTransactions.get() - before shouldBe 2
+    } finally await(provider.close())
+  }
+
+  it should "renew the clock lease in the background while checks are active and stop on close" in Using.resource(
+    new Fixture
+  ) { db =>
+    val provider = db.withConcurrentChecks(2)
+    provider.renewingInBackground shouldBe true
+    try {
+      val view = open(provider)
+      accepted(await(provider.authorize(view)))
+      // Observations set demand; the task then commits a renewal without any further call.
+      val before   = db.openedConnections.get()
+      val deadline = System.nanoTime() + 3000000000L
+      while (db.openedConnections.get() == before && System.nanoTime() < deadline) Thread.sleep(50)
+      db.openedConnections.get() should be > before
+    } finally await(provider.close())
+    provider.renewingInBackground shouldBe false
   }
 }

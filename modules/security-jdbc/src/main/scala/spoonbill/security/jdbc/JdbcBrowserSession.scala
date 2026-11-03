@@ -54,8 +54,10 @@ final case class ActiveBrowserSession(hostSessionId: UUID, generation: Long, exp
  * escape that transaction so rejected preparation also rolls back factor
  * consumption, host session/completion rows and audit writes.
  */
-final class JdbcAuthException(val error: JdbcAuthError)
-    extends RuntimeException(s"Browser session operation rejected: $error")
+final class JdbcAuthException(val error: JdbcAuthError, cause: Throwable)
+    extends RuntimeException(s"Browser session operation rejected: $error", cause) {
+  def this(error: JdbcAuthError) = this(error, null)
+}
 
 /**
  * Trusted host integration. These are blocking SQL hooks, not browser input.

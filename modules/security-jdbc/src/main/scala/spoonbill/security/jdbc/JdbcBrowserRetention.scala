@@ -46,7 +46,8 @@ private[jdbc] final class JdbcBrowserRetention(realm: String, namespace: String,
 
   def initialize(connection: Connection): Unit = JdbcBrowserRetention.initialize(connection)
 
-  def enable(connection: Connection): Unit = {
+  /** Enroll the scope once, under the realm lock; true when the row already existed. */
+  def enable(connection: Connection): Boolean = {
     val present = sql(connection, "SELECT id_prefix FROM spoonbill_browser_retention WHERE realm=? AND namespace=? FOR UPDATE") {
       query => Using.resource(query.executeQuery())(rows => if (rows.next()) Some(rows.getLong(1)) else None)
     }
@@ -76,6 +77,7 @@ private[jdbc] final class JdbcBrowserRetention(realm: String, namespace: String,
         UPDATE spoonbill_browser_session s SET expires_at=LEAST(s.expires_at,b.deadline) FROM bounds b
         WHERE s.realm=b.realm AND s.cookie_namespace=b.namespace""", clock().plusSeconds(policy.maxSessionSeconds))
     }
+    present.nonEmpty
   }
 
   def credentialKey(connection: Connection): Array[Byte] = sql(connection,

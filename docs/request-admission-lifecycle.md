@@ -122,8 +122,11 @@ pending successor.
 
 Memory reclamation holds the same monitor as its immutable host/browser
 transaction. JDBC reclamation and provider transactions hold the same realm and
-namespace advisory transaction lock. A transaction already running must settle
-before cleanup can establish eligibility. A delayed preparation that starts after
+namespace advisory transaction lock. With the JDBC
+[concurrent-checks opt-in](browser-authentication.md#concurrent-authority-checks),
+authority checks hold that lock in shared mode; reclamation, like every writer,
+still waits for running checks and blocks new ones. A transaction already
+running must settle before cleanup can establish eligibility. A delayed preparation that starts after
 cleanup finds a missing or stale record before its host callback can run.
 Shared-node operations and restart use durable floors, issuance state, and the
 nondecreasing persisted clock. A backward wall-clock sample cannot restore expired
@@ -168,8 +171,10 @@ reasonable starting point. Choose an interval comfortably below the shortest
 configured owner lease and recovery window, account for scheduler/database delays,
 and monitor failed or delayed ticks. Coordinator maintenance revalidates attached
 owners, detaches expired authority, renews valid owners, reclaims absent local
-history, and observes capacity. Stop the application's scheduler during shutdown
-and await coordinator closure. Tiny test windows require correspondingly frequent
+history, and observes capacity. Each owned view is revalidated in its own
+short coordinator turn, so other operations interleave with a long sweep instead
+of waiting for it; a sweep is not atomic with respect to them. Stop the
+application's scheduler during shutdown and await coordinator closure. Tiny test windows require correspondingly frequent
 ticks; a connection whose owner lease expires must reload or reconnect through
 fresh admission rather than revive its old guard.
 

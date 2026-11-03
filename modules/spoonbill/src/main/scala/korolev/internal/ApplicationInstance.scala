@@ -170,12 +170,22 @@ final class ApplicationInstance[
       Effect[F].fail(error)
     }
 
-  private def beforeInteraction: F[Unit] =
+  private def awaitReadiness: F[Unit] =
     awaitReady.fold(Effect[F].unit)(ready => Effect[F].delayAsync(ready()))
-      .flatMap(_ => frontend.authorizeInteraction())
+
+  private def beforeInteraction: F[Unit] =
+    awaitReadiness.flatMap(_ => frontend.authorizeInteraction())
+
+  /**
+   * A guarded frontend's action queue authorizes each action immediately
+   * before running it, so the action itself only awaits readiness. Unguarded
+   * actions run directly and keep their own interaction check.
+   */
+  private def beforeAdmittedInteraction: F[Unit] =
+    if (frontend.guarded) awaitReadiness else beforeInteraction
 
   private def onHistory(message: Frontend.BrowserHistoryMessage): F[Unit] =
-    frontend.runUserAction(beforeInteraction.flatMap(_ => stateManager
+    frontend.runUserAction(beforeAdmittedInteraction.flatMap(_ => stateManager
       .read[S](Id.TopLevel)
       .flatMap { maybeTopLevelState =>
         router.toState
@@ -192,17 +202,22 @@ final class ApplicationInstance[
       }.flatMap(_ => message.sensitiveNavigation.fold(Effect[F].unit)(frontend.completeSensitiveNavigation)), message.renderRevision)
 
   private def onEvent(dem: DomEventMessage): F[Unit] = {
-    def aux(effects: List[DomEventMessage => F[Boolean]]): F[Unit] =
+    // The event's admission check authorized the first handler: only
+    // synchronous revision and handler selection run in between. A later
+    // handler starts after earlier user effects, which may have suspended, so
+    // it observes current authority again.
+    def aux(effects: List[DomEventMessage => F[Boolean]], admitted: Boolean): F[Unit] =
       effects match {
         case Nil => Effect[F].unit
         case effect :: xs =>
-          effect(dem).flatMap { stopPropagation =>
+          val authorized = if (admitted) Effect[F].unit else frontend.authorizeInteraction()
+          authorized.flatMap(_ => effect(dem)).flatMap { stopPropagation =>
             if (stopPropagation) Effect[F].unit
-            else aux(xs)
+            else aux(xs, admitted = false)
           }
       }
     val k = (dem.target, dem.eventType)
-    def process: F[Unit] = beforeInteraction.flatMap(_ => Effect[F]
+    def process: F[Unit] = beforeAdmittedInteraction.flatMap(_ => Effect[F]
       .delay(eventCounters.getOrElse(k, 0))
       .flatMap { eventCounter =>
         if (eventCounter == dem.eventCounter) {
@@ -220,7 +235,7 @@ final class ApplicationInstance[
           }.flatMap { allEffects =>
             if (allEffects.nonEmpty) {
               for {
-                _             <- aux(allEffects)
+                _             <- aux(allEffects, admitted = true)
                 newEventConter = dem.eventCounter + 1
                 _             <- Effect[F].delay(eventCounters.put(k, newEventConter))
                 _             <- frontend.setEventCounter(dem.target, dem.eventType, newEventConter)

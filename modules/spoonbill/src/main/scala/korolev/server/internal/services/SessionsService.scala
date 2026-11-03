@@ -233,6 +233,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       requireLive().flatMap(_ => required(guard.authorize(state))).flatMap(_ => requireLive()).recoverF { case error =>
         deny(error)
       }
+    // One fresh authority observation for several presentations, such as the
+    // current and the produced or candidate presentation of one operation.
+    def authorizeAll(guard: SessionGuard[F, S], states: List[S]): F[Unit] =
+      requireLive().flatMap(_ => required(guard.authorizeEach(states))).flatMap(_ => requireLive()).recoverF {
+        case error => deny(error)
+      }
 
     final class OutputAuthorization(raw: StateManager[F], guard: SessionGuard[F, S]) {
       private def current: F[S] = raw.read[S](avocet.Id.TopLevel).flatMap {
@@ -354,7 +360,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                   rawManager,
                   state => authorize(guard, state),
                   snapshots.map(session => (state: S) => session.commit(state)),
-                  snapshots.map(_ => (error: Throwable) => deny(error))
+                  snapshots.map(_ => (error: Throwable) => deny(error)),
+                  Some(states => authorizeAll(guard, states))
                 )
       _ <- Effect[F].delay(managerRef.set(Some(manager)))
       authorizeCurrent = () =>
@@ -363,12 +370,21 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                              case None        => deny(new SessionAccessDenied)
                            }
       outputAuthorization = guard.outputAdmission.map(_ => new OutputAuthorization(rawManager, guard))
+      // Single-owner output: one fresh observation at release checks the
+      // current presentation together with the one that produced the frame.
+      completeOutput = (produced: S) =>
+                         new Frontend.CompleteOutputAuthorization[F] {
+                           def apply(): F[Unit] = rawManager.read[S](avocet.Id.TopLevel).flatMap {
+                             case Some(current) => authorizeAll(guard, List(current, produced))
+                             case None          => deny(new SessionAccessDenied)
+                           }
+                         }
       captureProducer = () =>
                           outputAuthorization match {
                             case Some(output) => output.capture()
                             case None =>
                               rawManager.read[S](avocet.Id.TopLevel).flatMap {
-                                case Some(state) => Effect[F].pure(() => authorize(guard, state))
+                                case Some(state) => Effect[F].pure[() => F[Unit]](completeOutput(state))
                                 case None        => Effect[F].fail[() => F[Unit]](new SessionAccessDenied)
                               }
                           }
@@ -429,7 +445,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               config.delayedRender,
               Some(() => ready.get(())),
               Some(state => authorize(guard, state)),
-              outputAuthorization.map(output => (state: S) => output.producer(state))
+              Some(outputAuthorization.fold[S => () => F[Unit]](completeOutput)(output => state => output.producer(state)))
             )
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
@@ -451,16 +467,21 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // Publish before arming cleanup, so an early disconnect cannot be followed
       // by a late put resurrecting a closed app in the local registry.
       _ <- Effect[F].start(terminal.get(()).flatMap(_ => cleanup()))
+      // These checks guard extension callbacks only. Without extensions there
+      // is no callback to run, so no observation is made per state change. The
+      // streams are still drained: an eager effect subscribes them at creation.
       _ <- Effect[F].start(app.stateStream.flatMap(_.foreach { case (id, changed) =>
-             if (id != avocet.Id.TopLevel) Effect[F].unit
+             if (id != avocet.Id.TopLevel || handlers.isEmpty) Effect[F].unit
              else
-               authorize(guard, changed.asInstanceOf[S])
-                 .flatMap(_ => authorizeCurrent())
-                 .flatMap(_ => handlers.map(_.onState(changed.asInstanceOf[S])).sequence.unit)
+               rawManager.read[S](avocet.Id.TopLevel).flatMap {
+                 case Some(current) => authorizeAll(guard, List(changed.asInstanceOf[S], current))
+                 case None          => deny(new SessionAccessDenied)
+               }.flatMap(_ => handlers.map(_.onState(changed.asInstanceOf[S])).sequence.unit)
            }))
       _ <- Effect[F].start(
              app.messagesStream.foreach(message =>
-               authorizeCurrent().flatMap(_ => handlers.map(_.onMessage(message)).sequence.unit)
+               if (handlers.isEmpty) Effect[F].unit
+               else authorizeCurrent().flatMap(_ => handlers.map(_.onMessage(message)).sequence.unit)
              )
            )
       _ <- ready.put((), ())

@@ -44,11 +44,20 @@ export class SensitiveRegions {
     window.addEventListener('beforeunload', this._departure);
     window.addEventListener('popstate', this._history);
     document.addEventListener('visibilitychange', this._visibility);
-    if (typeof MutationObserver !== 'undefined') {
-      this._observer = new MutationObserver(() => this.reconcile());
-      this._observer.observe(document.documentElement, {subtree: true, childList: true,
-        attributes: true, attributeFilter: [REGION_ATTRIBUTE]});
-    }
+    // Observe the document only while a region is active: reconcile() has
+    // nothing to check otherwise, and an idle observer would still queue a
+    // record for every DOM patch the application applies.
+    this._observer = typeof MutationObserver !== 'undefined' ? new MutationObserver(() => this.reconcile()) : null;
+    this._observing = false;
+  }
+
+  _watch() {
+    const active = this._active.size > 0;
+    if (!this._observer || active === this._observing) return;
+    if (active) this._observer.observe(document.documentElement, {subtree: true, childList: true,
+      attributes: true, attributeFilter: [REGION_ATTRIBUTE]});
+    else this._observer.disconnect();
+    this._observing = active;
   }
 
   show(connection, presentation, region, purpose, remainingMillis, payload, expiresAtMillis) {
@@ -87,6 +96,7 @@ export class SensitiveRegions {
       const record = {connection, presentation, region, host, root,
         deadline: Math.min(now + remainingMillis, expiresAtMillis), timer: null};
       this._active.set(region, record);
+      this._watch();
       try {
         this._render(root, payload);
         if (Date.now() >= record.deadline) throw new Error('Sensitive presentation expired');
@@ -187,6 +197,7 @@ export class SensitiveRegions {
   _clearRecord(record, notify) {
     if (this._active.get(record.region) !== record) return;
     this._active.delete(record.region);
+    this._watch();
     clearTimeout(record.timer);
     // Clear canvas backing pixels as well as detaching its DOM node.
     for (const canvas of record.root.querySelectorAll('canvas')) canvas.width = canvas.height = 0;
@@ -263,6 +274,7 @@ export class SensitiveRegions {
     this._closed = true;
     this.clearAll(false);
     if (this._observer) this._observer.disconnect();
+    this._observing = false;
     window.removeEventListener('pagehide', this._navigation);
     window.removeEventListener('beforeunload', this._departure);
     window.removeEventListener('popstate', this._history);

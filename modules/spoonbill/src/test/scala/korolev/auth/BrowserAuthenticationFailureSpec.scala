@@ -11,9 +11,10 @@ import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, Future, Promise}
 import scala.concurrent.duration.*
 import spoonbill.Qsid
+import spoonbill.action.{AccessDenied, InvocationBinding}
 import spoonbill.data.Bytes
 import spoonbill.effect.Stream
-import spoonbill.security.Identifiers.ConnectionId
+import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
 import spoonbill.server.*
 import spoonbill.state.BoundedPresentationStore
 import spoonbill.state.javaSerialization.*
@@ -25,17 +26,22 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
   private class Fixture(
     limits: BoundedPresentationStore.Limits = BoundedPresentationStore.Limits(),
     ownership: BrowserOwnership = BrowserOwnership.ExclusiveScope,
-    allowed: String => Boolean = _ => true
+    allowed: String => Boolean = _ => true,
+    concurrency: Option[BrowserCheckConcurrency] = None
   ) {
     private val ids    = new AtomicLong()
     private val time   = Instant.parse("2026-10-11T00:00:00Z")
     val releaseFails   = new AtomicBoolean()
+    val releaseCalls   = new AtomicInteger()
     val authorizeFails = new AtomicBoolean()
     val authorizeCalls = new AtomicInteger()
     val authorizeNewGeneration = new AtomicBoolean()
     val factoryFails   = new AtomicBoolean()
     val releaseDelay   = new AtomicReference(Option.empty[Promise[Unit]])
     val authorizeDelay = new AtomicReference(Option.empty[Promise[Unit]])
+    // Holds one view's observation open so other coordinator work can be queued behind it.
+    val authorizeHold  = new AtomicReference(Option.empty[(ConnectionId, Promise[Unit])])
+    val authorizeLog   = new AtomicReference(Vector.empty[ConnectionId])
     val releaseError   = new IllegalStateException("Synthetic release failure")
     val authorizeError = new IllegalStateException("Synthetic authority storage failure")
     val config = BrowserConfiguration(
@@ -55,6 +61,7 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
     val persistence = new BrowserPersistence[Future, String] {
       def scope                                     = underlying.scope
       def capabilities                              = underlying.capabilities.copy(ownership = ownership)
+      override private[spoonbill] def checkConcurrency = concurrency
       def accepts(receipt: CommittedAuthentication) = underlying.accepts(receipt)
       def capture(binding: String, token: Option[String], activate: Boolean) =
         underlying.capture(binding, token, activate)
@@ -62,8 +69,10 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
         underlying.claim(identity, qsid, id, existingOnly)
       def authorize(view: BrowserView[String]) = {
         authorizeCalls.incrementAndGet()
+        authorizeLog.updateAndGet(_ :+ view.connectionId)
+        val held = authorizeHold.get().filter(_._1 == view.connectionId).fold(Future.unit)(_._2.future)
         if (authorizeFails.get()) Future.failed(authorizeError)
-        else authorizeDelay.get().fold(Future.unit)(_.future).flatMap(_ => underlying.authorize(view)).map {
+        else held.flatMap(_ => authorizeDelay.get().fold(Future.unit)(_.future)).flatMap(_ => underlying.authorize(view)).map {
           case Right(identity) if authorizeNewGeneration.get() =>
             // A provider may return a fresh observation of changed authority.
             // Preserve issuer and credentials so the coordinator must compare
@@ -74,7 +83,7 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
         }
       }
       def release(view: BrowserView[String]): Future[Unit] =
-        if (releaseFails.get()) Future.failed(releaseError)
+        if ({ releaseCalls.incrementAndGet(); releaseFails.get() }) Future.failed(releaseError)
         else releaseDelay.get().fold(Future.unit)(_.future).flatMap(_ => underlying.release(view))
       def begin(view: BrowserView[String], purpose: String) = underlying.begin(view, purpose)
       def bindChallenge(ceremony: BrowserCeremony, challenge: BrowserChallenge) =
@@ -105,29 +114,29 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
       )
     )
     val viewKey = Qsid("device", "view")
-    def request: HttpRequest[Future] = Request(
+    def request(binding: String = "b" * 43): HttpRequest[Future] = Request(
       Request.Method.Get,
       PathAndQuery.Root,
       Seq("Origin" -> "https://example.test"),
       None,
       Stream.empty[Future, Bytes],
-      "spoonbill_binding=" + "b" * 43
+      "spoonbill_binding=" + binding
     )
-    def open(qsid: Qsid = viewKey): SessionGuard[Future, String] = {
-      val guard = await(
-        configured.sessionAccessControl.get
-          .open(qsid, request, ConnectionId.fromUuid(new UUID(0L, ids.incrementAndGet())))
-      )
+    def open(qsid: Qsid = viewKey): SessionGuard[Future, String] = openOwned(qsid)._1
+    def openOwned(qsid: Qsid, binding: String = "b" * 43): (SessionGuard[Future, String], ConnectionId) = {
+      val owner = ConnectionId.fromUuid(new UUID(0L, ids.incrementAndGet()))
+      val guard = await(configured.sessionAccessControl.get.open(qsid, request(binding), owner))
       guard.applicationStateInitialization match {
         case ApplicationStateInitialization.Retained() => ()
         case ApplicationStateInitialization.Reconstructed(acknowledge) => await(acknowledge())
       }
-      guard
+      guard -> owner
     }
     def manager = await(configured.stateStorage.get(viewKey.deviceId, viewKey.sessionId))
     def close(): Unit = {
       releaseFails.set(false); authorizeFails.set(false); factoryFails.set(false)
       releaseDelay.get().foreach(_.trySuccess(())); authorizeDelay.get().foreach(_.trySuccess(()))
+      authorizeHold.get().foreach(_._2.trySuccess(()))
       await(browser.close())
     }
   }
@@ -252,7 +261,7 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
     val held  = Promise[Unit]()
     f.authorizeDelay.set(Some(held))
     val running = guard.authorize("fresh")
-    val queued  = f.browser.currentPrincipal(f.request)
+    val queued  = f.browser.currentPrincipal(f.request())
     val closing = guard.close()
     closing.isCompleted shouldBe false
     held.success(())
@@ -274,6 +283,171 @@ class BrowserAuthenticationFailureSpec extends AnyFlatSpec with Matchers {
       await(first.close())
       await(next.authorize("fresh"))
       await(next.close())
+    } finally f.close()
+  }
+
+  "Maintenance sweep" should "let other coordinator work interleave between per-view revalidations" in withFixture {
+    f =>
+      val (_, first)      = f.openOwned(Qsid("device", "first"))
+      val (_, second)     = f.openOwned(Qsid("device", "second"))
+      val (_, third)      = f.openOwned(Qsid("device", "third"))
+      val (click, fourth) = f.openOwned(Qsid("device", "fourth"))
+      val held            = Promise[Unit]()
+      f.authorizeHold.set(Some(first -> held))
+      f.authorizeLog.set(Vector.empty)
+      val sweep = f.browser.maintenance()
+      f.authorizeLog.get() shouldBe Vector(first)
+      // Queued while the first revalidation is held; it must not wait for the
+      // other views, which a single sweep turn would have checked first.
+      val authorized = click.authorize("fresh")
+      authorized.isCompleted shouldBe false
+      held.success(())
+      await(authorized)
+      await(sweep)
+      // The click ran before the remaining revalidations, which end with the
+      // click's own view.
+      f.authorizeLog.get() shouldBe Vector(first, fourth, second, third, fourth)
+  }
+
+  it should "skip a view closed after the sweep started" in withFixture { f =>
+    val (_, first)      = f.openOwned(Qsid("device", "first"))
+    val (second, other) = f.openOwned(Qsid("device", "second"))
+    val held            = Promise[Unit]()
+    f.authorizeHold.set(Some(first -> held))
+    f.authorizeLog.set(Vector.empty)
+    val sweep   = f.browser.maintenance()
+    val closing = second.close()
+    closing.isCompleted shouldBe false
+    held.success(())
+    await(closing)
+    await(sweep)
+    f.authorizeLog.get() shouldBe Vector(first)
+    await(f.underlying.resources).ownedViews shouldBe 1
+  }
+
+  it should "end quietly when close is requested during the sweep" in withFixture { f =>
+    val (_, first) = f.openOwned(Qsid("device", "first"))
+    f.openOwned(Qsid("device", "second"))
+    val held = Promise[Unit]()
+    f.authorizeHold.set(Some(first -> held))
+    f.authorizeLog.set(Vector.empty)
+    val sweep   = f.browser.maintenance()
+    val closing = f.browser.close()
+    closing.isCompleted shouldBe false
+    held.success(())
+    await(sweep)
+    await(closing)
+    f.authorizeLog.get() shouldBe Vector(first)
+  }
+
+  "Concurrent checks" should "run checks of different bindings concurrently and serialize one binding" in {
+    val f = new Fixture(concurrency = Some(BrowserCheckConcurrency(2)))
+    try {
+      val (first, a)  = f.openOwned(Qsid("device", "first"), binding = "a" * 43)
+      val (second, _) = f.openOwned(Qsid("device", "second"), binding = "c" * 43)
+      val (third, _)  = f.openOwned(Qsid("device", "third"), binding = "a" * 43)
+      val held        = Promise[Unit]()
+      f.authorizeHold.set(Some(a -> held))
+      f.authorizeLog.set(Vector.empty)
+      val one = first.authorize("fresh")
+      one.isCompleted shouldBe false
+      // Another binding's check runs beside the held one; the same binding's waits.
+      await(second.authorize("fresh"))
+      val more = third.authorize("fresh")
+      more.isCompleted shouldBe false
+      held.success(())
+      await(one)
+      await(more)
+      f.authorizeLog.get().size shouldBe 3
+      await(first.close()); await(second.close()); await(third.close())
+    } finally f.close()
+  }
+
+  it should "deny a queued check of a view denied in a read turn without another observation" in {
+    val f = new Fixture(concurrency = Some(BrowserCheckConcurrency(2)))
+    try {
+      val (guard, owner) = f.openOwned(f.viewKey)
+      val old            = f.manager
+      val held           = Promise[Unit]()
+      f.authorizeHold.set(Some(owner -> held))
+      f.authorizeLog.set(Vector.empty)
+      val denied  = guard.authorize("fresh")
+      val binding = new InvocationBinding(InvocationId.fromUuid(new UUID(0L, 99L)), owner,
+        expectedAuthority = Some(f.browser.authority))
+      val queued = f.browser.authority.resolve(binding)
+      queued.isCompleted shouldBe false
+      held.failure(f.authorizeError)
+      await(denied.failed) shouldBe f.authorizeError
+      await(queued) shouldBe Left(AccessDenied.StaleAuthority)
+      f.authorizeLog.get() shouldBe Vector(owner)
+      await(f.underlying.resources).ownedViews shouldBe 0
+      intercept[BoundedPresentationStore.Rejected](await(old.read[String](Id.TopLevel)))
+    } finally f.close()
+  }
+
+  it should "give a same-identity reconnect queued ahead of the deferred detach a fresh presentation" in {
+    val f = new Fixture(concurrency = Some(BrowserCheckConcurrency(2)))
+    try {
+      val (guard, owner) = f.openOwned(f.viewKey)
+      await(f.manager.write(Id("1_2"), "denied presentation"))
+      val held = Promise[Unit]()
+      f.authorizeHold.set(Some(owner -> held))
+      val denied = guard.authorize("fresh")
+      val reconnect = f.configured.sessionAccessControl.get
+        .resume(f.viewKey, f.request(), ConnectionId.fromUuid(new UUID(0L, 77L))).get
+      reconnect.isCompleted shouldBe false
+      held.failure(f.authorizeError)
+      await(denied.failed) shouldBe f.authorizeError
+      val resumed = await(reconnect)
+      resumed.applicationStateInitialization match {
+        case ApplicationStateInitialization.Reconstructed(complete) => await(complete())
+        case other => fail(s"Expected a fresh presentation, got $other")
+      }
+      await(f.manager.read[String](Id("1_2"))) shouldBe None
+      await(resumed.close())
+    } finally f.close()
+  }
+
+  it should "keep the presentation when the queue bound rejects a check" in {
+    val f = new Fixture(concurrency = Some(BrowserCheckConcurrency(2)))
+    try {
+      val (guard, owner) = f.openOwned(f.viewKey)
+      await(f.manager.write(Id("1_2"), "kept presentation"))
+      val held = Promise[Unit]()
+      f.authorizeHold.set(Some(owner -> held))
+      val running = guard.authorize("fresh")
+      // The queue bound is one: a second queued turn fills it and a third is rejected.
+      val queued   = f.browser.localHistoryUsage
+      val rejected = guard.authorize("fresh")
+      intercept[IllegalStateException](await(rejected))
+      held.success(())
+      await(running)
+      await(queued)
+      val resumed = await(f.configured.sessionAccessControl.get
+        .resume(f.viewKey, f.request(), ConnectionId.fromUuid(new UUID(0L, 78L))).get)
+      resumed.applicationStateInitialization match {
+        case ApplicationStateInitialization.Retained() => ()
+        case other => fail(s"Expected the kept presentation, got $other")
+      }
+      await(f.manager.read[String](Id("1_2"))) shouldBe Some("kept presentation")
+      await(resumed.close())
+    } finally f.close()
+  }
+
+  it should "let close release a view whose deferred detach the gate rejected" in {
+    val f = new Fixture(concurrency = Some(BrowserCheckConcurrency(2)))
+    try {
+      val (guard, owner) = f.openOwned(f.viewKey)
+      val held           = Promise[Unit]()
+      f.authorizeHold.set(Some(owner -> held))
+      f.releaseCalls.set(0)
+      val denied  = guard.authorize("fresh")
+      val closing = f.browser.close()
+      closing.isCompleted shouldBe false
+      held.failure(f.authorizeError)
+      await(denied.failed) shouldBe f.authorizeError
+      await(closing)
+      f.releaseCalls.get() shouldBe 1
     } finally f.close()
   }
 }

@@ -19,10 +19,11 @@ import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
 
 /**
- * Covers the last revision check of a guarded DOM event. The application
- * authorizes again after queue admission and before it selects handlers. A
- * render published during that step makes the event obsolete: it must not run
- * either handler, close the connection or report an application error.
+ * Covers the revision checks of a guarded DOM event. Queue admission authorizes
+ * the event once; the application then selects its handlers without another
+ * authorization. A render published while that authorization is pending makes
+ * the event obsolete: it must not run either handler, close the connection or
+ * report an application error.
  */
 class ObsoleteDomEventSelectionSpec extends AsyncFlatSpec with Matchers {
   private implicit val effect: Effect[Future] = Effect.futureEffect
@@ -46,7 +47,7 @@ class ObsoleteDomEventSelectionSpec extends AsyncFlatSpec with Matchers {
     def error(message: String, cause: Throwable): Unit       = { errors.add(message); () }
   }
 
-  "A guarded DOM event" should "be discarded when a newer render wins during the application's authorization" in {
+  "A guarded DOM event" should "be discarded when a newer render wins during its admission authorization" in {
     val timeoutExecutor = Executors.newSingleThreadScheduledExecutor { (run: Runnable) =>
       val thread = new Thread(run, "obsolete-dom-event-selection-test-timeout")
       thread.setDaemon(true)
@@ -81,10 +82,10 @@ class ObsoleteDomEventSelectionSpec extends AsyncFlatSpec with Matchers {
         Future.successful(new SessionGuard[Future, String] {
           val applicationStateInitialization = ApplicationStateInitialization.Retained[Future]()
           override val ownershipEpoch        = Some(ViewOwnershipEpoch.initial)
-          // Once armed, check 1 is queue admission and check 2 is the application's
-          // own authorization, which runs just before it selects handlers.
+          // Once armed, check 1 is the event's queue admission. It is the only
+          // authorization before the application selects handlers.
           def authorize(state: String) =
-            if (armed.get() && checks.incrementAndGet() == 2) {
+            if (armed.get() && checks.incrementAndGet() == 1) {
               entered.trySuccess(())
               release.future
             } else Future.unit
@@ -155,10 +156,10 @@ class ObsoleteDomEventSelectionSpec extends AsyncFlatSpec with Matchers {
       target = targets.head
       _      = armed.set(true)
       _     <- incoming.enqueue(click(connection, deliveredRevision, target))
-      // Queue admission accepted the then-current revision. The application's
-      // own authorization is now held, before handler selection.
+      // The then-current revision passed its bounds check. Queue admission's
+      // authorization is now held, before the obsolete-revision check.
       _ <- entered.future
-      _  = checks.get() shouldBe 2
+      _  = checks.get() shouldBe 1
       _ <- app.topLevelComponentInstance.browserAccess.transition(_ => "updated")
       published <- until(app.frontend, "[20,")
       publishedRevision = revision(published)
