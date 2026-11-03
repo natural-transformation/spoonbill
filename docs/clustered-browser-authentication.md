@@ -12,7 +12,7 @@ Shared-store mode has been available since 5.0.0. Existing single-owner
 applications keep their explicit exclusive mode and do not acquire the clustered
 snapshot cost unless they opt into it.
 
-For current applications, use matching **8.0.1** Spoonbill modules, the
+For current applications, use matching **8.1.0** Spoonbill modules, the
 [browser authentication guide](browser-authentication.md), and the
 [8.0 migration guide](migration-v8.md). Recompile custom integrations before
 running the correctness fixture below. Release-specific measurements in the
