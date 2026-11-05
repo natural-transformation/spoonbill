@@ -394,6 +394,7 @@ lazy val ce3 = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName                         := "spoonbill-ce3",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "render-timers-tests",
     libraryDependencies += "org.typelevel" %% "cats-effect" % ce3Version
   )
   .dependsOn(effect, spoonbill % "test->compile", http % "test->compile")
@@ -427,6 +428,7 @@ lazy val zio2 = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill-zio2",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "render-timers-tests",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio"               % zio2Version,
       "dev.zio" %% "zio-test"          % zio2Version % Test,
@@ -521,6 +523,7 @@ lazy val `file-streaming-example` = project
   .disablePlugins(HeaderPlugin)
   .settings(exampleSettings: _*)
   .settings(mainClass := Some("FileStreamingExample"))
+  .settings(Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "render-timers-tests")
   .dependsOn(akka, monix)
 
 lazy val delayExample = project

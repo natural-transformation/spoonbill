@@ -17,15 +17,11 @@ final class DelayExampleSpec extends AnyFlatSpec with Matchers {
     def addMisc(item: M): Unit                                   = misc += item
   }
 
-  "DelayExample.document" should "include a delay binding for Some state" in {
+  "DelayExample.document" should "include its dismissal timer for Some state" in {
     val rc = new MiscCollectingRenderContext[Context.Binding[Future, Option[Int], Any]]()
 
     DelayExample.document(Some(1))(rc)
 
-    val hasDelay = rc.misc.exists {
-      case Context.Delay(_, _) => true
-      case _                   => false
-    }
-    hasDelay shouldBe true
+    rc.misc should contain(DelayExample.resetAfterDelay)
   }
 }

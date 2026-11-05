@@ -22,11 +22,10 @@ object OneByOneFileStreamingExample extends SimpleAkkaHttpSpoonbillApp {
 
   val fileInput = elementId()
 
-  // Use Delay binding explicitly to avoid deprecated delay helper.
-  private val aliveIndicatorTick =
-    Context.Delay[Task, State, Any](1.second, access =>
-      access.transition(state => state.copy(aliveIndicator = !state.aliveIndicator))
-    )
+  val aliveIndicatorTick =
+    timer
+      .every(timerId("upload:alive"), spoonbill.timer.Period.from(1.second).toOption.get)
+      .update(spoonbill.action.StateUpdate.Modify[State](state => state.copy(aliveIndicator = !state.aliveIndicator)))
 
   def onUploadClick(access: Access): Task[Unit] = {
 

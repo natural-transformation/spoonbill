@@ -73,15 +73,27 @@ final class ComponentInstance[
   ) => StatefulRenderContext[Binding[F, CS, E]],
   scheduler: Scheduler[F],
   reporter: Reporter,
-  recovery: PartialFunction[Throwable, F[Unit]]
+  recovery: PartialFunction[Throwable, F[Unit]],
+  executionContext: ExecutionContext = ExecutionContext.global,
+  ownership: Option[ComponentOwnership[F]] = None,
+  timers: Option[TimerRuntime[F]] = None
 ) { self =>
 
   import ComponentInstance._
   import reporter.Implicit
 
   private val miscLock = new Object()
+  private val owners   = ownership.getOrElse(new ComponentOwnership(stateManager, reporter, executionContext))
+  private val owner    = owners.bind(nodeId, deleteOnRetire = nodeId != Id.TopLevel)
+  // A traversal snapshot can predate a completed predecessor deletion, even
+  // when bind no longer finds an outstanding handoff at this address.
+  @volatile private var baselineReady = !owner.reused
+  @volatile private var loading       = false
+  private var firstRender = true
 
-  private var lastParameters: P        = _
+  private[spoonbill] def stateSnapshot: F[StateManager.Snapshot] = owners.snapshot
+
+  @volatile private var lastParameters: P = _
   private val markedDelays             = mutable.Set.empty[Id] // Set of the delays which are should survive
   private val markedComponentInstances = mutable.Set.empty[Id]
   private val delays                   = mutable.Map.empty[Id, DelayInstance[F, CS, E]]
@@ -92,7 +104,39 @@ final class ComponentInstance[
   // Why we use '() => F[Unit]'? Because should
   // support scala.concurrent.Future which is has
   // strict semantic (runs immediately).
-  private val pendingEffects = Queue[F, () => F[Unit]]()
+  private val pendingEffects = Queue[F, ComponentLaneEntry[F]]()
+
+  private val timerTarget = new TimerRuntime.Target[F] {
+    val owner: TimerMachine.Owner                    = TimerMachine.Owner(self.owner.incarnation)
+    def active: Boolean                              = self.owner.isActive
+    def offer(entry: ComponentLaneEntry[F]): Boolean = pendingEffects.offerUnsafe(entry)
+    def deliver(select: () => Option[Any => Option[Any]]): F[Unit] =
+      self.owner.awaitOpen.flatMap {
+        case false => Effect[F].unit
+        case true =>
+          frontend.authorizeInteraction().flatMap(_ => browserAccess.state).flatMap { state =>
+            // Authorization/read may resume inline on a scheduler thread. The lane
+            // awaits this second dispatch, including its write and notification.
+            Effect[F].fork(Effect[F].delayAsync {
+              val admitted = frontend.selectLiveInteraction {
+                self.owner.admit().map(lease => lease -> select())
+              }.flatten
+              admitted match {
+                case None => Effect[F].unit
+                case Some((lease, selected)) =>
+                  lease.run {
+                    selected.flatMap(_(state)) match {
+                      case None => Effect[F].unit
+                      case Some(value) =>
+                        val next = value.asInstanceOf[CS]
+                        stateManager.write(nodeId, next).flatMap(_ => stateQueue.enqueue(nodeId, next, None))
+                    }
+                  }
+              }
+            })(executionContext)
+          }
+      }
+  }
 
   @volatile private var eventSubscription = Option.empty[E => _]
 
@@ -141,7 +185,10 @@ final class ComponentInstance[
       frontend.authorizeInteraction().flatMap(_ => Effect[F].delay(eventSubscription.foreach(f => f(message))))
 
     def state: F[CS] = {
-      val state = stateManager.read[CS](nodeId)
+      val state = owner.read(stateManager.read[CS](nodeId)).flatMap {
+        case Some(value) => Effect[F].pure(value)
+        case None        => Effect[F].fail(new spoonbill.server.SessionAccessDenied)
+      }
 
       state.map { maybeState =>
         maybeState
@@ -276,29 +323,34 @@ final class ComponentInstance[
   ): Unit = miscLock.synchronized {
     // Reset all event handlers delays and elements
     prepare()
-    val state = snapshot[CS](nodeId).map(Right(_)).getOrElse(component.initialState)
-    val node = state match {
-      case Right(value) =>
-        if (lastParameters != parameters) {
-          component.maybeUpdateState(parameters, value) match {
-            case None => ()
-            case Some(effect) =>
-              effect.flatMap { newState =>
-                stateManager.write(nodeId, newState) *>
-                  stateQueue.enqueue(nodeId, newState, None)
-              }.runAsyncForget // TODO Should be cancelable
-          }
-        }
-        component.render(parameters, value)
-      case Left(generateState) =>
-        generateState(parameters).flatMap { newState =>
-          stateManager.write(nodeId, newState) *>
-            stateQueue.enqueue(nodeId, newState, None)
-        }.runAsyncForget // TODO Should be cancelable
-        component.renderNoState(parameters)
+    if (firstRender) {
+      baselineReady = baselineReady && owners.snapshotIsCurrent(snapshot)
+      firstRender = false
     }
+    val hasBaseline = owner.isOpen && baselineReady
+    val state =
+      if (hasBaseline) snapshot[CS](nodeId).map(Right(_)).getOrElse(component.initialState)
+      else Left((_: P) => Effect[F].fail[CS](new IllegalStateException("Ownership handoff pending")))
+    val node = if (!hasBaseline) {
+      loadWhenReady(parameters)
+      component.renderNoState(parameters)
+    } else
+      state match {
+        case Right(value) =>
+          if (lastParameters != parameters) {
+            component.maybeUpdateState(parameters, value) match {
+              case None => ()
+              case Some(effect) =>
+                effect.flatMap(newState => writeLoaded(newState)).runAsyncForget
+            }
+          }
+          component.render(parameters, value)
+        case Left(generateState) =>
+          Effect[F].delayAsync(generateState(parameters)).flatMap(writeLoaded).runAsyncForget
+          component.renderNoState(parameters)
+      }
 
-    lastParameters = parameters
+    if (hasBaseline) lastParameters = parameters
     val proxy = createMiscProxy(
       rc,
       (proxy, misc) =>
@@ -317,10 +369,13 @@ final class ComponentInstance[
             val id = rc.currentContainerId
             markedDelays += id
             if (!delays.contains(id)) {
-              val delayInstance = new DelayInstance(delay, scheduler, reporter)
+              val delayInstance =
+                new DelayInstance(delay, scheduler, reporter, executionContext, timers.map(_.deadlines))
               delays.put(id, delayInstance)
               delayInstance.start(browserAccess, () => frontend.authorizeInteraction())
             }
+          case timer: TimerBinding[F, CS, E] @unchecked =>
+            timers.foreach(_.collect(timerTarget, timer.id, timer.nanos, timer.periodic, timer.restartOn, timer.update))
           case entry: ComponentEntry[F, CS, E, Any, Any, Any] @unchecked =>
             val id = rc.subsequentId
             nestedComponents.get(id) match {
@@ -330,6 +385,7 @@ final class ComponentInstance[
                 n.setEventsSubscription((e: Any) => entry.eventHandler(browserAccess, e).runAsyncForget)
                 n.applyRenderContext(entry.parameters, proxy, snapshot)
               case _ =>
+                nestedComponents.get(id).foreach(_.retire())
                 val n = entry.createInstance(
                   id,
                   sessionId,
@@ -339,7 +395,10 @@ final class ComponentInstance[
                   stateQueue,
                   scheduler,
                   reporter,
-                  recovery
+                  recovery,
+                  executionContext,
+                  Some(owners),
+                  timers
                 )
                 markedComponentInstances += id
                 nestedComponents.put(id, n)
@@ -356,6 +415,46 @@ final class ComponentInstance[
     refreshHandlerSnapshot()
   }
 
+  private def writeLoaded(newState: CS): F[Unit] = owner.admit() match {
+    case None => Effect[F].unit
+    case Some(lease) =>
+      lease.run {
+        stateManager.write(nodeId, newState).flatMap { _ =>
+          baselineReady = true
+          loading = false
+          stateQueue.enqueue(nodeId, newState, None)
+        }
+      }
+  }
+
+  private def loadWhenReady(parameters: P): Unit = if (!loading) {
+    loading = true
+    Effect[F]
+      .fork(Effect[F].delayAsync {
+        owner.awaitOpen.flatMap {
+          case false => Effect[F].unit
+          case true =>
+            owner.read(stateManager.read[CS](nodeId)).flatMap {
+              case None => Effect[F].unit
+              case Some(saved) =>
+                saved.orElse(component.initialState.toOption) match {
+                  case Some(value) => writeLoaded(value)
+                  case None =>
+                    Effect[F].delayAsync(component.initialState.swap.toOption.get(parameters)).flatMap { value =>
+                      lastParameters = parameters
+                      writeLoaded(value)
+                    }
+                }
+            }
+        }
+      })(executionContext)
+      .recover { case error =>
+        loading = false
+        reporter.error("Component initialization failed", error)
+      }
+      .runAsyncForget
+  }
+
   private def applyTransitionEffect(transition: TransitionAsync[F, CS]): F[CS] =
     for {
       maybeState <- stateManager.read[CS](nodeId)
@@ -368,21 +467,45 @@ final class ComponentInstance[
 
   private def applyTransition(transition: TransitionAsync[F, CS]): F[Unit] = {
     val effect = () =>
-      for {
-        newState <- applyTransitionEffect(transition)
-        _        <- stateQueue.enqueue(nodeId, newState, None)
-      } yield ()
-    pendingEffects.enqueue(effect)
+      ownedTurn {
+        for {
+          newState <- applyTransitionEffect(transition)
+          _        <- stateQueue.enqueue(nodeId, newState, None)
+        } yield ()
+      }
+    pendingEffects.enqueue(new ComponentLaneEntry(effect))
   }
 
   private def applyTransitionForce(transition: TransitionAsync[F, CS]): F[Unit] = Effect[F].promiseF[Unit] { cb =>
     val effect = () =>
-      (for {
-        newState <- applyTransitionEffect(transition)
-        _        <- stateQueue.enqueue(nodeId, newState, Some(cb))
-      } yield ()).recover { case error => cb(Left(error)) }
-    pendingEffects.enqueue(effect)
+      ownedTurn(
+        for {
+          newState <- applyTransitionEffect(transition)
+          _        <- stateQueue.enqueue(nodeId, newState, Some(cb))
+        } yield (),
+        () => cb(Left(new spoonbill.server.SessionAccessDenied))
+      ).recover { case error => cb(Left(error)) }
+    Effect[F].delay {
+      val entry = new ComponentLaneEntry(effect, () => cb(Left(new spoonbill.server.SessionAccessDenied)))
+      if (!pendingEffects.offerUnsafe(entry)) entry.discard()
+    }
   }
+
+  private def ownedTurn(operation: => F[Unit], discarded: () => Unit = () => ()): F[Unit] =
+    owner.awaitOpen.flatMap { _ =>
+      owner.admit() match {
+        case Some(lease) => lease.run(operation)
+        case None        => Effect[F].delay(discarded())
+      }
+    }
+
+  private[spoonbill] def updateFromHistory(update: CS => F[Option[CS]]): F[Unit] =
+    ownedTurn {
+      browserAccess.state.flatMap(update).flatMap {
+        case Some(value) => stateManager.write(nodeId, value).flatMap(_ => stateQueue.enqueue(nodeId, value, None))
+        case None        => Effect[F].unit
+      }
+    }
 
   type EventHandlers    = Vector[DomEventMessage => F[Boolean]]
   type AllEventHandlers = MapView[EventId, EventHandlers]
@@ -452,10 +575,7 @@ final class ComponentInstance[
     nestedComponents foreach { case (id, nested) =>
       if (!markedComponentInstances.contains(id)) {
         nestedComponents.remove(id)
-        nested
-          .destroy()
-          .after(stateManager.delete(id))
-          .runAsyncForget
+        nested.retire()
       } else nested.dropObsoleteMisc()
     }
 
@@ -484,21 +604,32 @@ final class ComponentInstance[
    *
    * MUST be invoked after closing connection.
    */
-  def destroy(): F[Unit] =
-    for {
-      _ <- Effect[F].delay(miscLock.synchronized {
-             delays.values.foreach(_.cancel())
-             delays.clear()
-           })
-      _ <- pendingEffects.close()
-      _ <- nestedComponents.values.toList
-             .map(_.destroy())
-             .sequence
-             .unit
-    } yield ()
+  private[spoonbill] def retire(): Unit = {
+    if (nodeId == Id.TopLevel) owners.closeAdmission()
+    timers.foreach(_.close(timerTarget.owner))
+    owner.retire()
+    miscLock.synchronized {
+      delays.values.foreach { delay =>
+        try delay.cancel()
+        catch { case NonFatal(error) => reporter.error("Delay cancellation failed", error) }
+      }
+      delays.clear()
+      pendingEffects.unsafeClose()
+      pendingEffects.dequeueAll().map(_.foreach(_.discard())).runAsyncForget
+      nestedComponents.values.foreach(_.retire())
+    }
+  }
 
-  private def applyPendingEffect(f: () => F[Unit]): F[Unit] =
-    f().recover { case e => reporter.error("Transition failed", e) }
+  def destroy(): F[Unit] = Effect[F].delay(retire()).flatMap { _ =>
+    val ownDrain = if (nodeId == Id.TopLevel) owners.closeAndDrain() else owner.awaitRetired
+    val cleanup  = ownDrain :: miscLock.synchronized(nestedComponents.values.toList).map(_.destroy())
+    cleanup.map(_.map[Option[Throwable]](_ => None).recover { case error => Some(error) }).sequence.flatMap { errors =>
+      errors.flatten.headOption.fold(Effect[F].unit)(Effect[F].fail[Unit])
+    }
+  }
+
+  private def applyPendingEffect(entry: ComponentLaneEntry[F]): F[Unit] =
+    entry.run().recover { case e => reporter.error("Transition failed", e) }
 
   protected def unsafeInitialize(): Unit =
     pendingEffects.stream
@@ -510,27 +641,57 @@ final class ComponentInstance[
     Effect[F].start(pendingEffects.stream.foreach(applyPendingEffect))
 }
 
-private object ComponentInstance {
+private[spoonbill] object ComponentInstance {
 
   import Context.Access
   import Context.Delay
 
-  final class DelayInstance[F[_]: Effect, S, M](delay: Delay[F, S, M], scheduler: Scheduler[F], reporter: Reporter) {
+  final class DelayInstance[F[_]: Effect, S, M](
+    delay: Delay[F, S, M],
+    scheduler: Scheduler[F],
+    reporter: Reporter,
+    executionContext: ExecutionContext = ExecutionContext.global,
+    deadlines: Option[Frontend.RpcDeadlineScheduler] = None
+  ) {
 
-    @volatile private var handler  = Option.empty[Scheduler.JobHandler[F, _]]
+    @volatile private var handler  = Option.empty[() => Unit]
     @volatile private var finished = false
 
     def isFinished: Boolean = finished
 
     def cancel(): Unit =
-      handler.foreach(_.unsafeCancel())
+      handler.foreach(_())
 
-    def start(access: Access[F, S, M], authorize: () => F[Unit]): Unit =
-      handler = Some {
-        scheduler.unsafeScheduleOnce(delay.duration) {
-          finished = true
-          authorize().flatMap(_ => Effect[F].delayAsync(delay.effect(access)))
+    private def report(error: Throwable): Unit = error match {
+      case _: spoonbill.server.SessionAccessDenied => ()
+      case Frontend.ObsoleteBrowserEvent           => ()
+      case _                                       => reporter.error("Delay failed", error)
+    }
+
+    def start(access: Access[F, S, M], authorize: () => F[Unit]): Unit = {
+      val driver = deadlines.getOrElse(new Frontend.RpcDeadlineScheduler {
+        def schedule(duration: scala.concurrent.duration.FiniteDuration)(wake: () => Unit): () => Unit = {
+          val job = scheduler.unsafeScheduleOnce(duration)(Effect[F].delay(wake()))
+          () => job.unsafeCancel()
         }
-      }
+      })
+      try
+        handler = Some(driver.schedule(delay.duration) { () =>
+          finished = true
+          try
+            Effect[F]
+              .fork(Effect[F].delayAsync {
+                authorize().flatMap { _ =>
+                  Effect[F].fork(Effect[F].delayAsync(delay.effect(access)))(executionContext)
+                }
+              })(executionContext)
+              .runAsync {
+                case Left(error) => report(error)
+                case Right(_)    => ()
+              }
+          catch { case NonFatal(error) => report(error) }
+        })
+      catch { case NonFatal(error) => finished = true; report(error) }
+    }
   }
 }

@@ -61,7 +61,10 @@ final class ApplicationInstance[
   delayedRender: FiniteDuration,
   awaitReady: Option[() => F[Unit]] = None,
   authorizeProduced: Option[S => F[Unit]] = None,
-  captureProducedAuthorization: Option[S => (() => F[Unit])] = None
+  captureProducedAuthorization: Option[S => (() => F[Unit])] = None,
+  timerSettings: spoonbill.timer.TimerSettings = spoonbill.timer.TimerSettings(),
+  timerDeadlines: Option[Frontend.RpcDeadlineScheduler] = None,
+  timerClock: () => Long = () => System.nanoTime()
 )(implicit ec: ExecutionContext) { application =>
 
   import reporter.Implicit
@@ -75,6 +78,13 @@ final class ApplicationInstance[
   private val stateHub      = Hub(stateQueue.stream)
   private val messagesQueue = Queue[F, M]()
   private val publishedEventHandlers = new AtomicReference(Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]])
+  private val timers = new TimerRuntime[F](
+    timerDeadlines.getOrElse(TimerRuntime.deadlineDriver(scheduler)),
+    timerClock,
+    ec,
+    reporter,
+    timerSettings
+  )
 
   private val renderContext = {
     DiffRenderContext[Binding[F, S, M]](savedBuffer = if (frontend.guarded) None else devMode.loadRenderContext())
@@ -112,7 +122,9 @@ final class ApplicationInstance[
       reporter,
       { case ex: Throwable =>
         topLevelComponentInstance.browserAccess.transition(recovery(ex))
-      }
+      },
+      ec,
+      timers = Some(timers)
     )
     componentInstance.setEventsSubscription(messagesQueue.offerUnsafe)
     componentInstance
@@ -127,7 +139,7 @@ final class ApplicationInstance[
 
   private def onState(maybeRenderCallback: Seq[Effect.Promise[Unit]]): F[Unit] =
     (for {
-      snapshot <- stateManager.snapshot
+      snapshot <- topLevelComponentInstance.stateSnapshot
       producedState = snapshot[S](Id.TopLevel).getOrElse(initialState)
       // Set page url if router exists
       _ <- router.fromState
@@ -137,6 +149,7 @@ final class ApplicationInstance[
                case None => frontend.changePageUrl(rootPath ++ uri)
              }}
       _ <- Effect[F].delay {
+             timers.beginRender()
              // Prepare render context
              renderContext.swap()
              // Avocet's diff algorithm mutates its internal IdBuilder. Reset it before each render
@@ -151,21 +164,26 @@ final class ApplicationInstance[
              // Avocet's DiffRenderContext expects the freshly-rendered document to be finalized
              // (flip the buffer + reset the id builder) before running `diff`.
              renderContext.finalizeDocument()
+             timers.prepareRender()
            }
       // Infer and perform changes
       handlers = if (frontend.recoversView) topLevelComponentInstance.allEventHandlers.toMap
         else Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]]
       _ <- authorizeProduced match {
-        case Some(_) =>
-          frontend.performDomChangesAuthorized(renderContext.diff, outputAuthorization(producedState),
-            () => publishedEventHandlers.set(handlers))
-        case None => frontend.performDomChanges(renderContext.diff)
-      }
+             case Some(_) =>
+               frontend.performDomChangesAuthorized(
+                 renderContext.diff,
+                 outputAuthorization(producedState),
+                 () => { publishedEventHandlers.set(handlers); timers.acceptTimerRender() }
+               )
+             case None => frontend.performDomChangesAccepted(renderContext.diff, () => timers.acceptTimerRender())
+           }
+      _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
       _ <- saveRenderContextIfNecessary()
       // Make spoonbill ready to next render
-      _ <- Effect[F].delay(topLevelComponentInstance.dropObsoleteMisc())
-      _  = maybeRenderCallback.foreach(_(Right(())))
+      _ = maybeRenderCallback.foreach(_(Right(())))
     } yield ()).recoverF { case error =>
+      timers.abortRender()
       maybeRenderCallback.foreach(_(Left(error)))
       Effect[F].fail(error)
     }
@@ -185,21 +203,18 @@ final class ApplicationInstance[
     if (frontend.guarded) awaitReadiness else beforeInteraction
 
   private def onHistory(message: Frontend.BrowserHistoryMessage): F[Unit] =
-    frontend.runUserAction(beforeAdmittedInteraction.flatMap(_ => stateManager
-      .read[S](Id.TopLevel)
-      .flatMap { maybeTopLevelState =>
-        router.toState
-          .lift(message.path)
-          .fold(Effect[F].delay(Option.empty[S]))(_(maybeTopLevelState.getOrElse(initialState)).map(Some(_)))
-      })
-      .flatMap {
-        case Some(newState) =>
-          stateManager
-            .write(Id.TopLevel, newState)
-            .after(stateQueue.enqueue(Id.TopLevel, newState, None))
-        case None =>
-          Effect[F].unit
-      }.flatMap(_ => message.sensitiveNavigation.fold(Effect[F].unit)(frontend.completeSensitiveNavigation)), message.renderRevision)
+    frontend.runUserAction(
+      beforeAdmittedInteraction
+        .flatMap(_ =>
+          topLevelComponentInstance.updateFromHistory { current =>
+            router.toState
+              .lift(message.path)
+              .fold(Effect[F].delay(Option.empty[S]))(_(current).map(Some(_)))
+          }
+        )
+        .flatMap(_ => message.sensitiveNavigation.fold(Effect[F].unit)(frontend.completeSensitiveNavigation)),
+      message.renderRevision
+    )
 
   private def onEvent(dem: DomEventMessage): F[Unit] = {
     // The event's admission check authorized the first handler: only
@@ -283,17 +298,20 @@ final class ApplicationInstance[
       else Effect[F].unit
 
     // Render current state using 'performDiff'.
-    def render(performDiff: (ChangesPerformer => Unit) => F[Unit]) =
+    def render() =
       for {
-        snapshot <- stateManager.snapshot
-        _        <- Effect[F].delay {
-                    topLevelComponentInstance.applyRenderContext((), renderContext, snapshot)
-                    // Avocet's DiffRenderContext expects the freshly-rendered document to be finalized
-                    // (flip the buffer + reset the id builder) before running `diff`.
-                    renderContext.finalizeDocument()
-                  }
-        _        <- performDiff(renderContext.diff)
-        _        <- saveRenderContextIfNecessary()
+        snapshot <- topLevelComponentInstance.stateSnapshot
+        _ <- Effect[F].delay {
+               timers.beginRender()
+               topLevelComponentInstance.applyRenderContext((), renderContext, snapshot)
+               // Avocet's DiffRenderContext expects the freshly-rendered document to be finalized
+               // (flip the buffer + reset the id builder) before running `diff`.
+               renderContext.finalizeDocument()
+               timers.prepareRender()
+             }
+        _ <- frontend.performDomChangesAccepted(renderContext.diff, () => timers.acceptTimerRender())
+        _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
+        _ <- saveRenderContextIfNecessary()
       } yield ()
 
     // Initial render for the "pre-rendered page" startup path.
@@ -304,28 +322,33 @@ final class ApplicationInstance[
     //   which breaks subsequent renders (see Issue14Spec after the Avocet upgrade).
     def renderInitialState(): F[Unit] =
       for {
-        snapshot <- stateManager.snapshot
-        _        <- Effect[F].delay {
-                    if (frontend.recoversView) {
-                      // The client resets to this empty root, so no prior DOM,
-                      // patch history or process-local buffer is trusted.
-                      renderContext.openNode(XmlNs.html, "html")
-                      renderContext.closeNode("html")
-                      renderContext.finalizeDocument()
-                      renderContext.swap()
-                      renderContext.reset()
-                    }
-                    topLevelComponentInstance.applyRenderContext((), renderContext, snapshot)
-                    renderContext.finalizeDocument()
-                  }
+        snapshot <- topLevelComponentInstance.stateSnapshot
+        _ <- Effect[F].delay {
+               timers.beginRender()
+               if (frontend.recoversView) {
+                 // The client resets to this empty root, so no prior DOM,
+                 // patch history or process-local buffer is trusted.
+                 renderContext.openNode(XmlNs.html, "html")
+                 renderContext.closeNode("html")
+                 renderContext.finalizeDocument()
+                 renderContext.swap()
+                 renderContext.reset()
+               }
+               topLevelComponentInstance.applyRenderContext((), renderContext, snapshot)
+               renderContext.finalizeDocument()
+               timers.prepareRender()
+             }
         _ <- if (frontend.recoversView) {
-          val produced = snapshot[S](Id.TopLevel).getOrElse(initialState)
-          val handlers = topLevelComponentInstance.allEventHandlers.toMap
-          frontend.resetDomChangesAuthorized(renderContext.diff,
-            outputAuthorization(produced),
-            () => publishedEventHandlers.set(handlers))
-        } else Effect[F].unit
-        _        <- saveRenderContextIfNecessary()
+               val produced = snapshot[S](Id.TopLevel).getOrElse(initialState)
+               val handlers = topLevelComponentInstance.allEventHandlers.toMap
+               frontend.resetDomChangesAuthorized(
+                 renderContext.diff,
+                 outputAuthorization(produced),
+                 () => { publishedEventHandlers.set(handlers); timers.acceptTimerRender() }
+               )
+             } else frontend.acceptInitialRender(() => timers.acceptTimerRender())
+        _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
+        _ <- saveRenderContextIfNecessary()
       } yield ()
 
     def start(): F[Unit] = if (devMode.saved && !frontend.guarded) {
@@ -345,7 +368,7 @@ final class ApplicationInstance[
         // generated by old code. The code may
         // consist changes in render, so we
         // should deliver them to the user.
-        _ <- render(frontend.performDomChanges)
+        _ <- render()
         // Start handlers (same as the "pre-rendered page" init path).
         _ <- frontend.browserHistoryMessages
                .foreach(onHistory)
@@ -372,6 +395,7 @@ final class ApplicationInstance[
                }.start
              }
         _ <- topLevelComponentInstance.initialize()
+        _ <- Effect[F].delay(timers.start())
       } yield ()
 
     } else {
@@ -408,8 +432,12 @@ final class ApplicationInstance[
              }
         // Init component
         _ <- topLevelComponentInstance.initialize()
+        _ <- Effect[F].delay(timers.start())
       } yield ()
     }
-    frontend.authorizeInteraction().flatMap(_ => start())
+    frontend.authorizeInteraction().flatMap(_ => start()).recoverF { case error =>
+      timers.abortRender()
+      Effect[F].fail(error)
+    }
   }
 }

@@ -5,6 +5,20 @@ import org.scalatest.matchers.should.Matchers
 
 class PseudoHtmlSpec extends AnyFlatSpec with Matchers {
 
+  "Render timers" should "remain inert and invisible in static testkit rendering" in {
+    import spoonbill.Context
+    import spoonbill.action.StateUpdate
+    import spoonbill.timer.{DelayDuration, Period}
+    import scala.concurrent.duration.{Duration, DurationInt}
+    import avocet.dsl.*, avocet.dsl.html.*
+    val context = Context[Option, Int, Unit]
+    val update = StateUpdate.Modify[Int](_ => throw new AssertionError("Static renderer evaluated a timer"))
+    val once = context.timer.after(context.timerId(), DelayDuration.from(Duration.Zero).toOption.get).update(update)
+    val periodic = context.timer.every(context.timerId(), Period.from(1.millis).toOption.get).update(update)
+    val plain: context.Node = div("before", span("after"))
+    PseudoHtml.render(div("before", once, periodic, span("after"))).pseudoDom shouldBe PseudoHtml.render(plain).pseudoDom
+  }
+
   "PseudoDom.render" should "map avocet.Node to PseudoDom.Element" in {
     import avocet.dsl.html._
 

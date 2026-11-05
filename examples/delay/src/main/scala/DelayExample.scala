@@ -14,12 +14,10 @@ object DelayExample extends SimpleAkkaHttpSpoonbillApp {
   import avocet.dsl._
   import avocet.dsl.html._
 
-  private val resetAfterDelay =
-    Context.Delay[Future, Option[Int], Any](3.seconds, access =>
-      access.transition { case _ =>
-        None
-      }
-    )
+  val resetAfterDelay =
+    timer
+      .after(timerId("notice:dismiss"), spoonbill.timer.DelayDuration.from(3.seconds).toOption.get)
+      .update(spoonbill.action.StateUpdate.Modify[Option[Int]](_ => None))
 
   val document: Render = {
     case Some(n) =>

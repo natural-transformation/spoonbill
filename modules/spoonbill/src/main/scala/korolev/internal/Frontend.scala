@@ -124,6 +124,19 @@ final class Frontend[F[_]: Effect](
 
   private[spoonbill] def authorizeInteraction(): F[Unit] = authorizeWith(authorize)
 
+  private[spoonbill] def interactionIsLive: Boolean = !outputClosed.get() && !replacementPending.get()
+
+  private[spoonbill] def selectLiveInteraction[A](select: => A): Option[A] = renderPublication.synchronized {
+    if (interactionIsLive) Some(select) else None
+  }
+
+  private[spoonbill] def acceptInitialRender(accepted: () => Unit): F[Unit] = Effect[F].delay {
+    renderPublication.synchronized {
+      if (!interactionIsLive) throw new SessionAccessDenied
+      accepted()
+    }
+  }
+
   /**
    * The interaction check with a selected authority observation. A complete
    * output producer replaces the separate current-authority check because its
@@ -171,7 +184,8 @@ final class Frontend[F[_]: Effect](
       Effect[F].delay {
         if (
           !guarded || replacementCompletion.isEmpty || binding.connectionId != actionConnectionId ||
-          !(handoff.invocationKey eq binding.replacementIdentity) || !replacementPending.compareAndSet(false, true)
+          !(handoff.invocationKey eq binding.replacementIdentity) ||
+          !renderPublication.synchronized(replacementPending.compareAndSet(false, true))
         )
           throw new SessionAccessDenied
         sensitiveOutcomes.close()
@@ -229,7 +243,7 @@ final class Frontend[F[_]: Effect](
 
   private[spoonbill] def close(): F[Unit] =
     Effect[F].delay {
-      outputClosed.set(true)
+      renderPublication.synchronized(outputClosed.set(true))
       val waiting = pendingUserActions.values.toList
       pendingUserActions.clear()
       waiting.foreach(_.apply())
@@ -513,32 +527,49 @@ final class Frontend[F[_]: Effect](
     resetView: Boolean,
     onPublished: () => Unit
   ): F[Unit] =
-    if (recoversView && (str.startsWith("[4,") || str.startsWith("[4 ") || str == "[4]")) Effect[F].delay {
-      // Reserve the revision and publish in one critical section *after* the
-      // asynchronous authorization checks. Concurrent producers cannot reorder
-      // sequence numbers or publish a direct property mutation without a stamp.
-      renderPublication.synchronized {
-        import spoonbill.security.Versions.ViewOwnershipEpoch.*
-        val frame = if (resetView) {
-          if (recoveryStarted.get()) throw new SessionAccessDenied
-          val epoch = viewRecoveryEpoch.getOrElse(throw new SessionAccessDenied)
-          s"""[19,"${epoch.toLong}","$actionConnectionId","0",$str]"""
-        } else {
-          val previous = renderRevision.get()
-          if (!recoveryStarted.get() || previous >= 9007199254740991L) throw new SessionAccessDenied
-          s"""[20,"$actionConnectionId","$previous","${previous + 1L}",$str]"""
+    if (recoversView && (str.startsWith("[4,") || str.startsWith("[4 ") || str == "[4]"))
+      Effect[F].delay {
+        // Reserve the revision and publish in one critical section *after* the
+        // asynchronous authorization checks. Concurrent producers cannot reorder
+        // sequence numbers or publish a direct property mutation without a stamp.
+        renderPublication.synchronized {
+          if (!interactionIsLive) throw new SessionAccessDenied
+          import spoonbill.security.Versions.ViewOwnershipEpoch.*
+          val frame = if (resetView) {
+            if (recoveryStarted.get()) throw new SessionAccessDenied
+            val epoch = viewRecoveryEpoch.getOrElse(throw new SessionAccessDenied)
+            s"""[19,"${epoch.toLong}","$actionConnectionId","0",$str]"""
+          } else {
+            val previous = renderRevision.get()
+            if (!recoveryStarted.get() || previous >= 9007199254740991L) throw new SessionAccessDenied
+            s"""[20,"$actionConnectionId","$previous","${previous + 1L}",$str]"""
+          }
+          if (!outgoingQueue.offerUnsafe(Outgoing(frame, producer, pending))) throw new SessionAccessDenied
+          if (resetView) recoveryStarted.set(true) else renderRevision.incrementAndGet()
+          onPublished()
+          ()
         }
-        if (!outgoingQueue.offerUnsafe(Outgoing(frame, producer, pending))) throw new SessionAccessDenied
-        if (resetView) recoveryStarted.set(true) else renderRevision.incrementAndGet()
-        onPublished()
-        ()
       }
+    else if (rejectIfFull)
+      Effect[F].delay {
+        if (!outgoingQueue.offerUnsafe(Outgoing(str, producer, pending)))
+          throw ClientSideException("Browser output queue is full")
+      }
+    else {
+      def offer(): F[Unit] = Effect[F].delay {
+        renderPublication.synchronized {
+          if (outputClosed.get() || (str.startsWith("[4,") && replacementPending.get())) throw new SessionAccessDenied
+          if (!pending()) true
+          else if (outgoingQueue.offerUnsafe(Outgoing(str, producer, pending))) { onPublished(); true }
+          else if (outgoingQueue.isClosed) throw new SessionAccessDenied
+          else false
+        }
+      }.flatMap {
+        case true  => Effect[F].unit
+        case false => outgoingQueue.canOffer.flatMap(_ => offer())
+      }
+      offer()
     }
-    else if (rejectIfFull) Effect[F].delay {
-      if (!outgoingQueue.offerUnsafe(Outgoing(str, producer, pending)))
-        throw ClientSideException("Browser output queue is full")
-    }
-    else outgoingQueue.enqueue(Outgoing(str, producer, pending))
 
   private def sendRaw(
     str: String,
@@ -773,6 +804,9 @@ final class Frontend[F[_]: Effect](
     } yield result
 
   def performDomChanges(f: ChangesPerformer => Unit): F[Unit] = performDomChangesWithProducer(f, None)
+
+  private[spoonbill] def performDomChangesAccepted(f: ChangesPerformer => Unit, accepted: () => Unit): F[Unit] =
+    performDomChangesWithProducer(f, None, onPublished = accepted)
 
   private[spoonbill] def performDomChangesAuthorized(
     f: ChangesPerformer => Unit,

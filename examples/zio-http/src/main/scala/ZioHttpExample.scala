@@ -22,12 +22,10 @@ object ZioHttpExample extends ZIOAppDefault {
 
   import ctx._
 
-  private val resetAfterDelay =
-    Context.Delay[ZIO[Any, Throwable, *], Option[Int], Any](3.seconds, access =>
-      access.transition { case _ =>
-        None
-      }
-    )
+  val resetAfterDelay =
+    timer
+      .after(timerId("notice:dismiss"), spoonbill.timer.DelayDuration.from(3.seconds).toOption.get)
+      .update(spoonbill.action.StateUpdate.Modify[Option[Int]](_ => None))
 
   val document: ctx.Render = {
     case Some(n) =>

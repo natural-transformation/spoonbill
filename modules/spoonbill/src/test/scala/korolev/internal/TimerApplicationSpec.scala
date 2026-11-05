@@ -1,0 +1,327 @@
+package spoonbill.internal
+
+import TimerTestSupport.*
+import avocet.{Id, StatefulRenderContext, XmlNs}
+import org.scalatest.flatspec.AnyFlatSpec
+import org.scalatest.matchers.should.Matchers
+import scala.concurrent.{Await, Future, Promise}
+import scala.concurrent.duration.*
+import spoonbill.*
+import spoonbill.action.StateUpdate
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler}
+import spoonbill.effect.syntax.*
+import spoonbill.security.Versions.ViewOwnershipEpoch
+import spoonbill.state.{GuardedStateManager, StateDeserializer, StateManager, StateSerializer}
+import spoonbill.state.javaSerialization.*
+import spoonbill.timer.*
+
+class TimerApplicationSpec extends AnyFlatSpec with Matchers {
+  import avocet.dsl.*
+  import avocet.dsl.html.*
+  private given Effect[Future]               = new Effect.FutureEffect
+  private val ctx                            = Context[Future, Int, Unit]
+  private val tickDelay                      = DelayDuration.from(1.millis).toOption.get
+  private def result[A](value: Future[A]): A = Await.result(value, 3.seconds)
+
+  private class App(
+    document: Int => avocet.Document.Node[Context.Binding[Future, Int, Unit]],
+    val storage: StateManager[Future] = StateManager.cached[Future](),
+    authorize: Option[() => Future[Unit]] = None,
+    recovery: Boolean = false
+  ) {
+    val worker                              = new Worker
+    val clock                               = new Deadlines
+    val reports                             = new Reports
+    given Reporter                          = reports
+    given scala.concurrent.ExecutionContext = worker
+    val frontend = new Frontend[Future](
+      Queue[Future, String]().stream,
+      None,
+      authorize = authorize,
+      viewRecoveryEpoch = if (recovery) Some(ViewOwnershipEpoch.initial) else None
+    )
+    val app = new ApplicationInstance[Future, Int, Unit](
+      Qsid("timer", java.util.UUID.randomUUID().toString),
+      frontend,
+      storage,
+      0,
+      document,
+      Root,
+      Router.empty[Future, Int],
+      (rc, add) =>
+        new StatefulRenderContext[Context.Binding[Future, Int, Unit]] {
+          def currentContainerId: Id                                  = rc.currentContainerId
+          def currentId: Id                                           = rc.currentId
+          def subsequentId: Id                                        = rc.subsequentId
+          def openNode(ns: XmlNs, name: String): Unit                 = rc.openNode(ns, name)
+          def closeNode(name: String): Unit                           = rc.closeNode(name)
+          def setAttr(ns: XmlNs, name: String, value: String): Unit   = rc.setAttr(ns, name, value)
+          def setStyle(name: String, value: String): Unit             = rc.setStyle(name, value)
+          def addTextNode(text: String): Unit                         = rc.addTextNode(text)
+          def addMisc(misc: Context.Binding[Future, Int, Unit]): Unit = add(this, misc)
+        },
+      new Scheduler[Future],
+      reports,
+      PartialFunction.empty,
+      Duration.Zero,
+      authorizeProduced = if (recovery) Some(_ => Future.unit) else None,
+      timerDeadlines = Some(clock),
+      timerClock = () => clock.now
+    )
+    def start(): Unit = { result(app.initialize()); worker.drain() }
+    def change(value: Int): Unit = {
+      result(app.topLevelComponentInstance.browserAccess.transition(_ => value)); worker.drain()
+    }
+    def fire(): Unit  = { clock.advance(1.millis); clock.fire(); worker.drain() }
+    def close(): Unit = { result(frontend.close()); val done = app.destroy(); worker.drain(); result(done) }
+  }
+
+  "Timer application integration" should "accept recovery reset and later patches while omitting startup conflicts" in {
+    val binding = ctx.timer.after(ctx.timerId("notice"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val valid   = ctx.timer.after(ctx.timerId("valid"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val f       = new App(_ => Html(body(binding, binding, valid)), authorize = Some(() => Future.unit), recovery = true)
+    f.start()
+    // Dev-mode CSS/event-counter control frames may precede publication.
+    result(
+      f.frontend.outgoingMessages.collect { case frame if frame.startsWith("[19,") => frame }.pull()
+    ).isDefined shouldBe true
+    f.clock.active.size shouldBe 1
+    f.reports.warnings.size shouldBe 1
+    f.fire()
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(1)
+    result(
+      f.frontend.outgoingMessages.collect { case frame if frame.startsWith("[20,") => frame }.pull()
+    ).isDefined shouldBe true
+    f.reports.warnings.size shouldBe 1
+    f.close()
+  }
+
+  it should "leave timer metadata unchanged when rendering throws" in {
+    val binding = ctx.timer.after(ctx.timerId("notice"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val f       = new App(state => if (state == 5) throw new IllegalStateException("render failed") else Html(body(binding)))
+    f.start()
+    val original = f.clock.active.head
+    f.change(5)
+    f.clock.active shouldBe Vector(original)
+    f.fire()
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(6)
+    f.clock.active shouldBe empty
+    f.reports.errors.map(_._1).toSet shouldBe Set("Unable to process state update")
+    f.close()
+  }
+
+  it should "shift after both preceding-lane completion and asynchronous state preparation while preserving FIFO" in {
+    val raw       = StateManager.cached[Future]()
+    val readGate  = Promise[Unit]()
+    var gateReads = false
+    val manager = new StateManager[Future] {
+      def snapshot = raw.snapshot
+      def read[T: StateDeserializer](id: Id) =
+        if (gateReads) Effect[Future].flatMap(readGate.future)(_ => raw.read[T](id)) else raw.read[T](id)
+      def write[T: StateSerializer](id: Id, value: T) = raw.write(id, value)
+      def delete(id: Id)                              = raw.delete(id)
+    }
+    var reductions = 0
+    val binding = ctx.timer
+      .after(ctx.timerId("notice"), tickDelay)
+      .update(StateUpdate.Modify[Int] { n =>
+        reductions += 1; n + 1
+      })
+    val f = new App(_ => Html(body(binding)), manager)
+    f.start()
+    val preceding = Promise[Int]()
+    result(f.app.topLevelComponentInstance.browserAccess.transitionAsync(_ => preceding.future))
+    f.worker.drain()
+    f.fire()
+    gateReads = true
+    preceding.success(10) // Simulate completion on a scheduler thread.
+    reductions shouldBe 0
+    f.worker.drain() // timer now waits for readGate
+    result(f.app.topLevelComponentInstance.browserAccess.transition(_ * 2))
+    readGate.success(())
+    reductions shouldBe 0
+    result(raw.read[Int](Id.TopLevel)) shouldBe Some(10)
+    gateReads = false
+    f.worker.drain()
+    reductions shouldBe 1
+    result(raw.read[Int](Id.TopLevel)) shouldBe Some(22)
+    f.close()
+  }
+
+  it should "skip reduction when a public frontend closes during authorization" in {
+    val gate       = Promise[Unit]()
+    var holding    = false
+    var reductions = 0
+    val binding = ctx.timer
+      .after(ctx.timerId("notice"), tickDelay)
+      .update(StateUpdate.Modify[Int] { n =>
+        reductions += 1; n + 1
+      })
+    val f = new App(_ => Html(body(binding)), authorize = Some(() => if (holding) gate.future else Future.unit))
+    f.start(); holding = true; f.fire()
+    result(f.frontend.close())
+    gate.success(())
+    f.worker.drain()
+    reductions shouldBe 0
+    f.reports.errors shouldBe empty
+    f.close()
+  }
+
+  it should "retain guarded storage authority checks before reduction and writing" in {
+    var currentOwner = true
+    val raw          = StateManager.cached[Future](Map(Id.TopLevel -> 0))
+    val guarded = new GuardedStateManager[Future, Int](
+      raw,
+      _ => if (currentOwner) Future.unit else Future.failed(new spoonbill.server.SessionAccessDenied)
+    )
+    var reductions = 0
+    val binding = ctx.timer
+      .after(ctx.timerId("notice"), tickDelay)
+      .update(StateUpdate.Modify[Int] { n =>
+        reductions += 1; n + 1
+      })
+    val f = new App(_ => Html(body(binding)), guarded, Some(() => Future.unit))
+    f.start(); currentOwner = false; f.fire()
+    reductions shouldBe 0
+    result(raw.read[Int](Id.TopLevel)) shouldBe Some(0)
+    f.clock.active shouldBe empty
+    f.close()
+  }
+
+  it should "reject an old initializer result after replacing a nested component at the same address" in {
+    import ctx.*
+    val late   = Promise[Int]()
+    var values = Vector.empty[Int]
+    val first = new Component[Future, Int, Unit, Unit]((_: Unit) => late.future) {
+      def render(parameters: Unit, state: Int): context.Node = div(state.toString)
+    }
+    val second = Component[Future, Int, Unit, Unit](20)((_, _, state) => div(state.toString))
+    val storage = StateManager.cached[Future](onWrite = (id, value) => {
+      if (id != Id.TopLevel) values :+= value.asInstanceOf[Int]
+      Future.unit
+    })
+    val f = new App(state => Html(body(if (state == 0) first(()) else second(()))), storage)
+    f.start()
+    f.change(1)
+    values shouldBe Vector(20)
+    late.success(99)
+    f.worker.drain()
+    values shouldBe Vector(20)
+    f.close()
+  }
+
+  it should "hold nested successor initialization behind an admitted predecessor write and deletion" in {
+    import ctx.*
+    val write = Promise[Unit]()
+    var trace = Vector.empty[String]
+    val first = new Component[Future, Int, Unit, Unit]((_: Unit) => Future.successful(10)) {
+      def render(parameters: Unit, state: Int): context.Node = div(state.toString)
+    }
+    val second = Component[Future, Int, Unit, Unit](20)((_, _, state) => div(state.toString))
+    val storage = StateManager.cached[Future](
+      onWrite = (id, value) => {
+        if (id == Id.TopLevel) Future.unit
+        else { trace :+= s"write:$value"; if (value == 10) write.future else Future.unit }
+      },
+      onDelete = _ => { trace :+= "delete"; Future.unit }
+    )
+    val f = new App(state => Html(body(if (state == 0) first(()) else second(()))), storage)
+    f.start()
+    f.change(1)
+    trace shouldBe Vector("write:10")
+    write.success(())
+    f.worker.drain()
+    trace shouldBe Vector("write:10", "delete", "write:20")
+    f.close()
+  }
+
+  it should "preserve legacy container deadlines, captured callbacks, render-driven overlap, and cancellation" in {
+    val oldCallback = Promise[Unit]()
+    var captured    = Vector.empty[Int]
+    val f = new App(state =>
+      Html(body(if (state < 3) {
+        Context.Delay[Future, Int, Unit](
+          (state + 1).millis,
+          _ => {
+            captured :+= state
+            if (state == 0) oldCallback.future else Future.unit
+          }
+        )
+      } else span("removed")))
+    )
+    f.start()
+    val original = f.clock.active.head
+    f.change(1)
+    f.clock.active shouldBe Vector(original)
+    f.fire()
+    captured shouldBe Vector(0)
+    f.change(2)
+    f.clock.active.head.duration shouldBe 3.millis
+    f.clock.advance(3.millis); f.clock.fire(); f.worker.drain()
+    captured shouldBe Vector(0, 2) // legacy rearming does not join its older callback
+    oldCallback.success(())
+    f.worker.drain()
+    f.change(0)
+    f.clock.active.size shouldBe 1
+    f.change(3)
+    f.clock.active shouldBe empty
+    f.close()
+  }
+
+  it should "never acknowledge ordinary publication when the output queue rejected a frame" in {
+    val f = new App(_ => Html(body("page")))
+    f.start()
+    var accepted = 0
+    result(f.frontend.outgoingMessages.cancel())
+    val rejected = f.frontend.performDomChangesAccepted(_ => (), () => accepted += 1)
+    result(rejected.failed) shouldBe a[spoonbill.server.SessionAccessDenied]
+    accepted shouldBe 0
+    f.close()
+  }
+
+  it should "preserve parameter loading and reject its late write after nested replacement" in {
+    import ctx.*
+    val late       = Promise[Int]()
+    var parameters = Vector.empty[Int]
+    var written    = Vector.empty[Int]
+    val first = new Component[Future, Int, Int, Unit](10) {
+      override def maybeUpdateState(parameter: Int, current: Int): Option[Future[Int]] = {
+        parameters :+= parameter
+        if (parameter == 1) Some(late.future) else None
+      }
+      def render(parameter: Int, state: Int): context.Node = div(state.toString)
+    }
+    val second = Component[Future, Int, Int, Unit](20)((_, _, state) => div(state.toString))
+    val storage = StateManager.cached[Future](onWrite = (id, value) => {
+      if (id != Id.TopLevel) written :+= value.asInstanceOf[Int]
+      Future.unit
+    })
+    val f = new App(state => Html(body(if (state < 2) first(state) else second(state))), storage)
+    f.start()
+    parameters shouldBe Vector(0)
+    f.change(1)
+    parameters shouldBe Vector(0, 1)
+    f.change(2)
+    late.success(99)
+    f.worker.drain()
+    written shouldBe Vector(20)
+    f.close()
+  }
+
+  it should "preserve concrete nested content during pre-rendered startup without an extra write" in {
+    import ctx.*
+    var rendered = Vector.empty[Int]
+    var writes   = 0
+    val child = Component[Future, Int, Unit, Unit](10) { (_, _, value) =>
+      rendered :+= value
+      div(value.toString)
+    }
+    val storage = StateManager.cached[Future](onWrite = (_, _) => { writes += 1; Future.unit })
+    val f       = new App(_ => Html(body(child(()))), storage)
+    result(f.app.initialize()(f.worker))
+    rendered shouldBe Vector(10)
+    f.worker.drain()
+    writes shouldBe 0
+    f.close()
+  }
+}

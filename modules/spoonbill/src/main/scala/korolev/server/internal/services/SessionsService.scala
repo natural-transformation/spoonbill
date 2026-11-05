@@ -430,23 +430,25 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                    replacementCompletion = guard.replacementCompletion
                  )
       _ <- Effect[F].delay(frontendRef.set(Some(frontend)))
-      app = new ApplicationInstance[F, S, M](
-              qsid,
-              frontend,
-              manager,
-              initial,
-              config.document,
-              config.rootPath,
-              config.router,
-              (rc, k) => pageService.setupStatefulProxy(rc, qsid, k),
-              scheduler,
-              config.reporter,
-              config.recovery,
-              config.delayedRender,
-              Some(() => ready.get(())),
-              Some(state => authorize(guard, state)),
-              Some(outputAuthorization.fold[S => () => F[Unit]](completeOutput)(output => state => output.producer(state)))
-            )
+      app =
+        new ApplicationInstance[F, S, M](
+          qsid,
+          frontend,
+          manager,
+          initial,
+          config.document,
+          config.rootPath,
+          config.router,
+          (rc, k) => pageService.setupStatefulProxy(rc, qsid, k),
+          scheduler,
+          config.reporter,
+          config.recovery,
+          config.delayedRender,
+          Some(() => ready.get(())),
+          Some(state => authorize(guard, state)),
+          Some(outputAuthorization.fold[S => () => F[Unit]](completeOutput)(output => state => output.producer(state))),
+          timerSettings = config.timerSettings
+        )
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
       state     <- rawManager.read[S](avocet.Id.TopLevel).map(_.getOrElse(initial))
@@ -563,8 +565,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       for {
         _ <- consumed
         _ <- incomingStream.cancel()
-        _ <- frontend.outgoingMessages.cancel()
-        _ <- app.topLevelComponentInstance.destroy()
+        _ <- frontend.close()
+        _ <- app.destroy()
         _ <- ehs.map { handler =>
                handler.onDestroy().recover { case error =>
                  config.reporter.error(s"Unable to destroy extension for $qsid", error)
@@ -617,7 +619,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                 scheduler,
                 config.reporter,
                 config.recovery,
-                config.delayedRender
+                config.delayedRender,
+                timerSettings = config.timerSettings
               )
         browserAccess = app.topLevelComponentInstance.browserAccess
         _ <- config.extensions.map { extension =>
