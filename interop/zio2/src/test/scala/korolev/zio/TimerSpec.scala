@@ -25,4 +25,12 @@ class TimerSpec extends AnyFlatSpec with Matchers {
       .update(StateUpdate.Modify[Int](_ + 1))
     TimerAdapterChecks.periodic(0, binding, 1, 2)
   }
+
+  it should "preserve the first notification when startup waits for readiness" in {
+    val ctx = Context[Task, Int, Any]
+    val binding = ctx.timer
+      .every(ctx.timerId("ready"), Period.from(1.millis).toOption.get)
+      .update(StateUpdate.Modify[Int](_ + 1))
+    TimerAdapterChecks.periodic(0, binding, 1, 2, waitForReadiness = true)
+  }
 }

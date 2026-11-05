@@ -93,6 +93,8 @@ final class ComponentInstance[
 
   private[spoonbill] def stateSnapshot: F[StateManager.Snapshot] = owners.snapshot
 
+  private[spoonbill] def closeAdmission(): Unit = owners.closeAdmission()
+
   @volatile private var lastParameters: P = _
   private val markedDelays             = mutable.Set.empty[Id] // Set of the delays which are should survive
   private val markedComponentInstances = mutable.Set.empty[Id]
@@ -328,14 +330,11 @@ final class ComponentInstance[
       firstRender = false
     }
     val hasBaseline = owner.isOpen && baselineReady
-    val state =
-      if (hasBaseline) snapshot[CS](nodeId).map(Right(_)).getOrElse(component.initialState)
-      else Left((_: P) => Effect[F].fail[CS](new IllegalStateException("Ownership handoff pending")))
     val node = if (!hasBaseline) {
       loadWhenReady(parameters)
       component.renderNoState(parameters)
     } else
-      state match {
+      snapshot[CS](nodeId).map(Right(_)).getOrElse(component.initialState) match {
         case Right(value) =>
           if (lastParameters != parameters) {
             component.maybeUpdateState(parameters, value) match {
@@ -449,7 +448,9 @@ final class ComponentInstance[
         }
       })(executionContext)
       .recover { case error =>
-        loading = false
+        // A failed ownership gate cannot recover on another render. Keep this
+        // loader settled until remount instead of reporting the same failure.
+        if (owner.isOpen) loading = false
         reporter.error("Component initialization failed", error)
       }
       .runAsyncForget

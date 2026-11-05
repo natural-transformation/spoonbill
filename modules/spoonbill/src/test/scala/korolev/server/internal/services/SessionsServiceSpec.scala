@@ -10,11 +10,13 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration._
-import spoonbill.{Qsid, Router}
+import spoonbill.{Component, Context, Extension, Qsid, Router}
 import spoonbill.auth.*
-import spoonbill.effect.{Effect, Stream}
+import spoonbill.effect.{Effect, Queue, Stream}
+import spoonbill.internal.TimerTestSupport.{Reports, Worker}
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.server.{SessionAccessDenied, SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.{StateManager, StateStorage}
 import spoonbill.state.javaSerialization._
 import spoonbill.testExecution.defaultExecutor
 import spoonbill.web.{PathAndQuery, Request}
@@ -238,5 +240,70 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     )
     f.loaded.get() shouldBe 1
     await(f.provider.resources).ownedViews shouldBe 0
+  }
+
+  it should "retire a legacy session and reconnect after component cleanup and extension failures" in {
+    val worker                        = new Worker
+    val reports                       = new Reports
+    val deleteFailure                 = new IllegalStateException("Synthetic component delete failure")
+    var destroyed                     = Vector.empty[String]
+    var removals                      = 0
+    var manager: StateManager[Future] = null
+    val storage = new StateStorage[Future, Int] {
+      def exists(deviceId: String, sessionId: String): Future[Boolean] =
+        Future.successful(removals == 0 && manager != null)
+      def create(deviceId: String, sessionId: String, state: Int): Future[StateManager[Future]] = {
+        manager = StateManager.cached[Future](Map(Id.TopLevel -> state), onDelete = _ => Future.failed(deleteFailure))
+        Future.successful(manager)
+      }
+      def get(deviceId: String, sessionId: String): Future[StateManager[Future]] = Future.successful(manager)
+      def remove(deviceId: String, sessionId: String): Unit                      = removals += 1
+    }
+    val context = Context[Future, Int, Any]
+    import context.*
+    val child = Component[Future, Int, Unit, Any](10)((_, _, state) => div(state.toString))
+    val config = SpoonbillServiceConfig[Future, Int, Any](
+      stateStorage = storage,
+      stateLoader = StateLoader.default(0),
+      document = state => Html(body(if (state == 0) child(()) else div("removed"))),
+      reporter = reports,
+      extensions = List(
+        Extension.pure(_ =>
+          Extension.Handlers[Future, Int, Any](onDestroy = () => {
+            destroyed :+= "throwing"; throw new IllegalStateException("Synthetic extension failure")
+          })
+        ),
+        Extension.pure(_ =>
+          Extension.Handlers[Future, Int, Any](onDestroy = () => {
+            destroyed :+= "following"; Future.unit
+          })
+        )
+      )
+    )(worker)
+    val service = new SessionsService(config, new PageService(config))
+    val qsid    = Qsid("legacy-cleanup", UUID.randomUUID().toString)
+    val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
+    def attach(): SessionStart.Attached[Future] = {
+      val attached = await(service.createAppIfNeeded(qsid, request, Queue[Future, String]().stream))
+        .asInstanceOf[SessionStart.Attached[Future]]
+      worker.drain()
+      attached
+    }
+    val first = attach()
+    val old   = await(service.getApp(qsid)).get
+    await(old.topLevelComponentInstance.browserAccess.transition(_ => 1))
+    worker.drain()
+    reports.errors.map(_._2) should contain(deleteFailure)
+    await(first.release())
+    worker.drain()
+    destroyed shouldBe Vector("throwing", "following")
+    removals shouldBe 1
+    await(service.getApp(qsid)) shouldBe None
+    reports.errors should contain("Legacy session cleanup failed" -> deleteFailure)
+    val second = attach()
+    await(service.getApp(qsid)).get should not be theSameInstanceAs(old)
+    await(second.outgoing.pull()).isDefined shouldBe true
+    await(second.release())
+    worker.drain()
   }
 }

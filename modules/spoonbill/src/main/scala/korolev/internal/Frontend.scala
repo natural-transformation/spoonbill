@@ -558,7 +558,11 @@ final class Frontend[F[_]: Effect](
     else {
       def offer(): F[Unit] = Effect[F].delay {
         renderPublication.synchronized {
-          if (outputClosed.get() || (str.startsWith("[4,") && replacementPending.get())) throw new SessionAccessDenied
+          if (
+            outputClosed.get() ||
+            ((str.startsWith("[4,") || str.startsWith("[4 ") || str == "[4]") && replacementPending.get())
+          )
+            throw new SessionAccessDenied
           if (!pending()) true
           else if (outgoingQueue.offerUnsafe(Outgoing(str, producer, pending))) { onPublished(); true }
           else if (outgoingQueue.isClosed) throw new SessionAccessDenied

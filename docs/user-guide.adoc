@@ -643,7 +643,10 @@ and current interaction authorization. `NoUpdate` writes and renders nothing;
 skip the update, and composed lenses preserve other parent fields. Reducers
 should remain pure and check domain relevance: application state can advance
 before its corresponding render is accepted. Unexpected failures stop the
-generation; restart explicitly or remount to retry.
+generation; restart explicitly or remount to retry. An authorization denial also
+stops the timer, without a timer-error report; frontend denials retain the normal
+session teardown behavior. Guarded startup waits for session readiness and
+extension state-stream registration before arming timers.
 
 Periodic timers wait one period initially and another period after write and
 notification settlement. They do not overlap their own prior entry or catch up
@@ -651,6 +654,9 @@ missed ticks. Slow authorization blocks later work in the same component;
 other components can progress. Removal prevents unadmitted reduction. An already
 admitted turn may settle afterward, and address reuse waits for its settlement
 and storage cleanup. Cancellation does not roll back writes.
+If address cleanup fails, that address remains fenced for the rest of the live
+view: rendering again or remounting the component does not make the old storage
+safe. The failure is reported without retrying the initializer on every render.
 
 `SpoonbillServiceConfig.timerSettings.maxRetained` defaults to 1024 per live
 view (configurable from 1 to 65536). Completed/failed markers and retired but
@@ -658,6 +664,11 @@ unsettled entries count toward this limit. Existing valid registrations take
 priority, then new IDs follow document order. Duplicate IDs omit *all* their
 declarations, including otherwise identical ones. Invalid names/keys and excess
 registrations are also omitted: the page renders, but those timers do not run.
+In particular, completed one-shots still count while their bindings remain
+rendered. Remove bindings for finished notices, paginate large collections, or
+configure a suitable limit before rendering them. A list of more than 1024
+still-rendered one-shots can exhaust the default budget even after every
+admitted timer has finished; completing them alone does not admit the rest.
 Diagnostics include at most four escaped samples of 96 characters each and
 coalesce persistent issues; changing summaries are limited to one per owner per
 second. Freeing capacity alone does not retry an omission; a later accepted render must admit

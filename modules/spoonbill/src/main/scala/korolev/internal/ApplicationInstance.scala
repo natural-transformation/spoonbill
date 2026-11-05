@@ -283,11 +283,24 @@ final class ApplicationInstance[
   val messagesStream: Stream[F, M] =
     messagesQueue.stream
 
+  private[spoonbill] def closeAdmission(): Unit = topLevelComponentInstance.closeAdmission()
+
   def destroy(): F[Unit] = for {
     _ <- stateQueue.close()
     _ <- messagesQueue.close()
     _ <- topLevelComponentInstance.destroy()
   } yield ()
+
+  private def startTimersWhenReady(): F[Unit] = awaitReady match {
+    case None => Effect[F].delay(timers.start())
+    case Some(_) =>
+      Effect[F].start {
+        awaitReadiness.flatMap(_ => Effect[F].delay(timers.start())).recover {
+          case _: spoonbill.server.SessionAccessDenied => ()
+          case error                                   => reporter.error("Unable to start render timers", error)
+        }
+      }.unit
+  }
 
   def initialize()(implicit ec: ExecutionContext): F[Unit] = {
 
@@ -395,7 +408,7 @@ final class ApplicationInstance[
                }.start
              }
         _ <- topLevelComponentInstance.initialize()
-        _ <- Effect[F].delay(timers.start())
+        _ <- startTimersWhenReady()
       } yield ()
 
     } else {
@@ -432,7 +445,7 @@ final class ApplicationInstance[
              }
         // Init component
         _ <- topLevelComponentInstance.initialize()
-        _ <- Effect[F].delay(timers.start())
+        _ <- startTimersWhenReady()
       } yield ()
     }
     frontend.authorizeInteraction().flatMap(_ => start()).recoverF { case error =>

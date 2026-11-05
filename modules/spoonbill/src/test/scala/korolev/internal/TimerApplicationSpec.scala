@@ -27,7 +27,8 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     document: Int => avocet.Document.Node[Context.Binding[Future, Int, Unit]],
     val storage: StateManager[Future] = StateManager.cached[Future](),
     authorize: Option[() => Future[Unit]] = None,
-    recovery: Boolean = false
+    recovery: Boolean = false,
+    ready: Option[() => Future[Unit]] = None
   ) {
     val worker                              = new Worker
     val clock                               = new Deadlines
@@ -64,6 +65,7 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
       reports,
       PartialFunction.empty,
       Duration.Zero,
+      awaitReady = ready,
       authorizeProduced = if (recovery) Some(_ => Future.unit) else None,
       timerDeadlines = Some(clock),
       timerClock = () => clock.now
@@ -323,5 +325,87 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     f.worker.drain()
     writes shouldBe 0
     f.close()
+  }
+
+  it should "wait for readiness before arming timers and preserve the first state notification" in {
+    val ready   = Promise[Unit]()
+    val binding = ctx.timer.after(ctx.timerId("ready"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val f       = new App(_ => Html(body(binding)), ready = Some(() => ready.future))
+    f.start()
+    f.clock.active shouldBe empty
+    val subscriber = result(f.app.stateStream)
+    val first      = subscriber.pull()
+    f.clock.advance(10.millis)
+    ready.success(())
+    f.worker.drain()
+    f.clock.active.head.duration shouldBe Duration.Zero
+    f.clock.fire()
+    f.worker.drain()
+    result(first).get._2 shouldBe 1
+    f.close()
+  }
+
+  it should "not start timers when readiness fails during teardown" in {
+    val ready   = Promise[Unit]()
+    val binding = ctx.timer.after(ctx.timerId("ready"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val f       = new App(_ => Html(body(binding)), ready = Some(() => ready.future))
+    f.start()
+    f.close()
+    ready.failure(new spoonbill.server.SessionAccessDenied)
+    f.worker.drain()
+    f.clock.active shouldBe empty
+    f.reports.errors shouldBe empty
+  }
+
+  it should "report a failed ownership gate once across unrelated renders without clearing its fence" in {
+    import ctx.*
+    val storage = StateManager.cached[Future](onDelete = _ => Future.failed(new IllegalStateException("delete failed")))
+    val first   = Component[Future, Int, Unit, Unit](10)((_, _, state) => div(state.toString))
+    val second  = Component[Future, Int, Unit, Unit](20)((_, _, state) => div(state.toString))
+    val f       = new App(state => Html(body(if (state == 0) first(()) else second(()))), storage)
+    f.start()
+    f.change(1)
+    val count = f.reports.errors.count(_._1 == "Component initialization failed")
+    count shouldBe 1
+    (2 to 5).foreach(f.change)
+    f.reports.errors.count(_._1 == "Component initialization failed") shouldBe count
+    result(f.frontend.close())
+    val closed = f.app.destroy()
+    f.worker.drain()
+    result(closed.failed).getMessage shouldBe "delete failed"
+  }
+
+  it should "retire admission before a guarded drain releases a removed child's last write" in {
+    import ctx.*
+    val write   = Promise[Unit]()
+    var deletes = 0
+    val raw = StateManager.cached[Future](
+      Map(Id.TopLevel -> 0),
+      onWrite = (id, _) => if (id == Id.TopLevel) Future.unit else write.future,
+      onDelete = _ => { deletes += 1; Future.unit }
+    )
+    val guarded = new GuardedStateManager[Future, Int](raw, _ => Future.unit)
+    val child = new Component[Future, Int, Unit, Unit]((_: Unit) => Future.successful(10)) {
+      def render(parameters: Unit, state: Int): context.Node = div(state.toString)
+    }
+    val f = new App(
+      state => Html(body(if (state == 0) child(()) else div("removed"))),
+      guarded,
+      authorize = Some(() => Future.unit)
+    )
+    f.start()
+    f.change(1)
+    f.app.closeAdmission()
+    result(f.frontend.close())
+    val draining = guarded.closeAndDrain()
+    draining.isCompleted shouldBe false
+    write.success(())
+    f.worker.drain()
+    result(draining)
+    val destroyed = f.app.destroy()
+    f.worker.drain()
+    result(destroyed)
+    deletes shouldBe 0
+    f.reports.errors.map(_._1) should not contain "Component address cleanup failed"
   }
 }

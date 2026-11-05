@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
 import spoonbill.*
-import spoonbill.effect.{Effect, Queue, Reporter, Scheduler}
+import spoonbill.effect.{AsyncTable, Effect, Queue, Reporter, Scheduler}
 import spoonbill.state.{StateDeserializer, StateManager, StateSerializer}
 
 /** Same real component/driver contract under Future-like and lazy adapters. */
@@ -65,12 +65,14 @@ object TimerAdapterChecks {
     initial: S,
     binding: Context.Binding[F, S, Any],
     first: S,
-    second: S
+    second: S,
+    waitForReadiness: Boolean = false
   )(implicit ec: ExecutionContext): Unit = {
     import avocet.dsl.*, avocet.dsl.html.*
     val F          = Effect[F]
     val clock      = new Deadlines
     val reports    = new Reports
+    val ready      = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
     given Reporter = reports
     val writes     = new LinkedBlockingQueue[S]()
     val storage    = StateManager.cached[F](onWrite = (_, value) => F.delay { writes.add(value.asInstanceOf[S]); () })
@@ -102,18 +104,28 @@ object TimerAdapterChecks {
       reports,
       PartialFunction.empty,
       Duration.Zero,
+      awaitReady = if (waitForReadiness) Some(() => ready.get(())) else None,
       timerDeadlines = Some(clock),
       timerClock = () => clock.now.get()
     )
     try {
       run(app.initialize())
       assert(writes.isEmpty, "Inert binding changed state during startup")
+      val firstNotification = if (waitForReadiness) {
+        assert(clock.tasks.isEmpty, "Timer armed before readiness")
+        val stream       = run(app.stateStream)
+        val notification = F.toFuture(stream.pull())
+        run(ready.put((), ()))
+        Some(notification)
+      } else None
       clock.fire()
       assert(writes.poll(10, TimeUnit.SECONDS) == first)
+      firstNotification.foreach(value => assert(Await.result(value, 10.seconds).exists(_._2 == first)))
       clock.fire()
       assert(writes.poll(10, TimeUnit.SECONDS) == second)
       assert(reports.failures.isEmpty)
     } finally {
+      if (waitForReadiness) run(ready.putEither((), Left(new spoonbill.server.SessionAccessDenied), silent = true))
       run(frontend.close())
       run(app.destroy())
     }
