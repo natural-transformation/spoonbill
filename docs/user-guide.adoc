@@ -3,7 +3,7 @@ Aleksey Fomkin <a@fomkin.org>
 :source-highlighter: highlight.js
 :sectnums:
 :toc:
-:version: 8.1.0
+:version: 9.0.0
 :scala-version: 3.3.8
 :code: https://github.com/natural-transformation/spoonbill/blob/v{version}/
 
@@ -26,6 +26,12 @@ Presentation state is distinct from domain storage and authentication authority.
 The browser remains an untrusted input source. For account-bearing applications,
 use the guarded authentication integration described in <<authentication>>.
 The small public examples below intentionally have no accounts.
+
+Version 9 adds render-owned state timers and component ownership handoff.
+Upgrade all Spoonbill modules together and recompile: the public
+`SpoonbillServiceConfig` constructor now includes `timerSettings`, changing its
+binary signature. The database schema and browser protocol remain those of
+version 8. See <<_render_timers_and_server_push>> for timer behavior.
 
 Readers upgrading should read link:migration-v8.md[the 8.0 migration guide].
 Version 8 adds finite resource limits, guarded retention and a PostgreSQL V6
