@@ -7,6 +7,16 @@ import spoonbill.monix.*
 import spoonbill.state.javaSerialization.*
 
 class FileStreamingTimerSpec extends AnyFlatSpec with Matchers {
+  "Monix ownership" should "close without joining application computation and reject its late result" in {
+    val initial = FileStreamingExample.State(false, Map.empty, false)
+    TimerAdapterChecks.periodic(
+      initial,
+      FileStreamingExample.aliveIndicatorTick,
+      initial.copy(aliveIndicator = true),
+      initial,
+      holdComputationAtClose = true
+    )
+  }
   "Monix render timers" should "defer legacy constructors and observe their failures once" in {
     TimerAdapterChecks.legacy[Task]()
   }

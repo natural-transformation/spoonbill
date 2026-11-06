@@ -89,7 +89,6 @@ final class ComponentInstance[
   // when bind no longer finds an outstanding handoff at this address.
   @volatile private var baselineReady = !owner.reused
   @volatile private var loading       = false
-  private var firstRender = true
 
   private[spoonbill] def stateSnapshot: F[StateManager.Snapshot] = owners.snapshot
 
@@ -116,26 +115,28 @@ final class ComponentInstance[
       self.owner.awaitOpen.flatMap {
         case false => Effect[F].unit
         case true =>
-          frontend.authorizeInteraction().flatMap(_ => browserAccess.state).flatMap { state =>
-            // Authorization/read may resume inline on a scheduler thread. The lane
-            // awaits this second dispatch, including its write and notification.
-            Effect[F].fork(Effect[F].delayAsync {
-              val admitted = frontend.selectLiveInteraction {
-                self.owner.admit().map(lease => lease -> select())
-              }.flatten
-              admitted match {
-                case None => Effect[F].unit
-                case Some((lease, selected)) =>
-                  lease.run {
-                    selected.flatMap(_(state)) match {
-                      case None => Effect[F].unit
-                      case Some(value) =>
-                        val next = value.asInstanceOf[CS]
-                        stateManager.write(nodeId, next).flatMap(_ => stateQueue.enqueue(nodeId, next, None))
+          frontend.authorizeInteraction().flatMap(_ => readState).flatMap {
+            case None        => Effect[F].unit // No generated state yet: settle this tick as a skip.
+            case Some(state) =>
+              // Authorization/read may resume inline on a scheduler thread. The lane
+              // awaits this second dispatch, including its write and notification.
+              Effect[F].fork(Effect[F].delayAsync {
+                val admitted = frontend.selectLiveInteraction {
+                  self.owner.admit().map(lease => lease -> select())
+                }.flatten
+                admitted match {
+                  case None => Effect[F].unit
+                  case Some((lease, selected)) =>
+                    lease.run {
+                      selected.flatMap(_(state)) match {
+                        case None => Effect[F].unit
+                        case Some(value) =>
+                          val next = value.asInstanceOf[CS]
+                          stateManager.write(nodeId, next).flatMap(_ => stateQueue.enqueue(nodeId, next, None))
+                      }
                     }
-                  }
-              }
-            })(executionContext)
+                }
+              })(executionContext)
           }
       }
   }
@@ -186,23 +187,16 @@ final class ComponentInstance[
     def publish(message: E): F[Unit] =
       frontend.authorizeInteraction().flatMap(_ => Effect[F].delay(eventSubscription.foreach(f => f(message))))
 
-    def state: F[CS] = {
-      val state = owner.read(stateManager.read[CS](nodeId)).flatMap {
-        case Some(value) => Effect[F].pure(value)
-        case None        => Effect[F].fail(new spoonbill.server.SessionAccessDenied)
-      }
-
-      state.map { maybeState =>
+    def state: F[CS] =
+      readState.map { maybeState =>
         maybeState
           // Fallback to initial state in case when
           // access.state invoked in component with
           // unmodified default state.
           // Required because state manager doesn't
           // hold the state until modification.
-          .orElse(component.initialState.toOption)
           .getOrElse(throw new RuntimeException(s"State for ${nodeId.mkString} is empty"))
       }
-    }
 
     def sessionId: F[Qsid] = Effect[F].delay(self.sessionId)
 
@@ -325,11 +319,7 @@ final class ComponentInstance[
   ): Unit = miscLock.synchronized {
     // Reset all event handlers delays and elements
     prepare()
-    if (firstRender) {
-      baselineReady = baselineReady && owners.snapshotIsCurrent(snapshot)
-      firstRender = false
-    }
-    val hasBaseline = owner.isOpen && baselineReady
+    val hasBaseline = baselineReady && owner.snapshotIsCurrent(snapshot)
     val node = if (!hasBaseline) {
       loadWhenReady(parameters)
       component.renderNoState(parameters)
@@ -419,12 +409,16 @@ final class ComponentInstance[
     case Some(lease) =>
       lease.run {
         stateManager.write(nodeId, newState).flatMap { _ =>
-          baselineReady = true
-          loading = false
-          stateQueue.enqueue(nodeId, newState, None)
+          notifyLoaded(newState)
         }
       }
   }
+
+  private def notifyLoaded(state: CS): F[Unit] = Effect[F].delay {
+    owner.establishBaseline()
+    baselineReady = true
+    loading = false
+  }.flatMap(_ => stateQueue.enqueue(nodeId, state, None))
 
   private def loadWhenReady(parameters: P): Unit = if (!loading) {
     loading = true
@@ -434,12 +428,16 @@ final class ComponentInstance[
           case false => Effect[F].unit
           case true =>
             owner.read(stateManager.read[CS](nodeId)).flatMap {
-              case None => Effect[F].unit
-              case Some(saved) =>
-                saved.orElse(component.initialState.toOption) match {
-                  case Some(value) => writeLoaded(value)
-                  case None =>
-                    Effect[F].delayAsync(component.initialState.swap.toOption.get(parameters)).flatMap { value =>
+              case None              => Effect[F].unit
+              case Some(Some(saved)) =>
+                // Refresh the traversal without writing a previously read
+                // value back over a concurrent update from this same owner.
+                owner.admit().fold(Effect[F].unit)(_.run(notifyLoaded(saved)))
+              case Some(None) =>
+                component.initialState match {
+                  case Right(value) => writeLoaded(value)
+                  case Left(generate) =>
+                    Effect[F].delayAsync(generate(parameters)).flatMap { value =>
                       lastParameters = parameters
                       writeLoaded(value)
                     }
@@ -456,35 +454,28 @@ final class ComponentInstance[
       .runAsyncForget
   }
 
-  private def applyTransitionEffect(transition: TransitionAsync[F, CS]): F[CS] =
-    for {
-      maybeState <- stateManager.read[CS](nodeId)
-      state <- maybeState
-                 .orElse(component.initialState.toOption)
-                 .fold(Effect[F].fail(new Exception("Uninitialized component state")): F[CS])(Effect[F].pure(_))
-      newState <- transition(state)
-      _        <- stateManager.write(nodeId, newState)
-    } yield newState
+  // Missing generated state is distinct from retired/denied state access.
+  private def readState: F[Option[CS]] = owner.read(stateManager.read[CS](nodeId)).flatMap {
+    case Some(value) => Effect[F].pure(value.orElse(component.initialState.toOption))
+    case None        => Effect[F].fail(new spoonbill.server.SessionAccessDenied)
+  }
+
+  private def prepareTransition(transition: TransitionAsync[F, CS]): F[Option[CS]] =
+    readState.flatMap {
+      case Some(state) => Effect[F].delayAsync(transition(state)).map(Some(_))
+      case None        => Effect[F].fail(new Exception("Uninitialized component state"))
+    }
 
   private def applyTransition(transition: TransitionAsync[F, CS]): F[Unit] = {
-    val effect = () =>
-      ownedTurn {
-        for {
-          newState <- applyTransitionEffect(transition)
-          _        <- stateQueue.enqueue(nodeId, newState, None)
-        } yield ()
-      }
+    val effect = () => ownedTurn(prepareTransition(transition))
     pendingEffects.enqueue(new ComponentLaneEntry(effect))
   }
 
   private def applyTransitionForce(transition: TransitionAsync[F, CS]): F[Unit] = Effect[F].promiseF[Unit] { cb =>
     val effect = () =>
       ownedTurn(
-        for {
-          newState <- applyTransitionEffect(transition)
-          _        <- stateQueue.enqueue(nodeId, newState, Some(cb))
-        } yield (),
-        () => cb(Left(new spoonbill.server.SessionAccessDenied))
+        prepareTransition(transition),
+        Some(cb)
       ).recover { case error => cb(Left(error)) }
     Effect[F].delay {
       val entry = new ComponentLaneEntry(effect, () => cb(Left(new spoonbill.server.SessionAccessDenied)))
@@ -492,20 +483,34 @@ final class ComponentInstance[
     }
   }
 
-  private def ownedTurn(operation: => F[Unit], discarded: () => Unit = () => ()): F[Unit] =
-    owner.awaitOpen.flatMap { _ =>
-      owner.admit() match {
-        case Some(lease) => lease.run(operation)
-        case None        => Effect[F].delay(discarded())
-      }
+  private def ownedTurn(
+    prepare: => F[Option[CS]],
+    rendered: Option[Effect.Promise[Unit]] = None
+  ): F[Unit] = {
+    def discard(): F[Unit] = Effect[F].delay(rendered.foreach(_(Left(new spoonbill.server.SessionAccessDenied))))
+    owner.awaitOpen.flatMap {
+      case false                 => discard()
+      case true if !owner.isOpen => discard()
+      case true =>
+        Effect[F].delayAsync(prepare).flatMap {
+          case None => Effect[F].unit
+          case Some(value) =>
+            owner.admit() match {
+              // User computation stays in the lane but owns no drain reservation.
+              // Only a commit admitted while this captured owner is live can write.
+              case None => discard()
+              case Some(lease) =>
+                lease.run {
+                  stateManager.write(nodeId, value).flatMap(_ => stateQueue.enqueue(nodeId, value, rendered))
+                }
+            }
+        }
     }
+  }
 
   private[spoonbill] def updateFromHistory(update: CS => F[Option[CS]]): F[Unit] =
     ownedTurn {
-      browserAccess.state.flatMap(update).flatMap {
-        case Some(value) => stateManager.write(nodeId, value).flatMap(_ => stateQueue.enqueue(nodeId, value, None))
-        case None        => Effect[F].unit
-      }
+      browserAccess.state.flatMap(update)
     }
 
   type EventHandlers    = Vector[DomEventMessage => F[Boolean]]

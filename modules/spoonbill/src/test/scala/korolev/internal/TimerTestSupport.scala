@@ -19,6 +19,7 @@ private[spoonbill] object TimerTestSupport {
   }
 
   final class Deadlines extends Frontend.RpcDeadlineScheduler {
+    var onCancel: () => Unit = () => ()
     final class Task(val duration: FiniteDuration, val wake: () => Unit) {
       var canceled     = false
       var fired        = false
@@ -29,7 +30,7 @@ private[spoonbill] object TimerTestSupport {
     def schedule(delay: FiniteDuration)(wake: () => Unit): () => Unit = {
       val task = new Task(delay, wake)
       tasks += task
-      () => task.canceled = true
+      () => { task.canceled = true; onCancel() }
     }
     def active: Vector[Task]                    = tasks.filter(t => !t.canceled && !t.fired).toVector
     def advance(duration: FiniteDuration): Unit = now += duration.toNanos

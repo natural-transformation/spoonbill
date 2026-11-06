@@ -408,4 +408,191 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     deletes shouldBe 0
     f.reports.errors.map(_._1) should not contain "Component address cleanup failed"
   }
+
+  it should "finish destruction before an asynchronous transition completes and discard its late result" in {
+    val held = Promise[Int]()
+    val f    = new App(_ => Html(body("no timer")))
+    f.start()
+    result(f.app.topLevelComponentInstance.browserAccess.transitionAsync(_ => held.future))
+    f.worker.drain()
+    result(f.frontend.close())
+    val destroyed = f.app.destroy()
+    f.worker.drain()
+    val completedBeforeApplication = destroyed.isCompleted
+    held.success(99)
+    f.worker.drain()
+    result(destroyed)
+    completedBeforeApplication shouldBe true
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe None
+  }
+
+  it should "reject a later traversal snapshot captured before successor initialization" in {
+    import ctx.*
+    val oldWrite         = Promise[Unit]()
+    val resumeSnapshot   = Promise[Unit]()
+    var pauseSnapshot    = false
+    var snapshotCaptured = false
+    var writes           = Vector.empty[Int]
+    var prepared         = Vector.empty[Int]
+    val raw = StateManager.cached[Future](onWrite = (id, value) => {
+      if (id == Id.TopLevel) Future.unit
+      else {
+        writes :+= value.asInstanceOf[Int]
+        if (value == 10) oldWrite.future else Future.unit
+      }
+    })
+    val storage = new StateManager[Future] {
+      def snapshot = Effect[Future].flatMap(raw.snapshot) { captured =>
+        if (!pauseSnapshot) Future.successful(captured)
+        else {
+          pauseSnapshot = false
+          snapshotCaptured = true
+          Effect[Future].map(resumeSnapshot.future)(_ => captured)
+        }
+      }
+      def read[T: StateDeserializer](id: Id)          = raw.read[T](id)
+      def write[T: StateSerializer](id: Id, value: T) = raw.write(id, value)
+      def delete(id: Id)                              = raw.delete(id)
+    }
+    val first = new Component[Future, Int, Int, Unit]((_: Int) => Future.successful(10)) {
+      def render(parameters: Int, state: Int): context.Node = div(state.toString)
+    }
+    val successor = new Component[Future, Int, Int, Unit](20) {
+      override def maybeUpdateState(parameters: Int, current: Int): Option[Future[Int]] = {
+        prepared :+= current
+        if (current == 10) Some(Future.successful(99)) else None
+      }
+      def render(parameters: Int, state: Int): context.Node = div(state.toString)
+    }
+    val f = new App(state => Html(body(if (state == 0) first(state) else successor(state))), storage)
+    f.start()
+    f.change(1) // successor's first traversal is its loading placeholder
+    pauseSnapshot = true
+    f.change(2)
+    snapshotCaptured shouldBe true
+    oldWrite.success(())
+    f.worker.drain()
+    writes shouldBe Vector(10, 20)
+    resumeSnapshot.success(())
+    f.worker.drain()
+    try {
+      prepared should not contain 10
+      writes should not contain 99
+      prepared should contain(20)
+    } finally f.close()
+  }
+
+  it should "discard late forced transitions and history computations without joining them at shutdown" in {
+    for (history <- List(false, true)) {
+      val held = Promise[Int]()
+      val f    = new App(_ => Html(body("no timer")))
+      f.start()
+      val running = if (history) {
+        f.app.topLevelComponentInstance.updateFromHistory(_ => Effect[Future].map(held.future)(Some(_)))
+      } else f.app.topLevelComponentInstance.browserAccess.transitionForceAsync(_ => held.future)
+      f.worker.drain()
+      f.close()
+      held.isCompleted shouldBe false
+      result(f.storage.read[Int](Id.TopLevel)) shouldBe None
+      held.success(99)
+      f.worker.drain()
+      if (history) result(running)
+      else result(running.failed) shouldBe a[spoonbill.server.SessionAccessDenied]
+      result(f.storage.read[Int](Id.TopLevel)) shouldBe None
+      var called = false
+      result(f.app.topLevelComponentInstance.updateFromHistory { _ =>
+        called = true; Future.successful(Some(42))
+      })
+      called shouldBe false
+    }
+  }
+
+  it should "still drain a transition whose storage write was already admitted" in {
+    val write = Promise[Unit]()
+    val raw   = StateManager.cached[Future](onWrite = (_, _) => write.future)
+    val f     = new App(_ => Html(body("no timer")), raw)
+    f.start()
+    result(f.app.topLevelComponentInstance.browserAccess.transition(_ => 1))
+    f.worker.drain()
+    result(f.frontend.close())
+    val destroyed = f.app.destroy()
+    f.worker.drain()
+    destroyed.isCompleted shouldBe false
+    write.success(())
+    f.worker.drain()
+    result(destroyed)
+    result(raw.read[Int](Id.TopLevel)) shouldBe Some(1)
+  }
+
+  it should "skip a loading-state tick and let a periodic timer run after initialization" in {
+    import ctx.*
+    for (periodic <- List(false, true)) {
+      val initialized = Promise[Int]()
+      var childValue  = Option.empty[Int]
+      val child = new Component[Future, Int, Unit, Unit]((_: Unit) => initialized.future) {
+        private val tick =
+          if (periodic)
+            context.timer
+              .every(context.timerId("loading"), Period.from(1.millis).toOption.get)
+              .update(StateUpdate.Modify[Int](_ + 1))
+          else context.timer.after(context.timerId("loading"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+        override def renderNoState(parameters: Unit): context.Node = div("loading", tick)
+        def render(parameters: Unit, state: Int): context.Node = {
+          childValue = Some(state)
+          div(state.toString, tick)
+        }
+      }
+      val f = new App(_ => Html(body(child(()))))
+      f.start()
+      f.fire()
+      childValue shouldBe None
+      f.reports.errors shouldBe empty
+      initialized.success(20)
+      f.worker.drain()
+      childValue shouldBe Some(20)
+      if (periodic) {
+        f.fire()
+        childValue shouldBe Some(21)
+      } else f.clock.active shouldBe empty // A successful one-shot skip is consumed.
+      f.close()
+    }
+  }
+
+  it should "restart an application's timer when its accepted restart key changes" in {
+    val f = new App(state =>
+      Html(
+        body(
+          ctx.timer
+            .after(ctx.timerId("restart"), tickDelay, RestartKey.Number(state))
+            .update(StateUpdate.Modify[Int](_ + 1))
+        )
+      )
+    )
+    f.start()
+    val stale = f.clock.active.head
+    f.change(10)
+    stale.canceled shouldBe true
+    stale.fire()
+    f.worker.drain()
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(10)
+    f.fire()
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(11)
+    f.close()
+  }
+
+  it should "keep an accepted timer installed when later obsolete-binding cleanup fails" in {
+    val cleanupFailure = new IllegalStateException("Synthetic cancellation failure")
+    val binding        = ctx.timer.after(ctx.timerId("accepted"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val legacy         = ctx.delay(1.second)(_ => Future.unit)
+    val f              = new App(state => Html(body(if (state == 0) legacy else binding)))
+    f.start()
+    f.clock.onCancel = () => throw cleanupFailure
+    f.change(1)
+    f.clock.onCancel = () => ()
+    f.reports.errors.map(_._2) should contain(cleanupFailure)
+    f.clock.active.size shouldBe 1
+    f.fire()
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(2)
+    f.close()
+  }
 }

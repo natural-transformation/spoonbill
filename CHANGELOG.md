@@ -11,6 +11,16 @@
 - Fence component state access across removal and replacement, and drain
   admitted writes before reusing an address. Failed address cleanup remains
   fenced until the view ends; unrelated renders do not repeatedly initialize it.
+  Commit admission follows asynchronous application computation, so an unfinished
+  transition or history computation cannot hold session teardown indefinitely;
+  late results are discarded, while admitted writes and notifications still drain.
+  All traversals check the captured component incarnation and baseline revision,
+  preventing a delayed snapshot from reaching a successor's renderer or parameter
+  loader. Known unrelated component baselines survive deletions elsewhere.
+- Timers that wake before generated component state exists now skip the tick
+  without reporting an error. Periodic timers can recover on a later tick;
+  a one-shot skip remains consumed. Document the preparation-time state read and
+  the absence of transaction isolation against writers outside the component lane.
 - Restore support for the `delay` helper by removing its deprecation. Legacy
   callbacks keep render-driven repetition but construct and execute off the
   scheduler thread, with unexpected failures reported once.

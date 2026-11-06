@@ -348,6 +348,22 @@ class TimerRuntimeSpec extends AnyFlatSpec with Matchers {
     )
   }
 
+  it should "charge a rendered completed one-shot before admitting a new identity" in {
+    val f = new Fixture(1)
+    import f.*
+    render(declaration())
+    due(); turn()
+    val next = ctx.timerId("next")
+    render { declaration(); declaration(next) }
+    clock.active shouldBe empty
+    runtime.snapshot.slots.size shouldBe 1
+    reports.warnings.last should include("overflow=1")
+    render(declaration(next))
+    clock.active.head.duration shouldBe 1.millis
+    due(); turn()
+    target.state shouldBe 2
+  }
+
   private def proxy[S](
     rc: StatefulRenderContext[Context.Binding[Future, S, Unit]],
     add: (StatefulRenderContext[Context.Binding[Future, S, Unit]], Context.Binding[Future, S, Unit]) => Unit

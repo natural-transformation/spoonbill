@@ -66,13 +66,15 @@ object TimerAdapterChecks {
     binding: Context.Binding[F, S, Any],
     first: S,
     second: S,
-    waitForReadiness: Boolean = false
+    waitForReadiness: Boolean = false,
+    holdComputationAtClose: Boolean = false
   )(implicit ec: ExecutionContext): Unit = {
     import avocet.dsl.*, avocet.dsl.html.*
     val F          = Effect[F]
     val clock      = new Deadlines
     val reports    = new Reports
     val ready      = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+    val held       = AsyncTable.unsafeCreateEmpty[F, Unit, S]
     given Reporter = reports
     val writes     = new LinkedBlockingQueue[S]()
     val storage    = StateManager.cached[F](onWrite = (_, value) => F.delay { writes.add(value.asInstanceOf[S]); () })
@@ -124,6 +126,21 @@ object TimerAdapterChecks {
       clock.fire()
       assert(writes.poll(10, TimeUnit.SECONDS) == second)
       assert(reports.failures.isEmpty)
+      if (holdComputationAtClose) {
+        val entered = new java.util.concurrent.CountDownLatch(1)
+        val transition = F.toFuture(app.topLevelComponentInstance.browserAccess.transitionForceAsync { _ =>
+          entered.countDown()
+          held.get(())
+        })
+        assert(entered.await(10, TimeUnit.SECONDS), "Application computation did not enter its lane")
+        try {
+          run(frontend.close())
+          run(app.destroy())
+          assert(!transition.isCompleted, "Held application computation unexpectedly completed")
+        } finally run(held.putEither((), Right(initial), silent = true))
+        assert(Await.result(transition.failed, 10.seconds).isInstanceOf[spoonbill.server.SessionAccessDenied])
+        assert(writes.isEmpty, "Retired computation wrote a late result")
+      }
     } finally {
       if (waitForReadiness) run(ready.putEither((), Left(new spoonbill.server.SessionAccessDenied), silent = true))
       run(frontend.close())

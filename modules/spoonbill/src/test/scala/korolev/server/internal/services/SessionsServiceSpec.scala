@@ -8,7 +8,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{Await, Future, Promise}
 import scala.concurrent.duration._
 import spoonbill.{Component, Context, Extension, Qsid, Router}
 import spoonbill.auth.*
@@ -305,5 +305,83 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     await(second.outgoing.pull()).isDefined shouldBe true
     await(second.release())
     worker.drain()
+  }
+
+  it should "release a guarded attachment while application computation remains pending" in withAnonymous { f =>
+    f.seed("/login")
+    val first = f.attach("/login")
+    f.ready(first)
+    val old      = await(f.service.getApp(f.qsid)).get
+    val expected = f.state
+    val entered  = Promise[Unit]()
+    val held     = Promise[String]()
+    val transition = old.topLevelComponentInstance.browserAccess.transitionForceAsync { _ =>
+      entered.trySuccess(())
+      held.future
+    }
+    try {
+      await(entered.future)
+      await(first.release())
+      held.isCompleted shouldBe false
+      await(f.service.getApp(f.qsid)) shouldBe None
+      val second = f.attach("/help")
+      try {
+        f.ready(second)
+        await(f.service.getApp(f.qsid)).get should not be theSameInstanceAs(old)
+        held.success("stale computation")
+        await(transition.failed) shouldBe a[SessionAccessDenied]
+        f.state shouldBe expected
+      } finally await(second.release())
+    } finally {
+      held.trySuccess("late cleanup")
+      await(first.release())
+    }
+  }
+
+  it should "remove and reconnect a legacy session without waiting for a pending application computation" in {
+    val worker    = new Worker
+    var destroyed = false
+    val config = SpoonbillServiceConfig[Future, Int, Any](
+      stateLoader = StateLoader.default(0),
+      document = state => Html(body(state.toString)),
+      reporter = new Reports,
+      extensions = List(
+        Extension.pure(_ =>
+          Extension.Handlers[Future, Int, Any](onDestroy = () => {
+            destroyed = true; Future.unit
+          })
+        )
+      )
+    )(worker)
+    val service = new SessionsService(config, new PageService(config))
+    val qsid    = Qsid("legacy-pending", UUID.randomUUID().toString)
+    val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
+    def attach(): SessionStart.Attached[Future] = {
+      val attached = await(service.createAppIfNeeded(qsid, request, Queue[Future, String]().stream))
+        .asInstanceOf[SessionStart.Attached[Future]]
+      worker.drain()
+      attached
+    }
+    val first      = attach()
+    val old        = await(service.getApp(qsid)).get
+    val held       = Promise[Int]()
+    val transition = old.topLevelComponentInstance.browserAccess.transitionForceAsync(_ => held.future)
+    worker.drain()
+    try {
+      await(first.release())
+      worker.drain()
+      held.isCompleted shouldBe false
+      destroyed shouldBe true
+      await(service.getApp(qsid)) shouldBe None
+      val second = attach()
+      try {
+        val next = await(service.getApp(qsid)).get
+        next should not be theSameInstanceAs(old)
+        held.success(99)
+        worker.drain()
+        await(transition.failed) shouldBe a[SessionAccessDenied]
+        await(next.topLevelComponentInstance.browserAccess.state) shouldBe 0
+      } finally { await(second.release()); worker.drain() }
+    } finally { held.trySuccess(99); await(first.release()); worker.drain() }
   }
 }

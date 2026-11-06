@@ -637,8 +637,14 @@ kind, duration, or `restartOn` also restarts it. `RestartKey` supports `Stable`,
 `Text`, `Number`, `Uuid`, and nested `Parts`; keys are limited to 64 nodes,
 eight nesting levels, and 1024 total text code units. Keys are never logged.
 
-Updates run in their component's ordinary transition queue, using current state
-and current interaction authorization. `NoUpdate` writes and renders nothing;
+Updates run in their component's ordinary transition queue. They read state
+after interaction authorization, during preparation and before final admission
+and the execution-context hop. The queue serializes timer and ordinary
+transition turns, but initializers, parameter loaders, and history computations
+can write outside that queue. Timer updates are not atomic transactions against
+those writers: an intervening write can be overwritten by a candidate derived
+from the earlier read. Avoid competing writes from those paths when atomic
+read/modify/write behavior is required. `NoUpdate` writes and renders nothing;
 `Modify(identity)` still writes. Partial scoped reads or writes that are undefined
 skip the update, and composed lenses preserve other parent fields. Reducers
 should remain pure and check domain relevance: application state can advance
@@ -648,12 +654,30 @@ stops the timer, without a timer-error report; frontend denials retain the norma
 session teardown behavior. Guarded startup waits for session readiness and
 extension state-stream registration before arming timers.
 
+A timer declared in `renderNoState` may wake before generated initial state
+exists. That tick skips reduction, writing, and rendering without reporting a
+failure. A still-rendered periodic timer waits its next period and can update
+once state exists.
+A one-shot skip is consumed; declare it in the stateful render, or change its
+restart key when initialization completes, if it must run after loading.
+
 Periodic timers wait one period initially and another period after write and
 notification settlement. They do not overlap their own prior entry or catch up
 missed ticks. Slow authorization blocks later work in the same component;
 other components can progress. Removal prevents unadmitted reduction. An already
 admitted turn may settle afterward, and address reuse waits for its settlement
 and storage cleanup. Cancellation does not roll back writes.
+Ordinary asynchronous transitions and history computations acquire commit
+ownership only after application computation completes. Teardown does not join
+unfinished application work, and its late result cannot write into a retired
+owner. This does not cancel the underlying effect. A storage write that has
+already been admitted still holds teardown through write and notification
+settlement; an unfinished storage write must not be abandoned to permit reuse.
+Every component traversal validates its snapshot against the owner's baseline,
+including traversals delayed across handoff and initialization. A stale snapshot
+cannot be passed to the successor's renderer or parameter loader. Known unrelated
+owners remain valid when another component is deleted; an address not yet owned
+when the snapshot was captured still uses a conservative deletion check.
 If address cleanup fails, that address remains fenced for the rest of the live
 view: rendering again or remounting the component does not make the old storage
 safe. The failure is reported without retrying the initializer on every render.

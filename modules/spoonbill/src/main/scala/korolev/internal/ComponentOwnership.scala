@@ -21,21 +21,27 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
   private var nextIncarnation = 0L
   private var baselineVersion = new Object
 
-  private final class Snapshot(val version: AnyRef, underlying: StateManager.Snapshot) extends StateManager.Snapshot {
+  private case class Baseline(incarnation: Long, revision: Long)
+  private final class Snapshot(
+    val version: AnyRef,
+    val baselines: Map[Id, Baseline],
+    underlying: StateManager.Snapshot
+  ) extends StateManager.Snapshot {
+    val source                                              = ComponentOwnership.this
     def apply[T: StateDeserializer](address: Id): Option[T] = underlying[T](address)
   }
 
   /**
-   * Capture before the storage read, so a concurrent deletion invalidates it.
+   * Capture owner baselines before the storage read. A handoff or loader
+   * completion invalidates affected captures without rejecting other owners.
    */
-  def snapshot: F[StateManager.Snapshot] = Effect[F].delay(lock.synchronized(baselineVersion)).flatMap { version =>
-    storage.snapshot.map(value => new Snapshot(version, value))
-  }
-
-  def snapshotIsCurrent(snapshot: StateManager.Snapshot): Boolean = snapshot match {
-    case value: Snapshot => lock.synchronized(value.version eq baselineVersion)
-    case _               => false
-  }
+  def snapshot: F[StateManager.Snapshot] = Effect[F]
+    .delay(lock.synchronized {
+      (baselineVersion, tails.iterator.map { case (address, owner) => address -> owner.baseline }.toMap)
+    })
+    .flatMap { case (version, baselines) =>
+      storage.snapshot.map(value => new Snapshot(version, baselines, value))
+    }
 
   def closeAdmission(): Unit = lock.synchronized { closed = true }
 
@@ -109,6 +115,38 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
     private var admitted                 = 0
     private var cleanupStarted           = false
     private var predecessorError         = Option.empty[Throwable]
+    private var baselineRevision         = 0L
+
+    private[ComponentOwnership] def baseline: Baseline = Baseline(incarnation, baselineRevision)
+
+    /**
+     * Validate every traversal, including snapshots suspended across handoff.
+     */
+    def snapshotIsCurrent(snapshot: StateManager.Snapshot): Boolean = lock.synchronized {
+      snapshot match {
+        case value: Snapshot if (value.source eq ComponentOwnership.this) && !closed && active && opened =>
+          value.baselines.get(address) match {
+            case Some(captured) => captured == baseline
+            // An address not yet owned at capture can use its pre-rendered
+            // state only if no intervening deletion made that baseline unknown.
+            case None => !reused && baselineRevision == 0L && (value.version eq baselineVersion)
+          }
+        case _ => false
+      }
+    }
+
+    /**
+     * Mark a settled loader write or fresh baseline read before notification.
+     */
+    def establishBaseline(): Unit = lock.synchronized {
+      try baselineRevision = Math.addExact(baselineRevision, 1L)
+      catch {
+        case error: ArithmeticException =>
+          active = false
+          opened = false
+          throw error
+      }
+    }
 
     def isOpen: Boolean       = lock.synchronized(!closed && active && opened)
     def isActive: Boolean     = lock.synchronized(!closed && active)
@@ -128,6 +166,7 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
       val available = lock.synchronized {
         predecessorSettled = true
         predecessorError = result.left.toOption
+        if (result.isRight && reused) baselineRevision = 1L
         opened = result.isRight && active
         opened
       }

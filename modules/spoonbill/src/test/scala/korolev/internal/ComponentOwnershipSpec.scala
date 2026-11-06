@@ -154,14 +154,14 @@ class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
     val owners   = new ComponentOwnership(storage, new Reports, worker)
     val old      = owners.bind(Id("1_2"), true)
     val snapshot = result(owners.snapshot)
-    owners.snapshotIsCurrent(snapshot) shouldBe true
+    old.snapshotIsCurrent(snapshot) shouldBe true
     old.retire()
     worker.drain()
     val next = owners.bind(Id("1_2"), true)
     next.isOpen shouldBe true
     next.reused shouldBe false
-    owners.snapshotIsCurrent(snapshot) shouldBe false
-    owners.snapshotIsCurrent(result(owners.snapshot)) shouldBe true
+    next.snapshotIsCurrent(snapshot) shouldBe false
+    next.snapshotIsCurrent(result(owners.snapshot)) shouldBe true
   }
 
   it should "drain whole-view shutdown without deleting through a closed guarded store" in {
@@ -178,5 +178,61 @@ class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
     lease.release()
     worker.drain()
     result(closed)
+  }
+
+  it should "validate each owner's baseline without invalidating unrelated established components" in {
+    val worker   = new Worker
+    val owners   = new ComponentOwnership(StateManager.cached[Future](), new Reports, worker)
+    val removed  = owners.bind(Id("1_2"), true)
+    val retained = owners.bind(Id("1_3"), true)
+    val snapshot = result(owners.snapshot)
+    removed.retire()
+    worker.drain()
+    retained.snapshotIsCurrent(snapshot) shouldBe true
+    retained.establishBaseline()
+    retained.snapshotIsCurrent(snapshot) shouldBe false
+    retained.snapshotIsCurrent(result(owners.snapshot)) shouldBe true
+  }
+
+  it should "reject a snapshot captured while a successor's gate was still closed" in {
+    val worker  = new Worker
+    val owners  = new ComponentOwnership(StateManager.cached[Future](), new Reports, worker)
+    val old     = owners.bind(Id("1_2"), true)
+    val lease   = old.admit().get
+    val next    = owners.bind(Id("1_2"), true)
+    val pending = result(owners.snapshot)
+    lease.release()
+    worker.drain()
+    next.snapshotIsCurrent(pending) shouldBe false
+    val opened = result(owners.snapshot)
+    next.establishBaseline()
+    next.snapshotIsCurrent(opened) shouldBe false
+    next.snapshotIsCurrent(result(owners.snapshot)) shouldBe true
+  }
+
+  it should "serialize concurrent admission and address replacement without late writes crossing the handoff" in {
+    val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+    val ec       = scala.concurrent.ExecutionContext.fromExecutorService(executor)
+    try {
+      (1 to 100).foreach { _ =>
+        val storage = StateManager.cached[Future]()
+        val owners  = new ComponentOwnership(storage, new Reports, ec)
+        val old     = owners.bind(Id("1_2"), true)
+        val start   = new java.util.concurrent.CountDownLatch(1)
+        val writer = Future {
+          start.await()
+          old.admit().fold(Future.unit)(_.run(storage.write(Id("1_2"), 10)))
+        }(ec).flatMap(identity)(ec)
+        val replacement = Future { start.await(); owners.bind(Id("1_2"), true) }(ec)
+        start.countDown()
+        result(writer)
+        val next = result(replacement)
+        result(next.awaitOpen) shouldBe true
+        result(storage.read[Int](Id("1_2"))) shouldBe None
+        result(next.admit().get.run(storage.write(Id("1_2"), 20)))
+        old.admit() shouldBe None
+        result(storage.read[Int](Id("1_2"))) shouldBe Some(20)
+      }
+    } finally ec.shutdown()
   }
 }

@@ -34,4 +34,12 @@ class TimerIOSpec extends AnyFlatSpec with Matchers {
       .update(StateUpdate.Modify[Int](_ + 1))
     TimerAdapterChecks.periodic(0, binding, 1, 2, waitForReadiness = true)
   }
+
+  it should "close without joining application computation and reject its late result" in {
+    val ctx = Context[IO, Int, Any]
+    val binding = ctx.timer
+      .every(ctx.timerId("close"), Period.from(1.millis).toOption.get)
+      .update(StateUpdate.Modify[Int](_ + 1))
+    TimerAdapterChecks.periodic(0, binding, 1, 2, holdComputationAtClose = true)
+  }
 }
