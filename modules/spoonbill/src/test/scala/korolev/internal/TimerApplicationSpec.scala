@@ -683,4 +683,55 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
       f.reports.errors shouldBe empty
     } finally f.close()
   }
+
+  it should "complete a no-update render promise once without writing or requesting a render" in {
+    var writes  = 0
+    var renders = 0
+    val storage = StateManager.cached[Future](onWrite = (_, _) => { writes += 1; Future.unit })
+    val f       = new App(state => { renders += 1; Html(body(state.toString)) }, storage)
+    f.start()
+    val initialRenders = renders
+    val prepared       = Promise[Option[Int]]()
+    val completed      = Promise[Unit]()
+    var completions    = 0
+    val turn = f.app.topLevelComponentInstance.ownedTurn(
+      prepared.future,
+      Some { result =>
+        completions += 1
+        completed.tryComplete(result.toTry)
+        ()
+      }
+    )
+    try {
+      completed.isCompleted shouldBe false
+      prepared.success(None)
+      result(turn)
+      f.worker.drain()
+      completed.future.value shouldBe Some(scala.util.Success(()))
+      completions shouldBe 1
+      writes shouldBe 0
+      renders shouldBe initialRenders
+      f.reports.errors shouldBe empty
+    } finally f.close()
+  }
+
+  it should "deny a no-update render promise after retirement without constructing preparation" in {
+    val f = new App(_ => Html(body("closed")))
+    f.start()
+    f.close()
+    var prepared    = false
+    var completions = Vector.empty[Either[Throwable, Unit]]
+    result(
+      f.app.topLevelComponentInstance.ownedTurn(
+        {
+          prepared = true
+          Future.successful(None)
+        },
+        Some(value => completions :+= value)
+      )
+    )
+    prepared shouldBe false
+    completions.size shouldBe 1
+    completions.head.left.toOption.get shouldBe a[spoonbill.server.SessionAccessDenied]
+  }
 }

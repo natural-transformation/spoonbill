@@ -483,7 +483,8 @@ final class ComponentInstance[
     }
   }
 
-  private def ownedTurn(
+  /** A no-update turn completes without writing state or requesting a render. */
+  private[internal] def ownedTurn(
     prepare: => F[Option[CS]],
     rendered: Option[Effect.Promise[Unit]] = None
   ): F[Unit] = {
