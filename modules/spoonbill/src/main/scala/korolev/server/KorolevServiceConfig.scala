@@ -52,7 +52,8 @@ case class SpoonbillServiceConfig[F[_], S, M](
   sessionAccessControl: Option[SessionAccessControl[F, S]] = None,
   authenticationCompletion: Option[AuthenticationCompletionConfig[F]] = None,
   private[spoonbill] val browserSecurityInstallation: Option[spoonbill.auth.BrowserSecurityInstallation[F, S]] = None,
-  staticResourceLimits: StaticResourceLimits = StaticResourceLimits()
+  staticResourceLimits: StaticResourceLimits = StaticResourceLimits(),
+  timerSettings: spoonbill.timer.TimerSettings = spoonbill.timer.TimerSettings()
 )(implicit val executionContext: ExecutionContext)
 
 object SpoonbillServiceConfig {

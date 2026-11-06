@@ -3,6 +3,10 @@ package spoonbill.action
 import spoonbill.effect.Effect
 
 private[spoonbill] object StateUpdateInterpreter:
+  def reduce[S](update: StateUpdate[S], current: S): Option[S] = update match
+    case StateUpdate.NoUpdate()     => None
+    case StateUpdate.Modify(reduce) => Some(reduce(current))
+
   def apply[F[_]: Effect, S](update: StateUpdate[S])(transition: (S => S) => F[Unit]): F[Unit] =
     update match
       case StateUpdate.NoUpdate()     => Effect[F].unit

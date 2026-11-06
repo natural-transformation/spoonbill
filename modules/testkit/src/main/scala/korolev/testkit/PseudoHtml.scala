@@ -167,7 +167,12 @@ object PseudoHtml {
       }
     }
 
-    def addMisc(misc: Binding[F, S, M]): Unit = {
+    def addMisc(misc: Binding[F, S, M]): Unit = misc match {
+      case _: Context.TimerBinding[_, _, _] => ()
+      case _ => addOrdinaryMisc(misc)
+    }
+
+    private def addOrdinaryMisc(misc: Binding[F, S, M]): Unit = {
       idBuilder.decLevel()
       misc match {
         case ComponentEntry(c, p, _) =>
@@ -182,6 +187,8 @@ object PseudoHtml {
           val eventId = EventId(idBuilder.mkId, event.`type`, event.phase)
           events = (eventId, event.asInstanceOf[Context.Event[F, S, M]]) :: events
         case _: Context.Delay[_, _, _] =>
+          ()
+        case _: Context.TimerBinding[_, _, _] =>
           ()
       }
       idBuilder.incLevel()

@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+- Add inert render-owned `timer.after` and `timer.every` bindings for
+  `StateUpdate`, with typed `TimerId`, structural `RestartKey`, validated
+  `DelayDuration` and `Period`, and `SpoonbillServiceConfig.timerSettings`.
+  Registration follows accepted live rendering. Duplicate, invalid, and excess
+  timers are omitted with diagnostics; the default budget is 1024 retained
+  identities, including completed one-shots whose bindings remain rendered.
+- Fence component state access across removal and replacement, and drain
+  admitted writes before reusing an address. Failed address cleanup remains
+  fenced until the view ends; unrelated renders do not repeatedly initialize it.
+  Commit admission follows asynchronous application computation, so an unfinished
+  transition or history computation cannot hold session teardown indefinitely;
+  late results are discarded, while admitted writes and notifications still drain.
+  All traversals check the captured component incarnation and baseline revision,
+  preventing a delayed snapshot from reaching a successor's renderer or parameter
+  loader. Known unrelated component baselines survive deletions elsewhere.
+  Ordinary parameter reloads and repeated baseline refreshes preserve valid
+  same-owner snapshots, avoiding unnecessary loading placeholders and rerenders.
+- Timers that wake before generated component state exists now skip the tick
+  without reporting an error. Periodic timers can recover on a later tick;
+  a one-shot skip remains consumed. Document the preparation-time state read and
+  the absence of transaction isolation against writers outside the component lane.
+- Restore support for the `delay` helper by removing its deprecation. Legacy
+  callbacks keep render-driven repetition but construct and execute off the
+  scheduler thread, with unexpected failures reported once.
+- Continue legacy session cleanup after frontend/component teardown errors,
+  including extension destruction and removal from the application registry.
+  Guarded teardown retires component admission before draining storage writes.
+  New timers wait for guarded readiness and extension state-stream registration.
+- Legacy teardown now closes the frontend explicitly. In-flight handlers that
+  try to send output during teardown can fail with an access denial, rather than
+  having output silently dropped, and may produce event/transition error reports.
+- Migrate dismissal and streaming examples to the timer API; keep timer bindings
+  inert in static testkit rendering. Internal `ComponentInstance` construction
+  and `ComponentEntry.createInstance` gained parameters: defaults preserve source
+  compatibility, but consumers calling these directly must recompile. Binary
+  compatibility for those signatures is not promised by this change.
+
 ## 8.1.0 — 2026-11-03
 
 This release reduces guarded event latency and timer memory, and adds an

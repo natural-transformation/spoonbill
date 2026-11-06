@@ -274,6 +274,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       case false => Effect[F].unit
       case true =>
         for {
+          // Retire component admission before any asynchronous close/drain can
+          // settle a lease and schedule a now-unnecessary per-node deletion.
+          _ <- attempt(Effect[F].delay(appRef.get().foreach(_.closeAdmission())))
           _ <- Effect[F].delay { live.set(false); idleTimer.getAndSet(None).foreach(_.unsafeCancel()) }
           _ <- attempt(ready.putEither((), Left(new SessionAccessDenied), silent = true))
           _ <- attempt(frontendRef.get().fold(monitored.cancel())(_.close()))
@@ -430,23 +433,25 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                    replacementCompletion = guard.replacementCompletion
                  )
       _ <- Effect[F].delay(frontendRef.set(Some(frontend)))
-      app = new ApplicationInstance[F, S, M](
-              qsid,
-              frontend,
-              manager,
-              initial,
-              config.document,
-              config.rootPath,
-              config.router,
-              (rc, k) => pageService.setupStatefulProxy(rc, qsid, k),
-              scheduler,
-              config.reporter,
-              config.recovery,
-              config.delayedRender,
-              Some(() => ready.get(())),
-              Some(state => authorize(guard, state)),
-              Some(outputAuthorization.fold[S => () => F[Unit]](completeOutput)(output => state => output.producer(state)))
-            )
+      app =
+        new ApplicationInstance[F, S, M](
+          qsid,
+          frontend,
+          manager,
+          initial,
+          config.document,
+          config.rootPath,
+          config.router,
+          (rc, k) => pageService.setupStatefulProxy(rc, qsid, k),
+          scheduler,
+          config.reporter,
+          config.recovery,
+          config.delayedRender,
+          Some(() => ready.get(())),
+          Some(state => authorize(guard, state)),
+          Some(outputAuthorization.fold[S => () => F[Unit]](completeOutput)(output => state => output.producer(state))),
+          timerSettings = config.timerSettings
+        )
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
       state     <- rawManager.read[S](avocet.Id.TopLevel).map(_.getOrElse(initial))
@@ -470,14 +475,15 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // These checks guard extension callbacks only. Without extensions there
       // is no callback to run, so no observation is made per state change. The
       // streams are still drained: an eager effect subscribes them at creation.
-      _ <- Effect[F].start(app.stateStream.flatMap(_.foreach { case (id, changed) =>
+      stateEvents <- app.stateStream
+      _ <- Effect[F].start(stateEvents.foreach { case (id, changed) =>
              if (id != avocet.Id.TopLevel || handlers.isEmpty) Effect[F].unit
              else
                rawManager.read[S](avocet.Id.TopLevel).flatMap {
                  case Some(current) => authorizeAll(guard, List(changed.asInstanceOf[S], current))
                  case None          => deny(new SessionAccessDenied)
                }.flatMap(_ => handlers.map(_.onState(changed.asInstanceOf[S])).sequence.unit)
-           }))
+           })
       _ <- Effect[F].start(
              app.messagesStream.foreach(message =>
                if (handlers.isEmpty) Effect[F].unit
@@ -524,6 +530,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
     def handleAppOrWsOutgoingCloseOrTimeout(frontend: Frontend[F], app: App, ehs: ExtensionsHandlers): F[Unit] = {
 
+      def attempt(operation: => F[Unit]): F[Unit] = Effect[F].delayAsync(operation).recover { case error =>
+        config.reporter.error("Legacy session cleanup failed", error)
+        ()
+      }
+
       val consumed: F[Unit] = Effect[F].promise[Unit] { cb =>
         val invoked = new AtomicBoolean(false)
         def invokeOnce(reason: String): Either[Throwable, Unit] => Unit = (x: Either[Throwable, Unit]) =>
@@ -562,11 +573,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
       for {
         _ <- consumed
-        _ <- incomingStream.cancel()
-        _ <- frontend.outgoingMessages.cancel()
-        _ <- app.topLevelComponentInstance.destroy()
+        _ <- attempt(incomingStream.cancel())
+        _ <- attempt(frontend.close())
+        _ <- attempt(app.destroy())
         _ <- ehs.map { handler =>
-               handler.onDestroy().recover { case error =>
+               Effect[F].delayAsync(handler.onDestroy()).recover { case error =>
                  config.reporter.error(s"Unable to destroy extension for $qsid", error)
                  ()
                }
@@ -617,7 +628,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                 scheduler,
                 config.reporter,
                 config.recovery,
-                config.delayedRender
+                config.delayedRender,
+                timerSettings = config.timerSettings
               )
         browserAccess = app.topLevelComponentInstance.browserAccess
         _ <- config.extensions.map { extension =>

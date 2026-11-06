@@ -128,4 +128,18 @@ class ReplacementOutputSpec extends AnyFlatSpec with Matchers {
       f.admissions.get() shouldBe 0
     } finally await(f.frontend.close())
   }
+
+  it should "reject an empty DOM frame if replacement begins after its preliminary authorization" in {
+    val f         = new Fixture
+    var published = false
+    try {
+      val pending = f.frontend.performDomChangesAuthorized(
+        _ => (),
+        () => f.frontend.completeReplacement(f.handoff, f.binding),
+        () => published = true
+      )
+      intercept[SessionAccessDenied](await(pending))
+      published shouldBe false
+    } finally await(f.frontend.close())
+  }
 }

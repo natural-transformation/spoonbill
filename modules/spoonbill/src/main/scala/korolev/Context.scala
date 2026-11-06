@@ -34,6 +34,8 @@ import spoonbill.web.{FormData, MimeTypes}
 final class Context[F[_], S, M] extends Context.Scope[F, S, S, M] {
   type AccessType = S
   protected val accessScope: Context.Access[F, S, M] => Context.Access[F, S, M] = identity
+  protected def updateScope(update: spoonbill.action.StateUpdate[S]): S => Option[S] =
+    state => spoonbill.action.StateUpdateInterpreter.reduce(update, state)
 }
 
 object Context {
@@ -115,8 +117,10 @@ object Context {
     type Document        = avocet.Document[Binding]
     type Node            = avocet.Document.Node[Binding]
     type Attr            = avocet.Document.Attr[Binding]
+    type TimerId         = spoonbill.timer.TimerId[S]
 
     protected val accessScope: Context.Access[F, S, M] => Access
+    protected def updateScope(update: spoonbill.action.StateUpdate[AccessType]): S => Option[S]
 
     def scope[S2](lens: Lens[S, S2]): Scope[F, S, S2, M] =
       scope(lens.read, lens.write)
@@ -125,7 +129,44 @@ object Context {
       new Scope[F, S, S2, M] {
         protected val accessScope: Context.Access[F, S, M] => Access =
           access => access.imap(read, write)
+        protected def updateScope(update: spoonbill.action.StateUpdate[S2]): S => Option[S] = update match {
+          case spoonbill.action.StateUpdate.NoUpdate() => _ => None
+          case _ =>
+            state =>
+              read
+                .lift(state)
+                .flatMap(focus => spoonbill.action.StateUpdateInterpreter.reduce(update, focus))
+                .flatMap(value => write.lift((state, value)))
+        }
       }
+
+    def timerId(): TimerId             = spoonbill.timer.TimerId.fresh[S]()
+    def timerId(name: String): TimerId = spoonbill.timer.TimerId.named[S](name)
+
+    final class TimerPlan private[Scope] (
+      id: TimerId,
+      nanos: Long,
+      periodic: Boolean,
+      key: spoonbill.timer.RestartKey
+    ) {
+      def update(update: spoonbill.action.StateUpdate[AccessType]): Binding =
+        TimerBinding(id, nanos, periodic, key, updateScope(update))
+    }
+
+    object timer {
+      def after(
+        id: TimerId,
+        delay: spoonbill.timer.DelayDuration,
+        restartOn: spoonbill.timer.RestartKey = spoonbill.timer.RestartKey.Stable
+      ): TimerPlan =
+        new TimerPlan(id, delay.nanos, false, restartOn)
+      def every(
+        id: TimerId,
+        period: spoonbill.timer.Period,
+        restartOn: spoonbill.timer.RestartKey = spoonbill.timer.RestartKey.Stable
+      ): TimerPlan =
+        new TimerPlan(id, period.nanos, true, restartOn)
+    }
 
     implicit class JsCodeHelper(sc: StringContext) {
       def js(args: Any*): JsCode =
@@ -138,7 +179,6 @@ object Context {
      * Schedules the transition with delay. For example it can be useful when
      * you want to hide something after timeout.
      */
-    @deprecated("Delays often is using for hacks", "0.18.0")
     def delay(duration: FiniteDuration)(effect: Access => F[Unit]): Delay[F, S, M] =
       Delay(duration, accessScope.andThen(effect))
 
@@ -579,6 +619,14 @@ object Context {
 
   sealed trait Binding[+F[_], +S, +M]
 
+  private[spoonbill] final case class TimerBinding[F[_], S, M](
+    id: spoonbill.timer.TimerId[S],
+    nanos: Long,
+    periodic: Boolean,
+    restartOn: spoonbill.timer.RestartKey,
+    update: S => Option[S]
+  ) extends Binding[F, S, M]
+
   abstract class PropertyHandler[F[_]: Effect] {
     @deprecated("""Use "propertyName" instead of 'propertyName""", "0.13.0")
     def get(propName: Symbol): F[String] = get(propName.name)
@@ -612,7 +660,10 @@ object Context {
       stateQueue: Queue[F, (Id, Any, Option[Effect.Promise[Unit]])],
       scheduler: Scheduler[F],
       reporter: Reporter,
-      recovery: PartialFunction[Throwable, F[Unit]]
+      recovery: PartialFunction[Throwable, F[Unit]],
+      executionContext: scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.global,
+      ownership: Option[spoonbill.internal.ComponentOwnership[F]] = None,
+      timers: Option[spoonbill.internal.TimerRuntime[F]] = None
     ): ComponentInstance[F, AS, M, CS, P, E] =
       new ComponentInstance(
         node,
@@ -636,7 +687,10 @@ object Context {
           },
         scheduler,
         reporter,
-        recovery
+        recovery,
+        executionContext,
+        ownership,
+        timers
       )
   }
 

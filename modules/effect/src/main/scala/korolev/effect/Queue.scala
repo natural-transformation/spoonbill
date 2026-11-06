@@ -31,6 +31,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 
   private val state = new AtomicReference(Queue.State[T]())
 
+  /** Distinguishes a rejected offer after close from temporary backpressure. */
+  def isClosed: Boolean = state.get().closed
+
   private final class QueueStream extends Stream[F, T] {
 
     def pull(): F[Option[T]] = Effect[F].promise { cb =>

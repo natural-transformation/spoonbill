@@ -19,16 +19,12 @@ final class ZioHttpExampleSpec extends AnyFlatSpec with Matchers {
     def addMisc(item: M): Unit                                   = misc += item
   }
 
-  "ZioHttpExample.document" should "include a delay binding for Some state" in {
+  "ZioHttpExample.document" should "include its dismissal timer for Some state" in {
     val rc =
       new MiscCollectingRenderContext[Context.Binding[ZTask, Option[Int], Any]]()
 
     ZioHttpExample.document(Some(1))(rc)
 
-    val hasDelay = rc.misc.exists {
-      case Context.Delay(_, _) => true
-      case _                   => false
-    }
-    hasDelay shouldBe true
+    rc.misc should contain(ZioHttpExample.resetAfterDelay)
   }
 }

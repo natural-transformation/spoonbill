@@ -595,12 +595,122 @@ work, for example focusing an element introduced by a transition. It requests a
 forced identity transition internally and does not acknowledge browser paint.
 It therefore belongs in explicit DOM-effect workflows, not no-update completion.
 
-=== Delays and server push
+=== Render timers and server push
 
-`delay(duration)(handler)` attaches delayed work to a rendered binding. This
-helper has been deprecated since 0.18.0. Existing presentation timers can still
-use it, but it is not durable scheduling. See
-{code}examples/delay/src/main/scala/DelayExample.scala[the delay example].
+`timer.after(id, duration).update(StateUpdate)` describes a one-shot presentation
+update. `timer.every(id, period).update(StateUpdate)` repeats after the previous
+update settles. Construct durations with `spoonbill.timer.DelayDuration.from`
+and `spoonbill.timer.Period.from`; both return `Either`. Delays accept zero,
+periods require at least one millisecond, and both require exact whole
+milliseconds no greater than `Long.MaxValue / 1000000L`. Validate durations
+before rendering.
+
+[source,scala]
+----
+import spoonbill.action.StateUpdate
+import spoonbill.timer.DelayDuration
+import scala.concurrent.duration.*
+
+val dismiss = timerId("notice:dismiss")
+val hideAfter = DelayDuration.from(3.seconds).toOption.get
+val dismissNotice = timer.after(dismiss, hideAfter)
+  .update(StateUpdate.Modify[Option[String]](_ => None))
+----
+
+Attach the resulting binding to the rendered notice. Construction and static
+HTTP rendering do not start a timer. A live accepted render starts the delay;
+browser paint is not acknowledged. See
+{code}examples/delay/src/main/scala/DelayExample.scala[notice dismissal] and
+{code}examples/file-streaming/src/main/scala/FileStreamingExample.scala[the periodic alive indicator].
+
+Declare anonymous `timerId()` values once outside rendering. Named IDs use exact,
+case-sensitive equality within a component incarnation: for lists, reconstruct
+`timerId(s"notice-list:dismiss:${notice.id}")` from stable, non-sensitive item
+metadata. Reordering preserves that timer. Use a different site prefix for an
+independent timer on the same item. Names must contain 1–128 UTF-16 code units.
+IDs are neither credentials nor cancellation handles.
+
+An unchanged declaration keeps its deadline and uses the latest accepted update
+at reducer admission. Completed one-shots and failed timers stay stopped while
+present. Removal followed by reappearance starts a fresh generation. Changing
+kind, duration, or `restartOn` also restarts it. `RestartKey` supports `Stable`,
+`Text`, `Number`, `Uuid`, and nested `Parts`; keys are limited to 64 nodes,
+eight nesting levels, and 1024 total text code units. Keys are never logged.
+
+Updates run in their component's ordinary transition queue. They read state
+after interaction authorization, during preparation and before final admission
+and the execution-context hop. The queue serializes timer and ordinary
+transition turns, but initializers, parameter loaders, and history computations
+can write outside that queue. Timer updates are not atomic transactions against
+those writers: an intervening write can be overwritten by a candidate derived
+from the earlier read. Avoid competing writes from those paths when atomic
+read/modify/write behavior is required. `NoUpdate` writes and renders nothing;
+`Modify(identity)` still writes. Partial scoped reads or writes that are undefined
+skip the update, and composed lenses preserve other parent fields. Reducers
+should remain pure and check domain relevance: application state can advance
+before its corresponding render is accepted. Unexpected failures stop the
+generation; restart explicitly or remount to retry. An authorization denial also
+stops the timer, without a timer-error report; frontend denials retain the normal
+session teardown behavior. Guarded startup waits for session readiness and
+extension state-stream registration before arming timers.
+
+A timer declared in `renderNoState` may wake before generated initial state
+exists. That tick skips reduction, writing, and rendering without reporting a
+failure. A still-rendered periodic timer waits its next period and can update
+once state exists.
+A one-shot skip is consumed; declare it in the stateful render, or change its
+restart key when initialization completes, if it must run after loading.
+
+Periodic timers wait one period initially and another period after write and
+notification settlement. They do not overlap their own prior entry or catch up
+missed ticks. Slow authorization blocks later work in the same component;
+other components can progress. Removal prevents unadmitted reduction. An already
+admitted turn may settle afterward, and address reuse waits for its settlement
+and storage cleanup. Cancellation does not roll back writes.
+Ordinary asynchronous transitions and history computations acquire commit
+ownership only after application computation completes. Teardown does not join
+unfinished application work, and its late result cannot write into a retired
+owner. This does not cancel the underlying effect. A storage write that has
+already been admitted still holds teardown through write and notification
+settlement; an unfinished storage write must not be abandoned to permit reuse.
+Every component traversal validates its snapshot against the owner's baseline,
+including traversals delayed across handoff and initialization. A stale snapshot
+cannot be passed to the successor's renderer or parameter loader. Known unrelated
+owners remain valid when another component is deleted; an address not yet owned
+when the snapshot was captured still uses a conservative deletion check.
+Ordinary parameter reloads do not advance the ownership baseline revision;
+initialization and handoff still invalidate snapshots captured too early.
+If address cleanup fails, that address remains fenced for the rest of the live
+view: rendering again or remounting the component does not make the old storage
+safe. The failure is reported without retrying the initializer on every render.
+
+`SpoonbillServiceConfig.timerSettings.maxRetained` defaults to 1024 per live
+view (configurable from 1 to 65536). Completed/failed markers and retired but
+unsettled entries count toward this limit. Existing valid registrations take
+priority, then new IDs follow document order. Duplicate IDs omit *all* their
+declarations, including otherwise identical ones. Invalid names/keys and excess
+registrations are also omitted: the page renders, but those timers do not run.
+In particular, completed one-shots still count while their bindings remain
+rendered. Remove bindings for finished notices, paginate large collections, or
+configure a suitable limit before rendering them. A list of more than 1024
+still-rendered one-shots can exhaust the default budget even after every
+admitted timer has finished; completing them alone does not admit the rest.
+Diagnostics include at most four escaped samples of 96 characters each and
+coalesce persistent issues; changing summaries are limited to one per owner per
+second. Freeing capacity alone does not retry an omission; a later accepted render must admit
+it, starting a fresh deadline. The temporary declaration map scales with the
+number of distinct declarations and is released before pending publication.
+
+The supported legacy `delay(duration)(handler)` helper keeps its original
+container identity, pending deadline/callback, and render-driven repetition.
+It can overlap an earlier callback. Callback construction and execution now
+use the configured asynchronous execution context, and unexpected failures are
+reported. That context must not execute submitted work inline. New render timers
+also borrow this context; cleanup never shuts it down.
+
+Neither API provides durable scheduling, restart recovery, exactly-once external
+effects, or rollback. Use the dedicated sensitive-disclosure expiry policy for
+sensitive content. Deferred external work is not part of the new timer API.
 
 An `Extension` acquires session-scoped resources and receives state/message
 notifications. Use `Extension.managed` or `managedF` for subscriptions with cleanup;

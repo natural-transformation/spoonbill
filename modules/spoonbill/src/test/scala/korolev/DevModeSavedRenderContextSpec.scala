@@ -83,6 +83,13 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
       val incomingMessages = Queue[Future, String]()
       val frontend         = new Frontend[Future](incomingMessages.stream, None)
       val stateManager     = new StateStorage.SimpleInMemoryStateManager[Future]()
+      val clock            = new spoonbill.internal.TimerTestSupport.Deadlines
+      val timerCalls       = new AtomicInteger(0)
+      val startupTimer = timer
+        .after(timerId("saved-startup"), spoonbill.timer.DelayDuration.from(1.second).toOption.get)
+        .update(spoonbill.action.StateUpdate.Modify[String] { state =>
+          timerCalls.incrementAndGet(); state
+        })
 
       val app = new ApplicationInstance[Future, DevModeSavedRenderContextSpec.S, Any](
         sessionId = qsid,
@@ -114,7 +121,8 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
                 counter.incrementAndGet()
                 Future.unit
               }
-            )
+            ),
+            timers = Seq(startupTimer)
           )
         },
         stateManager = stateManager,
@@ -134,13 +142,16 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
             def addMisc(misc: Context.Binding[Future, DevModeSavedRenderContextSpec.S, Any]): Unit = k(rc, misc)
           },
         recovery = PartialFunction.empty,
-        delayedRender = 0.seconds
+        delayedRender = 0.seconds,
+        timerDeadlines = Some(clock),
+        timerClock = () => clock.now
       )
 
       def fireEvent(data: String) =
         incomingMessages.offerUnsafe(s"""[0,"$data"]""")
 
       Await.result(app.initialize(), 3.seconds)
+      clock.active.size shouldBe 1
 
       // Derive the click target id from the handler registry so the test is robust across
       // minor internal id allocation changes.
@@ -168,6 +179,14 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
       eventually(timeout(Span(2, Seconds)), interval(Span(25, Millis))) {
         counter.get shouldBe 3
       }
+      clock.tasks.size shouldBe 1
+      clock.advance(1.second)
+      clock.fire()
+      eventually(timeout(Span(2, Seconds)), interval(Span(25, Millis))) {
+        timerCalls.get() shouldBe 1
+      }
+      Await.result(frontend.close(), 3.seconds)
+      Await.result(app.destroy(), 3.seconds)
     } finally {
       // Best-effort cleanup to avoid leaving dev-mode artifacts around.
       try savedFile.delete()
@@ -191,9 +210,10 @@ object DevModeSavedRenderContextSpec {
   import avocet.dsl._
   import avocet.dsl.html._
 
-  def render(firstEvents: Seq[Event], secondEvents: Seq[Event]): Render = {
+  def render(firstEvents: Seq[Event], secondEvents: Seq[Event], timers: Seq[Binding] = Nil): Render = {
     case "firstState" =>
       body(
+        timers,
         div("Hello"),
         div(
           button("Click me", firstEvents)
@@ -201,6 +221,7 @@ object DevModeSavedRenderContextSpec {
       )
     case "secondState" =>
       body(
+        timers,
         div("Hello"),
         ul(
           li("One", secondEvents),
