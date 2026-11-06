@@ -116,6 +116,7 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
     private var cleanupStarted           = false
     private var predecessorError         = Option.empty[Throwable]
     private var baselineRevision         = 0L
+    private var baselineEstablished      = false
 
     private[ComponentOwnership] def baseline: Baseline = Baseline(incarnation, baselineRevision)
 
@@ -136,15 +137,20 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
     }
 
     /**
-     * Mark a settled loader write or fresh baseline read before notification.
+     * Mark the first stored baseline before notification. Reloads and repeated
+     * refreshes of this same owner do not invalidate its established snapshots.
      */
     def establishBaseline(): Unit = lock.synchronized {
-      try baselineRevision = Math.addExact(baselineRevision, 1L)
-      catch {
-        case error: ArithmeticException =>
-          active = false
-          opened = false
-          throw error
+      if (!baselineEstablished) {
+        try {
+          baselineRevision = Math.addExact(baselineRevision, 1L)
+          baselineEstablished = true
+        } catch {
+          case error: ArithmeticException =>
+            active = false
+            opened = false
+            throw error
+        }
       }
     }
 

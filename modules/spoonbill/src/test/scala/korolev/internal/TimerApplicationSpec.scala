@@ -595,4 +595,92 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(2)
     f.close()
   }
+
+  it should "keep established content visible when a parameter reload completes across a paused snapshot" in {
+    import ctx.*
+    val reload       = Promise[Int]()
+    val resume       = Promise[Unit]()
+    var pause        = false
+    var captured     = false
+    var placeholders = 0
+    var rendered     = Vector.empty[Int]
+    val raw          = StateManager.cached[Future]()
+    val storage = new StateManager[Future] {
+      def snapshot = Effect[Future].flatMap(raw.snapshot) { snapshot =>
+        if (!pause) Future.successful(snapshot)
+        else { pause = false; captured = true; Effect[Future].map(resume.future)(_ => snapshot) }
+      }
+      def read[T: StateDeserializer](id: Id)          = raw.read[T](id)
+      def write[T: StateSerializer](id: Id, value: T) = raw.write(id, value)
+      def delete(id: Id)                              = raw.delete(id)
+    }
+    val child = new Component[Future, Int, Int, Unit](10) {
+      override def maybeUpdateState(parameters: Int, current: Int): Option[Future[Int]] =
+        if (parameters == 1) Some(reload.future) else None
+      override def renderNoState(parameters: Int): context.Node = {
+        placeholders += 1
+        div("loading")
+      }
+      def render(parameters: Int, state: Int): context.Node = {
+        rendered :+= state
+        div(state.toString)
+      }
+    }
+    val f = new App(state => Html(body(child(state))), storage)
+    f.start()
+    f.change(1)
+    pause = true
+    f.change(2)
+    captured shouldBe true
+    reload.success(20)
+    f.worker.drain()
+    resume.success(())
+    f.worker.drain()
+    try {
+      placeholders shouldBe 0
+      rendered.last shouldBe 20
+      f.reports.errors shouldBe empty
+    } finally f.close()
+  }
+
+  it should "still invalidate a pre-initialization snapshot for a fresh generated-state owner" in {
+    import ctx.*
+    val initialize      = Promise[Int]()
+    val resume          = Promise[Unit]()
+    var pause           = false
+    var captured        = false
+    var initializations = 0
+    var rendered        = Vector.empty[Int]
+    val raw             = StateManager.cached[Future]()
+    val storage = new StateManager[Future] {
+      def snapshot = Effect[Future].flatMap(raw.snapshot) { snapshot =>
+        if (!pause) Future.successful(snapshot)
+        else { pause = false; captured = true; Effect[Future].map(resume.future)(_ => snapshot) }
+      }
+      def read[T: StateDeserializer](id: Id)          = raw.read[T](id)
+      def write[T: StateSerializer](id: Id, value: T) = raw.write(id, value)
+      def delete(id: Id)                              = raw.delete(id)
+    }
+    val child = new Component[Future, Int, Unit, Unit]((_: Unit) => {
+      initializations += 1
+      initialize.future
+    }) {
+      def render(parameters: Unit, state: Int): context.Node = { rendered :+= state; div(state.toString) }
+    }
+    val f = new App(_ => Html(body(child(()))), storage)
+    f.start()
+    initializations shouldBe 1
+    pause = true
+    f.change(1)
+    captured shouldBe true
+    initialize.success(20)
+    f.worker.drain()
+    resume.success(())
+    f.worker.drain()
+    try {
+      initializations shouldBe 1
+      rendered.last shouldBe 20
+      f.reports.errors shouldBe empty
+    } finally f.close()
+  }
 }

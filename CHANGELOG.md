@@ -17,6 +17,8 @@
   All traversals check the captured component incarnation and baseline revision,
   preventing a delayed snapshot from reaching a successor's renderer or parameter
   loader. Known unrelated component baselines survive deletions elsewhere.
+  Ordinary parameter reloads and repeated baseline refreshes preserve valid
+  same-owner snapshots, avoiding unnecessary loading placeholders and rerenders.
 - Timers that wake before generated component state exists now skip the tick
   without reporting an error. Periodic timers can recover on a later tick;
   a one-shot skip remains consumed. Document the preparation-time state read and

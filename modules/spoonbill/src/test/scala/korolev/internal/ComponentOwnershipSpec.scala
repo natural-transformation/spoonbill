@@ -235,4 +235,15 @@ class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
       }
     } finally ec.shutdown()
   }
+
+  it should "establish a stored baseline once without invalidating later same-owner snapshots" in {
+    val owners = new ComponentOwnership(StateManager.cached[Future](), new Reports, new Worker)
+    val owner  = owners.bind(Id("1_2"), true)
+    val before = result(owners.snapshot)
+    owner.establishBaseline()
+    owner.snapshotIsCurrent(before) shouldBe false
+    val established = result(owners.snapshot)
+    owner.establishBaseline()
+    owner.snapshotIsCurrent(established) shouldBe true
+  }
 }

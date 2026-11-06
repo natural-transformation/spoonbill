@@ -678,6 +678,8 @@ including traversals delayed across handoff and initialization. A stale snapshot
 cannot be passed to the successor's renderer or parameter loader. Known unrelated
 owners remain valid when another component is deleted; an address not yet owned
 when the snapshot was captured still uses a conservative deletion check.
+Ordinary parameter reloads do not advance the ownership baseline revision;
+initialization and handoff still invalidate snapshots captured too early.
 If address cleanup fails, that address remains fenced for the rest of the live
 view: rendering again or remounting the component does not make the old storage
 safe. The failure is reported without retrying the initializer on every render.

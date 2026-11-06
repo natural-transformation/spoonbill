@@ -330,12 +330,12 @@ final class ComponentInstance[
             component.maybeUpdateState(parameters, value) match {
               case None => ()
               case Some(effect) =>
-                effect.flatMap(newState => writeLoaded(newState)).runAsyncForget
+                effect.flatMap(newState => writeLoaded(newState, establishBaseline = false)).runAsyncForget
             }
           }
           component.render(parameters, value)
         case Left(generateState) =>
-          Effect[F].delayAsync(generateState(parameters)).flatMap(writeLoaded).runAsyncForget
+          Effect[F].delayAsync(generateState(parameters)).flatMap(value => writeLoaded(value)).runAsyncForget
           component.renderNoState(parameters)
       }
 
@@ -404,18 +404,18 @@ final class ComponentInstance[
     refreshHandlerSnapshot()
   }
 
-  private def writeLoaded(newState: CS): F[Unit] = owner.admit() match {
+  private def writeLoaded(newState: CS, establishBaseline: Boolean = true): F[Unit] = owner.admit() match {
     case None => Effect[F].unit
     case Some(lease) =>
       lease.run {
         stateManager.write(nodeId, newState).flatMap { _ =>
-          notifyLoaded(newState)
+          notifyLoaded(newState, establishBaseline)
         }
       }
   }
 
-  private def notifyLoaded(state: CS): F[Unit] = Effect[F].delay {
-    owner.establishBaseline()
+  private def notifyLoaded(state: CS, establishBaseline: Boolean = true): F[Unit] = Effect[F].delay {
+    if (establishBaseline) owner.establishBaseline()
     baselineReady = true
     loading = false
   }.flatMap(_ => stateQueue.enqueue(nodeId, state, None))
@@ -493,7 +493,7 @@ final class ComponentInstance[
       case true if !owner.isOpen => discard()
       case true =>
         Effect[F].delayAsync(prepare).flatMap {
-          case None => Effect[F].unit
+          case None => Effect[F].delay(rendered.foreach(_(Right(()))))
           case Some(value) =>
             owner.admit() match {
               // User computation stays in the lane but owns no drain reservation.
