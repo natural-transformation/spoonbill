@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 9.0.0 — 2026-11-06
+
+This release adds render-owned state timers and component ownership handoff.
+Upgrade every Spoonbill module together and recompile your application. The
+public `SpoonbillServiceConfig` constructor gains `timerSettings`; previously
+compiled configuration calls are not binary compatible with this release.
 
 - Add inert render-owned `timer.after` and `timer.every` bindings for
   `StateUpdate`, with typed `TimerId`, structural `RestartKey`, validated
