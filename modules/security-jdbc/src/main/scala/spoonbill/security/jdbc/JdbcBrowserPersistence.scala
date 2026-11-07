@@ -375,7 +375,16 @@ final class JdbcBrowserPersistence[F[_], P](
     browser.initialize(connection)
     schema.foreach(text => Using.resource(connection.createStatement())(_.executeUpdate(text)))
     retention.initialize(connection)
+    JdbcSnapshotReferences.initialize(connection)
   }
+
+  /**
+   * Restricted bookkeeping for the publication capability: one realm-locked
+   * transaction without a view authority check, in the cleanup lane for
+   * maintenance claims and the ordinary lane for request-path reconciliation.
+   */
+  private[jdbc] def bookkeeping[A](cleanup: Boolean)(body: (Connection, Instant) => A): F[Either[TransactionFailure, A]] =
+    owned(if (cleanup) Lane.Cleanup else Lane.Ordinary)(transaction(connection => body(connection, now())))
 
   /** Check committed loss before this transaction stages any ownership changes. */
   private def reconcileOwnedViews(connection: Connection): Unit = {
@@ -711,6 +720,17 @@ final class JdbcBrowserPersistence[F[_], P](
     restore: (S, D) => S
   ): BrowserView[P] => Option[spoonbill.snapshot.ViewSnapshotSession[F, S]] =
     JdbcBrowserSnapshots.projected(this, format, project, restore)
+
+  /**
+   * The optional publication capability for reference-backed snapshots: this
+   * provider publishes payload references under its view fences, and a payload
+   * adapter stores the bytes elsewhere. Compose it with
+   * spoonbill.recovery.PayloadRecovery.projectedWithPayloads; inline
+   * projectedSnapshots stays the default. Requires the V7 migration.
+   */
+  def snapshotReferences(
+    settings: spoonbill.recovery.SnapshotReferenceSettings = spoonbill.recovery.SnapshotReferenceSettings()
+  ): spoonbill.recovery.SnapshotReferenceSupport[F, P] = new JdbcSnapshotReferences(this, settings)
 
   /**
    * Explicit administrative observation, never part of request authorization.

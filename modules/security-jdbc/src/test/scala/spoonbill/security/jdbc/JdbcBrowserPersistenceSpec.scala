@@ -2535,7 +2535,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         Using.resource(connection.createStatement())(_.executeUpdate(s"CREATE SCHEMA $freshSchema"))
         try {
           connection.setSchema(freshSchema)
-          applyMigrations(connection, "V4__browser_auth.sql", "V5__authenticated_session_replacement.sql", "V6__browser_retention.sql")
+          applyMigrations(connection, "V4__browser_auth.sql", "V5__authenticated_session_replacement.sql", "V6__browser_retention.sql", "V7__snapshot_references.sql")
           val installed = frameworkSchema(connection)
           assertSuccessorIndex(installed)
           installed shouldBe expected

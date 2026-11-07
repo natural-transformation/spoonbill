@@ -12,6 +12,7 @@ import scala.util.control.NonFatal
 import spoonbill.action.{AuthenticatedActionContext, UiOutcome}
 import spoonbill.auth.*
 import spoonbill.effect.Effect
+import spoonbill.recovery.{PayloadRecovery, SnapshotReferenceSettings}
 import spoonbill.security.jdbc.*
 import spoonbill.security.transaction.*
 import spoonbill.sensitive.{Audience, Purpose, SensitiveAccess}
@@ -33,7 +34,9 @@ final class JdbcAccounts(
   snapshotVersion: Int = 1,
   activeViewLimit: Int = 16,
   fixtureDiagnostics: Boolean = false,
-  deliveryLimit: Int = 3
+  deliveryLimit: Int = 3,
+  snapshotStorage: SnapshotStorage = SnapshotStorage.Inline,
+  reservationSeconds: Long = 120
 )(using ec: ExecutionContext)
     extends Accounts[Future] {
   private case class Account(
@@ -122,11 +125,26 @@ final class JdbcAccounts(
     ownership = if (clustered) BrowserOwnership.SharedViews else BrowserOwnership.ExclusiveScope,
     limits = BrowserPersistenceLimits(activeViewsPerBinding = activeViewLimit, maxDeliveries = deliveryLimit)
   )
-  private val projected = persistence.projectedSnapshots(
-    DraftPresentation.format(snapshotVersion),
-    DraftPresentation.project,
-    DraftPresentation.restore
+  // Reference-backed storage keeps the provider's fences and moves payload bytes
+  // into the example's own table through the generic binding; inline storage
+  // stays the default. The binding has its own maintenance and close.
+  private val payloadBinding = Option.when(snapshotStorage == SnapshotStorage.Reference)(
+    PayloadRecovery.projectedWithPayloads[Future, Principal, Page, DraftPresentation](
+      persistence.snapshotReferences(SnapshotReferenceSettings(reservationSeconds = reservationSeconds)),
+      new JdbcPayloadStore(source, blockingContext),
+      DraftPresentation.format(snapshotVersion),
+      DraftPresentation.project,
+      DraftPresentation.restore
+    )
   )
+  private val projected: BrowserView[Principal] => Option[ViewSnapshotSession[Future, Page]] =
+    payloadBinding.fold(
+      persistence.projectedSnapshots(
+        DraftPresentation.format(snapshotVersion),
+        DraftPresentation.project,
+        DraftPresentation.restore
+      )
+    )(_.snapshots)
   private def snapshots(view: BrowserView[Principal]): Option[ViewSnapshotSession[Future, Page]] =
     if (!clustered) None
     else
@@ -517,7 +535,10 @@ final class JdbcAccounts(
                 query.setTimestamp(1, Timestamp.from(clock())); query.executeUpdate(); ()
               }
             }
-          }(blockingContext).flatMap(_ => browser.maintenance())
+          }(blockingContext)
+            .flatMap(_ => browser.maintenance())
+            // Payload deletes run here, outside the coordinator's turns.
+            .flatMap(_ => payloadBinding.fold(Future.unit)(_.maintenance()))
         catch { case NonFatal(error) => Future.failed(error) }
       work.transform { result =>
         releaseJob(); result
@@ -556,7 +577,7 @@ final class JdbcAccounts(
       connection.setAutoCommit(false)
       try {
         persistence.initialize(connection)
-        schema.foreach(text => Using.resource(connection.createStatement())(_.executeUpdate(text)))
+        (schema ++ JdbcPayloadStore.schema).foreach(text => Using.resource(connection.createStatement())(_.executeUpdate(text)))
         val password = DomainPolicy.passwordHash("password").toArray
         DomainPolicy.accounts.foreach { seeded =>
           sql(
@@ -579,7 +600,9 @@ final class JdbcAccounts(
   override def close(): Future[Unit] = {
     stopped.set(true)
     if (jobs.get() == 0) drained.trySuccess(())
-    drained.future.flatMap(_ => browser.close())(ExecutionContext.parasitic)
+    drained.future
+      .flatMap(_ => browser.close())(ExecutionContext.parasitic)
+      .flatMap(_ => payloadBinding.fold(Future.unit)(_.close()))(ExecutionContext.parasitic)
   }
   private val schema = Vector(
     """CREATE TABLE IF NOT EXISTS example_account(id UUID PRIMARY KEY,name TEXT UNIQUE NOT NULL,version BIGINT NOT NULL,

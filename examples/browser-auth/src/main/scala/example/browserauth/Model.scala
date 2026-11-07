@@ -112,6 +112,11 @@ object DraftPresentation {
     )
 }
 
+/** Where committed projections live: inline provider rows, or references to the example's payload table. */
+enum SnapshotStorage {
+  case Inline, Reference
+}
+
 enum SignIn {
   case Completed(receipt: CommittedAuthentication)
   case Challenge(ceremony: CeremonyId, reference: String)

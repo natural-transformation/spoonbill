@@ -1,5 +1,7 @@
 // Correctness only: real separate web JVMs share PostgreSQL. The proxy only
 // forwards bytes and injects transport loss; it does not implement auth logic.
+// The reference-payloads scenario repeats the cluster flow with projections
+// published as references to the example's own payload table.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -18,10 +20,10 @@ assert.ok(classpath.startsWith('/') && !classpath.includes('\n'), 'Expected one 
 const database = new URL(process.env.SPOONBILL_JDBC_TEST_URL.replace(/^jdbc:/, ''));
 assert.ok(['localhost', '127.0.0.1', '::1', '[::1]'].includes(database.hostname), 'Disposable loopback database required');
 const engines = (process.env.SPOONBILL_AUTH_ENGINES ?? 'chromium,webkit').split(',');
-const scenarios = (process.env.SPOONBILL_CLUSTER_SCENARIOS ?? 'anonymous-peer,chained-replacement,cluster').split(',');
+const scenarios = (process.env.SPOONBILL_CLUSTER_SCENARIOS ?? 'anonymous-peer,chained-replacement,cluster,reference-payloads').split(',');
 assert.ok(scenarios.length && new Set(scenarios).size === scenarios.length &&
-  scenarios.every(scenario => ['anonymous-peer', 'chained-replacement', 'cluster'].includes(scenario)),
-  'Select anonymous-peer, chained-replacement, cluster, or a comma-separated combination');
+  scenarios.every(scenario => ['anonymous-peer', 'chained-replacement', 'cluster', 'reference-payloads'].includes(scenario)),
+  'Select anonymous-peer, chained-replacement, cluster, reference-payloads, or a comma-separated combination');
 assert.ok(engines.length && new Set(engines).size === engines.length &&
   engines.every(engine => ['chromium', 'webkit'].includes(engine)), 'Select chromium, webkit, or both');
 const browsers = require(process.env.PLAYWRIGHT_DRIVER_PATH);
@@ -58,6 +60,7 @@ async function exercise(engine, scenario) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'spoonbill-cluster-browser-'));
   const schema = 'cluster_' + randomUUID().replaceAll('-', '');
   const ports = {a: await freePort(), b: await freePort()};
+  const referenceMode = scenario === 'reference-payloads';
   let target = 'a', dropResponses = false, phase = 'start', browser, context, page, a, b;
   const connections = new Set(), errors = [], sockets = [], requests = [];
   const proxy = net.createServer(client => {
@@ -83,7 +86,8 @@ async function exercise(engine, scenario) {
         env: {...process.env, SPOONBILL_AUTH_PROVIDER: 'jdbc', SPOONBILL_AUTH_CLUSTERED: 'true',
           SPOONBILL_AUTH_ORIGIN: origin, SPOONBILL_AUTH_SCHEMA: schema,
           SPOONBILL_AUTH_SNAPSHOT_VERSION: String(snapshotVersion), SPOONBILL_AUTH_TEST_FIXTURES: 'true',
-          SPOONBILL_AUTH_MAX_ACTIVE_VIEWS: '2'},
+          SPOONBILL_AUTH_MAX_ACTIVE_VIEWS: '2', SPOONBILL_AUTH_SNAPSHOT_STORAGE: referenceMode ? 'reference' : 'inline',
+          SPOONBILL_AUTH_RESERVATION_SECONDS: referenceMode ? '5' : '120'},
         stdio: ['ignore', log, log],
       });
     fs.closeSync(log); owned.add(child);
@@ -109,7 +113,31 @@ async function exercise(engine, scenario) {
   }
   async function snapshotState() {
     return JSON.parse(await sql(`SELECT COALESCE(json_agg(json_build_object('view',view_id,'revision',revision,
-      'format',schema_version,'digest',md5(payload)) ORDER BY view_id)::text,'[]') FROM ${schema}.spoonbill_view_snapshot`));
+      'format',schema_version,'digest',md5(payload),'reference',payload_operation::text) ORDER BY view_id)::text,'[]') FROM ${schema}.spoonbill_view_snapshot`));
+  }
+  async function referenceState() {
+    return JSON.parse(await sql(`SELECT json_build_object(
+      'published',(SELECT count(*) FROM ${schema}.spoonbill_snapshot_reference WHERE state='published'),
+      'staged',(SELECT count(*) FROM ${schema}.spoonbill_snapshot_reference WHERE state='staged'),
+      'open',(SELECT count(*) FROM ${schema}.spoonbill_snapshot_reference WHERE state='retired' AND deleted_at IS NULL),
+      'deleted',(SELECT count(*) FROM ${schema}.spoonbill_snapshot_reference WHERE deleted_at IS NOT NULL),
+      'referenceBacked',(SELECT count(*) FROM ${schema}.spoonbill_view_snapshot WHERE payload_operation IS NOT NULL),
+      'inline',(SELECT count(*) FROM ${schema}.spoonbill_view_snapshot WHERE payload_operation IS NULL),
+      'payloads',(SELECT count(*) FROM ${schema}.example_payload WHERE NOT retired),
+      'tombstones',(SELECT count(*) FROM ${schema}.example_payload WHERE retired))`));
+  }
+  // In reference mode every committed projection is a published reference whose
+  // bytes live in the example table, and superseded references are retired and
+  // deleted by the nodes' own maintenance, not by a coordinator turn. A
+  // reservation abandoned by a killed node expires after the fixture's short
+  // deadline and is retired and cleaned the same way, payload included.
+  async function referencesSettled(expectedViews) {
+    if (!referenceMode) return;
+    await until(async () => {
+      const state = await referenceState();
+      return state.open === 0 && state.staged === 0 && state.published === state.referenceBacked &&
+        state.referenceBacked >= expectedViews && state.inline === 0 && state.payloads === state.published;
+    }, 'Reference-backed projections did not settle: ' + JSON.stringify(await referenceState()), 30000);
   }
   async function activeViews() {
     return Number(await sql(`SELECT count(*) FROM ${schema}.spoonbill_browser_view WHERE owner_id IS NOT NULL`));
@@ -450,6 +478,12 @@ async function exercise(engine, scenario) {
 
     phase = 'first-draft-before-pause';
     await save('Acknowledged unfinished work on A', 'item-a');
+    await referencesSettled(1);
+    if (referenceMode) {
+      const published = await referenceState();
+      assert.ok(published.referenceBacked >= 1 && published.payloads >= 1 && published.inline === 0,
+        'The reference-backed writer must publish references, never inline bytes: ' + JSON.stringify(published));
+    }
     phase = 'overlap-and-delayed-old-owner';
     a.kill('SIGSTOP');
     before = socketCount; routeTo('b');
@@ -458,6 +492,8 @@ async function exercise(engine, scenario) {
     await stop(a); a = undefined;
     phase = 'draft-after-old-owner-cleanup';
     await save('Acknowledged work on B after old cleanup', 'item-b');
+    await referencesSettled(1);
+    if (referenceMode) assert.ok((await referenceState()).deleted >= 1, 'Superseded references must be deleted by maintenance');
     a = await start('a');
 
     phase = 'graceful-handoff';
@@ -466,6 +502,7 @@ async function exercise(engine, scenario) {
     await recovered('Acknowledged work on B after old cleanup', 'item-b', before);
     b = await start('b');
     await save('Acknowledged work before abrupt failure', 'item-c');
+    await referencesSettled(1);
 
     phase = 'lost-business-response';
     const previousCount = await count();
@@ -570,6 +607,8 @@ async function exercise(engine, scenario) {
     assert.ok(sockets.slice(before).every(socket => !socket.ready), 'An earlier snapshot cannot revive a revoked session');
     assert.equal((await context.request.get(origin + '/protected')).status(), 403);
 
+    await referencesSettled(1);
+    const references = referenceMode ? await referenceState() : null;
     phase = 'logout';
     const logout = await context.request.post(origin + '/auth/logout', {headers: {Origin: origin}, maxRedirects: 0});
     assert.equal(logout.status(), 303);
@@ -577,7 +616,8 @@ async function exercise(engine, scenario) {
     await page.getByRole('button', {name: 'Begin sign-in', exact: true}).waitFor();
     assert.equal((await context.cookies()).find(cookie => cookie.name === 'spoonbill_session'), undefined);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({engine, separateJvms: true, sharedPostgres: true, overlap: true,
+    console.log(JSON.stringify({engine, scenario, snapshotStorage: referenceMode ? 'reference' : 'inline',
+      references, separateJvms: true, sharedPostgres: true, overlap: true,
       firstHttpAndSocketDifferentNodes: true, factorChallengeHandoff: true,
       unknownViewRefused: true, originalCeremonyRecovered: true, lostHttpDeliveryResponseRetried: true,
       incompatibleSnapshotPreserved: true, sameViewCompatibleRecovery: true,

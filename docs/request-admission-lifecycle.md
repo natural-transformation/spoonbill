@@ -300,6 +300,34 @@ pre-cutover privileged scope as a rollback shortcut. If a new scope is needed,
 perform a separately reviewed drained transition with old-writer exclusion and
 host-authority revocation.
 
+## PostgreSQL V7 snapshot references migration
+
+Apply the forward
+[V7 snapshot references migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V7__snapshot_references.sql)
+after V4, V5 and V6. V4, V5 and V6 bytes remain immutable. V7 adds the
+`spoonbill_snapshot_reference` table (one row per publication attempt with its
+staged, published or retired state, garbage claim and deletion bookkeeping),
+the `spoonbill_snapshot_read_pin` table, and a nullable `payload_operation`
+pointer on `spoonbill_view_snapshot`. Runtime schema initialization still
+creates them explicitly; request handling never migrates.
+
+Every JDBC deployment applies V7, because the inline snapshot writer now clears
+the pointer column. Drain and stop every older serving, writing **and retention**
+binary before a V7-aware provider starts against the scope: a pre-V7 retention
+sweep deletes snapshot rows without recording cleanup obligations and would
+orphan external payloads, and request routing alone does not isolate it. Inline
+and empty views stay inline; a view becomes reference-backed only when a
+reference-backed writer publishes its next revision, and an inline-only reader
+of such a revision fails closed instead of reading empty bytes.
+
+Rollback requires binaries whose readers and retention understand references,
+or an explicit migration of reference-backed views back to inline data before
+older binaries return. Pointing an old deployment at reference data is not a
+rollback. Never drop a retired reference whose deletion is uncertain and never
+reset claim generations: obligations settle only through the maintenance
+protocol, and an operator reconciliation retries physical deletion through the
+same rules.
+
 The memory provider has no restart persistence: a new instance has a new issuer
 and secret, rejects old authenticated cookies/capabilities, and requires login.
 Its floors protect the lifetime of that instance; host-owned durable data remains

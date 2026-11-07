@@ -82,6 +82,19 @@ object Main {
     val deliveryLimit = sys.env.get("SPOONBILL_AUTH_DELIVERY_LIMIT").fold(3)(_.toInt)
     require(deliveryLimit > 0 && deliveryLimit <= 16, "Synthetic delivery limit must be between 1 and 16")
     require(!clustered || provider == "jdbc", "Clustered mode requires the shared JDBC provider")
+    val snapshotStorage = sys.env.getOrElse("SPOONBILL_AUTH_SNAPSHOT_STORAGE", "inline") match {
+      case "inline"    => SnapshotStorage.Inline
+      case "reference" => SnapshotStorage.Reference
+      case _           => throw new IllegalArgumentException("SPOONBILL_AUTH_SNAPSHOT_STORAGE must be inline or reference")
+    }
+    require(snapshotStorage == SnapshotStorage.Inline || clustered, "Reference-backed snapshots require clustered JDBC mode")
+    // A short reservation deadline lets the fixture observe cleanup of a reservation
+    // abandoned by a killed node; production keeps the provider default.
+    val reservationSeconds = sys.env.get("SPOONBILL_AUTH_RESERVATION_SECONDS").fold(120L)(_.toLong)
+    require(
+      reservationSeconds >= 120 || (fixtureDiagnostics && reservationSeconds > 0),
+      "Reservation deadlines below 120 seconds require explicit test fixtures"
+    )
     val origin    = sys.env.getOrElse("SPOONBILL_AUTH_ORIGIN", s"http://localhost:$port")
     val publicUri = URI.create(origin)
     require(
@@ -156,7 +169,9 @@ object Main {
             snapshotVersion = snapshotVersion,
             activeViewLimit = activeViewLimit,
             fixtureDiagnostics = fixtureDiagnostics,
-            deliveryLimit = deliveryLimit
+            deliveryLimit = deliveryLimit,
+            snapshotStorage = snapshotStorage,
+            reservationSeconds = reservationSeconds
           )
       }
       owned.set(Some(accounts))

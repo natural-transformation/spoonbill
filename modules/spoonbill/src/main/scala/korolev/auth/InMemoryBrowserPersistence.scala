@@ -144,6 +144,9 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   }
   private var currentState                                                 = Option(State(initialHost))
   private var observed                                                     = Instant.MIN
+  // Capabilities that publish under this provider's fences learn of reclaimed
+  // views inside the sweep that removes them, under the same monitor.
+  private var reclaimListeners = List.empty[(Set[Qsid], Instant) => Unit]
   private def state: State                                                 = currentState.getOrElse(deny(BrowserFailure.Closed))
   private def save(value: State): Unit                                     = currentState = Some(value)
   private def deny(error: BrowserFailure = BrowserFailure.Denied): Nothing = throw new Refused(error)
@@ -218,7 +221,26 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       views = views,
       bindingActivity = activity -- removedBindings.keySet
     ))
+    if (removedViews.nonEmpty) reclaimListeners.foreach(_(removedViews.keySet, time))
   }
+
+  /**
+   * The atomic domain of an optional capability such as
+   * InMemorySnapshotReferences: body runs under the monitor after this
+   * provider authorized the view's current ownership and authority, so a
+   * capability's records change in the same step as its ownership decisions.
+   */
+  private[auth] def fenced[A](view: BrowserView[P])(body: Instant => A): F[Either[BrowserFailure, A]] = result {
+    authorizeView(state, view)
+    body(now())
+  }
+
+  /** Restricted bookkeeping under the monitor, without a view authority check. */
+  private[auth] def bookkeeping[A](body: Instant => A): F[Either[BrowserFailure, A]] = result(body(now()))
+
+  /** Register a listener run inside the sweep that removes views, under the monitor. */
+  private[auth] def onViewsReclaimed(listener: (Set[Qsid], Instant) => Unit): Unit =
+    monitor.synchronized(reclaimListeners ::= listener)
   private def entry(): Unit = {
     if (inTransaction.get()) throw new OperationProtocolException(OperationError.TransactionRequired)
     if (issuer.isClosed) deny(BrowserFailure.Closed)

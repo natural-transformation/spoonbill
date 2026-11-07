@@ -22,6 +22,73 @@ running the correctness fixture below. Release-specific measurements in the
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
 records; they are not performance acceptance evidence for 8.0.0.
 
+## External payload storage
+
+Inline PostgreSQL snapshots stay the default. `spoonbill-security-jdbc` also
+implements an optional, provider-neutral publication capability: the provider
+keeps authority, view ownership and revision checks and publishes a *reference*
+to each committed projection under its fences, while a small payload adapter
+stores the bytes elsewhere. Choose it for externally governed storage or for
+payloads whose placement or size justifies the cost; it does not remove
+PostgreSQL from a deployment that keeps the JDBC authority provider.
+
+```scala
+val payloads: SnapshotPayloadStore[Future] = ...   // yours, or a library's
+val binding = PayloadRecovery.projectedWithPayloads[Future, Principal, Page, DraftPresentation](
+  persistence.snapshotReferences(),  // SnapshotReferenceSettings() by default
+  payloads,
+  DraftPresentation.format(version),
+  DraftPresentation.project,
+  DraftPresentation.restore
+)
+val browser = new BrowserAuthentication(persistence, policy, configuration, snapshots = binding.snapshots)
+```
+
+The coordinator's `snapshots` parameter is unchanged. The binding adds its own
+lifecycle: schedule `binding.maintenance()` beside `browser.maintenance()`,
+because payload deletes are network I/O to another store and run there,
+outside coordinator turns and provider transactions; stop admission, drain
+admitted snapshot writes, then `binding.close()` during shutdown. Closing stops
+binding-owned work and neither closes the shared provider or store nor waits
+for uncancellable I/O forever; unsettled obligations stay durable for another
+maintenance instance.
+
+A healthy save costs two provider transactions, reserve and publish, and one
+durable put; no status lookup, get or delete happens on that path. A restore
+pins the current reference inside the provider's transaction, fetches and
+validates the bytes against their published digest and length, and revalidates
+the pin's reference, revision, authority and owner before adopting them. A
+lost reply is reconciled through the same operation id: a lost reservation
+reply recovers its ticket, a lost publication reply recovers the committed
+revision, and an unresolved outcome fails that commit closed so the next commit
+conflicts instead of overwriting. Missing or corrupt referenced bytes are
+failures, not an empty snapshot and not permission to reset.
+
+Cleanup is a durable provider obligation. Superseded references are retired in
+the publication transaction, references of reclaimed views and expired
+reservations in the retention sweep, both under the realm lock that publication
+holds. Maintenance claims bounded batches with a leased claim id and
+generation, deletes idempotently, and records completion only for a claim that
+is still current. `FinalDeleted` is accepted only from an adapter that declares
+a durable retirement fence or verified quiescence; an `Unproven` adapter keeps
+every obligation open as `Uncertain`, the backlog is visible through
+`binding.backlog()`, and at `SnapshotReferenceSettings.maxOpenObligations` the
+provider refuses new reservations instead of retaining payloads without limit.
+A deadline or a repeated delete never establishes finality. Payload
+confidentiality is the deployment's responsibility.
+
+A view written inline stays inline until a reference-backed writer publishes
+its next revision; an inline-only reader of a reference-backed revision fails
+closed. Incompatible readers, writers and retention workers must not reach a
+scope whose writers publish references: drain the deployment before the first
+reference-backed writer starts. The optional mode needs the
+[V7 migration](request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration),
+which every 10.x JDBC deployment applies. Adapter authors qualify a store with
+the published `spoonbill-recovery-testkit`; see the
+[qualification guide](recovery-adapter-qualification.md). The example application
+selects this mode with `SPOONBILL_AUTH_SNAPSHOT_STORAGE=reference`, storing
+payloads in its own PostgreSQL table through a fencing adapter.
+
 ## Application integration
 
 Configure each web node with `ownership = BrowserOwnership.SharedViews`. This selects
@@ -276,6 +343,18 @@ ordered after the probe to avoid racing its cookie delivery. A cheaper lookup
 or parallel reconnect would need separate race/authority tests; the sequential
 performance evidence does not establish burst capacity.
 
+## Upgrading to the V7 snapshot reference schema
+
+Every JDBC deployment of the release that adds external payload storage applies
+the forward
+[V7 migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V7__snapshot_references.sql)
+after V4, V5 and V6, whether or not it enables reference-backed snapshots: the
+inline writer clears the new snapshot pointer column. Drain and stop every
+older serving, writing and retention binary first. Rollback needs readers and
+retention logic that understand references, or an explicit migration of
+reference-backed views back to inline data before older binaries return. See the
+[V7 procedure](request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration).
+
 ## Upgrading existing deployments to 8.0.0
 
 Deploy matching 8.0.0 modules and recompile against the
@@ -353,6 +432,17 @@ database was supplied, starts two independent JVMs, and runs Chromium and
 WebKit from the pinned Nix browser environment. `SPOONBILL_AUTH_ENGINES=chromium`
 selects a focused single-engine run. An optional argument supplies an already
 compiled runtime classpath file.
+
+The `reference-payloads` scenario repeats the cluster flow with
+`SPOONBILL_AUTH_SNAPSHOT_STORAGE=reference`, checking after every acknowledged
+save that the projection is a published reference whose bytes live in the
+example's payload table, that no inline bytes were written, and that superseded
+references are retired and deleted by the nodes' own maintenance. It also sets
+`SPOONBILL_AUTH_RESERVATION_SECONDS=5` (allowed below the 120-second default only
+with `SPOONBILL_AUTH_TEST_FIXTURES=true`), so a reservation abandoned by a killed
+node expires, is retired and is cleaned up, payload included, within the run.
+`SPOONBILL_CLUSTER_SCENARIOS` selects scenarios; the inline `cluster` run is the
+unchanged baseline.
 
 The fixture runs A writing snapshot version 1 and B writing version 2, with
 mutually configured readers and the same current client wire protocol. The
