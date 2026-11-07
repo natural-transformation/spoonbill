@@ -65,7 +65,7 @@ test('schema export updates stale V6 without rewriting historical V4 or V5 bytes
   assert.equal(metadata.upgradeTables, 1);
   assert.equal(metadata.retentionStatements, 4);
   assert.equal(metadata.retentionTables, 2);
-  assert.equal(metadata.referenceStatements, 6);
+  assert.equal(metadata.referenceStatements, 7);
   assert.equal(metadata.referenceTables, 2);
   const checked = run(directory, '--check');
   assert.equal(checked.status, 0, checked.stderr);

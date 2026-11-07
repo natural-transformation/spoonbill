@@ -31,6 +31,9 @@ CREATE INDEX IF NOT EXISTS spoonbill_snapshot_reference_view
 CREATE INDEX IF NOT EXISTS spoonbill_snapshot_reference_garbage
       ON spoonbill_snapshot_reference (realm, cookie_namespace, retired_at) WHERE state = 'retired' AND deleted_at IS NULL;
 
+CREATE INDEX IF NOT EXISTS spoonbill_snapshot_reference_staged
+      ON spoonbill_snapshot_reference (realm, cookie_namespace) WHERE state = 'staged';
+
 CREATE TABLE IF NOT EXISTS spoonbill_snapshot_read_pin (
       realm VARCHAR(96) NOT NULL, cookie_namespace VARCHAR(96) NOT NULL, pin_id UUID NOT NULL,
       operation_id UUID NOT NULL, view_id VARCHAR(192) NOT NULL, owner_id UUID NOT NULL,

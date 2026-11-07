@@ -131,13 +131,20 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
       }
     }
 
+  /** Open cleanup obligations plus outstanding reservations: both are retained work the bound charges. */
   private def openObligations(connection: Connection): Long = statement(
     connection,
     """SELECT count(*) FROM spoonbill_snapshot_reference
-    WHERE realm=? AND cookie_namespace=? AND state='retired' AND deleted_at IS NULL"""
+    WHERE realm=? AND cookie_namespace=? AND (state='staged' OR (state='retired' AND deleted_at IS NULL))"""
   ) { query =>
     scoped(query)
     Using.resource(query.executeQuery()) { rows => rows.next(); rows.getLong(1) }
+  }
+
+  /** A fenced operation's settlement: a result, a rejection, or a commit whose reply was lost. */
+  private enum Fenced[+A] {
+    case Settled(result: Either[ViewSnapshotError, A])
+    case Uncertain
   }
 
   private final class Bound(view: BrowserView[P], identity: SnapshotIdentity, policy: SnapshotSchemaPolicy)
@@ -160,23 +167,28 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
       }
     }
 
-    /** Current authority and owner fence first, then the body with the view's revision. */
+    /**
+     * Current authority and owner fence first, then the body with the view's
+     * revision. An unknown commit stays uncertain: the transaction may have
+     * published or reserved, so the caller reconciles instead of concluding.
+     */
     private def fenced[A](
       body: (Connection, Instant, ViewRevision) => Either[ViewSnapshotError, A]
-    ): F[Either[ViewSnapshotError, A]] =
+    ): F[Fenced[A]] =
       F.map(provider.transact(view) { tx =>
         val connection = tx.connection
         revision(connection).flatMap(current => body(connection, tx.now, current))
       }) {
-        case Right(result) => result
+        case Right(result)                          => Fenced.Settled(result)
+        case Left(TransactionFailure.CommitUnknown) => Fenced.Uncertain
         case Left(
               TransactionFailure.Rejected(OperationError.HostDenied | OperationError.ForeignPermit | OperationError.Expired)
             ) =>
-          Left(ViewSnapshotError.AccessDenied)
+          Fenced.Settled(Left(ViewSnapshotError.AccessDenied))
         // A closed scope or a view row the provider no longer has: this owner is stale.
         case Left(TransactionFailure.Rejected(OperationError.ScopeClosed | OperationError.NotPrepared)) =>
-          Left(ViewSnapshotError.StaleOwner)
-        case Left(_) => Left(ViewSnapshotError.StorageFailure)
+          Fenced.Settled(Left(ViewSnapshotError.StaleOwner))
+        case Left(_) => Fenced.Settled(Left(ViewSnapshotError.StorageFailure))
       }
 
     private def mismatch(row: Row): Option[SnapshotResetReason] =
@@ -229,9 +241,13 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
               }
           }
       }
-    })(_.fold(ReferenceLoad.Rejected.apply, load => load))
+    }) {
+      case Fenced.Settled(result) => result.fold(ReferenceLoad.Rejected.apply, load => load)
+      // A pin that may or may not exist expires on its own; the reader fails closed.
+      case Fenced.Uncertain => ReferenceLoad.Rejected(ViewSnapshotError.StorageFailure)
+    }
 
-    def finishRead(pin: ReadPin): F[Either[ViewSnapshotError, Unit]] = fenced { (connection, now, current) =>
+    def finishRead(pin: ReadPin): F[Either[ViewSnapshotError, Unit]] = F.map(fenced[Unit] { (connection, now, current) =>
       val held = statement(
         connection,
         """DELETE FROM spoonbill_snapshot_read_pin WHERE realm=? AND cookie_namespace=? AND pin_id=? AND owner_id=?
@@ -252,6 +268,9 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
           Right(())
         case _ => Left(ViewSnapshotError.StaleOwner)
       }
+    }) {
+      case Fenced.Settled(result) => result
+      case Fenced.Uncertain       => Left(ViewSnapshotError.StorageFailure)
     }
 
     def releaseRead(pin: ReadPin): F[Unit] = F.map(provider.bookkeeping(cleanup = false) { (connection, _) =>
@@ -298,8 +317,9 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
         }
       }
     }) {
-      case Right(ticket) => ReservationOutcome.Prepared(ticket)
-      case Left(error)   => ReservationOutcome.Rejected(error)
+      case Fenced.Settled(Right(ticket)) => ReservationOutcome.Prepared(ticket)
+      case Fenced.Settled(Left(error))   => ReservationOutcome.Rejected(error)
+      case Fenced.Uncertain              => ReservationOutcome.Uncertain
     }
 
     def publish(ticket: PublicationTicket): F[PublicationOutcome] = F.map(fenced[ViewRevision] {
@@ -362,8 +382,9 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
           case _ => Left(ViewSnapshotError.StorageFailure)
         }
     }) {
-      case Right(revision) => PublicationOutcome.Published(revision)
-      case Left(error)     => PublicationOutcome.Rejected(error)
+      case Fenced.Settled(Right(revision)) => PublicationOutcome.Published(revision)
+      case Fenced.Settled(Left(error))     => PublicationOutcome.Rejected(error)
+      case Fenced.Uncertain                => PublicationOutcome.Uncertain
     }
 
     def status(operation: PublicationId): F[PublicationStatus] = F.map(provider.bookkeeping(cleanup = false) {
@@ -469,16 +490,17 @@ private[jdbc] final class JdbcSnapshotReferences[F[_], P](
     def backlog(): F[CleanupBacklog] = F.map(provider.bookkeeping(cleanup = false) { (connection, _) =>
       statement(
         connection,
-        """SELECT count(*),count(*) FILTER (WHERE delete_attempts>0),min(retired_at) FROM spoonbill_snapshot_reference
-        WHERE realm=? AND cookie_namespace=? AND state='retired' AND deleted_at IS NULL"""
+        """SELECT count(*) FILTER (WHERE state='retired'),count(*) FILTER (WHERE state='retired' AND delete_attempts>0),
+        count(*) FILTER (WHERE state='staged'),min(retired_at) FILTER (WHERE state='retired') FROM spoonbill_snapshot_reference
+        WHERE realm=? AND cookie_namespace=? AND (state='staged' OR (state='retired' AND deleted_at IS NULL))"""
       ) { query =>
         scoped(query)
         Using.resource(query.executeQuery()) { rows =>
           rows.next()
-          CleanupBacklog(rows.getLong(1), rows.getLong(2), Option(rows.getTimestamp(3)).map(_.toInstant))
+          CleanupBacklog(rows.getLong(1), rows.getLong(2), rows.getLong(3), Option(rows.getTimestamp(4)).map(_.toInstant))
         }
       }
-    })(_.getOrElse(CleanupBacklog(0L, 0L, None)))
+    })(_.getOrElse(CleanupBacklog(0L, 0L, 0L, None)))
   }
 }
 
@@ -508,6 +530,8 @@ private[jdbc] object JdbcSnapshotReferences {
       ON spoonbill_snapshot_reference (realm, cookie_namespace, view_id)""",
     """CREATE INDEX IF NOT EXISTS spoonbill_snapshot_reference_garbage
       ON spoonbill_snapshot_reference (realm, cookie_namespace, retired_at) WHERE state = 'retired' AND deleted_at IS NULL""",
+    """CREATE INDEX IF NOT EXISTS spoonbill_snapshot_reference_staged
+      ON spoonbill_snapshot_reference (realm, cookie_namespace) WHERE state = 'staged'""",
     """CREATE TABLE IF NOT EXISTS spoonbill_snapshot_read_pin (
       realm VARCHAR(96) NOT NULL, cookie_namespace VARCHAR(96) NOT NULL, pin_id UUID NOT NULL,
       operation_id UUID NOT NULL, view_id VARCHAR(192) NOT NULL, owner_id UUID NOT NULL,

@@ -20,7 +20,8 @@ class InMemoryFencedRecoveryLawsSpec extends RecoveryLaws[Future, Counter] {
   protected def fixture(): RecoveryFixture[Future, Counter] =
     new InMemoryRecoveryFixture[Future, Counter](
       CounterFormats.current,
-      new InMemoryPayloadStore[Future](CleanupBasis.DurableRetirementFence)
+      new InMemoryPayloadStore[Future](CleanupBasis.DurableRetirementFence),
+      SnapshotReferenceSettings(maxOpenObligations = 4)
     )
   protected def sample(index: Int): Counter               = Counter(index)
   protected def incompatibleFormat: SnapshotFormat[Counter] = CounterFormats.incompatible

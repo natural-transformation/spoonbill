@@ -98,7 +98,14 @@ final class InMemorySnapshotReferences[F[_], H, P](
     }
   }
 
-  private def openObligations: Long = records.valuesIterator.count(record => record.retired && !record.deleted).toLong
+  private def staged(record: Record): Boolean = record.phase match {
+    case Phase.Staged(_) => true
+    case _               => false
+  }
+
+  /** Open cleanup obligations plus outstanding reservations: both are retained work the bound charges. */
+  private def openObligations: Long =
+    records.valuesIterator.count(record => (record.retired && !record.deleted) || staged(record)).toLong
 
   private def failure(value: BrowserFailure): ViewSnapshotError = value match {
     case BrowserFailure.Denied | BrowserFailure.Expired | BrowserFailure.Used => ViewSnapshotError.AccessDenied
@@ -332,11 +339,12 @@ final class InMemorySnapshotReferences[F[_], H, P](
       CleanupBacklog(
         open.size.toLong,
         open.count(_.attempts > 0).toLong,
+        records.valuesIterator.count(staged).toLong,
         open.flatMap(record => record.phase match {
           case Phase.Retired(since, _) => Some(since)
           case _                       => None
         }).minOption
       )
-    })(_.getOrElse(CleanupBacklog(0L, 0L, None)))
+    })(_.getOrElse(CleanupBacklog(0L, 0L, 0L, None)))
   }
 }

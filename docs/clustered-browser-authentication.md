@@ -49,9 +49,10 @@ lifecycle: schedule `binding.maintenance()` beside `browser.maintenance()`,
 because payload deletes are network I/O to another store and run there,
 outside coordinator turns and provider transactions; stop admission, drain
 admitted snapshot writes, then `binding.close()` during shutdown. Closing stops
-binding-owned work and neither closes the shared provider or store nor waits
-for uncancellable I/O forever; unsettled obligations stay durable for another
-maintenance instance.
+binding-owned work and returns without waiting for an in-flight adapter call;
+it neither closes the shared provider or store nor awaits I/O that may never
+settle. A delete whose completion is not recorded leaves its obligation durable
+for another maintenance instance.
 
 A healthy save costs two provider transactions, reserve and publish, and one
 durable put; no status lookup, get or delete happens on that path. A restore
@@ -71,9 +72,11 @@ holds. Maintenance claims bounded batches with a leased claim id and
 generation, deletes idempotently, and records completion only for a claim that
 is still current. `FinalDeleted` is accepted only from an adapter that declares
 a durable retirement fence or verified quiescence; an `Unproven` adapter keeps
-every obligation open as `Uncertain`, the backlog is visible through
-`binding.backlog()`, and at `SnapshotReferenceSettings.maxOpenObligations` the
-provider refuses new reservations instead of retaining payloads without limit.
+every obligation open as `Uncertain`, the backlog (open obligations, retried
+ones and outstanding reservations) is visible through `binding.backlog()`, and
+once open obligations plus outstanding reservations reach
+`SnapshotReferenceSettings.maxOpenObligations` the provider refuses new
+reservations instead of retaining payloads without limit.
 A deadline or a repeated delete never establishes finality. Payload
 confidentiality is the deployment's responsibility.
 

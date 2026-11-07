@@ -79,6 +79,7 @@ class ReferenceSnapshotStoreSpec extends AnyFlatSpec with Matchers {
     var write: Option[PayloadWrite]   = None
     var read: Option[PayloadRead]     = None
     var remove: Option[PayloadDelete] = None
+    var pendingDelete: Option[Future[PayloadDelete]] = None
     var throwOnPut                    = false
     val puts                          = new AtomicInteger()
     val deletes                       = new AtomicInteger()
@@ -94,7 +95,7 @@ class ReferenceSnapshotStoreSpec extends AnyFlatSpec with Matchers {
       Future.successful(read.getOrElse(objects.get(ref.id).fold[PayloadRead](PayloadRead.Missing)(PayloadRead.Found.apply)))
     def delete(ref: PayloadRef): Future[PayloadDelete] = {
       deletes.incrementAndGet()
-      Future.successful(remove.getOrElse { objects -= ref.id; PayloadDelete.FinalDeleted })
+      pendingDelete.getOrElse(Future.successful(remove.getOrElse { objects -= ref.id; PayloadDelete.FinalDeleted }))
     }
   }
 
@@ -274,7 +275,7 @@ class ReferenceSnapshotStoreSpec extends AnyFlatSpec with Matchers {
       completions :+= claim; completeAnswer
     }
     def retryDelete(claim: GarbageClaim): Future[ClaimUpdate] = Future.successful { retries :+= claim; ClaimUpdate.Applied }
-    def backlog(): Future[CleanupBacklog] = Future.successful(CleanupBacklog(claims.size.toLong, 0L, None))
+    def backlog(): Future[CleanupBacklog] = Future.successful(CleanupBacklog(claims.size.toLong, 0L, 0L, None))
   }
 
   private def provider(fake: FakeMaintenance, bound: FakeBound) = new SnapshotReferenceSupport[Future, String] {
@@ -350,28 +351,27 @@ class ReferenceSnapshotStoreSpec extends AnyFlatSpec with Matchers {
     target.statistics.finalDeletes shouldBe 0
   }
 
-  it should "coalesce overlapping sweeps, wait for the running sweep on close and start no work afterwards" in {
+  it should "coalesce overlapping sweeps and close without awaiting a delete that never settles" in {
     val maintenance = new FakeMaintenance
     val payloads    = new FakeStore
-    maintenance.claims = Vector(claim(), claim(), claim())
-    val hold = Promise[Unit]()
-    maintenance.holdClaim = Some(hold)
+    maintenance.claims = Vector(claim(), claim())
+    val stuck = Promise[PayloadDelete]()
+    payloads.pendingDelete = Some(stuck.future)
     val target  = binding(maintenance, payloads)
     val running = target.maintenance()
-    val second  = target.maintenance()
-    await(second)
-    maintenance.claimRequests.get() shouldBe 1
-    val closing = target.close()
-    closing.isCompleted shouldBe false
-    hold.success(())
-    await(running)
-    await(closing)
-    // Claims handed out to a closing binding are left to their lease; another worker reclaims them.
-    maintenance.completions shouldBe empty
-    payloads.deletes.get() shouldBe 0
-    maintenance.holdClaim = None
     await(target.maintenance())
     maintenance.claimRequests.get() shouldBe 1
+    running.isCompleted shouldBe false
+    await(target.close())
+    running.isCompleted shouldBe false
+    maintenance.completions shouldBe empty
+    await(target.maintenance())
+    maintenance.claimRequests.get() shouldBe 1
+    // The in-flight delete settles later: its completion is still recorded, the rest of the batch is skipped.
+    stuck.success(PayloadDelete.FinalDeleted)
+    await(running)
+    maintenance.completions.size shouldBe 1
+    payloads.deletes.get() shouldBe 1
   }
 
   it should "hand sessions of a closed binding a store that fails closed" in {

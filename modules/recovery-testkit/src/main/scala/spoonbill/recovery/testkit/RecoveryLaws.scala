@@ -386,6 +386,34 @@ trait RecoveryLaws[F[_], D] extends AnyFlatSpec with Matchers {
       await(db.observe(first)).revision shouldBe 1
   }
 
+  it should "refuse new reservations when abandoned uploads reach the bound before their deadline" in withFixture { db =>
+    val bound = db.referenceSettings.maxOpenObligations
+    if (bound > 64) cancel("Needs a small obligation bound")
+    val first  = await(db.open())
+    val store  = db.store(first)
+    val before = await(db.observe(first)).operations
+    (1L to bound).foreach { index =>
+      val gate   = await(db.gate(BeforePayloadDispatch))
+      val saving = background(store.save(initial, sample(index.toInt)))
+      await(gate.reached)
+      await(gate.resume(FailBeforeCommit))
+      rejection(await(saving)) shouldBe StorageFailure
+    }
+    val charged = await(db.observe(first))
+    charged.staged shouldBe bound.toInt
+    charged.operations.uploads - before.uploads shouldBe 0
+    rejection(await(store.save(initial, sample(0)))) shouldBe StorageFailure
+    await(db.observe(first)).staged shouldBe bound.toInt
+    await(pastReservation(db))
+    await(db.maintenance())
+    val swept = await(db.observe(first))
+    swept.staged shouldBe 0
+    if (settled(db)) {
+      swept.openObligations shouldBe 0
+      accepted(await(store.save(initial, sample(1)))) shouldBe revision(1)
+    } else swept.openObligations shouldBe bound
+  }
+
   it should "refuse new reservations at the open-obligation bound instead of retaining payloads without limit" in
     withFixture { db =>
       val bound = db.referenceSettings.maxOpenObligations

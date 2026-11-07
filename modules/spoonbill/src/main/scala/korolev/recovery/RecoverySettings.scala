@@ -6,8 +6,10 @@ package spoonbill.recovery
  * pin older than readPinSeconds cannot adopt its bytes; a garbage claim lease
  * expires after claimLeaseSeconds and an uncertain delete waits
  * retryBackoffSeconds before it may be claimed again. maxOpenObligations is
- * the backpressure bound: at that many open cleanup obligations the provider
- * refuses new reservations instead of admitting unbounded retention.
+ * the backpressure bound: once open cleanup obligations plus outstanding
+ * reservations reach it, the provider refuses new reservations instead of
+ * admitting unbounded retention, so repeated failed uploads cannot pile up
+ * reservations and payloads within the reservation window.
  */
 final case class SnapshotReferenceSettings(
   reservationSeconds: Long = 120,

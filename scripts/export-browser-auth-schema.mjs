@@ -54,7 +54,7 @@ const normalized = values => values.map(value => value.replace(/\s+/g, ' ').trim
 assert.deepEqual(normalized(upgradeSql), normalized(upgrade),
   'Frozen V5 must retain the exact replacement runtime DDL; use a forward migration for changes');
 assert.equal(retention.length, 4, 'Retention upgrade must define permanent scope metadata, shared work cadence and both last_seen columns');
-assert.equal(references.length, 6, 'Reference upgrade must define the reference and read-pin tables, their indexes and the snapshot pointer column');
+assert.equal(references.length, 7, 'Reference upgrade must define the reference and read-pin tables, their indexes and the snapshot pointer column');
 assert.deepEqual(normalized([...baselineSql, ...upgradeSql, ...retention, ...references]), normalized(sql),
   'Frozen V4 and V5 plus the forward retention and reference upgrades must cover runtime DDL exactly; review a new migration for other changes');
 const retentionResult = '-- Spoonbill bounded browser retention: explicit PostgreSQL forward upgrade.\n' +

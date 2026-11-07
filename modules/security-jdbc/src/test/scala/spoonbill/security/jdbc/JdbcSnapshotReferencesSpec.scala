@@ -18,7 +18,10 @@ import spoonbill.snapshot.{SnapshotFormat, SnapshotLoad, ViewSnapshotError, View
 class JdbcFencedRecoveryLawsSpec extends RecoveryLaws[Future, RecoveryCounter] {
   protected given effect: Effect[Future] = Effect.futureEffect
   protected def fixture(): RecoveryFixture[Future, RecoveryCounter] =
-    new JdbcRecoveryFixture(new InMemoryPayloadStore[Future](CleanupBasis.DurableRetirementFence))
+    new JdbcRecoveryFixture(
+      new InMemoryPayloadStore[Future](CleanupBasis.DurableRetirementFence),
+      SnapshotReferenceSettings(maxOpenObligations = 4)
+    )
   protected def sample(index: Int): RecoveryCounter                 = RecoveryCounter(index)
   protected def incompatibleFormat: SnapshotFormat[RecoveryCounter] = JdbcRecoveryFixture.incompatible
 }
@@ -76,6 +79,31 @@ class JdbcSnapshotReferencesSpec extends AnyFlatSpec with Matchers {
       after.statusLookups - before._2.statusLookups shouldBe 0
       after.downloads - before._2.downloads shouldBe 0
       snapshotRow(db, view) shouldBe ((1L, true, 0))
+  }
+
+  it should "reconcile a reservation or publication whose commit acknowledgement was lost through status" in withFixture {
+    db =>
+      val view  = await(db.open())
+      val store = db.store(view)
+      accepted(await(store.load())) shouldBe SnapshotLoad.Empty(initial)
+      // The next transaction is the reservation: it commits, its reply is lost.
+      db.loseAcknowledgementAt.set(db.transactions.get() + 1)
+      val before = db.harness.operations
+      accepted(await(store.save(initial, RecoveryCounter(1)))) shouldBe revision(1)
+      val reserved = db.harness.operations
+      reserved.reservations - before.reservations shouldBe 1
+      reserved.statusLookups - before.statusLookups shouldBe 1
+      reserved.uploads - before.uploads shouldBe 1
+      reserved.publications - before.publications shouldBe 1
+      // Reservation and publication are the next two transactions: lose the publication's reply.
+      db.loseAcknowledgementAt.set(db.transactions.get() + 2)
+      accepted(await(store.save(revision(1), RecoveryCounter(2)))) shouldBe revision(2)
+      val published = db.harness.operations
+      published.statusLookups - reserved.statusLookups shouldBe 1
+      published.publications - reserved.publications shouldBe 1
+      accepted(await(store.save(revision(2), RecoveryCounter(3)))) shouldBe revision(3)
+      accepted(await(store.load())) shouldBe SnapshotLoad.Restored(revision(3), RecoveryCounter(3))
+      await(db.observe(view)).published shouldBe 1
   }
 
   it should "serve an inline projection written before external payloads and move the view to a reference on the next publication" in

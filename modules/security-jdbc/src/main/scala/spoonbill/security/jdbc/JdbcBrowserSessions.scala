@@ -146,6 +146,9 @@ final class JdbcBrowserSessions(
     try {
       schema.foreach(sql => Using.resource(connection.createStatement())(_.executeUpdate(sql)))
       JdbcBrowserRetention.initialize(connection)
+      // The inline snapshot writer clears the reference pointer column, so every
+      // bootstrap path, low-level or provider, needs the reference schema.
+      JdbcSnapshotReferences.initialize(connection)
     }
     catch { case _: SQLException => throw new JdbcAuthException(JdbcAuthError.StorageFailure) }
 

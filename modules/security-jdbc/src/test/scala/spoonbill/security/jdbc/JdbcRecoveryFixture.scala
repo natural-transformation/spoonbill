@@ -56,6 +56,8 @@ final class JdbcRecoveryFixture(
   val realm              = "recovery-" + UUID.randomUUID().toString
   val clock              = new AtomicReference(start)
   val transactions       = new AtomicInteger()
+  // The index (1-based) of the provider transaction whose acknowledgement is lost after it committed.
+  val loseAcknowledgementAt = new AtomicInteger(0)
   private val random     = new SecureRandom()
   val source: DataSource = new DataSource {
     private val driver = new org.postgresql.Driver()
@@ -103,7 +105,11 @@ final class JdbcRecoveryFixture(
     val program     = TransactionProgram.direct
     val scopePolicy = TransactionScopePolicy.ThreadConfined
     def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = {
-      transactions.incrementAndGet(); outer.transact(body)
+      val index = transactions.incrementAndGet()
+      outer.transact(body).map {
+        case Right(_) if loseAcknowledgementAt.get() == index => Left(TransactionFailure.CommitUnknown)
+        case result                                           => result
+      }
     }
   }
   val persistence: JdbcBrowserPersistence[Future, String] = new JdbcBrowserPersistence(

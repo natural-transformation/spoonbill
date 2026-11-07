@@ -25,13 +25,17 @@ class JdbcViewSnapshotsSpec extends AsyncFlatSpec with Matchers {
     accepted(Digest256.fromBytes(MessageDigest.getInstance("SHA-256").digest(input)))
   }
 
-  private class Fixture(val limits: SnapshotLimits = SnapshotLimits.default) {
+  private class Fixture(val limits: SnapshotLimits = SnapshotLimits.default, isolatedSchema: Boolean = false) {
     private val url = sys.env.getOrElse("SPOONBILL_JDBC_TEST_URL", cancel("Set SPOONBILL_JDBC_TEST_URL to disposable PostgreSQL"))
+    // An isolated schema starts with no framework tables at all, so only this
+    // fixture's low-level bootstrap can have created them.
+    private val schemaName = Option.when(isolatedSchema)("lowlevel_" + UUID.randomUUID().toString.replace("-", ""))
     val dataSource: DataSource = new DataSource {
       def getConnection: Connection = {
         val properties = new Properties()
         sys.env.get("SPOONBILL_JDBC_TEST_USER").foreach(properties.setProperty("user", _))
         sys.env.get("SPOONBILL_JDBC_TEST_PASSWORD").foreach(properties.setProperty("password", _))
+        schemaName.foreach(properties.setProperty("currentSchema", _))
         DriverManager.getConnection(url, properties)
       }
       def getConnection(user: String, password: String): Connection = DriverManager.getConnection(url, user, password)
@@ -72,6 +76,7 @@ class JdbcViewSnapshotsSpec extends AsyncFlatSpec with Matchers {
     def sessions: JdbcBrowserSessions = new JdbcBrowserSessions(dataSource, realm, namespace, () => clock.get(), hooks)
 
     Using.resource(dataSource.getConnection) { connection =>
+      schemaName.foreach(name => Using.resource(connection.createStatement())(_.executeUpdate(s"CREATE SCHEMA $name")))
       sessions.initialize(connection)
       Using.resource(connection.createStatement())(_.executeUpdate("""CREATE TABLE IF NOT EXISTS spoonbill_snapshot_test_host (
         session_id UUID PRIMARY KEY, subject_key VARCHAR(256) NOT NULL, scope_key VARCHAR(256) NOT NULL,
@@ -337,6 +342,19 @@ class JdbcViewSnapshotsSpec extends AsyncFlatSpec with Matchers {
       try { reached.isCompleted shouldBe true; db.clock.set(db.prepared.sessionExpiresAt); blocker.commit() }
       finally blocker.close()
       writing.map(_ shouldBe Left(ViewSnapshotError.AccessDenied))
+    }
+  }
+
+  "Low-level bootstrap" should "create every table and column the inline writer needs in a fresh schema" in {
+    val db = new Fixture(isolatedSchema = true)
+    db.bound().load() shouldBe Right(SnapshotLoad.Empty(ViewRevision.initial))
+    val first = accepted(db.bound().save(ViewRevision.initial, Counter(3)))
+    db.restored() shouldBe (first -> Counter(3))
+    val second = accepted(db.bound().save(first, Counter(4)))
+    db.restored() shouldBe (second -> Counter(4))
+    db.sql("SELECT payload_operation IS NULL FROM spoonbill_view_snapshot WHERE realm = ? AND cookie_namespace = ? AND view_id = ?") { statement =>
+      db.scope(statement)
+      Using.resource(statement.executeQuery()) { rows => rows.next() shouldBe true; rows.getBoolean(1) shouldBe true }
     }
   }
 

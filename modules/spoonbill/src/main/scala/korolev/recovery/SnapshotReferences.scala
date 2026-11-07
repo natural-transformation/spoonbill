@@ -112,8 +112,13 @@ enum ClaimUpdate {
   case Applied, AlreadyApplied, StaleClaim
 }
 
-/** Visible cleanup backlog: open obligations, those already retried, and the oldest retirement. */
-final case class CleanupBacklog(open: Long, uncertain: Long, oldestRetiredAt: Option[Instant])
+/**
+ * Visible retained work: open cleanup obligations, those already retried,
+ * outstanding reservations not yet published or retired, and the oldest
+ * retirement. Open obligations and outstanding reservations together are
+ * charged against the provider's capacity bound.
+ */
+final case class CleanupBacklog(open: Long, uncertain: Long, staged: Long, oldestRetiredAt: Option[Instant])
 
 /**
  * The optional, provider-neutral publication capability. An authority provider

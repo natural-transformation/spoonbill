@@ -14,10 +14,11 @@ import spoonbill.snapshot.{SnapshotFormat, ViewSnapshotSession}
  * parameter. Schedule maintenance() beside browser.maintenance(): it claims
  * retired references and runs adapter deletes outside coordinator turns and
  * provider transactions. Close the binding during shutdown after draining
- * admitted snapshot writes; closing stops binding-owned work and releases
- * local resources, and neither closes the shared provider or store nor waits
- * for uncancellable I/O forever. Unsettled obligations remain durable for
- * another maintenance instance.
+ * admitted snapshot writes: closing stops binding-owned work and returns
+ * without waiting for an in-flight adapter call, and it neither closes the
+ * shared provider or store nor awaits I/O that may never settle. A delete
+ * whose completion is not recorded leaves its obligation durable for another
+ * maintenance instance.
  */
 trait PayloadSnapshotBinding[F[_], P, S] {
   def snapshots: BrowserView[P] => Option[ViewSnapshotSession[F, S]]
@@ -79,9 +80,7 @@ object PayloadRecovery {
     private val counters = new RecoveryCounters
     private val policy   = SnapshotSchemaPolicy.of(format)
     private val closed   = new AtomicBoolean()
-    private val monitor  = new Object
-    private var sweeping = false
-    private var waiters  = List.empty[Effect.Promise[Unit]]
+    private val sweeping = new AtomicBoolean()
 
     def statistics: RecoveryStatistics = counters.snapshot
     def backlog(): F[CleanupBacklog]   = F.delayAsync(provider.maintenance.backlog())
@@ -93,17 +92,8 @@ object PayloadRecovery {
         ViewSnapshotSession.projected(store, project, restore)
       }
 
-    private def beginSweep(): Boolean = monitor.synchronized {
-      if (closed.get() || sweeping) false
-      else { sweeping = true; true }
-    }
-    private def finishSweep(): Unit = {
-      val waiting = monitor.synchronized {
-        sweeping = false
-        val result = waiters; waiters = Nil; result
-      }
-      waiting.foreach(_(Right(())))
-    }
+    private def beginSweep(): Boolean = !closed.get() && sweeping.compareAndSet(false, true)
+    private def finishSweep(): Unit   = sweeping.set(false)
 
     def maintenance(): F[Unit] = F.delayAsync {
       if (!beginSweep()) F.unit
@@ -155,15 +145,11 @@ object PayloadRecovery {
       }
     }
 
-    def close(): F[Unit] = F.delayAsync {
-      closed.set(true)
-      F.promise[Unit] { callback =>
-        val finished = monitor.synchronized {
-          if (!sweeping) true
-          else { waiters = callback :: waiters; false }
-        }
-        if (finished) callback(Right(()))
-      }
-    }
+    /**
+     * Stop further work at once. A sweep already inside an adapter call finishes
+     * that call on its own and skips the rest of its batch; waiting for it here
+     * could block shutdown behind I/O that never settles.
+     */
+    def close(): F[Unit] = F.delay(closed.set(true))
   }
 }

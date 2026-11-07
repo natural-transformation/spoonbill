@@ -375,7 +375,6 @@ final class JdbcBrowserPersistence[F[_], P](
     browser.initialize(connection)
     schema.foreach(text => Using.resource(connection.createStatement())(_.executeUpdate(text)))
     retention.initialize(connection)
-    JdbcSnapshotReferences.initialize(connection)
   }
 
   /**

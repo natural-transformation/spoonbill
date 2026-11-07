@@ -23,7 +23,8 @@ serving, writing and retention binaries first; see the
   schema, and revalidate authority, owner and revision before adopting bytes.
   Cleanup is a durable provider obligation with leased claims; `FinalDeleted`
   is accepted only from a fencing or quiescent adapter, unproven adapters keep
-  obligations open, the backlog is visible, and reservations are refused at
+  obligations open, the backlog is visible, and new reservations are refused
+  once open obligations plus outstanding reservations reach
   `SnapshotReferenceSettings.maxOpenObligations`.
 - `JdbcBrowserPersistence.snapshotReferences()` implements the capability in
   the provider's view transaction and realm lock, with the new

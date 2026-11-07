@@ -27,8 +27,9 @@ class FilePayloadStoreLawsSpec extends PayloadStoreLaws[Future] {
 /** The protocol laws on the kit's modeled host with this adapter as the payload store. */
 class FilePayloadRecoveryLawsSpec extends RecoveryLaws[Future, Draft] {
   protected given effect: Effect[Future] = Effect.futureEffect
+  // A small bound lets the capacity laws run against this adapter as well.
   protected def fixture(): RecoveryFixture[Future, Draft] =
-    new InMemoryRecoveryFixture[Future, Draft](Drafts.format, Drafts.store())
+    new InMemoryRecoveryFixture[Future, Draft](Drafts.format, Drafts.store(), SnapshotReferenceSettings(maxOpenObligations = 4))
   protected def sample(index: Int): Draft               = Draft(s"draft-$index")
   protected def incompatibleFormat: SnapshotFormat[Draft] = Drafts.incompatible
 }
