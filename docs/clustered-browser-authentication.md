@@ -51,8 +51,9 @@ outside coordinator turns and provider transactions; stop admission, drain
 admitted snapshot writes, then `binding.close()` during shutdown. Closing stops
 binding-owned work and returns without waiting for an in-flight adapter call;
 it neither closes the shared provider or store nor awaits I/O that may never
-settle. A delete whose completion is not recorded leaves its obligation durable
-for another maintenance instance.
+settle, and a managed maintenance fiber can be cancelled while an adapter call
+is in flight. A delete whose completion is not recorded leaves its obligation
+durable for another maintenance instance.
 
 A healthy save costs two provider transactions, reserve and publish, and one
 durable put; no status lookup, get or delete happens on that path. A restore

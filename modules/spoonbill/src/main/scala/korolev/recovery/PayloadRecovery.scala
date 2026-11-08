@@ -95,14 +95,16 @@ object PayloadRecovery {
     private def beginSweep(): Boolean = !closed.get() && sweeping.compareAndSet(false, true)
     private def finishSweep(): Unit   = sweeping.set(false)
 
+    /**
+     * One sweep per binding at a time; a concurrent call returns at once. The
+     * sweep is cancellable, so a managed fiber can be interrupted while an
+     * adapter call is in flight: the finalizer releases the sweep, and a claim
+     * whose delete or completion was interrupted stays durable under its lease
+     * for a later sweep.
+     */
     def maintenance(): F[Unit] = F.delayAsync {
       if (!beginSweep()) F.unit
-      else
-        F.uncancelable {
-          F.delayAsync(sweep())
-            .recoverF { case NonFatal(error) => F.delay(finishSweep()).flatMap(_ => F.fail(error)) }
-            .flatMap(_ => F.delay(finishSweep()))
-        }
+      else F.guarantee(F.delayAsync(sweep()))(F.delay(finishSweep()))
     }
 
     private def sweep(): F[Unit] =

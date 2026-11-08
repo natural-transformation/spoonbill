@@ -17,6 +17,10 @@ serving, writing and retention binaries first; see the
   format, `project` and `restore` into a `PayloadSnapshotBinding` whose
   `snapshots` factory feeds the unchanged `BrowserAuthentication` parameter and
   whose `maintenance()` and `close()` the application schedules and owns.
+  Sweeps are cancellable: `Effect` gains `guarantee`, overridden natively in
+  the Cats Effect, Monix and ZIO instances, so interrupting a managed
+  maintenance fiber during a stalled adapter call completes at once and leaves
+  the claimed obligation durable for a later sweep.
 - A healthy save spends one reservation, one durable put and one publication;
   lost replies reconcile through the operation id, and an unresolved outcome
   fails that commit closed. Reads pin the reference, validate digest, length and
