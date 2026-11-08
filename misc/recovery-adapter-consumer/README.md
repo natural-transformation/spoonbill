@@ -2,8 +2,7 @@
 
 A separate sbt build that resolves the published `spoonbill-recovery-testkit`
 artifact in test scope and runs its laws against a payload adapter written
-without JDBC, repository classes or private Spoonbill internals. This is the R2
-exit condition of the [portable UI recovery plan](../../docs/portable-ui-recovery-plan.md):
+without JDBC, repository classes or private Spoonbill internals. It shows that
 an external author can qualify an adapter from the released kit alone.
 
 `FilePayloadStore` keeps each payload in a directory. A put writes a temporary

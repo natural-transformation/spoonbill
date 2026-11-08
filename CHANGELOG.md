@@ -2,9 +2,8 @@
 
 ## Unreleased
 
-This release implements the [portable UI recovery plan](docs/portable-ui-recovery-plan.md):
-opt-in external storage of snapshot payloads behind provider-published
-references. Existing inline PostgreSQL snapshots stay the default. Every JDBC
+This release adds portable UI recovery: opt-in external storage of snapshot
+payloads behind provider-published references. Existing inline PostgreSQL snapshots stay the default. Every JDBC
 deployment applies the forward V7 migration after V4, V5 and V6 and drains older
 serving, writing and retention binaries first; see the
 [V7 procedure](docs/request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration).

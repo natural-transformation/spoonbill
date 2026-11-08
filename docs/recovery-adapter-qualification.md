@@ -1,7 +1,9 @@
 # Qualifying a payload adapter
 
 This guide is for authors of a `SnapshotPayloadStore`: the small immutable
-payload adapter of [portable UI recovery](portable-ui-recovery-plan.md). It says
+payload adapter of portable UI recovery, described in the
+[external payload storage section](clustered-browser-authentication.md#external-payload-storage)
+of the clustered guide. It says
 what the adapter must promise, what the published conformance kit checks, and
 what the author still has to establish about the real datastore. The provider
 side, reference publication under the owner fence, stays with the configured
