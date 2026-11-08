@@ -127,7 +127,8 @@ private[jdbc] final class JdbcViewSnapshotData[P](
               revision = EXCLUDED.revision, subject_key = EXCLUDED.subject_key,
               scope_key = EXCLUDED.scope_key, session_id = EXCLUDED.session_id,
               security_generation = EXCLUDED.security_generation, slot_generation = EXCLUDED.slot_generation,
-              schema_id = EXCLUDED.schema_id, schema_version = EXCLUDED.schema_version, payload = EXCLUDED.payload""") { query =>
+              schema_id = EXCLUDED.schema_id, schema_version = EXCLUDED.schema_version, payload = EXCLUDED.payload,
+              payload_operation = NULL""") { query =>
             scope(query)
             query.setLong(4, next.toLong)
             query.setString(5, identity.subject.value)

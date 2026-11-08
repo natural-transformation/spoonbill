@@ -173,6 +173,21 @@ private[jdbc] final class JdbcBrowserRetention(realm: String, namespace: String,
     execute(connection, s"""DELETE FROM spoonbill_view_snapshot s USING spoonbill_browser_view v
       WHERE s.realm=? AND s.cookie_namespace=? AND v.realm=s.realm AND v.cookie_namespace=s.cookie_namespace
       AND v.view_id=s.view_id AND $expiredView""", viewCut)
+    // Payload references of reclaimed views, inline overwrites and expired
+    // reservations become durable cleanup obligations in this same sweep, under
+    // the realm lock that publication also holds, so retirement never races a
+    // late publication. Settled obligations and expired read pins are reclaimed
+    // behind the history window; references are never reused.
+    execute(connection, """UPDATE spoonbill_snapshot_reference r SET state='retired',retired_at=b.now
+      FROM (SELECT ?::varchar AS realm,?::varchar AS namespace,?::timestamptz AS now) b
+      WHERE r.realm=b.realm AND r.cookie_namespace=b.namespace AND r.state='staged' AND r.reservation_deadline<=b.now""", time)
+    execute(connection, """UPDATE spoonbill_snapshot_reference r SET state='retired',retired_at=b.now
+      FROM (SELECT ?::varchar AS realm,?::varchar AS namespace,?::timestamptz AS now) b
+      WHERE r.realm=b.realm AND r.cookie_namespace=b.namespace AND r.state='published'
+      AND NOT EXISTS (SELECT 1 FROM spoonbill_view_snapshot s WHERE s.realm=r.realm AND s.cookie_namespace=r.cookie_namespace
+        AND s.view_id=r.view_id AND s.payload_operation=r.operation_id)""", time)
+    execute(connection, """DELETE FROM spoonbill_snapshot_read_pin WHERE realm=? AND cookie_namespace=? AND expires_at<=?""", time)
+    execute(connection, """DELETE FROM spoonbill_snapshot_reference WHERE realm=? AND cookie_namespace=? AND deleted_at<=?""", history)
     execute(connection, s"""WITH removed AS (DELETE FROM spoonbill_browser_view v WHERE v.realm=? AND v.cookie_namespace=?
       AND $expiredView RETURNING realm,cookie_namespace,epoch)
       UPDATE spoonbill_browser_retention m SET view_floor=GREATEST(m.view_floor,n.floor)

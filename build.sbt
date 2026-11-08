@@ -298,6 +298,19 @@ lazy val securityJdbc = project
     Test / parallelExecution := false,
     libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13" % Test
   )
+  .dependsOn(spoonbill, recoveryTestkit % "test->compile")
+
+// Published conformance kit for portable UI recovery adapters: payload laws,
+// the fixture contract and the in-memory reference host live in main sources
+// so an independent adapter project consumes them in test scope.
+lazy val recoveryTestkit = project
+  .in(modules / "recovery-testkit")
+  .settings(commonSettings: _*)
+  .settings(
+    normalizedName := "spoonbill-recovery-testkit",
+    description    := "Conformance laws and reference fixtures for portable UI recovery adapters",
+    libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.9"
+  )
   .dependsOn(spoonbill)
 
 lazy val standalone = project
@@ -693,6 +706,7 @@ lazy val root = project
     core,
     spoonbill,
     securityJdbc,
+    recoveryTestkit,
     browserAuthBaseline,
     browserAuthExample,
     effect,

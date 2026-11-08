@@ -39,6 +39,9 @@ package object cats {
     def uncancelable[A](task: => IO[A]): IO[A] =
       IO.suspend(task).uncancelable
 
+    override def guarantee[A](task: IO[A])(finalizer: => IO[Unit]): IO[A] =
+      task.guarantee(IO.suspend(finalizer))
+
     def fail[A](e: Throwable): IO[A] = IO.raiseError(e)
 
     def fork[A](m: => IO[A])(implicit ec: ExecutionContext): IO[A] =

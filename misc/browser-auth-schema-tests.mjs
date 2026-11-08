@@ -13,12 +13,14 @@ const migrations = 'modules/security-jdbc/src/main/resources/spoonbill/migration
 const baseline = `${migrations}/V4__browser_auth.sql`;
 const upgrade = `${migrations}/V5__authenticated_session_replacement.sql`;
 const retention = `${migrations}/V6__browser_retention.sql`;
+const references = `${migrations}/V7__snapshot_references.sql`;
 
 function withFixture(body) {
   const directory = mkdtempSync(path.join(tmpdir(), 'spoonbill-schema-test-'));
   try {
-    for (const relative of [exporter, baseline, upgrade, retention,
-      ...['JdbcBrowserClock.scala', 'JdbcBrowserSessions.scala', 'JdbcBrowserPersistence.scala', 'JdbcBrowserRetention.scala'].map(name => `${sources}/${name}`)]) {
+    for (const relative of [exporter, baseline, upgrade, retention, references,
+      ...['JdbcBrowserClock.scala', 'JdbcBrowserSessions.scala', 'JdbcBrowserPersistence.scala', 'JdbcBrowserRetention.scala',
+        'JdbcSnapshotReferences.scala'].map(name => `${sources}/${name}`)]) {
       const destination = path.join(directory, relative);
       mkdirSync(path.dirname(destination), {recursive: true});
       copyFileSync(path.join(repository, relative), destination);
@@ -58,14 +60,41 @@ test('schema export updates stale V6 without rewriting historical V4 or V5 bytes
   assert.deepEqual(readFileSync(upgradeFile), originalUpgrade);
   assert.deepEqual(readFileSync(retentionFile), expectedRetention);
   const metadata = JSON.parse(result.stdout);
-  assert.equal(metadata.tables, 11);
+  assert.equal(metadata.tables, 13);
   assert.equal(metadata.upgradeStatements, 3);
   assert.equal(metadata.upgradeTables, 1);
   assert.equal(metadata.retentionStatements, 4);
   assert.equal(metadata.retentionTables, 2);
+  assert.equal(metadata.referenceStatements, 7);
+  assert.equal(metadata.referenceTables, 2);
   const checked = run(directory, '--check');
   assert.equal(checked.status, 0, checked.stderr);
 }));
+
+test('schema export updates a stale V7 without touching V4, V5 or V6', () => withFixture(directory => {
+  const referencesFile = path.join(directory, references);
+  const expectedReferences = readFileSync(referencesFile);
+  const originalRetention = readFileSync(path.join(directory, retention));
+  writeFileSync(referencesFile, '-- stale forward migration\n');
+  const stale = run(directory, '--check');
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /Reference upgrade DDL is stale/);
+  const result = run(directory, '--write');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(referencesFile), expectedReferences);
+  assert.deepEqual(readFileSync(path.join(directory, retention)), originalRetention);
+}));
+
+test('reference migration defines the reference and pin tables and their deployment restrictions', () => {
+  const sql = readFileSync(path.join(repository, references), 'utf8');
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS spoonbill_snapshot_reference/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS spoonbill_snapshot_read_pin/);
+  assert.match(sql, /ALTER TABLE spoonbill_view_snapshot ADD COLUMN IF NOT EXISTS payload_operation/);
+  for (const column of ['payload_digest', 'reservation_deadline', 'claim_generation', 'delete_attempts', 'retry_after', 'deleted_at'])
+    assert.ok(sql.includes(column), column);
+  assert.match(sql, /Drain every old serving\/writing binary and retention worker/);
+  assert.match(sql, /NEVER drop a retired reference whose deletion is uncertain/);
+});
 
 test('schema export rejects changed historical V4 bytes in both modes without rewriting files', () => withFixture(directory => {
   const baselineFile = path.join(directory, baseline);
@@ -136,7 +165,7 @@ test('schema export rejects runtime DDL outside the frozen baseline and reviewed
   for (const mode of ['--check', '--write']) {
     const result = run(directory, mode);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Frozen V4 and V5 plus the forward retention upgrade must cover runtime DDL exactly/);
+    assert.match(result.stderr, /Frozen V4 and V5 plus the forward retention and reference upgrades must cover runtime DDL exactly/);
     assert.deepEqual(readFileSync(path.join(directory, baseline)), originalBaseline);
     assert.deepEqual(readFileSync(path.join(directory, upgrade)), originalUpgrade);
     assert.deepEqual(readFileSync(path.join(directory, retention)), originalRetention);

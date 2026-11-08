@@ -19,6 +19,15 @@ Client and server are combined into a single app without any REST protocol in th
 * Connect to infrastructure (DBMS, Message queue) directly from application
 * Coordinate browser authentication in Scala with atomic memory or PostgreSQL host transactions
 
+The PostgreSQL module and its inline recovery APIs remain the default. Portable
+UI recovery adds generic interfaces for opt-in external snapshot payload
+storage: a small payload adapter
+stores immutable bytes while the configured provider keeps authority, ownership
+and revision checks and publishes references under its fences. Adapter authors
+qualify a store with the published `spoonbill-recovery-testkit`; replacing
+authority storage still uses the full provider extension path, and no named
+database adapter is shipped.
+
 ## Getting Started
 
 ```scala
@@ -41,6 +50,7 @@ the managed IO application.
 | `spoonbill-core` | Pure immutable security and ceremony decisions |
 | `spoonbill` | Application runtime, browser coordinator and memory provider |
 | `spoonbill-security-jdbc` | Optional PostgreSQL browser, transaction and snapshot integration |
+| `spoonbill-recovery-testkit` | Conformance laws and reference fixtures for portable recovery adapters |
 | `spoonbill-pekko` | Native Scala 3 Pekko HTTP/WebSocket adapter |
 
 ## Documentation
@@ -49,6 +59,7 @@ the managed IO application.
 * [User guide](docs/user-guide.adoc)
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
+* [Qualifying a payload adapter](docs/recovery-adapter-qualification.md) — portable UI recovery for external snapshot storage
 * [Migrating to 8.0: bounded resources and retention](docs/migration-v8.md)
 * [Migrating to 7.0: explicit state updates](docs/migration-v7.md)
 * [Migrating to 5.0](docs/migration-v5.md)

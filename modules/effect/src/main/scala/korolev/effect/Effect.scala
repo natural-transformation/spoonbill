@@ -36,6 +36,16 @@ trait Effect[F[_]] {
     * Preserve the calling effect's environment and local context.
     */
   def uncancelable[A](task: => F[A]): F[A]
+  /** Run finalizer once task settles, whether it succeeds, fails or is cancelled.
+    * This default covers success and failure, which is all a Future can do;
+    * instances of cancelable effects override it with their native guarantee
+    * so cancellation runs the finalizer too. The finalizer is taken by name
+    * because a strict effect evaluates it when constructed; it should not fail.
+    */
+  def guarantee[A](task: F[A])(finalizer: => F[Unit]): F[A] =
+    flatMap(recover(map(task)(value => Right(value): Either[Throwable, A])) { case error => Left(error) }) { result =>
+      flatMap(finalizer)(_ => result.fold(fail, pure))
+    }
   def delayAsync[A](value: => F[A]): F[A] = flatMap(delay(value))(identity)
   def fail[A](e: Throwable): F[A]
   def unit: F[Unit]

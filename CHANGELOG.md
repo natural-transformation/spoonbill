@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+This release adds portable UI recovery: opt-in external storage of snapshot
+payloads behind provider-published references. Existing inline PostgreSQL snapshots stay the default. Every JDBC
+deployment applies the forward V7 migration after V4, V5 and V6 and drains older
+serving, writing and retention binaries first; see the
+[V7 procedure](docs/request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration).
+
+- Add the `spoonbill.recovery` API: `SnapshotPayloadStore` for immutable
+  payload adapters with a declared `CleanupBasis`, and the optional
+  provider-neutral `SnapshotReferenceSupport` capability (bound reservation,
+  publication, read pins, operation status and leased garbage claims).
+  `PayloadRecovery.projectedWithPayloads` composes both with the application's
+  format, `project` and `restore` into a `PayloadSnapshotBinding` whose
+  `snapshots` factory feeds the unchanged `BrowserAuthentication` parameter and
+  whose `maintenance()` and `close()` the application schedules and owns.
+  Sweeps are cancellable: `Effect` gains `guarantee`, overridden natively in
+  the Cats Effect, Monix and ZIO instances, so interrupting a managed
+  maintenance fiber during a stalled adapter call completes at once and leaves
+  the claimed obligation durable for a later sweep.
+- A healthy save spends one reservation, one durable put and one publication;
+  lost replies reconcile through the operation id, and an unresolved outcome
+  fails that commit closed. Reads pin the reference, validate digest, length and
+  schema, and revalidate authority, owner and revision before adopting bytes.
+  Cleanup is a durable provider obligation with leased claims; `FinalDeleted`
+  is accepted only from a fencing or quiescent adapter, unproven adapters keep
+  obligations open, the backlog is visible, and new reservations are refused
+  once open obligations plus outstanding reservations reach
+  `SnapshotReferenceSettings.maxOpenObligations`.
+- `JdbcBrowserPersistence.snapshotReferences()` implements the capability in
+  the provider's view transaction and realm lock, with the new
+  `spoonbill_snapshot_reference` and `spoonbill_snapshot_read_pin` tables and a
+  `payload_operation` pointer on `spoonbill_view_snapshot` (migration V7). The
+  retention sweep retires references of reclaimed views, expired reservations
+  and orphaned references, and reclaims settled rows behind the history window.
+  `InMemoryBrowserPersistence` hosts `InMemorySnapshotReferences`, the
+  deterministic protocol model.
+- Publish `spoonbill-recovery-testkit`: `PayloadStoreLaws`, `RecoveryLaws`, the
+  `RecoveryFixture` contract with fault gates at every protocol point, the
+  `InMemoryRecoveryFixture` law host and `InMemoryPayloadStore`. The JDBC
+  provider runs the same laws against PostgreSQL, and an independent
+  file-system adapter in `misc/recovery-adapter-consumer` runs them from the
+  locally published kit. See the [qualification guide](docs/recovery-adapter-qualification.md).
+- The browser-auth example selects `SPOONBILL_AUTH_SNAPSHOT_STORAGE=reference`
+  to publish references into its own PostgreSQL payload table through a fencing
+  adapter; the two-JVM fixture gains the `reference-payloads` scenario. The
+  click-latency harness does not yet measure authenticated snapshot modes.
+
 ## 9.0.0 — 2026-11-06
 
 This release adds render-owned state timers and component ownership handoff.

@@ -35,6 +35,10 @@ class Zio2Effect[R, E](rts: Runtime[R], liftError: Throwable => E, unliftError: 
   def uncancelable[A](task: => ZIO[R, E, A]): ZIO[R, E, A] =
     ZIO.suspendSucceed(task).uninterruptible
 
+  // ensuring needs an infallible finalizer; the Effect contract asks callers for one.
+  override def guarantee[A](task: ZIO[R, E, A])(finalizer: => ZIO[R, E, Unit]): ZIO[R, E, A] =
+    task.ensuring(ZIO.suspendSucceed(finalizer).ignore)
+
   def fail[A](e: Throwable): ZIO[R, E, A] =
     ZIO.fail(e).mapError(liftError)
 

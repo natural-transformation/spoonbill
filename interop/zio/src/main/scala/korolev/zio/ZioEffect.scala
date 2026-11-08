@@ -35,6 +35,10 @@ class ZioEffect[R, E](rts: Runtime[R], liftError: Throwable => E, unliftError: E
   def uncancelable[A](task: => ZIO[R, E, A]): ZIO[R, E, A] =
     ZIO.effectSuspendTotal(task).uninterruptible
 
+  // ensuring needs an infallible finalizer; the Effect contract asks callers for one.
+  override def guarantee[A](task: ZIO[R, E, A])(finalizer: => ZIO[R, E, Unit]): ZIO[R, E, A] =
+    task.ensuring(ZIO.effectSuspendTotal(finalizer).ignore)
+
   def blocking[T](f: => T)(implicit ec: ExecutionContext): ZIO[R, E, T] =
     zio.blocking.Blocking.Service.live.effectBlocking(f).mapError(liftError)
 

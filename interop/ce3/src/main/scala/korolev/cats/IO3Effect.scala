@@ -35,6 +35,9 @@ class IO3Effect(runtime: IORuntime) extends KEffect[IO] {
   def uncancelable[A](task: => IO[A]): IO[A] =
     IO.uncancelable(_ => IO.defer(task))
 
+  override def guarantee[A](task: IO[A])(finalizer: => IO[Unit]): IO[A] =
+    task.guarantee(IO.defer(finalizer))
+
   def fail[A](e: Throwable): IO[A] = IO.raiseError(e)
 
   def fork[A](m: => IO[A])(implicit ec: ExecutionContext): IO[A] =
