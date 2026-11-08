@@ -1,7 +1,9 @@
 # Event latency: Spoonbill 1.x, 8.0.1 and the current change
 
 Measured 2026-11-03 on one Apple-silicon machine (16 cores, JDK 21, PostgreSQL 14),
-with the [end-to-end click harness](../misc/event-latency/README.md).
+with the [end-to-end click harness](../misc/event-latency/README.md); the
+[authenticated snapshot modes](#authenticated-views-with-durable-snapshots-inline-and-reference-backed)
+were measured on 2026-11-08 on the same machine.
 
 **Result.** Unguarded and in-memory guarded apps were never the problem: a click
 takes about 1 ms in 1.1.1, 8.0.1 and now. The lag came from guarded sessions with
@@ -144,13 +146,145 @@ and 53 ms, and successful clicks per second never fell below the exclusive
 baseline's. The exclusive mode saturates at about 40 to 44 clicks per second
 with maintenance every second, as the serialized design predicts; the
 concurrent mode is bounded by the clients' think time, and 48 users produce
-163 clicks per second at a p50 of 17 to 20 ms. Not measured: the write mix
-(sign-ins, logout, `transact`), authenticated users and a hot account, so
-writer latency under load is still open; the harness client has no sign-in
-flow. The coordinator's cumulative writer wait, reported as `writerWaitMs`, is
+163 clicks per second at a p50 of 17 to 20 ms. Not measured here: the write
+mix (sign-ins, logout, `transact`) and a hot account, so writer latency under
+load is still open; authenticated users with durable snapshots are measured in
+the next section. The coordinator's cumulative writer wait, reported as `writerWaitMs`, is
 dominated by the simultaneous session opens at the start of a run, which are
 exclusive turns queued behind one another and grow with the square of the user
 count.
+
+### Authenticated views with durable snapshots: inline and reference-backed
+
+[External payload storage](clustered-browser-authentication.md#external-payload-storage)
+adds an opt-in path for snapshot payloads beside the inline PostgreSQL
+snapshots. Its budget for a healthy save in an initialized session is one
+snapshot-provider transaction inline, against two provider transactions
+(reserve, publish) plus one durable payload put and no status lookup when the
+payload lives behind a published reference. The harness's `jdbc-snapshot` and
+`jdbc-reference` modes measure what each costs a click on authenticated views,
+with everything else equal: the same counter page, the same JDBC provider in
+exclusive ownership without concurrent checks, one pool of 32 connections, one
+blocking executor of 16 threads, the default retention policy and the same
+maintenance schedule. The projection is the count plus a padding string of
+1 KB or 64 KB. The payload adapter is modelled on the example's
+`JdbcPayloadStore` and writes to a bench-only table in the same PostgreSQL
+database, so a reference-backed save reaches the same server as the provider's
+rows, through the same delaying proxy; `BENCH_PAYLOAD_DELAY_MS` adds latency to
+the adapter alone, for a store slower than that database.
+
+The client signs in before it loads the page: `POST /bench-login` provisions a
+session through the provider SPI (capture, claim, begin and prepare, with a
+synthetic host that resolves every session id), the framework's
+`/auth/complete` delivers the session cookie, and the first handshake activates
+it. Every user is opened before anyone clicks, and the server's counters are
+read at that boundary, so the initial publication of the empty view is reported
+apart from the steady-state saves. The run asserts the budget from counter
+deltas instead of inferring it from latency. The server classifies every
+committed provider transaction by its SQL: a save, reservation or publication;
+a snapshot read, pin or status; cleanup of retired references; a clock
+checkpoint; and everything else, which is an authority check, claim, capture,
+ceremony or retention sweep. The binding reports its reservations, publications,
+status lookups, uploads and downloads, and the adapter its puts, gets and bytes.
+A run that misses the budget exits with status 1; every run below met it
+exactly.
+
+Measured 2026-11-08 on the same machine, one pass per cell, with a 0.25 ms
+database delay, 60 measured clicks per user after 10 warmup clicks, 200 ms of
+think time for 8 and 16 users and a closed loop for 1 user (200 clicks after 50).
+The machine was shared: its load average was between 4 and 12 throughout, so
+differences under about 10 percent between cells are noise. Latencies are
+click-to-patch milliseconds; the anonymous `jdbc` mode of the same build is the
+baseline. Provider transactions per click are the five authority checks plus the
+save path; the budget columns are exact counts, the rest are averages.
+
+| Users | Mode | Payload | p50 / p95 / p99 | Clicks/s | Round trips per click | Save transactions per click | Payload puts per click |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | anonymous `jdbc` | — | 20.4 / 21.6 / 22.8 | 36 | 46 | 0 | 0 |
+| 1 | `jdbc-snapshot` | 1 KB | 32.4 / 35.0 / 36.2 | 22 | 70 | 1 | 0 |
+| 1 | `jdbc-reference` | 1 KB | 42.7 / 45.9 / 47.7 | 17 | 92 | 2 | 1 |
+| 1 | `jdbc-snapshot` | 64 KB | 33.2 / 34.9 / 35.4 | 22 | 70 | 1 | 0 |
+| 1 | `jdbc-reference` | 64 KB | 43.2 / 48.9 / 50.3 | 17 | 92 | 2 | 1 |
+| 8 | anonymous `jdbc` | — | 22.4 / 34.8 / 39.7 | 28 | 48 | 0 | 0 |
+| 8 | `jdbc-snapshot` | 1 KB | 44.7 / 63.0 / 88.7 | 24 | 70 | 1 | 0 |
+| 8 | `jdbc-reference` | 1 KB | 86.1 / 116.4 / 129.6 | 21 | 92 | 2 | 1 |
+| 8 | `jdbc-snapshot` | 64 KB | 52.2 / 75.1 / 93.1 | 24 | 70 | 1 | 0 |
+| 8 | `jdbc-reference` | 64 KB | 81.6 / 108.5 / 116.9 | 22 | 92 | 2 | 1 |
+| 16 | anonymous `jdbc` | — | 95.5 / 118.8 / 127.1 | 42 | 48 | 0 | 0 |
+| 16 | `jdbc-snapshot` | 1 KB | 255.3 / 289.3 / 310.6 | 27 | 70 | 1 | 0 |
+| 16 | `jdbc-reference` | 1 KB | 365.0 / 405.4 / 427.7 | 22 | 93 | 2 | 1 |
+| 16 | `jdbc-snapshot` | 64 KB | 257.7 / 295.1 / 317.9 | 27 | 70 | 1 | 0 |
+| 16 | `jdbc-reference` | 64 KB | 372.4 / 417.5 / 462.3 | 22 | 93 | 2 | 1 |
+
+Status lookups, downloads, failures, rollbacks and client reconnects were zero
+in every run of this table. The save path's own cost, measured on the server
+from the coordinator's commit call to its completion (1 KB):
+
+| Users | Inline commit p50 / p95 / p99 | Reference commit p50 / p95 / p99 | Statements per save transaction (inline, reference) |
+| ---: | ---: | ---: | ---: |
+| 1 | 6.8 / 7.8 / 9.1 | 16.9 / 18.3 / 20.1 | 12, 13.5 |
+| 8 | 6.9 / 11.1 / 16.1 | 21.9 / 27.5 / 45.5 | 12, 13.5 |
+| 16 | 10.5 / 15.3 / 15.8 | 27.0 / 46.7 / 49.3 | 12, 13.5 |
+
+Startup, per session, counted from the first sign-in request to the ready
+frame. Both modes spend the same 31 authority transactions on sign-in, page
+load and the handshake; the snapshot session then reads the empty view and
+publishes its first projection.
+
+| Mode | Snapshot transactions | Payload puts | Round trips | Open p50 for 1 / 8 / 16 users | Server-side initialize p50 for 1 / 8 / 16 users |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| anonymous `jdbc` | 0 | 0 | — | 378 / 844 / 1400 | — |
+| `jdbc-snapshot` | 1 read, 1 save | 0 | 347 to 398 | 532 / 1436 / 2552 | 25.6 / 42.5 / 33.5 |
+| `jdbc-reference` | 1 read, 2 saves | 1 | 369 to 420 | 536 / 1619 / 2748 | 43.3 / 79.3 / 87.0 |
+
+Three further scenarios, all at 1 KB:
+
+| Scenario | Mode | p50 / p95 / p99 | Round trips per click | What else happened |
+| --- | --- | ---: | ---: | --- |
+| Maintenance every second, 16 users | `jdbc-snapshot` | 300.2 / 350.7 / 377.0 | 76 | 1 cleanup transaction |
+| Maintenance every second, 16 users | `jdbc-reference` | 441.7 / 488.9 / 510.0 | 109 | 1164 cleanup transactions and 1120 payload deletes: one claim, delete and completion per superseded reference |
+| Reconnect after warmup, 8 users | `jdbc-snapshot` | 44.3 / 67.1 / 192.4 | 73 | 8 restorations, p50 517 ms, each one snapshot read |
+| Reconnect after warmup, 8 users | `jdbc-reference` | 81.7 / 143.0 / 227.0 | 95 | 8 restorations, p50 572 ms, each two snapshot reads and one download |
+| Payload store 2 ms slower, 8 users | `jdbc-reference` | 83.2 / 141.9 / 229.0 | 92 | server commit p50 24.3 ms against 21.9 ms |
+
+What the numbers say:
+
+- **The budget holds.** In all 17 snapshot runs an inline save was exactly one
+  provider transaction, and a reference-backed save exactly two transactions and
+  one durable put, with no status lookup. The five authority checks per click
+  are unchanged from the anonymous mode in both.
+- **Inline costs one more transaction, references two more and a payload
+  write.** The inline save adds 12 statements and about 24 round trips to a
+  click; references add another 22 round trips. Alone, one user pays 12 ms for
+  inline snapshots over the anonymous click and another 10 ms for references at
+  a 0.25 ms database delay, which matches the server-side save cost of 6.8
+  against 16.9 ms.
+- **Under load the price is queueing, not round trips.** The exclusive realm
+  lock and the coordinator's exclusive turns serialize every provider
+  transaction, so each transaction a click adds waits behind every other user's.
+  The reference path costs 41 ms more than inline at 8 users and 110 ms more at
+  16, where the realm saturates at 22 to 27 clicks per second against 42
+  anonymous. Payload size made no measurable difference between 1 KB and 64 KB
+  in either mode: the bytes travel inside one statement.
+- **Cleanup is visible once maintenance runs often.** With maintenance every
+  second, every superseded reference is claimed, deleted and completed within
+  the run, one short bookkeeping transaction and one adapter delete per click,
+  and 16 users pay 77 ms more at the median than with the default cadence
+  (inline pays 45 ms more, for the revalidation turns alone).
+- **Restoration takes about half a second here** for a same-view reconnect of
+  8 simultaneous users, dominated by the new attachment's claim and checks; the
+  payload fetch costs references 55 ms more. The reconnect must carry the page
+  location, as the browser bridge does, or the server asks for a reload.
+- **A slower store charges only the saving click.** Two extra milliseconds per
+  put moved the server-side commit by about the same amount and the click
+  median not at all; the put runs outside the realm lock, so other users are not
+  held up by it. Tail latencies rose, within what one pass can tell.
+
+Caveats: the synthetic host adds no SQL to a check, so a real host's session
+lookup comes on top; the payload table shares the database and the pool with
+the provider, so this is not an external store's network cost; one node served
+everything, so restoration never crossed a process; every cell is one pass on a
+loaded shared machine; and the client does not render.
 
 ## Remaining limits
 
@@ -163,8 +297,9 @@ maintenance cadence. The
 lifts it for `ExclusiveScope` deployments, as the table above shows. What
 remains:
 
-1. The write mix, authenticated users and a hot account are not measured; the
-   harness client has no sign-in flow.
+1. The write mix and a hot account are not measured. The harness signs in
+   through its own provisioning route, so sign-in itself is not a measured
+   workload, and its synthetic host adds no SQL to a check.
 2. Cutting the authorization transaction's round trips, for example by
    combining the view and slot checks with their lease renewals, the design's
    phase 2.
@@ -188,4 +323,19 @@ nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 BENCH_MAINTENANCE_MS=1000 BENCH_CAP=16 \
   bash misc/event-latency/run.sh local jdbc-concurrent 48 60 10 200
+# The snapshot matrix: both modes at 1 KB and 64 KB for 1, 8 and 16 users;
+# the run exits with status 1 when the commit budget is missed.
+nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+  env PG_DELAY_MS=0.25 BENCH_PAYLOAD_BYTES=1024 \
+  bash misc/event-latency/run.sh local jdbc-snapshot 8 60 10 200
+nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+  env PG_DELAY_MS=0.25 BENCH_PAYLOAD_BYTES=65536 \
+  bash misc/event-latency/run.sh local jdbc-reference 16 60 10 200
+# Restoration, maintenance every second and a slower payload store.
+nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+  env PG_DELAY_MS=0.25 BENCH_RECONNECT=1 \
+  bash misc/event-latency/run.sh local jdbc-reference 8 60 10 200
+nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
+  env PG_DELAY_MS=0.25 BENCH_MAINTENANCE_MS=1000 BENCH_PAYLOAD_DELAY_MS=2 \
+  bash misc/event-latency/run.sh local jdbc-reference 16 60 10 200
 ```
