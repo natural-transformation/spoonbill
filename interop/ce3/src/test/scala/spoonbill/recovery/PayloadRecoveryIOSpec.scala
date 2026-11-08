@@ -86,6 +86,36 @@ final class PayloadRecoveryIOSpec extends AnyFlatSpec with Matchers {
     test.unsafeRunTimed(10.seconds).getOrElse(fail("The cancellation test did not finish"))
   }
 
+  it should "never leave the sweep acquired when cancelled before or during its first steps" in {
+    // The window between acquiring the flag and installing the finalizer cannot
+    // be hit on purpose from outside, so cancel at the start many times and
+    // require that every interleaving leaves the binding able to sweep again.
+    val test = for {
+      deletes     <- Ref.of[IO, Int](0)
+      claims      <- Ref.of[IO, Int](0)
+      completions <- Ref.of[IO, Int](0)
+      entered     <- Deferred[IO, Unit]
+      release     <- Deferred[IO, Unit]
+      _           <- release.complete(())
+      target = binding(claims, completions, store(entered, release, deletes))
+      _ <- (1 to 200).toList.foldLeft(IO.unit) { (previous, _) =>
+        previous *> target.maintenance().start.flatMap(_.cancel).flatMap { _ =>
+          for {
+            before <- claims.get
+            _      <- target.maintenance()
+            after  <- claims.get
+          } yield after shouldBe before + 1
+        }
+      }
+      recorded <- completions.get
+      claimed  <- claims.get
+    } yield {
+      recorded should be >= 200
+      claimed should be >= 200
+    }
+    test.unsafeRunTimed(30.seconds).getOrElse(fail("The acquisition test did not finish"))
+  }
+
   it should "release the sweep on cancellation so a later sweep claims and completes again" in {
     val test = for {
       entered     <- Deferred[IO, Unit]

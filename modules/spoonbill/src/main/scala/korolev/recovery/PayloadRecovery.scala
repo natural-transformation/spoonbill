@@ -100,11 +100,17 @@ object PayloadRecovery {
      * sweep is cancellable, so a managed fiber can be interrupted while an
      * adapter call is in flight: the finalizer releases the sweep, and a claim
      * whose delete or completion was interrupted stays durable under its lease
-     * for a later sweep.
+     * for a later sweep. The flag is acquired inside the guarded task, in one
+     * delay step, so no cancellation can land between acquisition and the
+     * finalizer that releases it; a run that never acquired the flag leaves it
+     * alone.
      */
-    def maintenance(): F[Unit] = F.delayAsync {
-      if (!beginSweep()) F.unit
-      else F.guarantee(F.delayAsync(sweep()))(F.delay(finishSweep()))
+    def maintenance(): F[Unit] = {
+      val acquired = new AtomicBoolean()
+      F.guarantee(F.delayAsync {
+        if (beginSweep()) { acquired.set(true); sweep() }
+        else F.unit
+      })(F.delay(if (acquired.get()) finishSweep()))
     }
 
     private def sweep(): F[Unit] =
