@@ -46,7 +46,11 @@ serving, writing and retention binaries first; see the
 - The browser-auth example selects `SPOONBILL_AUTH_SNAPSHOT_STORAGE=reference`
   to publish references into its own PostgreSQL payload table through a fencing
   adapter; the two-JVM fixture gains the `reference-payloads` scenario. The
-  click-latency harness does not yet measure authenticated snapshot modes.
+  click-latency harness gains authenticated `jdbc-snapshot` and
+  `jdbc-reference` modes that assert the healthy commit budget (one provider
+  transaction per inline save; reserve, publish and one payload put per
+  reference-backed save) and report the measured latency difference; see the
+  [event latency report](docs/event-latency-performance.md).
 
 ## 9.0.0 — 2026-11-06
 

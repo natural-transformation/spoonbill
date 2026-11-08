@@ -9,25 +9,66 @@
 // A closed socket is not fatal: the user reconnects to the same view, as the
 // browser would, and the reconnect is counted. The count the server shows after
 // a reconnect is adopted, so a discarded presentation is also tolerated.
+//
+// Environment, set by run.sh for the authenticated snapshot modes:
+//   BENCH_LOGIN=1      sign in first. POST /bench-login provisions a session and
+//                      answers with the binding cookie and a completion id; the
+//                      framework's POST /auth/complete turns the id into the
+//                      session cookie, as it does for a browser.
+//   BENCH_PHASES=1     open every user before anyone clicks, and record
+//                      /bench-stats and the proxy's round-trip count
+//                      (BENCH_COUNT_FILE) at that point, so startup is reported
+//                      apart from steady-state saves.
+//   BENCH_RECONNECT=1  after warmup every user drops its socket and reconnects
+//                      to the same view, which restores the saved projection.
+import { readFileSync } from 'node:fs';
 const [base, usersArg = '1', clicksArg = '300', warmupArg = '50', thinkArg = '0'] = process.argv.slice(2);
 const users = Number(usersArg), clicks = Number(clicksArg), warmup = Number(warmupArg), think = Number(thinkArg);
+const login = process.env.BENCH_LOGIN === '1';
+const phased = process.env.BENCH_PHASES === '1';
+const reconnectAfterWarmup = process.env.BENCH_RECONNECT === '1';
+const countFile = process.env.BENCH_COUNT_FILE;
 const BUTTON = '1_2_1';
 const decoder = new TextDecoder();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const totals = { reconnects: 0, reconnectMs: [] };
+const totals = { reconnects: 0, reconnectMs: [], openMs: [], restoreMs: [], restoreAttempts: 0 };
 
-async function loadPage() {
-  const response = await fetch(base + '/', { redirect: 'manual' });
+// The cookie jar as one Cookie header value. A Set-Cookie with an empty value
+// clears that cookie, which is how the server retires a stale session cookie.
+function withCookies(cookie, response) {
+  const jar = new Map(cookie.split('; ').filter(Boolean).map(pair => [pair.split('=')[0], pair]));
+  for (const header of response.headers.getSetCookie()) {
+    const pair = header.split(';')[0];
+    if (pair.endsWith('=')) jar.delete(pair.slice(0, -1)); else jar.set(pair.split('=')[0], pair);
+  }
+  return [...jar.values()].join('; ');
+}
+
+async function signIn() {
+  const provisioned = await fetch(base + '/bench-login', { method: 'POST' });
+  if (provisioned.status !== 200) throw new Error(`bench-login status ${provisioned.status}`);
+  const completion = (await provisioned.text()).trim();
+  const cookie = withCookies('', provisioned);
+  const delivered = await fetch(base + '/auth/complete', {
+    method: 'POST', headers: { Cookie: cookie, Origin: base, 'Content-Type': 'text/plain' }, body: completion });
+  if (delivered.status !== 204) throw new Error(`auth/complete status ${delivered.status}`);
+  return withCookies(cookie, delivered);
+}
+
+async function loadPage(cookie) {
+  const response = await fetch(base + '/', { redirect: 'manual', headers: cookie ? { Cookie: cookie } : {} });
   const html = await response.text();
   if (response.status !== 200) throw new Error(`page status ${response.status}`);
   const sid = /sid:'([^']+)'/.exec(html)[1];
-  const cookie = response.headers.getSetCookie().map(value => value.split(';')[0]).filter(v => !v.endsWith('=')).join('; ');
   // Unguarded apps are ready at open; guarded apps announce readiness (21).
-  return { sid, cookie, guarded: html.includes(',auth:true') };
+  return { sid, cookie: withCookies(cookie, response), guarded: html.includes(',auth:true') };
 }
 
-async function connect(page) {
-  const ws = new WebSocket(base.replace(/^http/, 'ws') + '/bridge/web-socket/' + page.sid,
+// A reconnect tells the server the page's current location, as the bridge
+// does; without it a view whose local presentation is gone can only be reloaded.
+async function connect(page, reconnecting = false) {
+  const location = reconnecting ? '?__spoonbill_location=' + encodeURIComponent('/') : '';
+  const ws = new WebSocket(base.replace(/^http/, 'ws') + '/bridge/web-socket/' + page.sid + location,
     { protocols: ['json'], headers: { Cookie: page.cookie, Origin: base } });
   ws.binaryType = 'arraybuffer';
   const session = { ws, counters: new Map(), view: null, revision: null, ready: false, waiters: [], closed: false,
@@ -86,11 +127,51 @@ async function click(session, expected) {
   return { patch: patchAt - started, ready: performance.now() - started };
 }
 
-async function user(index, results) {
-  const page = await loadPage();
-  let session = await connect(page);
+// Sign in when asked, load the page and open the socket; the time until the
+// view is ready covers the session open and, with snapshots, the initial
+// publication of the empty view's projection.
+async function open() {
+  const started = performance.now();
+  const page = await loadPage(login ? await signIn() : '');
+  const session = await connect(page);
+  totals.openMs.push(performance.now() - started);
+  return { page, session };
+}
+
+// Close the socket, wait for the close to complete and connect again to the
+// same view. The server keeps one attachment per view and refuses a handshake
+// that arrives before the old socket's cleanup, as it would for a browser
+// reload, so the handshake is retried; only the accepted attempt is timed.
+async function reopen(page, session) {
+  session.ws.close();
+  await new Promise(resolve => {
+    if (session.closed) resolve(); else session.ws.addEventListener('close', resolve, { once: true });
+  });
+  await sleep(100); // most of the server's cleanup of the old attachment
+  for (let attempt = 1; ; attempt++) {
+    const started = performance.now();
+    try {
+      const next = await connect(page, true);
+      totals.restoreMs.push(performance.now() - started);
+      totals.restoreAttempts += attempt;
+      return next;
+    } catch (error) {
+      if (error.message !== 'socket error' || attempt >= 200) throw error;
+      await sleep(25);
+    }
+  }
+}
+
+async function run(opened, results) {
+  let { page, session } = opened;
   let count = 0;
   for (let i = 1; i <= warmup + clicks; i++) {
+    if (reconnectAfterWarmup && i === warmup + 1) {
+      // Restoration: drop the socket and reconnect to the same view, which
+      // loads the saved projection; the count it shows is adopted.
+      session = await reopen(page, session);
+      if (session.shownCount !== null) count = session.shownCount;
+    }
     try {
       const sample = await click(session, count + 1);
       count += 1;
@@ -111,10 +192,25 @@ async function user(index, results) {
   session.ws.close();
 }
 
+// The server's counters and the proxy's round-trip count at a phase boundary.
+async function phaseStats() {
+  await sleep(120); // the proxy writes its counter file every 50 ms
+  const stats = await (await fetch(base + '/bench-stats')).json();
+  const roundTrips = countFile ? Number(readFileSync(countFile, 'utf8')) : null;
+  return { stats, roundTrips, atMs: Math.round(performance.now() - started) };
+}
+
 const pct = (values, q) => values[Math.min(values.length - 1, Math.max(0, Math.ceil(q * values.length) - 1))];
 const results = [];
 const started = performance.now();
-await Promise.all(Array.from({ length: users }, (_, index) => user(index, results)));
+let afterOpen = null;
+if (phased) {
+  const opened = await Promise.all(Array.from({ length: users }, () => open()));
+  afterOpen = await phaseStats();
+  await Promise.all(opened.map(value => run(value, results)));
+} else {
+  await Promise.all(Array.from({ length: users }, () => open().then(value => run(value, results))));
+}
 const elapsed = (performance.now() - started) / 1000;
 const summary = values => {
   values = [...values].sort((a, b) => a - b);
@@ -126,4 +222,7 @@ const round = object => object && Object.fromEntries(Object.entries(object).map(
 console.log(JSON.stringify({ base, users, clicksPerUser: clicks, warmup, thinkMs: think, samples: results.length,
   clicksPerSecond: Math.round(results.length / elapsed), reconnects: totals.reconnects,
   reconnectMs: round(summary(totals.reconnectMs)),
-  patchMs: round(summary(results.map(sample => sample.patch))), readyMs: round(summary(results.map(sample => sample.ready))) }));
+  openMs: round(summary(totals.openMs)), restores: totals.restoreMs.length, restoreAttempts: totals.restoreAttempts,
+  restoreMs: round(summary(totals.restoreMs)),
+  patchMs: round(summary(results.map(sample => sample.patch))), readyMs: round(summary(results.map(sample => sample.ready))),
+  afterOpen }));
