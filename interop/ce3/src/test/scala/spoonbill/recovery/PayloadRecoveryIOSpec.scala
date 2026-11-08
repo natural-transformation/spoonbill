@@ -116,6 +116,34 @@ final class PayloadRecoveryIOSpec extends AnyFlatSpec with Matchers {
     test.unsafeRunTimed(30.seconds).getOrElse(fail("The acquisition test did not finish"))
   }
 
+  it should "keep one stored maintenance effect from releasing a sweep another execution still holds" in {
+    val test = for {
+      entered     <- Deferred[IO, Unit]
+      release     <- Deferred[IO, Unit]
+      deletes     <- Ref.of[IO, Int](0)
+      claims      <- Ref.of[IO, Int](0)
+      completions <- Ref.of[IO, Int](0)
+      target = binding(claims, completions, store(entered, release, deletes))
+      tick   = target.maintenance()
+      fiber <- tick.start
+      _     <- entered.get
+      // Re-executions of the same effect coalesce; neither may release the running sweep.
+      _          <- tick
+      _          <- tick
+      overlapping <- claims.get
+      _          <- release.complete(())
+      _          <- fiber.join
+      _          <- tick
+      afterwards <- claims.get
+      recorded   <- completions.get
+    } yield {
+      overlapping shouldBe 1
+      afterwards shouldBe 2
+      recorded shouldBe 2
+    }
+    test.unsafeRunTimed(10.seconds).getOrElse(fail("The re-execution test did not finish"))
+  }
+
   it should "release the sweep on cancellation so a later sweep claims and completes again" in {
     val test = for {
       entered     <- Deferred[IO, Unit]

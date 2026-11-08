@@ -103,9 +103,10 @@ object PayloadRecovery {
      * for a later sweep. The flag is acquired inside the guarded task, in one
      * delay step, so no cancellation can land between acquisition and the
      * finalizer that releases it; a run that never acquired the flag leaves it
-     * alone.
+     * alone. The returned effect may be stored and executed repeatedly, so the
+     * acquisition record belongs to one execution, never to the effect value.
      */
-    def maintenance(): F[Unit] = {
+    def maintenance(): F[Unit] = F.delayAsync {
       val acquired = new AtomicBoolean()
       F.guarantee(F.delayAsync {
         if (beginSweep()) { acquired.set(true); sweep() }
