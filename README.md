@@ -32,12 +32,14 @@ database adapter is shipped.
 
 ```scala
 // build.sbt
-libraryDependencies += "com.natural-transformation" %% "spoonbill" % "9.0.0"
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "10.0.0"
 ```
 
-The latest release is [Spoonbill 9.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v9.0.0),
+The latest release is [Spoonbill 10.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0),
 published for Scala 3. Keep every Spoonbill module on the same version and
-recompile when upgrading from an earlier major release. Start with the
+recompile when upgrading from an earlier major release. Follow the
+[10.0 migration guide](docs/migration-v10.md) for Avocet 2 and the required JDBC
+V7 schema cutover, including inline-only deployments. Start with the
 [user guide](docs/user-guide.adoc) and [working examples](examples/). See the
 [browser authentication example](examples/browser-auth/) for password/factor
 login, recovery, protected actions and logout without application JavaScript.
@@ -60,6 +62,7 @@ the managed IO application.
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
 * [Qualifying a payload adapter](docs/recovery-adapter-qualification.md) — portable UI recovery for external snapshot storage
+* [Migrating to 10.0: Avocet 2 and portable UI recovery](docs/migration-v10.md)
 * [Migrating to 8.0: bounded resources and retention](docs/migration-v8.md)
 * [Migrating to 7.0: explicit state updates](docs/migration-v7.md)
 * [Migrating to 5.0](docs/migration-v5.md)

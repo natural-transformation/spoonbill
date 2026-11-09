@@ -2,8 +2,9 @@
 
 Updated: 2026-11-09. Portable recovery is implemented in merged PRs
 [#25](https://github.com/natural-transformation/spoonbill/pull/25) and
-[#26](https://github.com/natural-transformation/spoonbill/pull/26). It is recorded
-under `Unreleased` and is not available in Spoonbill 9.0.0.
+[#26](https://github.com/natural-transformation/spoonbill/pull/26) and is included
+in Spoonbill **10.0.0**. It is not available in Spoonbill 9.0.0. See the
+[10.0 migration guide](migration-v10.md) before upgrading.
 
 ## Current status
 

@@ -29,7 +29,7 @@ nix develop --no-write-lock-file --command sbt --batch --supershell=false \
   'spoonbill/publishLocal' 'pekko/publishLocal' 'pekko/makePom'
 nix develop --no-write-lock-file --command node \
   misc/pekko-native-consumer/check-pom.mjs \
-  interop/pekko/target/scala-3.3.8/spoonbill-pekko_3-8.0.0-SNAPSHOT.pom
+  interop/pekko/target/scala-3.3.8/spoonbill-pekko_3-10.0.0-SNAPSHOT.pom
 nix develop --no-write-lock-file --command bash -c \
   'cd misc/pekko-native-consumer && sbt --batch --supershell=false verifyNativeGraph compile run'
 ```

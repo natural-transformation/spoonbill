@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
+## 10.0.0 — 2026-11-09
 
 This release adds portable UI recovery: opt-in external storage of snapshot
 payloads behind provider-published references. Existing inline PostgreSQL snapshots stay the default. Every JDBC
 deployment applies the forward V7 migration after V4, V5 and V6 and drains older
 serving, writing and retention binaries first; see the
 [V7 procedure](docs/request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration).
+Upgrade every Spoonbill module together and recompile consumers against Avocet
+2.0.0; follow the [10.0 migration guide](docs/migration-v10.md).
 
 - Upgrade the rendering dependency to Avocet 2.0.0, including its SSR escaping,
   name validation, diff correctness and buffer lifecycle fixes. Recompile

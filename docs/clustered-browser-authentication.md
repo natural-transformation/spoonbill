@@ -1,6 +1,6 @@
 # Shared PostgreSQL browser authentication
 
-Spoonbill 8.0.0 supports an opt-in shared-store mode through the ordinary
+Spoonbill 10.0.0 supports an opt-in shared-store mode through the ordinary
 `JdbcBrowserPersistence` / `BrowserAuthentication` integration. Multiple web
 processes can use the same realm, cookie namespace, host database and credential
 vault. Each physical view has one current database owner. A reconnect claims a
@@ -12,15 +12,15 @@ Shared-store mode has been available since 5.0.0. Existing single-owner
 applications keep their explicit exclusive mode and do not acquire the clustered
 snapshot cost unless they opt into it.
 
-For current applications, use matching **9.0.0** Spoonbill modules, the
+For current applications, use matching **10.0.0** Spoonbill modules, the
 [browser authentication guide](browser-authentication.md), and the
-[8.0 migration guide](migration-v8.md). Recompile custom integrations before
+[10.0 migration guide](migration-v10.md). Recompile custom integrations before
 running the correctness fixture below. Release-specific measurements in the
 [v5 validation report](browser-auth-v5-validation.md),
 [5.0 snapshot testing guide](migration-testing-5.0.0-snapshot.md),
 [4.1 snapshot validation report](clustered-browser-authentication-validation.md),
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
-records; they are not performance acceptance evidence for 8.0.0.
+records; they are not performance acceptance evidence for 10.0.0.
 
 ## External payload storage
 
@@ -349,8 +349,7 @@ performance evidence does not establish burst capacity.
 
 ## Upgrading to the V7 snapshot reference schema
 
-Every JDBC deployment of the release that adds external payload storage applies
-the forward
+Every JDBC deployment of Spoonbill 10.0.0 applies the forward
 [V7 migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V7__snapshot_references.sql)
 after V4, V5 and V6, whether or not it enables reference-backed snapshots: the
 inline writer clears the new snapshot pointer column. Drain and stop every

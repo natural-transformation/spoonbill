@@ -1,6 +1,6 @@
 # Portable recovery release and rollout
 
-This is the release-order checklist for the local portable-recovery candidate.
+This is the release-order checklist for Spoonbill 10.0.0.
 The rehearsal target is Spoonbill's loopback browser-auth example with disposable
 PostgreSQL. Local tests, `publishLocal` and two-JVM handoffs are not a release or
 an application deployment. See the [local evidence and rerun commands](remaining-work-after-portable-recovery.md)
@@ -8,29 +8,32 @@ for completed checks; PairTime and other applications require their own plan.
 
 ## Release gate
 
-Propose **10.0.0**, with matching versions for all Spoonbill modules, including
+Release **10.0.0** with matching versions for all Spoonbill modules, including
 `spoonbill-recovery-testkit`. Portable recovery is absent from 9.0.0, and Avocet
 2.0.0 changes rendering lifecycle/name validation and invalidates Avocet 1's
 unversioned development render buffers. A new major release communicates that
-consumers must recompile and review custom rendering integrations. This proposal
-does not select or publish a version. See the [Avocet upgrade notes](remaining-work-after-portable-recovery.md#avocet-upgrade-notes)
+consumers must recompile and review custom rendering integrations. See the
+[10.0 migration guide](migration-v10.md) and [Avocet upgrade notes](remaining-work-after-portable-recovery.md#avocet-upgrade-notes)
 for the narrowly scoped development-cache migration; PostgreSQL presentation
 snapshots use the application's separate codec.
 
-The release PR must decide and align the development version as well as the
-published version. [build.sbt](../build.sbt) still sets `BaseVersion` to `8.0.0`
-(the default build is `8.0.0-SNAPSHOT`), the [independent consumer](../misc/recovery-adapter-consumer/consumer.sbt)
-defaults to `8.0.0-SNAPSHOT`, and [Scala CI](../.github/workflows/scala.yml)
-hardcodes `8.0.0-SNAPSHOT` artifact paths for the ZIO HTTP runtime and Pekko
-checks. These defaults do not select the proposed release. Update them together,
-or make their version selection consistent, in the release PR and validate the
-resulting CI paths and matching consumer coordinates before publication.
+[build.sbt](../build.sbt) sets `BaseVersion` to `10.0.0`; development builds,
+both [recovery](../misc/recovery-adapter-consumer/consumer.sbt) and
+[Pekko](../misc/pekko-native-consumer/consumer.sbt) consumer defaults, and
+[Scala CI](../.github/workflows/scala.yml) artifact paths use `10.0.0-SNAPSHOT`.
+Release CI supplies `RELEASE_VERSION=10.0.0` for stable artifacts. Future version
+changes must keep these defaults and verification paths aligned.
 
 Before publication, record the selected version, repository commit, module list,
 consumer compatibility results and release owner. After authorized publication,
 run the [Maven Central-only independent consumer check](../misc/recovery-adapter-consumer/README.md)
 with that exact version and retain its resolved coordinates/repository and test
 result. Local artifact resolution cannot satisfy that gate.
+
+The [GitHub release](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0)
+records the immutable tag and publication/verification evidence. Publishing that
+release triggers the existing workflow; do not also dispatch the same version
+manually, since Maven Central versions are immutable.
 
 ## Local migration rehearsal
 

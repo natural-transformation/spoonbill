@@ -61,15 +61,19 @@ below:
 
 ## Work that needs a release or deployment
 
-- [ ] Choose the next Spoonbill release version and publish matching modules,
-  including `spoonbill-recovery-testkit`. The portable recovery API is not part
-  of Spoonbill 9.0.0. Assess the Avocet major dependency upgrade before choosing
-  the release's compatibility promise; recompile consumers. Resolve the
-  [build/consumer/CI version alignment decision](portable-recovery-rollout.md#release-gate)
-  in the release PR before publication.
+Publication and public-consumer verification happen after this source checklist
+is committed. Their completion evidence is recorded on the linked GitHub release.
+
+- [x] Select **10.0.0** and align the development build, both independent
+  consumers and CI artifact paths to `10.0.0-SNAPSHOT`. Recompile consumers and
+  follow the [10.0 migration guide](migration-v10.md).
+- [ ] Publish matching 10.0.0 modules, including `spoonbill-recovery-testkit`.
+  The portable recovery API is not part of Spoonbill 9.0.0. Record the release
+  commit and publication evidence on the
+  [GitHub release](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0).
 - [ ] Run the independent adapter consumer against the actual released
   artifacts, without satisfying the check from local candidate artifacts.
-  Use `scripts/verify-recovery-kit-release.sh <stable-version>` after publication.
+  Use `scripts/verify-recovery-kit-release.sh 10.0.0` after publication.
   `publishLocal` validates packaging, not public availability.
 - [ ] Apply the documented [V7 migration procedure](request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration)
   to each JDBC deployment, draining incompatible serving, writing and retention
