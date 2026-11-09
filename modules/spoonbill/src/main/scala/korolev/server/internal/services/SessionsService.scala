@@ -23,7 +23,7 @@ import scala.concurrent.duration.*
 import spoonbill.{Extension, Qsid}
 import spoonbill.effect.{AsyncTable, Effect, Hub, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
-import spoonbill.internal.{ApplicationInstance, Frontend, SensitiveAuthorization}
+import spoonbill.internal.{ApplicationInstance, DevMode, Frontend, SensitiveAuthorization}
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.server.{
   ApplicationStateInitialization,
@@ -616,7 +616,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           )(Effect[F].pure(_))
         in      <- incomingHub.newStream()
         frontend = new Frontend[F](in, config.heartbeatLimit)
-        app = new ApplicationInstance[F, S, M](
+        app <- Effect[F].delay(new ApplicationInstance[F, S, M](
                 qsid,
                 frontend,
                 stateManager,
@@ -630,7 +630,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                 config.recovery,
                 config.delayedRender,
                 timerSettings = config.timerSettings
-              )
+              )).recoverF { case error: DevMode.InvalidSavedRenderContext =>
+                frontend.close().recover { case cleanupError => error.addSuppressed(cleanupError); () }
+                  .flatMap(_ => Effect[F].fail(error))
+              }
         browserAccess = app.topLevelComponentInstance.browserAccess
         _ <- config.extensions.map { extension =>
                extension
@@ -662,20 +665,33 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           outgoing.cancel().recover { case _ => () }
       SessionStart.Attached(outgoing, release)
     }
+
+    def attachOrReload(): F[SessionStart[F]] =
+      apps.getFill(qsid) {
+        Effect[F].delayAsync(create()).recoverF { case error: DevMode.InvalidSavedRenderContext =>
+          // Settle all current waiters and retain a terminal failure for this old
+          // session. Removing the entry would let a reconnect trust the stale DOM.
+          apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
+        }
+      }.map[SessionStart[F]](attached).recoverF { case error: DevMode.InvalidSavedRenderContext =>
+        config.reporter.error(error.getMessage, error)
+        incomingStream.cancel().recover { case cleanupError =>
+          config.reporter.error(s"Unable to close invalid development session $qsid", cleanupError)
+          ()
+        }.map(_ => SessionStart.Reload[F](): SessionStart[F])
+      }
+
     stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
       case true =>
         // State exists because it was created on static page
         // rendering phase (see ServerSideRenderingService)
-        apps
-          .getFill(qsid)(create())
-          .map[SessionStart[F]](attached)
+        attachOrReload()
       case false =>
         // State can be missing after a restart; rebuild it from the request.
         // A failed rebuild is the recognized reload recovery, not an access failure.
         config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
         initAppState(qsid, rh)
-          .flatMap(_ => apps.getFill(qsid)(create()))
-          .map[SessionStart[F]](attached)
+          .flatMap(_ => attachOrReload())
           .recover { case error =>
             config.reporter.error(s"Unable to rebuild state for $qsid", error)
             SessionStart.Reload()

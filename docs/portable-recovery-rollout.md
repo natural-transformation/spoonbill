@@ -17,6 +17,15 @@ does not select or publish a version. See the [Avocet upgrade notes](remaining-w
 for the narrowly scoped development-cache migration; PostgreSQL presentation
 snapshots use the application's separate codec.
 
+The release PR must decide and align the development version as well as the
+published version. [build.sbt](../build.sbt) still sets `BaseVersion` to `8.0.0`
+(the default build is `8.0.0-SNAPSHOT`), the [independent consumer](../misc/recovery-adapter-consumer/consumer.sbt)
+defaults to `8.0.0-SNAPSHOT`, and [Scala CI](../.github/workflows/scala.yml)
+hardcodes `8.0.0-SNAPSHOT` artifact paths for the ZIO HTTP runtime and Pekko
+checks. These defaults do not select the proposed release. Update them together,
+or make their version selection consistent, in the release PR and validate the
+resulting CI paths and matching consumer coordinates before publication.
+
 Before publication, record the selected version, repository commit, module list,
 consumer compatibility results and release owner. After authorized publication,
 run the [Maven Central-only independent consumer check](../misc/recovery-adapter-consumer/README.md)

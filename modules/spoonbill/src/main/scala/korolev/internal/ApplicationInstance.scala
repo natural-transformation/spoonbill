@@ -87,10 +87,13 @@ final class ApplicationInstance[
   )
 
   private val renderContext = {
-    DiffRenderContext[Binding[F, S, M]](savedBuffer = if (frontend.guarded) None else devMode.loadRenderContext())
+    if (frontend.guarded) DiffRenderContext[Binding[F, S, M]]()
+    else devMode.restoreRenderContext[Binding[F, S, M]]()
   }
   // The current candidate becomes the next baseline only after the frontend
   // accepts it. Failed rendering or publication must keep the previous DOM.
+  // Initialization/renders are sequential; publication calls acceptRender before
+  // its effect completes, so the next render observes this flag in that same chain.
   private var renderAccepted = false
 
   private def acceptRender(): Unit = {

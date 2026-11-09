@@ -11,10 +11,20 @@ serving, writing and retention binaries first; see the
 - Upgrade the rendering dependency to Avocet 2.0.0, including its SSR escaping,
   name validation, diff correctness and buffer lifecycle fixes. Recompile
   consumers; old unversioned Avocet dev-mode render buffers cannot be loaded.
-  Stop the development server, remove its obsolete render-context files from
-  `target/spoonbill/render-contexts` (or the configured development directory),
-  and reload the page fully. Application presentation snapshots and PostgreSQL
-  recovery data use a separate format and do not require deletion.
+  Invalid development buffers are quarantined beside the original file with an
+  `.invalid` suffix, and the affected legacy session receives a full-page reload
+  with an actionable server diagnostic naming the file. Old connections remain
+  rejected after reconnect or restart; a fresh page creates a new session.
+  If quarantine fails, the original file is retained and the failure is reported.
+  Application presentation snapshots and PostgreSQL recovery data use a separate
+  format and do not require deletion.
+- Server-side rendering now rejects a style emitted after an attribute. Put
+  styles first in hand-written render contexts and dynamic DSL content that the
+  optimizer cannot reorder.
+- Live rendering rejects nesting beyond 255 levels or more than 32767 sibling
+  positions instead of allowing identifiers to wrap.
+- A failed update render keeps the previously accepted DOM and reports the error;
+  a later successful render diffs against that accepted baseline.
 - Preserve styled SSR with preset DOM IDs by emitting generated attributes after
   styles. Promote render buffers only after frontend acceptance, so a failed
   render can recover against the last accepted DOM. Clear partial diff frames
