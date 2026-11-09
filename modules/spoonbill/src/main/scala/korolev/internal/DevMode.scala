@@ -41,8 +41,7 @@ private[spoonbill] object DevMode {
         val channel = nioFile.getChannel
         try {
           val buffer = ByteBuffer.allocate(channel.size.toInt)
-          channel.read(buffer)
-          buffer.position(0)
+          nioFile.readFully(buffer.array())
           Some(buffer)
         } finally {
           nioFile.close()
@@ -57,7 +56,8 @@ private[spoonbill] object DevMode {
       val channel = nioFile.getChannel
       try {
         val buffer = renderContext.save()
-        channel.write(buffer)
+        while (buffer.hasRemaining) channel.write(buffer)
+        channel.truncate(channel.position())
         ()
       } finally {
         nioFile.close()

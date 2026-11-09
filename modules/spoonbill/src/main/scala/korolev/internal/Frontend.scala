@@ -835,13 +835,15 @@ final class Frontend[F[_]: Effect](
     def diff = {
       val timeStart = System.nanoTime()
       val sb        = remoteDomChangesPerformer.buffer
-      sb.append('[')
-      sb.append(Procedure.ModifyDom.codeString)
-      sb.append(',')
-      f(remoteDomChangesPerformer)
-      sb.update(sb.length - 1, ' ') // replace last comma to space
-      sb.append(']')
-      val result    = remoteDomChangesPerformer.buffer.result()
+      val result = try {
+        sb.append('[')
+        sb.append(Procedure.ModifyDom.codeString)
+        sb.append(',')
+        f(remoteDomChangesPerformer)
+        sb.update(sb.length - 1, ' ') // replace last comma to space
+        sb.append(']')
+        sb.result()
+      } finally sb.clear()
       val timeEnd   = System.nanoTime()
       val timeTotal = timeEnd - timeStart
       Metrics.MaxDiffNanos.update(prev => Math.max(prev, timeTotal))
@@ -854,7 +856,6 @@ final class Frontend[F[_]: Effect](
       // Switch to blocking context if rendering is slow
       result <- if (avgDiffTime.get() > HeavyRenderThresholdNanos) Effect[F].blocking(diff) else Effect[F].delay(diff)
       _      <- sendRaw(result, producer = producer, resetView = reset, onPublished = onPublished)
-      _      <- Effect[F].delay(remoteDomChangesPerformer.buffer.clear())
     } yield ()
   }
 

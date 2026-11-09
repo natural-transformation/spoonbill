@@ -4,7 +4,7 @@ This guide is for authors of a `SnapshotPayloadStore`: the small immutable
 payload adapter of portable UI recovery, described in the
 [external payload storage section](clustered-browser-authentication.md#external-payload-storage)
 of the clustered guide. It says
-what the adapter must promise, what the published conformance kit checks, and
+what the adapter must promise, what the conformance kit checks, and
 what the author still has to establish about the real datastore. The provider
 side, reference publication under the owner fence, stays with the configured
 authority provider; an adapter never sees a `BrowserView`, a cookie, a raw
@@ -31,8 +31,10 @@ trait SnapshotPayloadStore[F[_]] {
   malformed snapshot, never an empty one.
 - `delete` is called only by `binding.maintenance()` after the provider issued a
   garbage claim. `FinalDeleted` means durable absence against pending, delayed
-  and retried uploads, including a caller paused before submission. Anything
-  less answers `Uncertain`; the provider keeps the obligation open and visible.
+  and retried uploads, including a caller paused before submission. This requires
+  a lasting retirement fence or verified closed admission with all admitted
+  writes settled before deletion. Anything less answers `Uncertain`; the provider
+  keeps the obligation open and visible.
 - `cleanupBasis` is the trusted claim behind `FinalDeleted`:
   - `DurableRetirementFence`: retirement and write admission serialize at the
     store, for example a tombstone written by the delete together with a
@@ -80,8 +82,19 @@ compile dependency of the kit, so the law traits run from your test sources.
    the pattern.
 
 [misc/recovery-adapter-consumer](../misc/recovery-adapter-consumer/README.md)
-is a separate sbt build that resolves the published kit and runs both suites
+is a separate sbt build that resolves the kit artifact and runs both suites
 against a file-system adapter with a per-reference lock and tombstone fence.
+Its `publishLocal` workflow validates local packaging and consumption; it does
+not establish that the kit is publicly released. Release qualification also
+requires resolving matching released Spoonbill and kit versions from the public
+repository without locally published artifacts.
+
+The consumer also runs `FilePayloadProcessSpec` with independent JVMs on one
+local filesystem. It checks immutable writes, retirement of never-written keys,
+a fresh process after forced termination following acknowledged deletion, and a
+gated upload overtaken by deletion. These probes add process-level evidence for
+the example; they do not simulate power loss, qualify a network filesystem or
+establish another adapter's distributed-store guarantees.
 
 ## What the author still has to prove
 
@@ -101,9 +114,16 @@ establish the datastore's profile. Before declaring a basis, write down:
   admits at once, how it bounds retries, and what it reports when the store is
   unavailable.
 - **Fence retention and reclamation.** When, if ever, tombstones are removed.
-  Removing one makes a late write an unreferenced orphan, not a live payload,
-  because references are never reused; that residual is storage and retention
-  accounting, not a correctness exception, and it must be reported.
+  Retain the fence and its retention/storage accounting until further admission
+  is irrevocably closed and all admitted writes have settled. Never-reused
+  references prevent renewed publication, but do not prevent a late upload from
+  recreating an orphan or establish bounded physical retention. Without that
+  proof, keep the fence and its accounting. The adapter must enforce any claimed
+  physical-storage limit itself: the provider's `maxOpenObligations` bounds open
+  obligations and reservations, not fences retained after `FinalDeleted`.
+  Both the file-system consumer and the browser-auth JDBC example retain
+  tombstones permanently; neither demonstrates bounded fence reclamation or a
+  bound on cumulative marker storage.
 - **Extra operations.** Any status, list or size calls beyond the healthy
   path's one put per save and one get per restore.
 

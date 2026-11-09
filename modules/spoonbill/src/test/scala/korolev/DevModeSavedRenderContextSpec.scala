@@ -36,6 +36,47 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
   import DevModeSavedRenderContextSpec.context._
   import Reporter.PrintReporter.Implicit
 
+  "Saved render contexts" should "restore after a smaller snapshot replaces a larger file" in {
+    val devModeKey = "spoonbill.dev"
+    val previous = sys.props.get(devModeKey)
+    sys.props.update(devModeKey, "true")
+    val devMode = new DevMode.ForRenderContext(UUID.randomUUID().toString)
+
+    def render(text: String, rc: DiffRenderContext[Nothing]): Unit = {
+      rc.openNode(XmlNs.html, "div")
+      rc.addTextNode(text)
+      rc.closeNode("div")
+      rc.finalizeDocument()
+    }
+
+    try {
+      val large = DiffRenderContext[Nothing]()
+      render("large" * 1000, large)
+      devMode.saveRenderContext(large)
+      val largeLength = devMode.file.length()
+
+      val small = DiffRenderContext[Nothing]()
+      render("small", small)
+      devMode.saveRenderContext(small)
+      devMode.file.length() shouldBe small.save().remaining().toLong
+      devMode.file.length() should be < largeLength
+
+      val restored = DiffRenderContext[Nothing](savedBuffer = devMode.loadRenderContext())
+      restored.swap()
+      restored.reset()
+      render("small", restored)
+      val changes = new spoonbill.internal.RemoteDomChangesPerformer
+      restored.diff(changes)
+      changes.buffer.toString shouldBe ""
+    } finally {
+      devMode.file.delete()
+      previous match {
+        case Some(value) => sys.props.update(devModeKey, value)
+        case None        => sys.props.remove(devModeKey)
+      }
+    }
+  }
+
   "Spoonbill dev mode" should "initialize from a saved render context and still process DOM events after a state transition" in {
     val devModeKey = "spoonbill.dev"
     val prevDev    = sys.props.get(devModeKey)

@@ -26,6 +26,14 @@ private[spoonbill] final class Html5RenderContext[F[_]: Effect, S, M](presetId: 
     extends avocet.impl.Html5RenderContext[Binding[F, S, M]](TextPrettyPrintingConfig.noPrettyPrinting) {
 
   private lazy val idb = IdBuilder()
+  private var pendingId: Option[(XmlNs, String)] = None
+
+  // Avocet emits styles before attributes. Keep the preset id pending until
+  // the element's styles are complete, without changing its allocated id.
+  private def flushPresetId(): Unit = {
+    pendingId.foreach { case (xmlns, value) => super.setAttr(xmlns, "k", value) }
+    pendingId = None
+  }
 
   override def addMisc(misc: Binding[F, S, M]): Unit = misc match {
     case ComponentEntry(component, parameters, _) =>
@@ -39,21 +47,29 @@ private[spoonbill] final class Html5RenderContext[F[_]: Effect, S, M](presetId: 
   }
 
   override def openNode(xmlns: XmlNs, name: String): Unit = {
+    flushPresetId()
     if (presetId) idb.incId()
     super.openNode(xmlns, name)
     if (presetId) {
-      super.setAttr(xmlns, "k", idb.mkId.toList.last.toString)
+      pendingId = Some((xmlns, idb.mkId.toList.last.toString))
       idb.incLevel()
     }
   }
 
   override def closeNode(name: String): Unit = {
+    flushPresetId()
     super.closeNode(name)
     if (presetId) idb.decLevel()
   }
 
   override def addTextNode(text: String): Unit = {
+    flushPresetId()
     if (presetId) idb.incId()
     super.addTextNode(text)
+  }
+
+  override def setAttr(xmlns: XmlNs, name: String, value: String): Unit = {
+    flushPresetId()
+    super.setAttr(xmlns, name, value)
   }
 }

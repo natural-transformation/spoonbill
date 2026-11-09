@@ -89,6 +89,19 @@ final class ApplicationInstance[
   private val renderContext = {
     DiffRenderContext[Binding[F, S, M]](savedBuffer = if (frontend.guarded) None else devMode.loadRenderContext())
   }
+  // The current candidate becomes the next baseline only after the frontend
+  // accepts it. Failed rendering or publication must keep the previous DOM.
+  private var renderAccepted = false
+
+  private def acceptRender(): Unit = {
+    renderAccepted = true
+    timers.acceptTimerRender()
+  }
+
+  private def abortRender(): Unit = {
+    if (!renderAccepted) renderContext.reset()
+    timers.abortRender()
+  }
 
   val topLevelComponentInstance: ComponentInstance[F, S, M, S, Any, M] = {
     val eventRegistry = new EventRegistry[F](frontend)
@@ -151,9 +164,11 @@ final class ApplicationInstance[
       _ <- Effect[F].delay {
              timers.beginRender()
              // Prepare render context
-             renderContext.swap()
-             // Avocet's diff algorithm mutates its internal IdBuilder. Reset it before each render
-             // so DOM ids remain deterministic across renders.
+             if (renderAccepted) {
+               renderContext.swap()
+               renderAccepted = false
+             }
+             // Discard any rejected candidate while retaining the accepted baseline.
              renderContext.reset()
              // Perform rendering
              topLevelComponentInstance.applyRenderContext(
@@ -174,16 +189,16 @@ final class ApplicationInstance[
                frontend.performDomChangesAuthorized(
                  renderContext.diff,
                  outputAuthorization(producedState),
-                 () => { publishedEventHandlers.set(handlers); timers.acceptTimerRender() }
+                 () => { publishedEventHandlers.set(handlers); acceptRender() }
                )
-             case None => frontend.performDomChangesAccepted(renderContext.diff, () => timers.acceptTimerRender())
+             case None => frontend.performDomChangesAccepted(renderContext.diff, () => acceptRender())
            }
       _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
       _ <- saveRenderContextIfNecessary()
       // Make spoonbill ready to next render
       _ = maybeRenderCallback.foreach(_(Right(())))
     } yield ()).recoverF { case error =>
-      timers.abortRender()
+      abortRender()
       maybeRenderCallback.foreach(_(Left(error)))
       Effect[F].fail(error)
     }
@@ -322,7 +337,7 @@ final class ApplicationInstance[
                renderContext.finalizeDocument()
                timers.prepareRender()
              }
-        _ <- frontend.performDomChangesAccepted(renderContext.diff, () => timers.acceptTimerRender())
+        _ <- frontend.performDomChangesAccepted(renderContext.diff, () => acceptRender())
         _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
         _ <- saveRenderContextIfNecessary()
       } yield ()
@@ -357,9 +372,9 @@ final class ApplicationInstance[
                frontend.resetDomChangesAuthorized(
                  renderContext.diff,
                  outputAuthorization(produced),
-                 () => { publishedEventHandlers.set(handlers); timers.acceptTimerRender() }
+                 () => { publishedEventHandlers.set(handlers); acceptRender() }
                )
-             } else frontend.acceptInitialRender(() => timers.acceptTimerRender())
+             } else frontend.acceptInitialRender(() => acceptRender())
         _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
         _ <- saveRenderContextIfNecessary()
       } yield ()
@@ -449,7 +464,7 @@ final class ApplicationInstance[
       } yield ()
     }
     frontend.authorizeInteraction().flatMap(_ => start()).recoverF { case error =>
-      timers.abortRender()
+      abortRender()
       Effect[F].fail(error)
     }
   }
