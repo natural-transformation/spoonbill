@@ -18,7 +18,10 @@ package spoonbill.internal
 
 import java.io.{File, RandomAccessFile}
 import java.nio.ByteBuffer
+import java.nio.file.Files
+import avocet.RenderException
 import avocet.impl.DiffRenderContext
+import scala.util.control.NonFatal
 
 private[spoonbill] object DevMode {
 
@@ -26,14 +29,52 @@ private[spoonbill] object DevMode {
   private val DevModeDirectoryKey     = "spoonbill.dev.directory"
   private val DevModeDefaultDirectory = "target/spoonbill/"
 
+  final class InvalidSavedRenderContext private[DevMode] (
+    val originalFile: File,
+    val retainedFile: File,
+    cause: Throwable,
+    quarantineFailure: Option[Throwable] = None
+  ) extends RuntimeException(
+        s"Cannot restore development render context '${originalFile.getAbsolutePath}'. " +
+          s"Invalid rendering data is retained at '${retainedFile.getAbsolutePath}'. " +
+          "A full page reload is required to create a new development session; do not reconnect the old DOM. " +
+          quarantineFailure.fold("")(_ => "The file could not be quarantined; keep it until the old page has been closed or fully reloaded. "),
+        cause
+      ) {
+    quarantineFailure.foreach(addSuppressed)
+  }
+
   class ForRenderContext(identifier: String) {
 
     lazy val file = new File(DevMode.renderStateDirectory, identifier)
+    private lazy val invalidFile = new File(file.getPath + ".invalid")
 
     lazy val saved: Boolean =
       DevMode.isActive && file.exists
 
     def isActive = DevMode.isActive
+
+    def restoreRenderContext[M](): DiffRenderContext[M] = {
+      // Keep rejecting this session after a restart or lost reload frame. A
+      // missing original file must not make the old browser DOM a fresh baseline.
+      if (isActive && invalidFile.exists())
+        throw new InvalidSavedRenderContext(file, invalidFile, null)
+      val savedBuffer = loadRenderContext()
+      try DiffRenderContext[M](savedBuffer = savedBuffer)
+      catch {
+        case error: RenderException if error.code == RenderException.Code.InvalidSavedBuffer =>
+          val quarantineFailure = try {
+            Files.move(file.toPath, invalidFile.toPath)
+            None
+          } catch { case NonFatal(failure) => Some(failure) }
+          throw new InvalidSavedRenderContext(
+            file,
+            if (quarantineFailure.isEmpty) invalidFile else file,
+            error,
+            quarantineFailure
+          )
+      }
+    }
 
     def loadRenderContext() =
       if (saved) {
@@ -41,8 +82,7 @@ private[spoonbill] object DevMode {
         val channel = nioFile.getChannel
         try {
           val buffer = ByteBuffer.allocate(channel.size.toInt)
-          channel.read(buffer)
-          buffer.position(0)
+          nioFile.readFully(buffer.array())
           Some(buffer)
         } finally {
           nioFile.close()
@@ -57,7 +97,8 @@ private[spoonbill] object DevMode {
       val channel = nioFile.getChannel
       try {
         val buffer = renderContext.save()
-        channel.write(buffer)
+        while (buffer.hasRemaining) channel.write(buffer)
+        channel.truncate(channel.position())
         ()
       } finally {
         nioFile.close()

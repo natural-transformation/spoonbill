@@ -60,6 +60,7 @@ jobs:
           misc/browser-protocol-tests.mjs \
           misc/browser-auth-schema-tests.mjs \
           misc/release-ref-tests.mjs \
+          misc/recovery-kit-release-tests.mjs \
           misc/replacement-bootstrap-tests.mjs \
           misc/browser-auth-completion-loss-tests.mjs \
           misc/core-purity-tests.mjs \

@@ -1,4 +1,6 @@
-import java.nio.channels.FileChannel
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.{FileChannel, WritableByteChannel}
 import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -13,7 +15,16 @@ import spoonbill.recovery.*
  * write admission serialize at the store: a put that observes the tombstone
  * answers Retired, and a delete that runs first leaves the tombstone the put
  * will see. Durable means the bytes and the directory entry were forced to
- * disk before the move became visible. The adapter never reclaims tombstones.
+ * disk before acknowledgment; the move becomes visible before directory force.
+ * A matching duplicate repeats directory force in case an earlier put failed
+ * after its move. The adapter never reclaims tombstones or lock files.
+ *
+ * This demonstration assumes an already durably provisioned local directory,
+ * reliable advisory locks, atomic moves and directory force on the selected
+ * filesystem, with every writer using this protocol. Creating the directory
+ * here is a convenience, not proof of its parent entry's crash durability.
+ * The laws do not establish these filesystem guarantees or qualify network
+ * filesystems; unsupported force operations fail closed.
  */
 final class FilePayloadStore(root: Path)(using blocking: ExecutionContext) extends SnapshotPayloadStore[Future] {
   Files.createDirectories(root)
@@ -44,14 +55,17 @@ final class FilePayloadStore(root: Path)(using blocking: ExecutionContext) exten
       locked(ref) {
         if (Files.exists(tombstone(ref))) PayloadWrite.Retired
         else if (Files.exists(payload(ref))) {
-          if (java.util.Arrays.equals(Files.readAllBytes(payload(ref)), bytes.toArray)) PayloadWrite.Durable
+          if (java.util.Arrays.equals(Files.readAllBytes(payload(ref)), bytes.toArray)) {
+            syncDirectory()
+            PayloadWrite.Durable
+          }
           else PayloadWrite.Conflict
         } else {
           val temporary = Files.createTempFile(root, ref.id.toString, ".staging")
           try {
             val channel = FileChannel.open(temporary, StandardOpenOption.WRITE)
             try {
-              channel.write(java.nio.ByteBuffer.wrap(bytes.toArray))
+              PayloadFileIO.writeFully(channel, ByteBuffer.wrap(bytes.toArray))
               channel.force(true)
             } finally channel.close()
             Files.move(temporary, payload(ref), StandardCopyOption.ATOMIC_MOVE)
@@ -88,4 +102,13 @@ final class FilePayloadStore(root: Path)(using blocking: ExecutionContext) exten
       }
     catch { case NonFatal(_) => PayloadDelete.Uncertain }
   }
+}
+
+/** Example-local I/O helper, separated so short writes can be tested deterministically. */
+object PayloadFileIO {
+  def writeFully(channel: WritableByteChannel, buffer: ByteBuffer): Unit =
+    while (buffer.hasRemaining) {
+      if (channel.write(buffer) <= 0)
+        throw new IOException("Payload write made no progress")
+    }
 }

@@ -8,6 +8,36 @@ deployment applies the forward V7 migration after V4, V5 and V6 and drains older
 serving, writing and retention binaries first; see the
 [V7 procedure](docs/request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration).
 
+- Upgrade the rendering dependency to Avocet 2.0.0, including its SSR escaping,
+  name validation, diff correctness and buffer lifecycle fixes. Recompile
+  consumers; old unversioned Avocet dev-mode render buffers cannot be loaded.
+  Invalid development buffers are quarantined beside the original file with an
+  `.invalid` suffix, and the affected legacy session receives a full-page reload
+  with an actionable server diagnostic naming the file. Old connections remain
+  rejected after reconnect or restart; a fresh page creates a new session.
+  If quarantine fails, the original file is retained and the failure is reported.
+  Application presentation snapshots and PostgreSQL recovery data use a separate
+  format and do not require deletion.
+- Server-side rendering now rejects a style emitted after an attribute. Put
+  styles first in hand-written render contexts and dynamic DSL content that the
+  optimizer cannot reorder.
+- Live rendering rejects nesting beyond 255 levels or more than 32767 sibling
+  positions instead of allowing identifiers to wrap.
+- A failed update render keeps the previously accepted DOM and reports the error;
+  a later successful render diffs against that accepted baseline.
+- Preserve styled SSR with preset DOM IDs by emitting generated attributes after
+  styles. Promote render buffers only after frontend acceptance, so a failed
+  render can recover against the last accepted DOM. Clear partial diff frames
+  on failure and truncate overwritten development snapshots to their new size.
+- Tighten payload adapter qualification guidance around durable fence retention
+  and accounting. The independent file adapter completes partial writes and
+  repeats directory sync on duplicate puts; its consumer can verify matching
+  released artifacts using Maven Central without the local Ivy resolver.
+- Add an isolated post-publication recovery-kit verification runner, populated
+  V6-to-V7 snapshot migration coverage and separate-JVM payload adapter probes
+  for retirement and delayed upload admission. Document release and rollout
+  acceptance in the [portable recovery runbook](docs/portable-recovery-rollout.md).
+
 - Add the `spoonbill.recovery` API: `SnapshotPayloadStore` for immutable
   payload adapters with a declared `CleanupBasis`, and the optional
   provider-neutral `SnapshotReferenceSupport` capability (bound reservation,

@@ -23,10 +23,10 @@ import spoonbill.auth.*
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Stream}
 import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
-import spoonbill.security.Versions.{SecurityGeneration, SlotGeneration, ViewOwnershipEpoch}
+import spoonbill.security.Versions.{SecurityGeneration, SlotGeneration, ViewOwnershipEpoch, ViewRevision}
 import spoonbill.security.transaction.*
 import spoonbill.server.*
-import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotFormat, SnapshotIdentity, SnapshotKeys, ViewSnapshotError, ViewSnapshotException}
+import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotBinaryCodec, SnapshotFormat, SnapshotIdentity, SnapshotKeys, SnapshotLoad, ViewSnapshotError, ViewSnapshotException}
 import spoonbill.state.BoundedPresentationStore
 import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
@@ -2526,7 +2526,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.committedSessions shouldBe 1
     }
 
-  it should "install frozen V4 then V5 and V6 with the same schema as runtime initialization" in Using
+  it should "install frozen V4 through V7 with the same schema as runtime initialization" in Using
     .resource(new Fixture(isolatedSchema = true)) { db =>
       Using.resource(db.source.getConnection) { connection =>
         val runtimeSchema = connection.getSchema
@@ -2539,6 +2539,104 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           val installed = frameworkSchema(connection)
           assertSuccessorIndex(installed)
           installed shouldBe expected
+        } finally {
+          connection.setSchema(runtimeSchema)
+          Using.resource(connection.createStatement())(_.executeUpdate(s"DROP SCHEMA $freshSchema CASCADE"))
+        }
+      }
+    }
+
+  it should "preserve a populated V6 inline snapshot through V7 and fence its next inline revision" in Using
+    .resource(new Fixture(isolatedSchema = true)) { db =>
+      Using.resource(db.source.getConnection) { connection =>
+        val runtimeSchema = connection.getSchema
+        val freshSchema   = "migration_" + UUID.randomUUID().toString.replace("-", "")
+        Using.resource(connection.createStatement())(_.executeUpdate(s"CREATE SCHEMA $freshSchema"))
+        try {
+          connection.setSchema(freshSchema)
+          applyMigrations(connection, "V4__browser_auth.sql", "V5__authenticated_session_replacement.sql", "V6__browser_retention.sql")
+          val namespace   = "session"
+          val viewId      = "legacy-inline-view"
+          val bindingHash = accepted(Digest256.fromBytes(Array.fill[Byte](32)(7)))
+          val ownerId     = UUID.randomUUID()
+          val ownerEpoch  = accepted(ViewOwnershipEpoch.fromLong(2))
+          val revision    = accepted(ViewRevision.fromLong(7))
+          val identity = SnapshotIdentity(
+            accepted(SnapshotKeys.Subject.parse("legacy-subject")),
+            accepted(SnapshotKeys.Scope.parse("legacy-scope")),
+            UUID.randomUUID(),
+            accepted(SecurityGeneration.fromLong(3)),
+            accepted(SlotGeneration.fromLong(4))
+          )
+          val format = new SnapshotFormat[String](accepted(SchemaId.parse("legacy-draft")), accepted(SchemaVersion.fromInt(1)))
+          val payload = accepted(format.write("saved before V7").flatMap(SnapshotBinaryCodec.encode(_, format.limits)))
+          def insert(sql: String)(bind: java.sql.PreparedStatement => Unit): Unit =
+            Using.resource(connection.prepareStatement(sql)) { statement =>
+              bind(statement)
+              statement.executeUpdate() shouldBe 1
+            }
+          insert("""INSERT INTO spoonbill_browser_slot
+            (realm,cookie_namespace,binding_hash,generation,current_session_id) VALUES (?,?,?,?,?)""") { statement =>
+            statement.setString(1, db.realm); statement.setString(2, namespace); statement.setBytes(3, bindingHash.bytes)
+            statement.setLong(4, identity.slotGeneration.toLong); statement.setObject(5, identity.sessionId)
+          }
+          insert("""INSERT INTO spoonbill_browser_view
+            (realm,cookie_namespace,view_id,binding_hash,owner_id,epoch,snapshot_revision) VALUES (?,?,?,?,?,?,?)""") { statement =>
+            statement.setString(1, db.realm); statement.setString(2, namespace); statement.setString(3, viewId)
+            statement.setBytes(4, bindingHash.bytes); statement.setObject(5, ownerId)
+            statement.setLong(6, ownerEpoch.toLong); statement.setLong(7, revision.toLong)
+          }
+          insert("""INSERT INTO spoonbill_view_snapshot
+            (realm,cookie_namespace,view_id,revision,subject_key,scope_key,session_id,
+             security_generation,slot_generation,schema_id,schema_version,payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""") { statement =>
+            statement.setString(1, db.realm); statement.setString(2, namespace); statement.setString(3, viewId)
+            statement.setLong(4, revision.toLong); statement.setString(5, identity.subject.value)
+            statement.setString(6, identity.scope.value); statement.setObject(7, identity.sessionId)
+            statement.setLong(8, identity.securityGeneration.toLong); statement.setLong(9, identity.slotGeneration.toLong)
+            statement.setString(10, format.schemaId.value); statement.setInt(11, format.version.value); statement.setBytes(12, payload)
+          }
+          // JSON includes every legacy column, including bytea, identity and activity timestamps.
+          def legacyRows(): Vector[String] =
+            Vector("spoonbill_browser_slot", "spoonbill_browser_view", "spoonbill_view_snapshot").map { table =>
+              Using.resource(connection.createStatement()) { statement =>
+                Using.resource(statement.executeQuery(s"SELECT (to_jsonb(legacy) - 'payload_operation')::text FROM $table legacy")) { rows =>
+                  rows.next() shouldBe true
+                  val result = rows.getString(1)
+                  rows.next() shouldBe false
+                  result
+                }
+              }
+            }
+          val before = legacyRows()
+          applyMigrations(connection, "V7__snapshot_references.sql")
+          legacyRows() shouldBe before
+          def assertInline(): Unit = Using.resource(connection.createStatement()) { statement =>
+            Using.resource(statement.executeQuery("SELECT payload_operation IS NULL FROM spoonbill_view_snapshot")) { rows =>
+              rows.next() shouldBe true
+              rows.getBoolean(1) shouldBe true
+              rows.next() shouldBe false
+            }
+          }
+          assertInline()
+          val data = new JdbcViewSnapshotData(db.realm, namespace, viewId, bindingHash, ownerId, ownerEpoch, identity, format)
+          data.revision(connection) shouldBe Right(revision)
+          data.load(connection, revision) shouldBe Right(SnapshotLoad.Restored(revision, "saved before V7"))
+          connection.setAutoCommit(false)
+          try {
+            val next = accepted(data.write(connection, accepted(data.revision(connection)), revision,
+              accepted(data.encode("saved after V7")), resetting = false))
+            next.toLong shouldBe 8L
+            connection.commit()
+            data.revision(connection) shouldBe Right(next)
+            data.load(connection, next) shouldBe Right(SnapshotLoad.Restored(next, "saved after V7"))
+            data.write(connection, accepted(data.revision(connection)), revision,
+              accepted(data.encode("stale overwrite")), resetting = false) shouldBe Left(ViewSnapshotError.RevisionConflict)
+            data.load(connection, next) shouldBe Right(SnapshotLoad.Restored(next, "saved after V7"))
+            assertInline()
+          } finally {
+            connection.rollback()
+            connection.setAutoCommit(true)
+          }
         } finally {
           connection.setSchema(runtimeSchema)
           Using.resource(connection.createStatement())(_.executeUpdate(s"DROP SCHEMA $freshSchema CASCADE"))
