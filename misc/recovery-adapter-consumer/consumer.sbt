@@ -1,6 +1,6 @@
 scalaVersion := sys.props.getOrElse("spoonbill.scala.version", "3.3.8")
 
-val spoonbillVersion = sys.props.getOrElse("spoonbill.version", "8.0.0-SNAPSHOT")
+val spoonbillVersion = sys.props.getOrElse("spoonbill.version", "10.0.0-SNAPSHOT")
 // Release evidence must not silently resolve a locally published candidate.
 val releasedKit = {
   val enabled = sys.props.get("spoonbill.released").contains("true")

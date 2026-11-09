@@ -1,9 +1,9 @@
-= Spoonbill 8 User Guide
+= Spoonbill 10 User Guide
 Aleksey Fomkin <a@fomkin.org>
 :source-highlighter: highlight.js
 :sectnums:
 :toc:
-:version: 9.0.0
+:version: 10.0.0
 :scala-version: 3.3.8
 :code: https://github.com/natural-transformation/spoonbill/blob/v{version}/
 
@@ -27,16 +27,19 @@ The browser remains an untrusted input source. For account-bearing applications,
 use the guarded authentication integration described in <<authentication>>.
 The small public examples below intentionally have no accounts.
 
-Version 9 adds render-owned state timers and component ownership handoff.
-Upgrade all Spoonbill modules together and recompile: the public
-`SpoonbillServiceConfig` constructor now includes `timerSettings`, changing its
-binary signature. The database schema and browser protocol remain those of
-version 8. See <<_render_timers_and_server_push>> for timer behavior.
+Version 10 upgrades rendering to Avocet 2.0.0 and adds the portable UI recovery
+API and `spoonbill-recovery-testkit` for opt-in external snapshot payload storage.
+Existing inline PostgreSQL recovery remains the default. Upgrade all Spoonbill
+modules together and recompile. Every JDBC deployment, including inline-only
+deployments, requires the V7 schema cutover after draining older serving, writing
+and retention binaries. Follow link:migration-v10.md[the 10.0 migration guide]
+for the database procedure, stricter rendering rules and saved development buffers.
 
-Readers upgrading should read link:migration-v8.md[the 8.0 migration guide].
-Version 8 adds finite resource limits, guarded retention and a PostgreSQL V6
-cutover; update all modules together and recompile. When upgrading from before
-7.0, also follow link:migration-v7.md[the explicit state-update migration].
+Version 9 introduced render-owned state timers and component ownership handoff;
+see <<_render_timers_and_server_push>>. Upgrades from before 9 must account for
+the `SpoonbillServiceConfig.timerSettings` constructor change. Upgrades from
+before 8 also require link:migration-v8.md[bounded resources and V6 retention];
+from before 7, follow link:migration-v7.md[the explicit state-update migration].
 
 == Start an application
 
@@ -819,7 +822,7 @@ Sources and examples:
 |ZIO HTTP |`spoonbill-zio-http` |`new ZioHttpSpoonbill[R].service(config)` with a compatible ZIO 2 effect/runtime.
 |===
 
-The release's ZIO HTTP integration targets ZIO HTTP 3.11.6 and ZIO 2.1.26.
+The release's ZIO HTTP integration targets ZIO HTTP 3.11.6 and ZIO 2.1.27.
 Use `ZIOAppDefault`, a `Runtime[R]`, and `Zio2Effect`; old `ZEnv` and
 `DefaultRuntime` examples are not the ZIO 2 setup. The complete
 {code}examples/zio-http/src/main/scala/ZioHttpExample.scala[ZIO HTTP application]
