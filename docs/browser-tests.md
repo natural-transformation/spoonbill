@@ -101,6 +101,27 @@ for the Scala server to become ready. Cleanup starts adapter-owned transport
 shutdown before releasing response resources, closes the guard, and releases
 held output and owned processes, including on failure.
 
+## Renderer acceptance against the Scala service
+
+The Avocet 2.0.0 renderer repairs (F2) are checked through the same standalone
+service, its HTML5 server-side rendering and the assembled client:
+
+```bash
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop . --no-write-lock-file --command \
+  bash scripts/test-renderer-acceptance.sh
+```
+
+Chromium and WebKit each load the server-rendered page, check the parsed nodes
+against the server's ids, click once and check the first patch, then prove that
+the current handlers run exactly once. The cases cover long element and
+attribute names, fixed hash-collision witnesses, quote- and delimiter-bearing
+data, and identity across the first patch, with default and preset ids. The
+script ends with an injected name-truncation fault that the runner must detect.
+The native CI job runs it after the sensitive acknowledgement step; its first
+Linux run is still pending. [Renderer acceptance](renderer-acceptance.md)
+describes the assertions, bounds, a discovered preset-id client defect and the
+recorded run.
+
 ## Public authentication example and delivery loss
 
 `scripts/test-browser-auth.sh` runs `misc/browser-auth-native-tests.cjs` against
