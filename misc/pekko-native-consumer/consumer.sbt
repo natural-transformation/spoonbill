@@ -1,8 +1,8 @@
-scalaVersion := sys.props.getOrElse("spoonbill.scala.version", "3.3.8")
+scalaVersion := sys.props.getOrElse("spoonbill.scala.version", "3.3.9")
 
 val spoonbillVersion = sys.props.getOrElse("spoonbill.version", "10.0.0-SNAPSHOT")
-val pekkoVersion = sys.props.getOrElse("pekko.version", "1.7.0")
-val pekkoHttpVersion = sys.props.getOrElse("pekko.http.version", "1.4.0")
+val pekkoVersion = sys.props.getOrElse("pekko.version", "2.0.0")
+val pekkoHttpVersion = sys.props.getOrElse("pekko.http.version", "2.0.0-M2")
 
 libraryDependencies ++= Seq(
   "com.natural-transformation" %% "spoonbill-pekko" % spoonbillVersion,

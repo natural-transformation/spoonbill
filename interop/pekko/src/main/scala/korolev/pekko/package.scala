@@ -132,6 +132,16 @@ package object pekko {
       }
     }
 
+  /** Pekko HTTP 2.0 negotiates `permessage-deflate` by default and inflates
+    * each compressed message up to its own `max-allocation` (256 KiB by
+    * default) before the adapter sees any of it. That cap would silently
+    * override `wsMaxMessageBytes` in both directions: larger permitted messages
+    * are dropped, and smaller limits no longer bound the inflated allocation.
+    * Declining compression keeps the uncompressed wire contract of Pekko HTTP
+    * 1.x, so `wsMaxMessageBytes` stays the only message-size limit.
+    */
+  private val WebSocketCompressionEnabled = false
+
   /** Choose the transport once from the public variant. `SendThenClose` keeps
     * the already-canceled application sink out of the graph and drains the
     * peer on a fresh sink. Output completion still closes that coupled flow.
@@ -152,7 +162,8 @@ package object pekko {
           Future.successful(
             upgrade.handleMessages(
               terminalFlow(outStream, httpConfig, wsLoggingEnabled, release, onAttached),
-              Some(selectedProtocol)
+              Some(selectedProtocol),
+              WebSocketCompressionEnabled
             )
           )
         }
@@ -160,7 +171,8 @@ package object pekko {
         Future.successful(
           upgrade.handleMessages(
             duplexFlow(inSink, outStream, httpConfig, reporter, wsLoggingEnabled, release, onAttached),
-            Some(selectedProtocol)
+            Some(selectedProtocol),
+            WebSocketCompressionEnabled
           )
         )
     }
@@ -237,7 +249,7 @@ package object pekko {
     release: () => F[Unit],
     onAttached: () => Unit
   )(implicit ec: ExecutionContext): Flow[Message, Message, Mat] =
-    flow.watchTermination() { (mat, done) =>
+    flow.watchTermination { (mat, done) =>
       // Materialization is the handoff. Before this, timeout still owns cleanup.
       onAttached()
       done.onComplete(_ => Effect[F].runAsync(release())(_ => ()))(ec)

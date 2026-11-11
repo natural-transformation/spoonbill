@@ -71,9 +71,9 @@ jobs:
             'zioHttpRuntime/packageBin' 'zioHttpRuntime/packageSrc' 'zioHttpRuntime/makePom' \
             'export zioHttp/Runtime/fullClasspath'
           nix develop --no-write-lock-file --command node misc/check-zio-http-runtime.mjs \
-            --jar "interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}.jar" \
-            --pom "interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}.pom" \
-            --sources "interop/zio-http-runtime/target/scala-3.3.8/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}-sources.jar" \
+            --jar "interop/zio-http-runtime/target/scala-3.3.9/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}.jar" \
+            --pom "interop/zio-http-runtime/target/scala-3.3.9/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}.pom" \
+            --sources "interop/zio-http-runtime/target/scala-3.3.9/spoonbill-zio-http-runtime_3-${RELEASE_VERSION}-sources.jar" \
             --classpath-file interop/zio-http/target/streams/runtime/fullClasspath/_global/streams/export
 
       - name: Import GPG key

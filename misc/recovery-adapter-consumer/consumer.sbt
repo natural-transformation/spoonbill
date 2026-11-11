@@ -1,4 +1,4 @@
-scalaVersion := sys.props.getOrElse("spoonbill.scala.version", "3.3.8")
+scalaVersion := sys.props.getOrElse("spoonbill.scala.version", "3.3.9")
 
 val spoonbillVersion = sys.props.getOrElse("spoonbill.version", "10.0.0-SNAPSHOT")
 // Release evidence must not silently resolve a locally published candidate.

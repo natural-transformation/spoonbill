@@ -1,7 +1,7 @@
 // End-to-end click latency harness. The same counter application is compiled
 // against Spoonbill 1.1.1, the released 8.0.1, and the repository working tree.
 // See README.md; prepare.sh writes target/local-classpath.txt first.
-ThisBuild / scalaVersion := "3.3.8"
+ThisBuild / scalaVersion := "3.3.9"
 ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature")
 
 val plainSources   = file("shared/plain").getAbsoluteFile

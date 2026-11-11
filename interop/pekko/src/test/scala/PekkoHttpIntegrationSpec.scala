@@ -223,7 +223,7 @@ final class PekkoHttpIntegrationSpec extends AnyFreeSpec with Matchers with Scal
                      // Send heartbeat callback: JSON array [CallbackType.Heartbeat]
                      TextMessage("[6]")
                    }
-                   .watchTermination() { (_, done) =>
+                   .watchTermination { (_, done) =>
                      done.foreach(_ => sentResponse.trySuccess(()))
                      done
                    }
