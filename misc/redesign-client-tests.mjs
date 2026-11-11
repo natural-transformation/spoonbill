@@ -155,6 +155,26 @@ test('redesign client regressions against real source modules', { timeout: 10000
     const { Connection, ConnectionType } = await import(pathToFileURL(join(directory, 'connection.js')));
     const { ConnectionLostWidget } = await import(pathToFileURL(join(directory, 'utils.js')));
 
+    await t.test('preset ids register an unkeyed sibling after a keyed element at k + 1', () => {
+      // Parsed SSR with presetIds: elements carry their last id segment in `k`;
+      // text nodes have none and must continue the count numerically.
+      const element = (k, ...childNodes) => ({nodeType: 1, childNodes, getAttribute: name => (name === 'k' ? k : null)});
+      const text = () => ({nodeType: 3, childNodes: []});
+      const inner = text(), loose = text(), tail = text(), last = text();
+      const first = element('1', inner), third = element('3'), ninth = element('9');
+      const root = element('1', first, loose, third, tail, ...Array.from({length: 4}, (_, n) => element(String(n + 5))), ninth, last);
+      // registerRoot only reads config and the registry, so it runs without a document.
+      const client = {config: {kid: true}, els: {}};
+      Spoonbill.prototype.registerRoot.call(client, root);
+      assert.equal(client.els['1_1'], first);
+      assert.equal(client.els['1_1_1'], inner);
+      assert.equal(client.els['1_2'], loose);
+      assert.equal(client.els['1_4'], tail);
+      assert.equal(client.els['1_10'], last, 'multi-digit counts are numeric');
+      assert.equal(loose.vId, '1_2');
+      assert.ok(!('1_11' in client.els) && !('1_31' in client.els) && !('1_91' in client.els), 'no concatenated ids');
+    });
+
     await t.test('explicit native form submits without a callback or retained submit event despite named-control shadowing', () => {
       const form = new FormFake([], {});
       form.fields = null;

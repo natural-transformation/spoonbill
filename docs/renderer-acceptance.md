@@ -75,12 +75,12 @@ Each case runs with the default ids and with `presetIds = true`. With preset
 ids every parsed element must carry `k` equal to its last server id segment;
 the server writes it after the styles.
 
-## Discovered defect: preset ids and text after an element
+## Discovered defect: preset ids and text after an element (fixed)
 
-With `presetIds = true`, the Spoonbill 10.0.0 client registers a text node that
+With `presetIds = true`, the Spoonbill 10.0.0 client registered a text node that
 follows an element sibling under a wrong id. In `registerRoot`
-(`modules/spoonbill/src/main/es6/spoonbill.js`), `lastId` takes the string value
-of the `k` attribute, and `lastId + 1` concatenates strings. After an element
+(`modules/spoonbill/src/main/es6/spoonbill.js`), `lastId` took the string value
+of the `k` attribute, and `lastId + 1` concatenated strings. After an element
 with `k="1"`, the next text node becomes `…_11` instead of `…_2`. The first
 patch of that text cannot find its node, so the client appends a duplicate text
 node at the end of the parent and leaves the stale text in place. Both engines
@@ -94,10 +94,11 @@ show it:
 The default (`presetIds = false`) is not affected. The defect is in the client,
 not in Avocet, and also exists without the Avocet 2.0.0 upgrade.
 
-The runner keeps this as a strict expected failure (`first-patch/preset`). The
-run must fail with exactly the recorded message. If the failure changes or
-disappears, the suite fails, so a fix must turn the case into an ordinary
-passing one.
+The runner first kept this as a strict expected failure (`first-patch/preset`).
+The fix converts `k` to a number before counting, so the text after an element
+with `k="1"` is `…_2`. `misc/redesign-client-tests.mjs` checks `registerRoot`
+directly, including a count past 9, and `first-patch/preset` now runs as an
+ordinary case. The strict-expected-failure mechanism remains, with no entries.
 
 ## Deliberate fault probe
 
@@ -146,6 +147,12 @@ two JARs.
 | WebKit 26.0 | `long-names`, `collisions`, `encoding`, `first-patch`: pass | `long-names`, `collisions`, `encoding`: pass; `first-patch`: known defect reproduced |
 
 Fault probe: detected (status 1, phase `patched-dom`). The script exited 0.
+
+After the preset-id fix (same producer, environment and browsers), all 16
+combinations pass in both engines, `first-patch/preset` included, and the fault
+probe is still detected. The fast Node client suites (`redesign-client-tests`,
+`sensitive-client-tests`, `browser-protocol-tests`, `replacement-bootstrap-tests`)
+pass 67 of 67.
 
 Related checks from the same worktree:
 

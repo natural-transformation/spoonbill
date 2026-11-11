@@ -119,8 +119,8 @@ data, and identity across the first patch, with default and preset ids. The
 script ends with an injected name-truncation fault that the runner must detect.
 The native CI job runs it after the sensitive acknowledgement step; its first
 Linux run is still pending. [Renderer acceptance](renderer-acceptance.md)
-describes the assertions, bounds, a discovered preset-id client defect and the
-recorded run.
+describes the assertions, bounds, the preset-id client defect it found (now
+fixed) and the recorded runs.
 
 ## Public authentication example and delivery loss
 
