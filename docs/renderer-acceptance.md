@@ -119,7 +119,7 @@ intended 31-character ones.
 | Fault probe | 60 s, plus 10 s to terminate |
 | Browser launch | 15 s |
 | Control requests, page actions and navigation | 10 s each |
-| Waiting for a handler counter | 5 s |
+| Waiting for a handler counter | 5 s in total, strict: each status request gets the remaining time, and a later result is rejected |
 
 The JVM binds a loopback port chosen by the kernel and reports it through a
 readiness file. Cleanup stops only that JVM (TERM, then KILL after 22 s),
@@ -171,7 +171,13 @@ Related checks from the same worktree:
 - Each case checks one patch after bootstrap. Later patches, keyed moves and
   reconnects are out of scope.
 - The recorded run was on macOS. The `native-browser` job in
-  `.github/workflows/scala.yml` now runs this script after the sensitive
-  acknowledgement step, but its first Linux run is still pending. The runner
-  applies the same Linux WebKit EGL setting as the other native fixtures.
+  `.github/workflows/scala.yml` runs this script after the sensitive
+  acknowledgement step, with the same Linux WebKit EGL setting as the other
+  native fixtures. Its first Linux run,
+  [run 43114101859](https://github.com/natural-transformation/spoonbill/actions/runs/43114101859)
+  for PR #30's head `39d1ec55` on `ubuntu-latest`, passed. Every case passed in
+  both engines except `first-patch/preset`, which reproduced the known defect as
+  its strict expected failure in both engines, and the fault probe was detected.
+  That run predates the preset-id fix, so it does not show the fixed case
+  passing on Linux.
 - WebKit is Playwright's WebKit build, not Safari.
