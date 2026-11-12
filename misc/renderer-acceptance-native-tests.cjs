@@ -212,13 +212,10 @@ async function exercise(browser, engine, scenario, ids) {
 // Strict expected failures: a defect this suite discovered and has not fixed.
 // The run must fail exactly as recorded; a changed or vanished failure fails the
 // suite, so a fix has to promote the case to an ordinary passing one.
-const knownDefects = {
-  // Spoonbill 10.0.0 client, registerRoot with kid (presetIds): `lastId` holds
-  // the string from the `k` attribute, so `lastId + 1` concatenates. A text node
-  // after an element with k="1" is registered as 1_2_1_11 instead of 1_2_1_2,
-  // and the first patch of that text appends a duplicate instead of replacing it.
-  'first-patch/preset': {phase: 'parsed', failure: 'parsed loose must be the client registry entry for server id 1_2_1_2'},
-};
+// Currently none. `first-patch/preset` was one until the client's registerRoot
+// kept its preset-id counter numeric (see redesign-client-tests.mjs); it now
+// runs as an ordinary case.
+const knownDefects = {};
 
 async function attempt(browser, engine, scenario, ids) {
   const known = fault === 'none' ? knownDefects[`${scenario}/${ids}`] : undefined;

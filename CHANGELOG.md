@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fix preset-id registration of text after a keyed element. With
+  `presetIds = true`, the client read the `k` attribute as a string, so a text
+  node after an element with `k="1"` was registered as `…_11` instead of `…_2`.
+  Its first patch then appended a duplicate text node and left the stale one in
+  place. Default ids were unaffected. Found by the real-service renderer
+  acceptance runner (Avocet F2).
+
 ## 10.0.0 — 2026-11-09
 
 This release adds portable UI recovery: opt-in external storage of snapshot
