@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix preset-id registration of text after a keyed element. With
+  `presetIds = true`, the client read the `k` attribute as a string, so a text
+  node after an element with `k="1"` was registered as `…_11` instead of `…_2`.
+  Its first patch then appended a duplicate text node and left the stale one in
+  place. Default ids were unaffected. Found by the real-service renderer
+  acceptance runner (Avocet F2).
 - Upgrade `spoonbill-pekko` to Pekko 2.0.0 and Pekko HTTP 2.0.0-M2. Pekko HTTP
   has no 2.0.0 final yet, and HTTP 1.x is not binary compatible with Pekko 2.0.
   Pekko 2.0 requires Java 17 or later and is not binary compatible with 1.x, so

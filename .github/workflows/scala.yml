@@ -171,6 +171,11 @@ jobs:
         env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop . --no-write-lock-file --command \
           bash scripts/test-sensitive-acknowledgement.sh
 
+    - name: Test renderer acceptance against the standalone Scala service
+      run: |
+        env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop . --no-write-lock-file --command \
+          bash scripts/test-renderer-acceptance.sh
+
     - name: Validate profiling capabilities and owned-process measurements
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.performance_tooling }}
       run: |

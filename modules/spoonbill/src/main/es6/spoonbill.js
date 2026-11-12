@@ -198,7 +198,9 @@ export class Spoonbill {
         if(self.config['kid']) {
           if(child.getAttribute && child.getAttribute('k')) {
             id = prefix + '_' + child.getAttribute('k');
-            lastId = child.getAttribute('k');
+            // `k` is an attribute string; keep the counter numeric so the next
+            // unkeyed sibling (a text node) gets k + 1, not the string "k1".
+            lastId = Number(child.getAttribute('k'));
           }else {
             lastId = lastId + 1;
             id = prefix + '_' + lastId;
