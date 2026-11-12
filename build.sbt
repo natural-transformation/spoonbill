@@ -2,7 +2,7 @@ import xerial.sbt.Sonatype._
 
 val scala3Version = "3.3.8"
 
-val avocetVersion = "2.0.0"
+val avocetVersion = "2.0.1"
 
 val akkaVersion     = "2.6.19"
 val akkaHttpVersion = "10.2.9"
@@ -27,7 +27,7 @@ scalaVersion := scala3Version
 
 def releaseVersion: String = sys.env.getOrElse("RELEASE_VERSION", "")
 def isRelease: Boolean     = releaseVersion != ""
-val BaseVersion            = "10.0.0"
+val BaseVersion            = "10.0.1"
 def publishVersion: String = if (isRelease) releaseVersion else s"$BaseVersion-SNAPSHOT"
 
 ThisBuild / version := publishVersion

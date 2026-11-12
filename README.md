@@ -32,14 +32,16 @@ database adapter is shipped.
 
 ```scala
 // build.sbt
-libraryDependencies += "com.natural-transformation" %% "spoonbill" % "10.0.0"
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "10.0.1"
 ```
 
-The latest release is [Spoonbill 10.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0),
+The latest release is [Spoonbill 10.0.1](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.1),
 published for Scala 3. Keep every Spoonbill module on the same version and
 recompile when upgrading from an earlier major release. Follow the
 [10.0 migration guide](docs/migration-v10.md) for Avocet 2 and the required JDBC
-V7 schema cutover, including inline-only deployments. Start with the
+V7 schema cutover, including inline-only deployments. The
+[10.0.1 patch upgrade](docs/migration-v10.md#upgrading-from-1000-to-1001) requires
+no additional database migration. Start with the
 [user guide](docs/user-guide.adoc) and [working examples](examples/). See the
 [browser authentication example](examples/browser-auth/) for password/factor
 login, recovery, protected actions and logout without application JavaScript.

@@ -1,9 +1,10 @@
 # Portable UI recovery
 
-Updated: 2026-11-09. Portable recovery is implemented in merged PRs
+Updated: 2026-11-12. Portable recovery is implemented in merged PRs
 [#25](https://github.com/natural-transformation/spoonbill/pull/25) and
 [#26](https://github.com/natural-transformation/spoonbill/pull/26) and is included
-in Spoonbill **10.0.0**. It is not available in Spoonbill 9.0.0. See the
+since Spoonbill **10.0.0**; use **10.0.1** for the preset-ID client fix and Avocet
+2.0.1. It is not available in Spoonbill 9.0.0. See the
 [10.0 migration guide](migration-v10.md) before upgrading.
 
 ## Current status
@@ -12,9 +13,9 @@ in Spoonbill **10.0.0**. It is not available in Spoonbill 9.0.0. See the
   publication and V7 migration are implemented. Inline PostgreSQL snapshots
   remain the default; external payload storage is opt-in.
 - R2: `spoonbill-recovery-testkit`, an independent non-JDBC adapter consumer and
-  qualification guidance are implemented. Local publication and consumer-law
-  checks validate packaging; resolution of an actual public release remains a
-  release gate.
+  qualification guidance are implemented. The [10.0.0 release](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0)
+  records verified public artifacts and 27 passing independent-consumer tests
+  from clean Maven Central-only caches. Repeat that public check for each release.
 - R3: the two-JVM `reference-payloads` browser scenario and authenticated
   inline/reference latency harness are implemented. See the
   [latency evidence](event-latency-performance.md#authenticated-views-with-durable-snapshots-inline-and-reference-backed).

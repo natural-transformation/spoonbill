@@ -1,6 +1,6 @@
 # Remaining work after portable UI recovery
 
-Updated: 2026-11-09. Baseline: merged PRs [#25](https://github.com/natural-transformation/spoonbill/pull/25)
+Updated: 2026-11-12. Baseline: merged PRs [#25](https://github.com/natural-transformation/spoonbill/pull/25)
 and [#26](https://github.com/natural-transformation/spoonbill/pull/26), commit
 `dbc99641c9553701df9b6d9fdb5a3cb511e3085b`.
 
@@ -67,14 +67,16 @@ is committed. Their completion evidence is recorded on the linked GitHub release
 - [x] Select **10.0.0** and align the development build, both independent
   consumers and CI artifact paths to `10.0.0-SNAPSHOT`. Recompile consumers and
   follow the [10.0 migration guide](migration-v10.md).
-- [ ] Publish matching 10.0.0 modules, including `spoonbill-recovery-testkit`.
-  The portable recovery API is not part of Spoonbill 9.0.0. Record the release
-  commit and publication evidence on the
+- [x] Publish all 26 matching 10.0.0 modules, including `spoonbill-recovery-testkit`.
+  Publication completed on 2026-11-10; the source commit and evidence are on the
   [GitHub release](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0).
-- [ ] Run the independent adapter consumer against the actual released
-  artifacts, without satisfying the check from local candidate artifacts.
-  Use `scripts/verify-recovery-kit-release.sh 10.0.0` after publication.
-  `publishLocal` validates packaging, not public availability.
+- [x] Run the independent adapter consumer against released 10.0.0 artifacts:
+  27 tests passed using fresh caches and Maven Central only. Two conditional law
+  branches were inapplicable. `publishLocal` alone does not establish this.
+- [ ] Publish and independently verify 10.0.1, which selects Avocet 2.0.1 and
+  includes the preset-ID fix found by the completed F2 renderer acceptance suite.
+  Use `scripts/verify-recovery-kit-release.sh 10.0.1`; record the result on its
+  [release page](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.1).
 - [ ] Apply the documented [V7 migration procedure](request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration)
   to each JDBC deployment, draining incompatible serving, writing and retention
   binaries first. Preserve the supported inline PostgreSQL snapshot path.

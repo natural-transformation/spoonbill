@@ -1,6 +1,6 @@
 scalaVersion := sys.props.getOrElse("spoonbill.scala.version", "3.3.8")
 
-val spoonbillVersion = sys.props.getOrElse("spoonbill.version", "10.0.0-SNAPSHOT")
+val spoonbillVersion = sys.props.getOrElse("spoonbill.version", "10.0.1-SNAPSHOT")
 val pekkoVersion = sys.props.getOrElse("pekko.version", "1.7.0")
 val pekkoHttpVersion = sys.props.getOrElse("pekko.http.version", "1.4.0")
 

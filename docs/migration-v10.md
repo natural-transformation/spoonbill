@@ -1,13 +1,30 @@
 # Migrating to Spoonbill 10: Avocet 2 and portable UI recovery
 
 Spoonbill **10.0.0** upgrades to Avocet **2.0.0** and adds opt-in external
-snapshot payload storage. This guide covers upgrading from 9.0.0. Update every
-Spoonbill module to `10.0.0` together and recompile all consumers, including
-custom render contexts, effect instances, providers and recovery adapters. Align
-any explicit Avocet dependencies with `2.0.0`. Upgrades from before 9 must also
+snapshot payload storage. This guide covers upgrading from 9.0.0 to the current
+10.0.1 release. Update every Spoonbill module to `10.0.1` together and recompile
+all consumers, including custom render contexts, effect instances, providers and
+recovery adapters. Align any explicit Avocet dependencies with `2.0.1`.
+Upgrades from before 9 must also
 account for `SpoonbillServiceConfig.timerSettings`; from before 8, follow the
 [8.0 migration guide](migration-v8.md), and from before 7, the
 [explicit state-update migration](migration-v7.md).
+
+## Upgrading from 10.0.0 to 10.0.1
+
+Keep every Spoonbill module on `10.0.1` and any explicit Avocet dependencies on
+`2.0.1`. The patch fixes registration of text following a keyed element when
+`presetIds = true`; refresh browser pages onto the updated client bundle.
+
+Avocet 2.0.1 narrows `CssValue` acceptance by rejecting CSS comment delimiters
+outside quoted strings. Valid math expressions and quoted literals remain
+supported. Review values that previously relied on comments; use `CssValue.trusted`
+only deliberately for valid values in a context known to accept them, never to
+bypass validation of untrusted input.
+
+There is no new database migration for this patch. JDBC installations already
+on 10.0.0 retain the V7 schema. An initial upgrade from 9 still requires the full
+rendering and V7 cutover steps below, including inline-only deployments.
 
 ## Avocet rendering and development sessions
 
