@@ -23,19 +23,30 @@ const idModes = selection('SPOONBILL_F2_ID_MODES', ['plain', 'preset']);
 const cases = selection('SPOONBILL_F2_SCENARIOS', Object.keys(scenarios));
 const fault = selection('SPOONBILL_F2_FAULT', ['none', 'truncate-names'])[0];
 
-async function control(context, command) {
-  const response = await context.request.post(`${origin}/fixture/${command}`, {timeout: 10000});
+async function control(context, command, timeout = 10000) {
+  const response = await context.request.post(`${origin}/fixture/${command}`, {timeout});
   assert.equal(response.status(), 200, `Control ${command} must finish within its bound`);
   return JSON.parse(await response.text());
 }
 
+// Polls the fixture until `condition` holds, within a strict 5 s wall-clock
+// budget: each status request gets only the remaining time (never 0, which
+// Playwright reads as no timeout), and a result arriving after the deadline is
+// not accepted.
 async function waitStatus(context, condition, message) {
   const deadline = Date.now() + 5000;
   for (;;) {
-    const status = await control(context, 'status');
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > 0, message);
+    let status;
+    try {
+      status = await control(context, 'status', remaining);
+    } catch (error) {
+      assert.fail(`${message} (status request: ${String(error.message).split('\n')[0]})`);
+    }
+    assert.ok(Date.now() <= deadline, message);
     if (condition(status)) return status;
-    assert.ok(Date.now() < deadline, message);
-    await pause(25);
+    await pause(Math.min(25, Math.max(0, deadline - Date.now())));
   }
 }
 
