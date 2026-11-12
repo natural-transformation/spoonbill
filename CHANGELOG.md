@@ -1,13 +1,26 @@
 # Changelog
 
-## Unreleased
+## 10.0.1 — 2026-11-12
 
+Upgrade all Spoonbill modules together to `10.0.1` and align explicit Avocet
+dependencies with `2.0.1`. This patch adds no database migration beyond the V7
+schema required by 10.0.0. See the
+[patch upgrade notes](docs/migration-v10.md#upgrading-from-1000-to-1001).
+
+- Upgrade the rendering dependency to Avocet 2.0.1. `CssValue` rejects CSS
+  comment delimiters outside quoted strings; valid math expressions and quoted
+  literals remain supported. Review values that previously relied on comments.
+  Use `CssValue.trusted` only deliberately in a context known to accept the value.
 - Fix preset-id registration of text after a keyed element. With
   `presetIds = true`, the client read the `k` attribute as a string, so a text
   node after an element with `k="1"` was registered as `…_11` instead of `…_2`.
   Its first patch then appended a duplicate text node and left the stale one in
   place. Default ids were unaffected. Found by the real-service renderer
   acceptance runner (Avocet F2).
+- Add the real-service renderer acceptance matrix to CI: long names,
+  collision-prone names, encoding and the first patch, each with default and
+  preset IDs in Chromium and WebKit. The runner includes a name-truncation fault
+  probe and checks the upgraded Avocet dependency through the assembled client.
 
 ## 10.0.0 — 2026-11-09
 

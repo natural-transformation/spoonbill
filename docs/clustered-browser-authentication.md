@@ -1,6 +1,6 @@
 # Shared PostgreSQL browser authentication
 
-Spoonbill 10.0.0 supports an opt-in shared-store mode through the ordinary
+Spoonbill 10.0.1 supports an opt-in shared-store mode through the ordinary
 `JdbcBrowserPersistence` / `BrowserAuthentication` integration. Multiple web
 processes can use the same realm, cookie namespace, host database and credential
 vault. Each physical view has one current database owner. A reconnect claims a
@@ -12,7 +12,7 @@ Shared-store mode has been available since 5.0.0. Existing single-owner
 applications keep their explicit exclusive mode and do not acquire the clustered
 snapshot cost unless they opt into it.
 
-For current applications, use matching **10.0.0** Spoonbill modules, the
+For current applications, use matching **10.0.1** Spoonbill modules, the
 [browser authentication guide](browser-authentication.md), and the
 [10.0 migration guide](migration-v10.md). Recompile custom integrations before
 running the correctness fixture below. Release-specific measurements in the
@@ -20,7 +20,7 @@ running the correctness fixture below. Release-specific measurements in the
 [5.0 snapshot testing guide](migration-testing-5.0.0-snapshot.md),
 [4.1 snapshot validation report](clustered-browser-authentication-validation.md),
 and [consumer feedback](snapshot-4.1.0-consumer-feedback.md) remain historical
-records; they are not performance acceptance evidence for 10.0.0.
+records; they are not performance acceptance evidence for 10.0.1.
 
 ## External payload storage
 
@@ -349,7 +349,7 @@ performance evidence does not establish burst capacity.
 
 ## Upgrading to the V7 snapshot reference schema
 
-Every JDBC deployment of Spoonbill 10.0.0 applies the forward
+Every JDBC deployment of Spoonbill 10 applies the forward
 [V7 migration](../modules/security-jdbc/src/main/resources/spoonbill/migrations/postgresql/V7__snapshot_references.sql)
 after V4, V5 and V6, whether or not it enables reference-backed snapshots: the
 inline writer clears the new snapshot pointer column. Drain and stop every
@@ -357,6 +357,8 @@ older serving, writing and retention binary first. Rollback needs readers and
 retention logic that understand references, or an explicit migration of
 reference-backed views back to inline data before older binaries return. See the
 [V7 procedure](request-admission-lifecycle.md#postgresql-v7-snapshot-references-migration).
+An installation already on 10.0.0 needs no additional schema migration for
+10.0.1; see the [patch upgrade notes](migration-v10.md#upgrading-from-1000-to-1001).
 
 ## Upgrading existing deployments to 8.0.0
 

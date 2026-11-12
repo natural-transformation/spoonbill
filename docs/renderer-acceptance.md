@@ -163,6 +163,31 @@ Related checks from the same worktree:
 | `sbt 'standalone/test'` (with the F2 fixture sources) | 39 tests passed |
 | `scripts/test-sensitive-acknowledgement.sh` | Pass in Chromium and WebKit; obsolete-event and authorization checks retained |
 
+## Recorded run: 2026-11-12, Avocet 2.0.1
+
+The 10.0.1 release preparation repeated the full matrix after selecting Avocet
+2.0.1. The source baseline was Spoonbill commit
+`5a58c94be78b5fbd7cd5305321fe105a9e5861d1` (merged preset-ID fix), with the
+release's dependency and version updates. The fixture and browser runner were
+unchanged.
+
+| Item | Value |
+| --- | --- |
+| Producer | Avocet 2.0.1, tag `v2.0.1`, commit `255966bc0fefa2e3395d268864b37b920841f4ef`, Maven Central artifacts |
+| avocet-core | `~/Library/Caches/Coursier/v1/https/repo1.maven.org/maven2/com/natural-transformation/avocet-core_3/2.0.1/avocet-core_3-2.0.1.jar`, SHA-256 `196730cb718065ae1f4995d7ed1eb51ab054fdfa4cdf7b8258627fd96386dc84` |
+| avocet-events | `~/Library/Caches/Coursier/v1/https/repo1.maven.org/maven2/com/natural-transformation/avocet-events_3/2.0.1/avocet-events_3-2.0.1.jar`, SHA-256 `7f1f61d1be7a9bac25ca09b3576e4994e4247d2dbdb3829ebc8f103b1bc9ce7a` |
+| Environment | Same pinned Nix toolchain and macOS environment as the preceding run; Scala 3.3.8 |
+| Browsers | Chromium 141.0.7390.37; WebKit 26.0 |
+| Matrix | All 16 combinations passed: four cases, default/preset IDs, both engines |
+| Fault probe | Name truncation detected with status 1 at `patched-dom`; overall script exited 0 |
+
+The artifact paths above came from the actual fixture classpath. Before the
+browser run, `compile`, `Test / compile` and the full `test` task passed through
+`scripts/with-test-postgres.sh` in the repository Nix environment: 1,541 tests
+passed, six conditional tests were canceled, and no suite aborted. This run used
+`set Global / concurrentRestrictions := Seq(Tags.limitAll(1))` to bound local
+resource use. The browser command is the one documented above.
+
 ## Limits of this evidence
 
 - The run used the unguarded startup path, where the parsed page is the

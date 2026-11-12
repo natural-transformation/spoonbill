@@ -15,7 +15,7 @@ not deployment defaults.
 For multiple live web nodes and rolling handoff, use the explicit
 [shared PostgreSQL mode and presentation projection](clustered-browser-authentication.md).
 Explicit exclusive mode retains its single-owner deployment contract.
-Use matching **10.0.0** versions for all Spoonbill
+Use matching **10.0.1** versions for all Spoonbill
 modules and recompile application integrations. Start with this guide and the
 [10.0 migration guide](migration-v10.md);
 the earlier snapshot guides remain historical testing records.
@@ -306,11 +306,13 @@ encryption key and results are process-local. The JDBC example keeps encrypted
 results in host tables and uses deployment-owned vault keys. Applications must
 bound and expire their own results; the reference `Accounts.maintenance` does so.
 
-For current deployments, use **10.0.0** for every Spoonbill module and rebuild
+For current deployments, use **10.0.1** for every Spoonbill module and rebuild
 consumers; public configuration and transport signatures have changed. Follow the
 [10.0 migration guide](migration-v10.md), including the required V7 migration
 after V4–V6 for every JDBC deployment, even inline-only deployments. Drain older
 serving, writing and retention binaries before the upgraded provider starts.
+Upgrades from 10.0.0 require no additional database migration; see the
+[10.0.1 patch notes](migration-v10.md#upgrading-from-1000-to-1001).
 Deploy compatible serving binaries and refresh browser pages onto their client
 bundle. When upgrading an installation that predates authenticated replacement,
 follow the [V5 schema and deployment upgrade](browser-auth-v4-deployment.md#upgrade-an-existing-browser-authentication-deployment)

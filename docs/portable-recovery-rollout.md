@@ -1,6 +1,6 @@
 # Portable recovery release and rollout
 
-This is the release-order checklist for Spoonbill 10.0.0.
+This is the release-order checklist for Spoonbill 10.0.x; the current patch is 10.0.1.
 The rehearsal target is Spoonbill's loopback browser-auth example with disposable
 PostgreSQL. Local tests, `publishLocal` and two-JVM handoffs are not a release or
 an application deployment. See the [local evidence and rerun commands](remaining-work-after-portable-recovery.md)
@@ -8,20 +8,20 @@ for completed checks; PairTime and other applications require their own plan.
 
 ## Release gate
 
-Release **10.0.0** with matching versions for all Spoonbill modules, including
+Release **10.0.1** with matching versions for all Spoonbill modules, including
 `spoonbill-recovery-testkit`. Portable recovery is absent from 9.0.0, and Avocet
 2.0.0 changes rendering lifecycle/name validation and invalidates Avocet 1's
-unversioned development render buffers. A new major release communicates that
+unversioned development render buffers. The 10.0.0 major release communicated that
 consumers must recompile and review custom rendering integrations. See the
 [10.0 migration guide](migration-v10.md) and [Avocet upgrade notes](remaining-work-after-portable-recovery.md#avocet-upgrade-notes)
 for the narrowly scoped development-cache migration; PostgreSQL presentation
 snapshots use the application's separate codec.
 
-[build.sbt](../build.sbt) sets `BaseVersion` to `10.0.0`; development builds,
+[build.sbt](../build.sbt) sets `BaseVersion` to `10.0.1`; development builds,
 both [recovery](../misc/recovery-adapter-consumer/consumer.sbt) and
 [Pekko](../misc/pekko-native-consumer/consumer.sbt) consumer defaults, and
-[Scala CI](../.github/workflows/scala.yml) artifact paths use `10.0.0-SNAPSHOT`.
-Release CI supplies `RELEASE_VERSION=10.0.0` for stable artifacts. Future version
+[Scala CI](../.github/workflows/scala.yml) artifact paths use `10.0.1-SNAPSHOT`.
+Release CI supplies `RELEASE_VERSION=10.0.1` for stable artifacts. Future version
 changes must keep these defaults and verification paths aligned.
 
 Before publication, record the selected version, repository commit, module list,
@@ -30,10 +30,14 @@ run the [Maven Central-only independent consumer check](../misc/recovery-adapter
 with that exact version and retain its resolved coordinates/repository and test
 result. Local artifact resolution cannot satisfy that gate.
 
-The [GitHub release](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.0)
+The [GitHub release](https://github.com/natural-transformation/spoonbill/releases/tag/v10.0.1)
 records the immutable tag and publication/verification evidence. Publishing that
 release triggers the existing workflow; do not also dispatch the same version
 manually, since Maven Central versions are immutable.
+
+The V7 cutover below was introduced by 10.0.0. An application already on 10.0.0
+with V7 installed needs no additional schema migration for 10.0.1; see the
+[patch upgrade notes](migration-v10.md#upgrading-from-1000-to-1001).
 
 ## Local migration rehearsal
 

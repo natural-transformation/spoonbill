@@ -3,7 +3,7 @@ Aleksey Fomkin <a@fomkin.org>
 :source-highlighter: highlight.js
 :sectnums:
 :toc:
-:version: 10.0.0
+:version: 10.0.1
 :scala-version: 3.3.8
 :code: https://github.com/natural-transformation/spoonbill/blob/v{version}/
 
@@ -27,13 +27,19 @@ The browser remains an untrusted input source. For account-bearing applications,
 use the guarded authentication integration described in <<authentication>>.
 The small public examples below intentionally have no accounts.
 
-Version 10 upgrades rendering to Avocet 2.0.0 and adds the portable UI recovery
+Version 10 upgrades rendering to Avocet 2 and adds the portable UI recovery
 API and `spoonbill-recovery-testkit` for opt-in external snapshot payload storage.
 Existing inline PostgreSQL recovery remains the default. Upgrade all Spoonbill
 modules together and recompile. Every JDBC deployment, including inline-only
 deployments, requires the V7 schema cutover after draining older serving, writing
 and retention binaries. Follow link:migration-v10.md[the 10.0 migration guide]
 for the database procedure, stricter rendering rules and saved development buffers.
+
+Version 10.0.1 uses Avocet 2.0.1 and fixes preset-ID registration of text after a
+keyed element. `CssValue` now rejects CSS comment delimiters outside quoted
+strings; math expressions and quoted literals remain supported. Upgrading from
+10.0.0 adds no database migration. See
+link:migration-v10.md#upgrading-from-1000-to-1001[the patch upgrade notes].
 
 Version 9 introduced render-owned state timers and component ownership handoff;
 see <<_render_timers_and_server_push>>. Upgrades from before 9 must account for
