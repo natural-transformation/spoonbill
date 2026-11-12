@@ -8,6 +8,19 @@
   Its first patch then appended a duplicate text node and left the stale one in
   place. Default ids were unaffected. Found by the real-service renderer
   acceptance runner (Avocet F2).
+- Upgrade `spoonbill-pekko` to Pekko 2.0.0 and Pekko HTTP 2.0.0-M2. Pekko HTTP
+  has no 2.0.0 final yet, and HTTP 1.x is not binary compatible with Pekko 2.0.
+  Pekko 2.0 requires Java 17 or later and is not binary compatible with 1.x, so
+  recompile consumers and follow the Pekko 2.0 migration guide.
+- **Experimental:** upstream marks Pekko HTTP 2.0.0-M2 as experimental and not
+  for production use. Do not release this pair to production; wait for Pekko
+  HTTP 2.0.0 final.
+- Spoonbill WebSockets on Pekko decline `permessage-deflate`, which Pekko HTTP
+  2.0 negotiates by default. Its inflate cap (256 KiB by default) would
+  otherwise drop browser messages that `wsMaxMessageBytes` permits. The wire
+  behaviour matches Pekko HTTP 1.x.
+- Build every module with Scala 3.3.9, the version the Pekko 2.0.0 artifacts
+  require. Published POMs now declare scala3-library 3.3.9.
 
 ## 10.0.0 — 2026-11-09
 
