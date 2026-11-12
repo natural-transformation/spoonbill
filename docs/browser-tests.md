@@ -118,7 +118,8 @@ attribute names, fixed hash-collision witnesses, quote- and delimiter-bearing
 data, and identity across the first patch, with default and preset ids. The
 script ends with an injected name-truncation fault that the runner must detect.
 The native CI job runs it after the sensitive acknowledgement step; its first
-Linux run passed, with the preset-id defect as its recorded expected failure.
+Linux run passed with the preset-id defect as a recorded expected failure, and
+the run after the fix passed every case.
 [Renderer acceptance](renderer-acceptance.md) describes the assertions, bounds,
 the preset-id client defect it found (now fixed) and the recorded runs.
 

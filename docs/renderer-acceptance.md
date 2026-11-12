@@ -178,6 +178,8 @@ Related checks from the same worktree:
   for PR #30's head `39d1ec55` on `ubuntu-latest`, passed. Every case passed in
   both engines except `first-patch/preset`, which reproduced the known defect as
   its strict expected failure in both engines, and the fault probe was detected.
-  That run predates the preset-id fix, so it does not show the fixed case
-  passing on Linux.
+  That run predates the preset-id fix. With the fix,
+  [run 43172078798](https://github.com/natural-transformation/spoonbill/actions/runs/43172078798)
+  for PR #31's head `91cb0ddf` passed on Linux with all 16 combinations,
+  `first-patch/preset` included in both engines, and the fault probe detected.
 - WebKit is Playwright's WebKit build, not Safari.
