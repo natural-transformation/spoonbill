@@ -1,8 +1,8 @@
 # Extension contract: design
 
-Status: revision 1, 2026-11-14. This is a proposal. Nothing in it is
+Status: revision 2, 2026-11-14. This is a proposal. Nothing in it is
 implemented. It changes behaviour and signatures, so it targets the next major
-release.
+release. Revision 2 folds in one review; see [review record](#review-record).
 
 ## Summary
 
@@ -30,25 +30,29 @@ first five; see [verified assumptions](#verified-assumptions).
 5. **Callbacks overlap, and their order depends on the effect type.** `onState`
    and `onMessage` of one extension can run at the same time. With `Future`, a
    later `setup` runs even when an earlier one has failed.
-6. **Extensions cannot be composed.** An application that wraps a group of
-   extensions rebuilds setup with rollback, fan-out and ordered teardown by
-   hand.
+6. **Extensions are hard to reuse.** An extension that is written for a part of
+   the application state needs a hand-written wrapper. An application that
+   wraps a group of extensions rebuilds setup with rollback, fan-out and
+   ordered teardown by hand.
 
 The proposal:
 
 1. **One runtime, one contract.** A single internal class serves legacy and
-   guarded sessions.
+   guarded sessions. It is the only owner of extension lifecycles.
 2. **`onState` starts with the state at attach.** After that it reports every
-   write, in order.
+   write once, in order. It never reports an older state after a newer one.
 3. **One ordered lane per view.** Callbacks never overlap. A failed callback is
    reported with the extension's name, and delivery continues.
-4. **Strict setup.** `setup` runs in order, is bounded, and fails the attach
-   when it fails.
+4. **Strict setup.** `setup` runs in order and is bounded. When one fails, the
+   runtime closes the view, destroys the extensions that are set up, and fails
+   the attach.
 5. **Strict destroy.** `onDestroy` runs once, last, in reverse order. It
-   receives the last state, because `access` is closed by then.
-6. **API cleanup.** Constructors take a name. The handler builder takes partial
-   functions and has no `null` defaults.
-7. **Two combinators:** `imapState` and `combine`.
+   receives the last state that passed its check, because `access` is closed by
+   then.
+6. **API cleanup.** Constructors take a name. `Handlers.apply` loses its `null`
+   defaults. A new `Handlers.partial` takes partial functions.
+7. **Reuse through `imapState`.** A group of extensions stays a plain list, so
+   the runtime owns every lifecycle.
 
 Two things are deliberately not proposed: DOM events for extensions, and
 messages from the router. [Events and extensions](#events-and-extensions) gives
@@ -67,6 +71,10 @@ the reasons.
   across reconnects (a new attach is a new extension instance), DOM events in
   extensions, messages from the router or the state loader, and back pressure
   per extension.
+- Not covered: an extension that sets up other extensions itself. The runtime's
+  guarantees end at that extension.
+- Not covered: a `setup` that acquires something and then never completes. The
+  runtime cannot release what it was never given.
 
 ## Current model
 
@@ -194,38 +202,65 @@ A new internal class, working name `ExtensionRuntime`, exists once per attached
 view. It owns setup, delivery and teardown. Legacy and guarded session creation
 both call it, so the contract is implemented once.
 
+The runtime is the only owner of extension lifecycles. It holds the handlers of
+every extension, bounds every call, and decides when an extension is destroyed.
+
 A guarded session passes two hooks: a check to run before a state is delivered,
 and a check to run before a message is delivered. They are the checks that run
 today. A legacy session passes none.
 
-A view without extensions gets no runtime. Nothing is subscribed, buffered or
+A view without extensions gets no runtime. Nothing is recorded, buffered or
 checked for it.
 
 ### 2. `onState` starts with the state at attach
 
-The rule: after every `setup` has completed, `onState` is called with the state
-the view has at attach. After that it is called once for every write of the
-top-level state, in write order.
+Two terms:
+
+- The **admitted state** is the state a view is accepted with. In a legacy
+  session it is the state the application instance is created with. In a
+  guarded session it is the state that passes the guarded check when the
+  attachment is accepted. That is the "connected" state where a guarded
+  session writes one.
+- The **attach state** is the first state an extension receives.
 
 The steps at attach:
 
-1. The application instance is initialized. A guarded session writes its
-   "connected" state where it does so today.
-2. The runtime subscribes to top-level state writes and to published messages.
-3. The runtime reads the current top-level state. This is the attach state.
-4. `setup` runs for each extension.
-5. Delivery starts with the attach state. Everything captured since step 2
-   follows.
+1. The application instance is created. From this moment every write of the
+   top-level state is recorded for the runtime, in the order the application
+   instance publishes them. No write can be published before recording starts.
+2. The instance is initialized. A guarded session writes and checks its
+   "connected" state where it does so today. This settles the admitted state.
+3. `setup` runs for each extension.
+4. Delivery starts. The attach state is the newest recorded write. If nothing
+   was written, it is the admitted state. Older recorded writes are dropped.
+5. Every later write is delivered once, in order.
 
-What follows from this:
+The guarantees:
 
-- A write made during `setup` is delivered after the attach state. Nothing is
-  lost, with any effect type.
-- A write that lands between steps 2 and 3 is delivered twice: once as the
-  attach state, once as a write. So the guarantee is "at least once, in order".
-  A handler must treat a repeated state as harmless.
-- The runtime does not compare states. A write that stores an equal value is
-  still delivered, as today.
+- The first `onState` call carries the attach state. It happens once.
+- Every write that is published after the attach state is delivered once, in
+  publish order.
+- An extension never receives a state that is older than one it has already
+  received.
+
+There is no separate read of "the current state" next to the recording.
+Revision 1 had one, and two writes between subscribing and reading could be
+delivered out of order. Recording from the moment the instance exists removes
+that gap: the admitted state and the recorded writes form one ordered history.
+
+The states that are dropped in step 4 were written before any extension could
+observe the view. The newest one stands for them, as the state after a
+reconnect stands for everything before it. A write made during `setup` is
+therefore not lost. It is either the attach state, or a newer state replaced
+it.
+
+Publish order is the order in which the application instance announces writes
+for rendering. The render loop sees the same order. The runtime does not
+compare states. A write that stores an equal value is still delivered, as
+today.
+
+Messages are recorded from step 1 too. They are delivered after the attach
+state, in publish order.
 
 ### 3. One ordered lane per view
 
@@ -236,7 +271,7 @@ it.
   one after another. The next call starts when the previous one has completed.
 - So no two callbacks of a view run at the same time. An extension can keep
   plain local state.
-- States arrive in write order. Messages arrive in publish order. No order is
+- States arrive in publish order. Messages arrive in publish order. No order is
   promised between a state and a message. A handler that needs the current
   state reads `access.state`.
 - The behaviour is the same for `Future` and for lazy effects.
@@ -261,19 +296,33 @@ A failed callback does not stop the lane:
 - `setup` runs for one extension at a time, in registration order.
 - Each `setup` is bounded by 10 seconds, the bound that guarded sessions use
   today.
-- `setup` fails closed. If one fails or runs out of time, the extensions that
-  are already set up are destroyed in reverse order, and the attach fails. This
-  holds for both session modes.
-- If a `setup` completes after its bound, its handlers are destroyed at once.
-- If the connection closes during setup, the remaining `setup` calls are
-  skipped, and the extensions that are already set up are destroyed.
+- The runtime keeps the handlers of an extension from the moment its `setup`
+  completes.
+- `setup` fails closed, in both session modes. This applies when a `setup`
+  fails, when it runs out of time, and when the connection closes during
+  setup.
+
+The steps when setup does not finish:
+
+1. The runtime skips the `setup` calls that have not started.
+2. It closes the view.
+3. It destroys the extensions that are set up, in reverse order, as in
+   [destroy](#5-destroy). `access` is closed in these `onDestroy` calls too.
+   They receive the admitted state.
+4. The attach fails.
+
+So rollback is owned by the runtime, not by any extension. The view is always
+closed before an `onDestroy` runs.
+
+A `setup` that is still running when the runtime gives up is not cancelled. An
+effect such as `Future` cannot be. If it completes later, its handlers are
+destroyed at once. If it never completes, whatever it acquired stays acquired.
 
 An extension that should never fail an attach recovers inside its own `setup`
 and returns empty handlers.
 
 In a legacy session, user events are not held back during setup. Their messages
-and state writes are captured from step 2 on and are delivered once setup is
-done.
+and state writes are recorded and are delivered once setup is done.
 
 ### 5. Destroy
 
@@ -283,8 +332,9 @@ The steps when a view ends, for any reason:
 2. The view is closed as today.
 3. The runtime waits for the delivery in flight, for at most 10 seconds.
 4. `onDestroy(lastState)` runs for each extension in reverse setup order, one
-   after another. Each call is bounded by 10 seconds. A failure is reported and
-   never stops the rest of the cleanup.
+   after another. Each call is bounded by 10 seconds. When a call fails or runs
+   out of time, that is reported, and the runtime moves on to the next
+   extension and to the rest of the cleanup.
 
 The guarantees:
 
@@ -293,8 +343,13 @@ The guarantees:
   the wait in step 3, `onDestroy` can overlap with it. That is reported.
 - `access` is closed during `onDestroy`. Calls on it fail with
   `SessionAccessDenied`.
-- `lastState` is the last state the runtime delivered to this view's
-  extensions. Before any delivery it is the attach state.
+- `lastState` is the last state that was delivered to this view's extensions.
+  If no state was delivered, it is the admitted state.
+
+Both sources passed the guarded check: a state is checked before it is
+delivered, and the admitted state is checked when the attachment is accepted.
+`onDestroy` never receives a state that failed its check, and never one that
+was written but not checked.
 
 A view ends when the browser closes or leaves the page, when the idle timeout
 fires, when access is denied or revoked, when the view is replaced, or when the
@@ -321,6 +376,13 @@ object Extension {
 
   object Handlers {
     def apply[F[_], S, M](using F: Effect[F])(
+      onState: S => F[Unit] = (_: S) => F.unit,
+      onMessage: M => F[Unit] = (_: M) => F.unit,
+      onDestroy: S => F[Unit] = (_: S) => F.unit
+    ): Handlers[F, S, M]
+
+    /** Like `apply`, but a state or message that is not matched is ignored. */
+    def partial[F[_], S, M](using F: Effect[F])(
       onState: PartialFunction[S, F[Unit]] = PartialFunction.empty,
       onMessage: PartialFunction[M, F[Unit]] = PartialFunction.empty,
       onDestroy: S => F[Unit] = (_: S) => F.unit
@@ -339,11 +401,6 @@ object Extension {
     acquire: Context.BaseAccess[F, S, M] => F[R],
     release: R => F[Unit]
   )(handlers: (R, Context.BaseAccess[F, S, M]) => Handlers[F, S, M]): Extension[F, S, M]
-
-  /** One extension made of several. */
-  def combine[F[_]: Effect, S, M](name: String)(
-    children: List[Extension[F, S, M]]
-  ): Extension[F, S, M]
 }
 ```
 
@@ -353,41 +410,56 @@ object Extension {
 - **Constructors take a name.** Failure reports name the extension. Today every
   extension built with `Extension.apply`, `pure` or `managed` is reported as
   "unnamed".
-- **The builder takes partial functions.** A state or message that a handler
-  does not match is ignored. The "do nothing" default case goes away. A total
-  function, a method reference and a `{ case ... }` block are all accepted.
-  `onDestroy` stays a total function, so cleanup is never skipped by accident.
-- **No `null` defaults.** The effect is taken in a leading `using` clause, so
-  the defaults can use it.
+- **`Handlers.apply` keeps total functions.** A stored function value, a method
+  reference, a function literal and a `{ case ... }` block with a default case
+  all keep compiling. Its defaults are no longer `null`. The effect is taken in
+  a leading `using` clause, so the defaults can use it.
+- **`Handlers.partial` is new.** A state or message that a handler does not
+  match is ignored, so the "do nothing" default case goes away. `onDestroy`
+  stays a total function, so cleanup is never skipped by accident.
+
+`partial` matters more once failures are isolated. A `{ case ... }` handler
+without a default case stops all delivery today. Under this proposal it would
+report a `MatchError` for every notification it does not match. `partial` says
+"only these" without either effect.
 
 The `Handlers` trait keeps total methods. A class that implements it directly
 only changes the `onDestroy` signature.
 
-### 7. Combinators
+`managed` keeps one cleanup of its own. When building the handlers fails after
+`acquire`, it releases the resource inside `setup`, before the runtime learns
+of the failure. The view is still open then. `release` receives only the
+resource, not `access`.
 
-**`imapState`** runs an extension that is written for a part of the state
-inside an application with a larger state. `read` and `write` are total
-functions. The child's `access` is the application's access through the same
-pair. The child's `onState` and `onDestroy` receive `read(state)`. Messages
-pass through unchanged.
+### 7. Reuse through `imapState`
 
-**`combine`** builds one extension from several.
+`imapState` runs an extension that is written for a part of the state inside an
+application with a larger state. `read` and `write` are total functions. The
+child's `access` is the application's access through the same pair. The child's
+`onState` and `onDestroy` receive `read(state)`. Messages pass through
+unchanged.
 
-- Setup runs in order. If a child fails, the children that are already set up
-  are destroyed in reverse order, and the combined `setup` fails.
-- Each callback goes to every child, in order. A failing child does not stop
-  the others. When all have run, the combined callback fails with the first
-  failure. The other failures are attached as suppressed. Each failure names
-  its child.
-- Destroy runs in reverse order. Every child is destroyed, even if one fails.
+`imapState` wraps exactly one extension. `setup` and `onDestroy` pass straight
+through, so the runtime still owns the lifecycle and every guarantee holds.
 
-The runtime is the same ordered loop over `config.extensions`. The only
-difference is that it reports each failure instead of passing it on. One
-implementation serves both.
+A group of extensions stays a plain list:
 
-A wrapper that guards a group of extensions then becomes small. It builds
-`Extension.combine("children")(children).imapState(read, write)`, calls its
-`setup`, and wraps the handlers it gets back.
+```scala
+val extensions: List[Extension[F, Page, Message]] =
+  children.map(_.imapState[Page](_.ui, (page, ui) => page.copy(ui = ui)))
+```
+
+The runtime sets up, notifies and destroys each element itself. That is the
+ordered loop with rollback that a wrapper has to write by hand today.
+
+There is no combinator that sets up other extensions inside its own `setup`.
+Revision 1 proposed one. Such a combinator hides its children from the runtime,
+and it cannot keep the guarantees of this document; see
+[alternatives](#alternatives-considered).
+
+An application can still write an extension that owns other extensions. The
+guarantees then end at that extension. It must bound, roll back and destroy its
+children itself.
 
 ## Breaking changes and migration
 
@@ -402,7 +474,8 @@ A wrapper that guards a group of extensions then becomes small. It builds
 | Legacy sessions destroy in reverse order | Extensions that depend on the destroy order | Check the order |
 | `onDestroy()` becomes `onDestroy(lastState)` | Everyone | `() => stop()` becomes `_ => stop()`. Replace `access.state` in `onDestroy` with the parameter |
 | Constructors take a name | Users of `Extension.apply`, `pure`, `managed`, `managedF` | Add a name |
-| The builder takes partial functions | Nobody has to change | Default cases can be removed |
+| `Handlers.apply` takes its `Effect` in a leading `using` clause and has no `null` defaults | Callers that pass `null` or the `Effect` instance by hand | Leave the `null` argument out. Pass the instance as `Handlers(using effect)(...)` |
+| `Handlers.partial` is new | Nobody has to change | Handlers with a "do nothing" default case can move to it |
 
 Guarded sessions that use neither snapshots nor reconstruction already receive
 the attach state through `onState`. For them the first row changes nothing.
@@ -436,7 +509,7 @@ After:
 ```scala
 def setup(access: Access): Future[Extension.Handlers[Future, State, Message]] =
   startWorker(access).map { worker =>
-    Extension.Handlers(
+    Extension.Handlers.partial(
       onState = { case State.Loading(request) => Future.successful(worker ! Run(request)) },
       onMessage = { case message: SearchMessage => Future.successful(worker ! Handle(message)) },
       onDestroy = lastState => Future.successful(worker ! Stop(lastState))
@@ -457,10 +530,14 @@ The release needs a migration guide in the style of
   is delivered.
 - **Isolation.** Only failures of the extension's own code are isolated. A
   failed check is not a handler failure.
-- **`lastState`.** It is a state that already passed its check, because it is
-  the last one that was delivered. A state that was written but never delivered
-  is not handed to `onDestroy`. `access` is closed during `onDestroy`, so
-  nothing can be written or sent to the browser from there.
+- **`lastState`.** It is the last delivered state, or the admitted state. Both
+  passed their check. A state whose check failed is never handed to
+  `onDestroy`, and neither is a state that was written but not checked. This
+  holds when a `setup` fails before any delivery, and when the first delivery
+  is rejected.
+- **Closed access in `onDestroy`.** The runtime closes the view before every
+  `onDestroy`, also when it rolls back a failed setup. Nothing can be written
+  or sent to the browser from there.
 - **DOM events.** They stay in the view. The server code that a browser can
   reach is unchanged.
 - **Setup.** Failing the attach is stricter than what legacy sessions do today.
@@ -483,20 +560,30 @@ the first two into permanent specs.
    the call order of setup and destroy, and an `onState` that stays pending
    while another state and a message arrive. It gave the remaining rows. The
    overlap case ran in a legacy session only.
-3. **Builder shape.** The proposed `Handlers.apply` compiles on Scala 3.3.8,
-   with a leading `using` clause and defaults that use the effect. These call
-   shapes compile: a total function, a method reference, a `{ case ... }`
-   block, type arguments inferred from the expected type, and the same inside
-   a `for` comprehension that yields the handlers. An unmatched state and an
-   unmatched message are ignored.
+3. **Builder shapes.** Both builders compile on Scala 3.3.8 with a leading
+   `using` clause and defaults that use the effect.
+   - `apply` accepts a stored function value, a function literal, a
+     `{ case ... }` block with a default case, and no arguments. Type arguments
+     can be left out, also inside a `for` comprehension that yields the
+     handlers.
+   - `partial` accepts `{ case ... }` blocks, also inside a `for`
+     comprehension. An unmatched state and an unmatched message are ignored.
+   - A stored function value does not compile against a `PartialFunction`
+     parameter. The review found this. It is why `apply` keeps total
+     functions.
 
 Not run: lazy effects, and guarded sessions with snapshots. Those rows come
-from reading the code.
+from reading the code. The proposal itself is not implemented, so its
+sequences were checked by reasoning against the current code, not by running
+them.
 
 ## Costs and risks
 
 - **The first `onState` call is new for most applications.** An extension that
   still replays the first state handles it twice until that code is removed.
+- **States before delivery are folded into the attach state.** An extension
+  does not see the intermediate states that were written before delivery
+  started.
 - **One lane.** A slow `onState` now delays `onMessage` for the same view, and
   the reverse. Today the two loops are independent. Rendering is not affected:
   it does not wait for extensions.
@@ -507,6 +594,12 @@ from reading the code.
   stalls one of the two loops. The session's idle timeout still ends the view.
 - **Fail-closed setup in legacy sessions.** A bug in an extension now keeps the
   view from attaching. Today it only disables that extension.
+- **A `setup` that acquires something and then never completes keeps it.** The
+  runtime destroys only what it was given. `managedF` has this property when
+  its handler effect hangs. Today is the same.
+- **No owning combinator.** An application that wraps a group of extensions in
+  one extension keeps its hand-written lifecycle code, and the guarantees stop
+  at that wrapper.
 - **Teardown can take longer when handlers hang.** The wait for the delivery in
   flight and each `onDestroy` have their own 10-second bound, and they run in
   sequence. A guarded view cannot reattach until its cleanup is done. Without
@@ -525,18 +618,36 @@ from reading the code.
   gives two callbacks for one idea, and most extensions would pass the same
   function to both. One guarded configuration already delivers the attach state
   through `onState`.
+- **Subscribe to writes, then read the current state (revision 1).** Rejected.
+  Two writes between the two steps are delivered as newer, older, newer.
+- **Deliver every recorded write, starting with the admitted state.** It keeps
+  every write. But an extension would first receive states from before it
+  existed, and in one guarded configuration it would receive the admitted
+  state twice. The newest state says the same in one call.
 - **Run `onDestroy` before the view is closed, so `access` still works.**
   Rejected. Guarded teardown closes admission first on purpose. Extension code
   could otherwise write state or send output while the view is being retired.
 - **Read the final state from storage for `onDestroy`.** Rejected. It can hand
   over a state that never passed its check, and it adds a storage read to
   teardown.
+- **Give `onDestroy` an optional state.** Rejected. Every handler would have to
+  deal with the empty case. The admitted state is always there.
+- **A combinator that owns its children, `combine` (revision 1).** Rejected.
+  The runtime sees one extension, so it cannot bound or destroy the children.
+  If a child `setup` never completes, the children before it are never
+  destroyed. If a child `onDestroy` never completes, the remaining children are
+  never destroyed. And the combinator has to roll back a failed child `setup`
+  while the view is still open. A list keeps ownership in the runtime. A safe
+  owning combinator needs what open question 8 asks for.
+- **Partial-function parameters on `Handlers.apply` (revision 1).** Rejected.
+  A stored function value stops compiling.
 - **One lane per extension.** Extensions would not delay each other. It needs
   one loop per extension, and it gives up a simple order across extensions. It
   can be added later without changing the contract of a single extension.
 - **Skip intermediate states when the lane falls behind.** Rejected.
   Applications use `onState` to react to a state that names work to do. A
-  skipped state would be a lost request.
+  skipped state would be a lost request. The attach state is the one exception:
+  it stands for what was written before any extension could observe the view.
 - **Keep the extension loops in `SessionsService`.** Rejected. The file is
   already large, and the two session modes would keep two copies of the
   contract.
@@ -545,16 +656,17 @@ from reading the code.
 
 1. **Specs first.** Turn the probes into permanent specs that state the new
    contract. They fail on the current code.
-2. **The ordered loop.** Implement setup with rollback, delivery to every child
-   and reverse destroy once. Expose it as `Extension.combine`.
-3. **`ExtensionRuntime`.** Add the lane, the attach state, the bounds, failure
-   reports and `lastState` on top of the loop.
+2. **Recording.** The application instance records top-level writes and
+   published messages from its construction, when the application has
+   extensions. Today the state subscription is created eagerly with `Future`
+   and lazily with other effects.
+3. **`ExtensionRuntime`.** Ordered and bounded setup, rollback after closing
+   the view, the lane, the attach state, failure reports, and destroy with
+   `lastState`.
 4. **Wire both session modes.** Replace the extension code in guarded and
-   legacy session creation. Make the state subscription explicit; today it is
-   created eagerly with `Future` and lazily with other effects. Keep the order
-   of the guarded checks.
-5. **API changes.** `onDestroy(lastState)`, named constructors, the builder,
-   `imapState`.
+   legacy session creation. Keep the order of the guarded checks.
+5. **API changes.** `onDestroy(lastState)`, named constructors,
+   `Handlers.partial`, no `null` defaults, `imapState`.
 6. **Documentation.** The scaladoc of `Extension`, the extension section of the
    user guide, the two examples that use extensions, a migration guide and the
    changelog.
@@ -568,29 +680,71 @@ plan.
 Each case runs in a legacy and in a guarded session. The cases that depend on
 evaluation order also run with a lazy effect.
 
+Attach and order:
+
 - The attach state is the first `onState` call, in every configuration:
   legacy, guarded without snapshots, guarded with snapshots, guarded with
   reconstruction.
-- A state written during `setup` arrives after the attach state.
-- States arrive in write order. Messages arrive in publish order.
+- Two writes before delivery starts: the newer one is the attach state, and the
+  older one never follows it. The test controls the order of both writes.
+- A write that is published while the attach state is being delivered arrives
+  after it.
+- States arrive in publish order. Messages arrive in publish order.
+- While one callback is pending, no other callback of that view starts.
+
+Failures:
+
 - A handler that fails, and one that throws, are reported with the extension's
   name. Later notifications reach every extension.
-- While one callback is pending, no other callback of that view starts.
-- `setup` calls run in order. A failed `setup` destroys the earlier extensions
-  in reverse order and fails the attach. A later `setup` does not run.
-- A `setup` that never completes fails the attach after the bound. A late
-  result is destroyed.
-- `onDestroy` runs once per extension, in reverse order, after the last
-  delivery, with the last delivered state. A failing `onDestroy` does not stop
-  the others or the rest of the cleanup.
-- `access` fails with `SessionAccessDenied` inside `onDestroy`.
 - A guarded check that fails before a delivery still denies the view. The
   handlers are not called for that notification.
+
+Setup:
+
+- `setup` calls run in order. A later `setup` does not run after a failed one.
+- A failed `setup` fails the attach. The extensions before it are destroyed in
+  reverse order. `access` fails inside their `onDestroy`, and they receive the
+  admitted state.
+- A `setup` that never completes fails the attach after the bound. The
+  extensions before it are destroyed, so what they acquired is released. A late
+  result is destroyed.
+- The connection closes during setup: the remaining `setup` calls do not run.
+
+Destroy:
+
+- `onDestroy` runs once per extension, in reverse order, after the last
+  delivery, with the last delivered state.
+- An `onDestroy` that fails, and one that never completes, do not keep the
+  other extensions from being destroyed, and do not stop the rest of the
+  cleanup.
+- `access` fails with `SessionAccessDenied` inside `onDestroy`.
+- The first delivery is rejected by the guarded check: `onDestroy` receives the
+  admitted state, not the rejected one.
+
+API:
+
 - A view without extensions creates no lane and runs no check per change.
 - `imapState`: the child sees the focused state, and its transitions change
-  only that part.
-- `combine`: setup rollback, a failing child, reverse destroy.
-- The builder ignores an unmatched state and an unmatched message.
+  only that part. Applied twice, it composes.
+- `Handlers.apply` compiles with a stored function value. `Handlers.partial`
+  ignores an unmatched state and an unmatched message.
+
+## Review record
+
+One review checked revision 1 against the runtime. Every finding was checked
+before it was accepted.
+
+### First review (revision 1)
+
+A review of commit `ca493150`, 2026-11-14.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| The attach sequence subscribed, then read the current state, and delivered that read before the captured writes. Two writes between subscribing and reading were delivered as newer, older, newer | P1 | No separate read. Recording starts with the application instance. The attach state is the newest recorded write, or the admitted state. [Proposal 2](#2-onstate-starts-with-the-state-at-attach) states the order guarantee, and the test plan has the two-write case |
+| A combined extension hid its children from the runtime. A child `setup` that never completed left the earlier children undestroyed. A child `onDestroy` that never completed blocked the others | P1 | The owning combinator is removed. A group is a list, so the runtime holds, bounds and destroys every extension. [Setup](#4-setup) and [destroy](#5-destroy) state this, and the test plan has both pending cases |
+| The combination rolled back a failed child `setup` while the view was still open, so `access` still worked in the earlier child's `onDestroy` | P2 | Rollback is owned by the runtime, which closes the view first. `managed` documents the one release it performs itself |
+| `lastState` fell back to the attach state before any delivery. That contradicted the claim that `onDestroy` only receives a delivered state | P2 | The admitted state is defined. `lastState` is the last delivered state, or the admitted state. The security section says the same, and the test plan covers a failed `setup` and a rejected first delivery |
+| A stored `S => F[Unit]` value does not compile against a `PartialFunction` parameter, but the migration table said that nobody has to change | P2 | `Handlers.apply` keeps total functions. `Handlers.partial` is a separate builder. The migration table and the builder checks are updated |
 
 ## Open questions
 
@@ -611,6 +765,11 @@ evaluation order also run with a lazy effect.
    message published after `transitionForce` returns is delivered after that
    state. It needs both to enter the lane at their source, not through two
    loops.
-7. **Are required names and a partial-function builder the right taste?** Both
-   are source-breaking for small gains. They can be dropped without touching
-   the contract.
+7. **Should constructors require a name?** It is source-breaking for a small
+   gain. It can be dropped without touching the contract.
+8. **Should `setup` be able to register cleanup while it acquires?** Then a
+   `setup` that never completes could not keep what it acquired, and a
+   combinator could own children safely. It is a larger API change.
+9. **Should one extension be able to hold a notification back from the
+   extensions after it?** An application-level check for a group of extensions
+   needs this. Today it is done by a wrapper that owns the group.
