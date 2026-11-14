@@ -1,8 +1,11 @@
 # Extension contract: design
 
-Status: revision 3, 2026-11-14. This is a proposal. Nothing in it is
-implemented. It changes behaviour and signatures, so it targets the next major
-release. It folds in two reviews; see [review record](#review-record).
+Status: revision 4, 2026-11-14. The proposal is implemented: all six steps of
+the [implementation plan](#implementation-plan), with the cases of the
+[test plan](#test-plan). It changes behaviour and signatures, so it targets the
+next major release. It folds in two reviews; see
+[review record](#review-record). Where the code differs from the text of
+revision 3, [implementation notes](#implementation-notes) says so.
 
 ## Summary
 
@@ -113,7 +116,8 @@ and
 
 ### Observed behaviour
 
-All rows were run with `Future`, unless marked "from reading".
+This is the behaviour of 10.0.1, before this change. All rows were run with
+`Future`, unless marked "from reading".
 
 | Behaviour | Legacy session | Guarded session |
 | --- | --- | --- |
@@ -277,6 +281,12 @@ Publish order is the order in which the application instance announces writes
 for rendering. The render loop sees the same order. The runtime does not
 compare states. A write that stores an equal value is still delivered, as
 today.
+
+A write counts from the moment the instance announces it. `transitionForce`
+returns after that moment. `transition` returns before it: it only queues the
+change. So a state that a `setup` requests with `transition` can be announced
+before or after delivery starts. Before, it is folded into the attach state.
+After, it is delivered on its own.
 
 Messages are recorded from step 1 too. They are delivered after the attach
 state, in publish order.
@@ -610,10 +620,9 @@ specs.
    row on two `setup` writes, and it confirmed the premise of the second
    review.
 
-Not run: lazy effects, and guarded sessions with snapshots. Those rows come
-from reading the code. The proposal itself is not implemented, so its
-sequences were checked by reasoning against the current code, not by running
-them.
+Not run against 10.0.1: lazy effects, and guarded sessions with snapshots.
+Those rows come from reading the code. The implementation is tested in all of
+these configurations; see [implementation notes](#implementation-notes).
 
 ## Costs and risks
 
@@ -626,6 +635,9 @@ them.
 - **One lane.** A slow `onState` now delays `onMessage` for the same view, and
   the reverse. Today the two loops are independent. Rendering is not affected:
   it does not wait for extensions.
+- **One hop to the execution context.** An idle lane is woken there, so an
+  extension callback starts a little later than the write that caused it. It
+  no longer delays that write.
 - **One call at a time.** With `Future`, the handlers of one notification start
   together today. They will run one after another, so a slow extension delays
   the ones after it.
@@ -695,6 +707,8 @@ them.
   contract.
 
 ## Implementation plan
+
+All six steps are done.
 
 1. **Specs first.** Turn the probes into permanent specs that state the new
    contract. They fail on the current code.
@@ -774,6 +788,83 @@ API:
   only that part. Applied twice, it composes.
 - `Handlers.apply` compiles with a stored function value. `Handlers.partial`
   ignores an unmatched state and an unmatched message.
+
+## Implementation notes
+
+The code is in
+[`ExtensionRuntime`](../modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala),
+[`SerialLane`](../modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala),
+[`Extension`](../modules/spoonbill/src/main/scala/korolev/Extension.scala) and
+the two session paths of
+[`SessionsService`](../modules/spoonbill/src/main/scala/korolev/server/internal/services/SessionsService.scala).
+The [migration guide](migration-v11.md) lists what an application changes.
+
+### Where the code differs from revision 3
+
+- **The lane has its own loop.** Revision 3 spoke of one queue and one loop.
+  The loop is not a stream loop. The `Future` effect of this codebase runs
+  callbacks on the completing thread. A stream loop then recurses once per
+  waiting item, and a backlog of a few thousand items overflows the stack.
+  `SerialLane` takes the next item in the same loop when a handler completes
+  at once. Adding an item is constant-time.
+- **Delivery leaves the writing thread.** An idle lane is woken on the
+  session's execution context. So an extension callback no longer runs on the
+  thread that writes the state or publishes the message. One wake-up serves
+  every item that waits.
+- **Recording happens at the source.** The top-level component instance tells
+  an observer about each write, before the write is queued for rendering. The
+  hub and the two public streams of the application instance are gone. Before
+  delivery starts the runtime keeps only the newest state, so recording needs
+  constant memory.
+- **Setup failures are reported.** The runtime reports a failed `setup` as
+  `Extension <name>: setup failed`. Guarded sessions did not report it before.
+- **The bound has two errors.** A guarded session fails a call that runs out
+  of time with `SessionAccessDenied`, as before. A legacy session uses
+  `ExtensionRuntime.TimedOut`.
+- **A legacy session arms its close watcher before setup**, as it did for a
+  view without extensions. When the connection closes during setup, the
+  watcher stops the runtime, and the remaining extensions are not set up. A
+  guarded session checks its terminal signal before each `setup`.
+- **Teardown before the first delivery.** When a view ends after delivery was
+  started but before the lane ran, the attach state is not delivered.
+  `onDestroy` then receives the admitted state.
+
+### Measured cost
+
+The numbers are guard observations in a guarded session, counted by
+`ExtensionCostSpec`. One observation can be a full provider transaction.
+
+| Step | No extensions, 10.0.1 and now | With extensions, 10.0.1 | With extensions, now |
+| --- | --- | --- | --- |
+| Attach, state retained | 10 | 11 | 11 |
+| Attach, state reconstructed | 8 | 8 | 9 |
+| Attach, with snapshots | 6 | not measured | 7 |
+| One click that changes state | 5 | 6 | 6 |
+| One published message | 1 | 2 | 2 |
+
+The numbers with extensions are the same for one and for three extensions.
+The one increase is the attach state of a session that did not receive it
+before.
+
+The lane was also run under load on a thread pool: a burst of 100,000
+notifications, and a backlog of 200,000 notifications behind a pending
+callback. Both complete in well under a second on a development machine.
+`ExtensionVolumeSpec` runs them with a 30-second limit, so it fails when
+delivery turns quadratic, overflows the stack or stops.
+
+### Tests
+
+| Spec | What it covers |
+| --- | --- |
+| `SerialLaneSpec` | Order, one handler at a time, no handler on the adding thread, stack safety, close and idle, many adding threads |
+| `ExtensionRuntimeDeliverySpec` | The attach state, folding, order, one callback at a time, failure isolation, the guarded check |
+| `ExtensionRuntimeLifecycleSpec` | Setup order, failed and pending setup, late results, teardown order, `lastState`, pending and failing `onDestroy` |
+| `ExtensionContractSpec` | The contract through a real session service, in a legacy session and in guarded sessions that retain, reconstruct or snapshot their state |
+| `ExtensionImapStateSpec` | `imapState` in the same four session modes |
+| `ExtensionHandlersSpec` | `Handlers.apply`, `Handlers.partial` and the named constructors |
+| `ExtensionCostSpec` | Guard observations per attach, click and message; rendering does not wait for an extension |
+| `ExtensionVolumeSpec` | A long burst and a large backlog |
+| `ExtensionAdapterChecks` | The contract under `Future`, cats-effect `IO` and ZIO |
 
 ## Review record
 

@@ -666,8 +666,8 @@ should remain pure and check domain relevance: application state can advance
 before its corresponding render is accepted. Unexpected failures stop the
 generation; restart explicitly or remount to retry. An authorization denial also
 stops the timer, without a timer-error report; frontend denials retain the normal
-session teardown behavior. Guarded startup waits for session readiness and
-extension state-stream registration before arming timers.
+session teardown behavior. Guarded startup waits for session readiness before
+arming timers. Extension delivery has started by then.
 
 A timer declared in `renderNoState` may wake before generated initial state
 exists. That tick skips reduction, writing, and rendering without reporting a
@@ -727,12 +727,66 @@ Neither API provides durable scheduling, restart recovery, exactly-once external
 effects, or rollback. Use the dedicated sensitive-disclosure expiry policy for
 sensitive content. Deferred external work is not part of the new timer API.
 
-An `Extension` acquires session-scoped resources and receives state/message
-notifications. Use `Extension.managed` or `managedF` for subscriptions with cleanup;
-`Extension.Handlers.onDestroy` is a `() => F[Unit]` thunk. Resolve subscriptions
-from current trusted authority, not a device cookie. Retire them when the view
-ends; they are not durable jobs. See
-{code}modules/spoonbill/src/main/scala/korolev/Extension.scala[extension lifecycle]
+=== Extensions
+
+An `Extension` is server code that lives as long as one attached view. Use it
+for work that is not tied to one DOM event: a subscription, background loading,
+or an actor for the view. Register extensions in
+`SpoonbillServiceConfig.extensions`.
+
+[source,scala]
+----
+import spoonbill.Extension
+
+val search = Extension.managed[Future, Page, Message, Subscription]("search")(
+  acquire = access => subscribe(results => access.transition(_.withResults(results))),
+  release = subscription => subscription.cancel()
+) { (subscription, access) =>
+  Extension.Handlers.partial[Future, Page, Message](
+    onState = { case Page.Searching(query) => subscription.search(query) },
+    onMessage = { case Message.Refresh => subscription.refresh() },
+    onDestroy = lastState => subscription.flush(lastState)
+  )
+}
+----
+
+The contract is the same in every session mode and with every effect type:
+
+* `setup` runs when a connection attaches to a view. It does not run for the
+  HTTP page render. Extensions are set up one at a time, in registration order.
+  Each `setup` has ten seconds. A failed `setup` fails the attach: the view is
+  closed, and the extensions that are already set up are destroyed.
+* `onState` is called first with the state the view has when delivery starts.
+  After that it is called once for every write of the top-level state, in
+  order. States that were written before delivery started are folded into the
+  first call: only the newest one is delivered.
+* `onMessage` is called once for every `access.publish` on the top level, in
+  publish order. A message is never folded.
+* The callbacks of a view run one at a time, in registration order. A failed
+  callback is reported with the extension's name, and delivery continues.
+  Return quickly, and start long work in your own fiber or actor.
+* `onDestroy(lastState)` runs once when the view ends, in reverse setup order.
+  The view is closed by then, so calls on `access` fail. Use `lastState`: the
+  last state that was passed to `onState`, or the state the view was accepted
+  with.
+
+Two rules for requests follow from this. A request that must be handled every
+time is a message. A request that must survive a reconnect stays in the state
+until it is handled; the next request is added to it and does not replace it.
+
+`Extension.Handlers` takes total functions. `Extension.Handlers.partial` takes
+partial functions and ignores a state or a message that is not matched.
+`Extension.managed` and `managedF` release one resource exactly once.
+`extension.imapState(read, write)` runs an extension that is written for a part
+of the state inside an application with a larger state.
+
+An extension does not receive DOM events. Handle the event in the view and
+publish a message: `event("click")(_.publish(Message.Refresh))`. Resolve
+subscriptions from current trusted authority, not a device cookie. Extensions
+are not durable jobs: they end with their view. See
+{code}modules/spoonbill/src/main/scala/korolev/Extension.scala[the extension API],
+{code}docs/extension-contract-design.md[the contract and its reasons],
+{code}docs/migration-v11.md[the migration notes]
 and {code}examples/extension/src/main/scala/ExtensionExample.scala[server push].
 
 === Forms and file streams

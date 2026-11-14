@@ -64,6 +64,7 @@ the managed IO application.
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
 * [Qualifying a payload adapter](docs/recovery-adapter-qualification.md) — portable UI recovery for external snapshot storage
+* [Migrating to 11.0: the extension contract](docs/migration-v11.md)
 * [Migrating to 10.0: Avocet 2 and portable UI recovery](docs/migration-v10.md)
 * [Migrating to 8.0: bounded resources and retention](docs/migration-v8.md)
 * [Migrating to 7.0: explicit state updates](docs/migration-v7.md)
