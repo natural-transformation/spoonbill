@@ -102,11 +102,11 @@ object Extension {
     /**
      * Runs once for every published message, in publish order.
      *
-     * Like `onState`, it runs in a task of the session's execution context, one
-     * callback of the view at a time. A callback that fails is reported, and
-     * the next one still runs. With ZIO each callback runs in a fiber of its
-     * own: start long work with `forkDaemon`, because a plain child fiber is
-     * interrupted when the callback returns.
+     * Like `onState`, it starts in a task of the session's execution context,
+     * one callback of the view at a time. A callback that fails is reported,
+     * and the next one still runs. With ZIO each callback runs in a fiber of
+     * its own: start long work with `forkDaemon`, because a plain child fiber
+     * is interrupted when the callback returns.
      *
      * @see
      *   Context.BaseAccess.publish

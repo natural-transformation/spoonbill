@@ -219,7 +219,8 @@ Extension[Future, State, Message]("statistics") { access =>
   cancelled (cats-effect) is reported the same way.
 - A callback starts in a task of the session's execution context. It does not
   run on the thread that writes the state, and not on the thread that
-  completed the previous callback.
+  completed the previous callback. With cats-effect and ZIO the task starts
+  the effect, and the callback runs on the runtime of the effect.
 - With ZIO, each callback runs in a fiber of its own. ZIO ends the fibers that
   an effect forks when the effect ends, so work that a handler starts with
   `.fork` is interrupted when the handler returns. In 10 it lived as long as
@@ -245,11 +246,15 @@ onState = { case State.Loading(request) => load(request).forkDaemon.unit }
 - `onDestroy` is the last callback. The runtime waits up to 10 seconds for the
   callback that is still running.
 - `onDestroy` starts in a task of the session's execution context, like
-  `onState` and `onMessage`. In 10 it ran on whichever thread reached it,
-  which could be the timer thread of the service.
+  `onState` and `onMessage`. With `Future`, in 10 it ran on whichever thread
+  reached it, which could be the timer thread of the service. The time the
+  task waits for a worker counts towards the 10 seconds of the call. When the
+  execution context refuses the task, for example after it was shut down, the
+  call starts on the thread that reached it.
 - Each `onDestroy` has 10 seconds. A failure or a timeout is reported, and the
   other extensions are still destroyed. A timeout is an
-  `ExtensionRuntime.TimedOut` in every session mode.
+  `ExtensionRuntime.TimedOut` in every session mode. A call that ran out of
+  time is not cancelled. When it fails later, that failure is reported too.
 - `transitionForce` fails with `SessionAccessDenied` when the view closes
   before the change was rendered. In 10 such a call never completed. A handler
   that waits for it now ends when the view closes.

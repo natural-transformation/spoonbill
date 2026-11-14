@@ -1,9 +1,9 @@
 # Extension contract: design
 
-Status: revision 7, 2026-11-14. The proposal is implemented: all six steps of
+Status: revision 8, 2026-11-14. The proposal is implemented: all six steps of
 the [implementation plan](#implementation-plan), with the cases of the
 [test plan](#test-plan). It changes behaviour and signatures, so it targets the
-next major release. It folds in five reviews: two of the design and three of
+next major release. It folds in six reviews: two of the design and four of
 the implementation; see [review record](#review-record). Where the code
 differs from the text of revision 3,
 [implementation notes](#implementation-notes) says so.
@@ -306,7 +306,12 @@ it.
 - A callback starts in a task of the session's execution context. It never
   starts inside the call that writes the state or publishes the message, and
   never on the thread that completed the previous callback. `onDestroy`
-  starts the same way.
+  starts the same way. One exception: when the execution context refuses the
+  task, `onDestroy` starts on the thread that reached it, so that what the
+  extension acquired is released.
+- With `Future` the task makes the call, so a callback runs on a thread of
+  the execution context. With cats-effect and ZIO the task starts the effect,
+  and the callback runs on the runtime of the effect.
 - The order and the guarantees are the same for `Future` and for lazy effects.
   One difference is listed below, for ZIO.
 
@@ -389,9 +394,11 @@ The steps when a view ends, for any reason:
 2. The view is closed as today.
 3. The runtime waits for the delivery in flight, for at most 10 seconds.
 4. `onDestroy(lastState)` runs for each extension in reverse setup order, one
-   after another. Each call is bounded by 10 seconds. When a call fails or runs
-   out of time, that is reported, and the runtime moves on to the next
-   extension and to the rest of the cleanup.
+   after another. Each call is bounded by 10 seconds, which include the time
+   the call waits for a worker. When a call fails or runs out of time, that is
+   reported, and the runtime moves on to the next extension and to the rest of
+   the cleanup. A call that ran out of time is still made, or goes on, and its
+   own failure is reported too.
 
 The guarantees:
 
@@ -627,8 +634,10 @@ The release needs a migration guide in the style of
 - **DOM events.** They stay in the view. The server code that a browser can
   reach is unchanged.
 - **Setup.** Failing the attach is stricter than what legacy sessions do today.
-- **Waits.** Every new wait is bounded, so extension code cannot hold up
-  teardown forever.
+- **Waits.** Every wait that this contract adds is bounded: a `setup`, the
+  wait for the callback in flight, and an `onDestroy`. Closing the view still
+  needs a worker and has no bound, as in 10; see
+  [costs and risks](#costs-and-risks).
 
 ## Verified assumptions
 
@@ -707,6 +716,27 @@ these configurations; see [implementation notes](#implementation-notes).
   flight and each `onDestroy` have their own 10-second bound, and they run in
   sequence. A guarded view cannot reattach until its cleanup is done. Without
   hanging handlers nothing changes.
+- **With `Future`, the session's own cleanup goes on on the timer thread
+  after an expired bound.** It stays there until a step completes on another
+  thread. What can run there: the report, closing the view when a `setup` ran
+  out of time, the write of the rendered state after a failed legacy attach,
+  the bookkeeping and the removal of the stored state. A guarded session did
+  this in 10. For a legacy session it is new, because its bounds are new.
+  Storage code that is slow delays the timers of other views for that time.
+  Extension callbacks do not run there: they start in tasks of the execution
+  context. One exception: when the execution context refuses the task of an
+  `onDestroy` call, the call is made on the thread that reached it, which can
+  be the timer thread. With cats-effect and ZIO the cleanup goes on on a
+  fiber, not on the timer thread.
+- **A teardown still needs a worker to close the view.** Closing the view,
+  step 2 of [destroy](#5-destroy), ends in a task of the execution context
+  and has no bound, as in 10. So when callbacks hold every worker, the
+  teardown of a session waits there, before it reaches the extensions. The
+  bounds of this contract cover the waits that it added: the wait for the
+  callback in flight, and each `onDestroy` call with its wait for a worker.
+  With cats-effect the close watcher is a fiber on the execution context, as
+  in 10. So every step of the cleanup that it runs needs a worker, also the
+  step after an expired bound.
 - **A cancelled request waits for the cleanup of its view.** With cats-effect
   and ZIO an attach can be cancelled. When the cleanup of its view has
   started, the cancellation returns when that cleanup is done, and a legacy
@@ -794,7 +824,9 @@ plan.
 The cases that a session can show run through a real session service, in a
 legacy session and in three kinds of guarded session. The cases that need
 control over time or threads run against the runtime with a manual worker and
-a manual bound. The [tests](#tests) table says which spec covers what. The
+a manual bound. The cases about a worker that is occupied, faster than the
+caller, or refusing run against the runtime on real executors. The
+[tests](#tests) table says which spec covers what. The
 cases that depend on evaluation order also run with a lazy effect.
 
 Attach and order:
@@ -859,9 +891,16 @@ Destroy:
   other extensions from being destroyed, and do not stop the rest of the
   cleanup.
 - An `onDestroy` that runs out of time is reported in both session modes.
-- `onDestroy` starts in a task of the execution context. After a bound has
-  expired, neither the report nor the rest of the teardown runs on the timer
-  thread.
+- With `Future`, `onDestroy` is called inside a task of the execution
+  context, also when a worker is faster than the caller, and also when the
+  thread that expired a bound reaches it. When the execution context refuses
+  the task, the call is made on the calling thread, still inside its bound.
+- The wait for a worker is inside the bound of the `onDestroy` call. With the
+  only worker occupied by a callback, the teardown of the runtime still ends,
+  and the call is made when the worker is free.
+- An `onDestroy` that fails after its bound has expired is still reported.
+- An `onDestroy` that holds the only worker of a session: its bound ends
+  without a worker, and the rest of the cleanup goes on.
 - The release of an attached view that is cancelled still finishes the
   cleanup, and the cancellation returns only then.
 - `access` fails with `SessionAccessDenied` inside `onDestroy`.
@@ -956,12 +995,30 @@ The [migration guide](migration-v11.md) lists what an application changes.
   takes the list of handlers, so a `setup` that returns later destroys its
   handlers at once, with a closed view. A legacy attach is not cancelable at
   all.
-- **Nothing of an extension runs on the timer thread.** One timer thread
-  serves every bound, idle timeout and render timer of a service. With
-  `Future`, what waits for a bound goes on on the thread that completes it. So
-  an expired bound hands its waiter over to the execution context, and every
-  `onDestroy` call starts in a task of the execution context. Otherwise a slow
-  `onDestroy` after an expired bound would hold up the timers of every view.
+- **An `onDestroy` call starts in a task of the execution context, inside
+  its bound.** One timer thread serves every bound, idle timeout and render
+  timer of a service, and with `Future` a teardown can reach an extension on
+  that thread. So the task starts the call itself. It is not a signal that
+  the caller then acts on: with `Future`, code behind a promise that is
+  already complete runs on the thread that asks for it, so a signal could
+  leave the call on the caller. With cats-effect and ZIO the task starts the
+  effect, and the runtime of the effect makes the call. The bound covers the
+  task from its submission. When every worker is occupied, the bound still
+  ends the wait; the call is made later, when a worker is free. Two things
+  follow. The call reports its own failure where its outcome arrives, so a
+  failure that arrives after the bound gave up is not lost; the bound reports
+  only that the time ran out. And when the execution context refuses the
+  task, the call starts on the thread that reached it, because what an
+  extension acquired must be released. With `Future` that thread makes the
+  call, and it can be the timer thread.
+- **A bound does not wait for a worker of the application.** It has to end a
+  wait when all of them are occupied. With `Future` the deadline completes on
+  the timer thread, and the session's own cleanup goes on there, as in 10 for
+  a guarded session. With cats-effect and ZIO the timer thread starts the
+  deadline on the runtime of the effect, and the cleanup goes on on its
+  fiber. A session test holds the only worker inside an `onDestroy` call, and
+  expects the report and the rest of the cleanup. What still needs a worker is
+  listed under [costs and risks](#costs-and-risks).
 - **The guarded cleanup is not cancelable.** It claims its turn before it does
   anything, so that it runs once. A cleanup that a cancelled request stopped
   halfway would then never be finished: the next caller finds the turn taken.
@@ -1016,7 +1073,8 @@ stops.
 | `SerialLaneSpec` | Order, one handler at a time, no handler on the adding thread or on the completing thread, the failure hook, a refused execution context, stack safety, close and idle, racing writers and closes |
 | `ExtensionRuntimeDeliverySpec` | The attach state, folding, what is kept before delivery, order, one callback at a time, a new task after a late callback or check, failure isolation, the guarded check, a stop between two extensions |
 | `ExtensionRuntimeLifecycleSpec` | Setup order, failed and pending setup, late results, a connection that is gone, teardown order, `lastState`, pending and failing `onDestroy` |
-| `ExtensionContractSpec` | The contract through a real session service, in a legacy session and in guarded sessions that retain, reconstruct or snapshot their state. Also: a connection that closes during the last `setup`, a guard that rejects a delivery or the attach state, a state read that fails before a delivery, an `onDestroy` that never completes in a guarded session, an attach after the state was rebuilt, and the state after a failed legacy attach |
+| `ExtensionTeardownSchedulingSpec` | Teardown on real executors: with the only worker occupied the wait for a worker stays inside the bound of `onDestroy`; an `onDestroy` that fails after its bound has expired is still reported; the call is made inside the task, also when the worker is faster than the caller; an execution context that refuses the task |
+| `ExtensionContractSpec` | The contract through a real session service, in a legacy session and in guarded sessions that retain, reconstruct or snapshot their state. Also: a connection that closes during the last `setup`, a guard that rejects a delivery or the attach state, a state read that fails before a delivery, an `onDestroy` that holds the only worker of a guarded session past its bound, an attach after the state was rebuilt, and the state after a failed legacy attach |
 | `ExtensionImapStateSpec` | `imapState` in the same four session modes |
 | `ExtensionHandlersSpec` | `Handlers.apply`, `Handlers.partial`, a `null` callback and the named constructors |
 | `ExtensionCostSpec` | Guard observations per attach, click and message; rendering does not wait for an extension. A measurement that ran in development mode is repeated |
@@ -1027,8 +1085,34 @@ stops.
 
 ## Review record
 
-Two reviews checked the design against the runtime. Three more checked the
+Two reviews checked the design against the runtime. Four more checked the
 implementation. Every finding was checked before it was accepted.
+
+### Sixth review (implementation, scheduling follow-up)
+
+A review of commit `37e80f97`, 2026-11-14. It found the cancelled rollback and
+the cost spec resolved. Its two findings are about the answer to the timer
+thread finding of the fifth review. Both of its probes failed on that commit
+and pass unchanged now.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| The hand-over to the execution context came before the bound of `onDestroy`. With the only worker occupied by a callback, the teardown waited for that worker without any bound, also after the wait for the callback had expired. The expired bound was handed over to the same execution context, so the deadline itself waited behind the occupied worker | P2 | The `onDestroy` call is submitted inside its bound, so the wait for a worker counts. The deadline of a bound does not need a worker of the application again |
+| The hand-over only completed a promise. A worker that finished before the caller went on left the `onDestroy` call on the caller, which can be the timer thread | Related | The call itself is made inside the task. A case runs it with a worker that is faster than the caller |
+
+The fix was then checked twice, each time by three independent reviewers
+with a lens of their own: first scheduling under `Future`, the two lazy
+effects, and the tests with the documents; then the runtime, the tests and
+the documents again, after the first points were handled. One skeptic tried
+to refute each finding. They found no defect in the corrected scheduling.
+They found the points below.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| No test failed when the deadline of a bound needed a worker of the application again. The runtime cases expire their bounds by hand, and the session cases had a free worker at the expiry | Test | The guarded ten-second case runs on one worker, and its `onDestroy` holds that worker. It fails with the hand-over put back |
+| An `onDestroy` that failed after its bound had expired was not reported. With the wait for a worker inside the bound, that includes a call that was not made in time | Low | The call reports its own failure inside its task. A case failed before the fix |
+| No test failed when the task was submitted before its bound had started. In the session case, the check that the worker was still held could not fail | Test | The case with a refusing execution context notes how many bounds were entered when `onDestroy` is called; it fails with the submission moved in front of the bound. The session case sets a flag when the destructor gives the worker back |
+| The new text said more than the code does. Closing the view needs a worker of the execution context and has no bound, as in 10, so a session whose workers are all held does not reach its extensions; the security section still said that extension code cannot hold up a teardown. "Expires on the timer thread" and "the call is made in a task" hold for `Future` only: with cats-effect and ZIO the task starts the effect, and the runtime of the effect makes the call. With cats-effect the cleanup that the close watcher runs needs a worker after an expiry, as in 10. A refused task leaves the `onDestroy` call on the calling thread | Wording | The text says what holds for each effect type; see [one ordered lane per view](#3-one-ordered-lane-per-view), [costs and risks](#costs-and-risks) and [implementation notes](#implementation-notes). The older behaviour is not changed here |
 
 ### Fifth review (implementation, follow-up)
 
@@ -1048,7 +1132,7 @@ They found the two points below.
 
 | Finding | Severity | Resolution |
 | --- | --- | --- |
-| With `Future`, an expired bound completed its waiter on the timer thread of the service. The rest of the teardown went on there: the report, the next `onDestroy` calls, the storage removal. That thread serves the timers of every view | Low | An expired bound hands its waiter over to the execution context, and every `onDestroy` call starts in a task of the execution context. The two ten-second cases assert that neither the report nor `onDestroy` runs on the timer thread; they fail with the hand-over switched off |
+| With `Future`, an expired bound completed its waiter on the timer thread of the service. The rest of the teardown went on there: the report, the next `onDestroy` calls, the storage removal. That thread serves the timers of every view | Low | First answer: an expired bound handed its waiter over to the execution context, and a hand-over preceded every `onDestroy` call. The sixth review found both wrong, and they were replaced; see there |
 | The session checks asserted that the view was not registered, which cannot fail when the attach never completed. One check did not prove that the view was released, and a failing check could leave its gates closed | Test | The checks prove the release by attaching again, open their gates in a `finally`, and a new check cancels the release of an attached view, where the registry does hold the view |
 
 ### Fourth review (implementation, second pass)
