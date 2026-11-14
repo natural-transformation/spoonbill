@@ -42,6 +42,9 @@ applications that register extensions are affected. See the
 - Fix: a legacy attach that fails for a reason other than an invalid saved
   render context frees its session entry. Later attaches of that session used
   to wait without an end.
+- Fix: a guarded attach that is cancelled (cats-effect, ZIO) cleans up after
+  itself: the view is closed and its attachment is released. It used to keep
+  both.
 - Add `Extension.Handlers.partial`, which takes partial functions and ignores
   a state or a message that is not matched. `Handlers.apply` no longer has
   `null` defaults: a `null` callback is rejected when the handlers are built.

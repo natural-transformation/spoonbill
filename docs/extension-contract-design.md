@@ -1,9 +1,9 @@
 # Extension contract: design
 
-Status: revision 5, 2026-11-14. The proposal is implemented: all six steps of
+Status: revision 6, 2026-11-14. The proposal is implemented: all six steps of
 the [implementation plan](#implementation-plan), with the cases of the
 [test plan](#test-plan). It changes behaviour and signatures, so it targets the
-next major release. It folds in three reviews: two of the design and one of
+next major release. It folds in four reviews: two of the design and two of
 the implementation; see [review record](#review-record). Where the code
 differs from the text of revision 3,
 [implementation notes](#implementation-notes) says so.
@@ -52,8 +52,8 @@ The proposal:
    runtime closes the view, destroys the extensions that are set up, and fails
    the attach.
 5. **Strict destroy.** `onDestroy` runs once, last, in reverse order. It
-   receives the last state that passed its check, because `access` is closed by
-   then.
+   receives the last state that the extension's `onState` received, because
+   `access` is closed by then.
 6. **API cleanup.** Constructors take a name. `Handlers.apply` loses its `null`
    defaults. A new `Handlers.partial` takes partial functions.
 7. **Reuse through `imapState`.** A group of extensions stays a plain list, so
@@ -401,8 +401,14 @@ The guarantees:
   sent to the browser any more. A state read and `transitionForce` fail with
   `SessionAccessDenied`. Other calls fail the same way or return without an
   effect: a `transition` returns, and the change is dropped.
-- `lastState` is the last state that was delivered to this view's extensions.
-  If no state was delivered, it is the admitted state.
+- `lastState` is the last state that was passed to this extension's `onState`.
+  If none was, it is the admitted state.
+
+`lastState` is kept per extension, and it is set when `onState` is called. A
+view can end while a state is on its way: after its check, or after the first
+extension got it. An extension that did not get that state does not see it in
+`onDestroy` either. So an extension can undo in `onDestroy` what it did for the
+state it last saw, such as a subscription for the user in that state.
 
 Both sources passed a guarded check at an earlier point: a state is checked
 before it is delivered, and the admitted state is checked when the attachment
@@ -598,8 +604,9 @@ The release needs a migration guide in the style of
   is delivered.
 - **Isolation.** Only failures of the extension's own code are isolated. A
   failed check is not a handler failure.
-- **`lastState`.** It is the last delivered state, or the admitted state. Each
-  passed a check earlier: before its delivery, or at admission. It is not
+- **`lastState`.** It is the last state the extension received, or the
+  admitted state. Each passed a check earlier: before its delivery, or at
+  admission. It is not
   checked again at teardown, so it is not a fresh authorization. After a
   revocation, the admitted state can fail its first delivery check and still
   be passed to `onDestroy` as the fallback. That is data that was authorized
@@ -610,6 +617,12 @@ The release needs a migration guide in the style of
 - **Closed access in `onDestroy`.** The runtime closes the view before every
   `onDestroy`, also when it rolls back a failed setup. Nothing can be written
   or sent to the browser from there.
+- **Reports.** The runtime reports failures of extension code, and such a
+  failure can be a snapshot rejection: a `setup` or a handler waits for a write
+  whose snapshot commit is rejected. A rejection can carry private details of
+  its provider in its cause and its suppressed exceptions. The runtime reports
+  it with its error code only, as the guarded session does. This also holds
+  when the extension wrapped the rejection in an exception of its own.
 - **DOM events.** They stay in the view. The server code that a browser can
   reach is unchanged.
 - **Setup.** Failing the attach is stricter than what legacy sessions do today.
@@ -802,6 +815,8 @@ Failures:
 - A guarded check that fails before a delivery still denies the view. The
   handlers are not called for that notification.
 - A check that fails for another reason than a denied access is reported.
+- A snapshot rejection is reported with its error code only, whether a `setup`,
+  a handler or `onDestroy` failed with it, and also when it was wrapped.
 
 Setup:
 
@@ -819,11 +834,17 @@ Setup:
   page was rendered with.
 - An attach that is cancelled during a `setup` still hands the handlers of that
   `setup` to the runtime.
+- A guarded attach that is cancelled during a `setup` cleans up itself: the
+  view is closed, and the handlers that the `setup` returns afterwards are
+  destroyed with a closed access.
 
 Destroy:
 
 - `onDestroy` runs once per extension, in reverse order, after the last
-  delivery, with the last delivered state.
+  delivery, with the last state that this extension received.
+- A view ends after a state passed its check and before any extension got it:
+  `onDestroy` does not receive that state. A view ends after the first
+  extension got a state: only that extension receives it in `onDestroy`.
 - An `onDestroy` that fails, and one that never completes, do not keep the
   other extensions from being destroyed, and do not stop the rest of the
   cleanup.
@@ -907,6 +928,19 @@ The [migration guide](migration-v11.md) lists what an application changes.
 - **Teardown before the first delivery.** When a view ends after delivery was
   started but before the lane ran, the attach state is not delivered.
   `onDestroy` then receives the admitted state.
+- **`lastState` is kept per extension.** It is set when `onState` is called,
+  not when the state passes its check. With one queue entry per call, a view
+  can end between the check and the calls, or between two calls.
+- **Reports are redacted.** Every report of the runtime passes one function.
+  It replaces a snapshot rejection by a copy that has only the error code,
+  also when the rejection is a cause or a suppressed exception of the failure.
+- **A cancelled guarded attach cleans up itself.** With cats-effect or ZIO an
+  attach can be cancelled while it waits. The failure path does not run then,
+  and the close watcher is not armed yet. So the attach has a finalizer that
+  runs the cleanup of the session unless the attach has completed. The cleanup
+  takes the list of handlers, so a `setup` that returns later destroys its
+  handlers at once, with a closed view. A legacy attach is not cancelable at
+  all.
 
 ### Measured cost
 
@@ -953,12 +987,26 @@ stops.
 | `ExtensionCostSpec` | Guard observations per attach, click and message; rendering does not wait for an extension |
 | `ExtensionVolumeSpec` | A long burst and a large backlog, each with a time limit over adding and delivering |
 | `ExtensionAdapterChecks` | The contract under `Future`, cats-effect `IO` and ZIO. With the two lazy effects also a handler that is interrupted or cancelled, and an attach that is cancelled during a `setup`. With ZIO also a child fiber and a daemon fiber of a handler |
+| `ExtensionSessionChecks` | With cats-effect `IO` and ZIO, through a real session service: a guarded attach that is cancelled during a `setup` |
 | `TimerApplicationSpec` | A `transitionForce` whose render can no longer happen fails |
 
 ## Review record
 
-Two reviews checked the design against the runtime. A third one checked the
+Two reviews checked the design against the runtime. Two more checked the
 implementation. Every finding was checked before it was accepted.
+
+### Fourth review (implementation, second pass)
+
+A review of commit `7b888be5`, 2026-11-14. It ran three probes against the
+pull request head and its base. Each finding was reproduced with a permanent
+test before the fix: nine tests failed on that commit and pass now. The two
+probes that compare head and base also pass unchanged.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| A `setup` that waits for a write can fail with a snapshot rejection. The runtime reported the original exception, so the cause and the suppressed exceptions that a provider attached reached the reporter. The guarded session reports only the error code | P1 | Every report of the runtime replaces a snapshot rejection by a copy with the error code only. This covers `setup`, `onState`, `onMessage` and `onDestroy`, and a rejection that the extension wrapped |
+| A guarded attach that is cancelled during a `setup` ran no cleanup. A `setup` that returned afterwards was kept and never destroyed. Before this change a result after the bound was destroyed by the late hook | P2 | The guarded attach has a finalizer that runs the session cleanup unless the attach has completed. The handlers are destroyed with a closed view, also when they arrive within the bound. A real-session check runs under cats-effect and ZIO |
+| `lastState` was set when a state passed its check. A view that ended before the callbacks ran passed that state to `onDestroy`, although no `onState` call had received it. The scaladoc and the migration guide promise the last state that `onState` received | P2 | `lastState` is kept per extension and set when `onState` is called. [Destroy](#5-destroy) states it |
 
 ### Third review (implementation)
 

@@ -59,8 +59,9 @@ Extension.Handlers[Future, State, Message](
 )
 ```
 
-`lastState` is the last state that was passed to `onState`. If none was, it is
-the state the view was accepted with.
+`lastState` is the last state that was passed to the `onState` of this
+extension. If none was, it is the state the view was accepted with. So an
+`onDestroy` can undo what its extension did for the state it last saw.
 
 A class that implements `Extension.Handlers` directly changes
 `def onDestroy(): F[Unit]` to `def onDestroy(lastState: S): F[Unit]`.
