@@ -26,7 +26,11 @@ import spoonbill.snapshot.ViewSnapshotException
  *     or cancelled effect.
  *   - A call starts in a task of the execution context: never inside the call
  *     that announces a write, and never on the thread that completed the
- *     previous call. This holds for `onState`, `onMessage` and `onDestroy`.
+ *     previous call. This holds for `onState`, `onMessage` and `onDestroy`. One
+ *     exception: when the execution context refuses the task, `onDestroy`
+ *     starts on the thread that reached it. With `Future` the task makes the
+ *     call. With cats-effect and ZIO the task starts the effect, and the
+ *     runtime of the effect runs it.
  *   - `destroy` waits for the call in flight, then calls `onDestroy` once per
  *     extension, in reverse setup order, each with a time bound.
  *
@@ -314,20 +318,48 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    * A failed call and a call that runs out of time are reported, not passed on.
    * The call starts in a task of the execution context, as `onState` and
    * `onMessage` do. A teardown can get here on any thread: a timer thread after
-   * an idle timeout, or the thread that completed the previous `onDestroy`.
+   * an idle timeout or an expired bound, or the thread that completed the
+   * previous `onDestroy`.
+   *
+   * The bound covers the task from its submission. So the time the task waits
+   * for a worker counts: when every worker is occupied, the bound still ends
+   * the wait. The teardown then goes on where its effect runs. With cats-effect
+   * that can need a worker again: the close watcher of a session is a fiber on
+   * the execution context.
+   *
+   * The bound reports only that the time ran out. The call reports its own
+   * failure, so that one is not lost when it arrives after the bound gave up.
    */
-  private def destroyOne(entry: Active): F[Unit] =
-    onExecutionContext.flatMap { _ =>
-      bound(Effect[F].delayAsync(entry.handlers.onDestroy(lastState(entry))), (_: Unit) => Effect[F].unit)
-    }.recover { case error => report(entry.name, OnDestroy, error) }
+  private def destroyOne(entry: Active): F[Unit] = {
+    // Not a value: the bound starts its time first, and submits the task then.
+    def call: F[Unit] =
+      inTask(entry.handlers.onDestroy(lastState(entry)))(error => report(entry.name, OnDestroy, error))
+    Effect[F]
+      .delayAsync(bound(call, (_: Unit) => Effect[F].unit))
+      .recover { case error => report(entry.name, OnDestroy, error) }
+  }
 
   /**
-   * Completes in a task of the execution context. When the execution context
-   * refuses the task, it completes here: a teardown must not wait for ever.
+   * Starts a call in a task of the execution context, and completes when the
+   * call has ended. A call that does not succeed goes to `failed`, where its
+   * outcome arrives; it does not fail the result.
+   *
+   * The task starts the call itself. A task that only completed a promise would
+   * not do: with `Future`, code behind a promise that is already complete runs
+   * on the thread that asks for it, which can be the caller. With `Future` the
+   * task makes the call. With cats-effect and ZIO it starts the effect, and the
+   * runtime of the effect runs it.
+   *
+   * When the execution context refuses the task, the call starts here. What an
+   * extension acquired must be released.
    */
-  private def onExecutionContext: F[Unit] = Effect[F].promise[Unit] { callback =>
-    try ec.execute(() => callback(Right(())))
-    catch { case NonFatal(_) => callback(Right(())) }
+  private def inTask(call: => F[Unit])(failed: Throwable => Unit): F[Unit] = Effect[F].promise[Unit] { callback =>
+    def run(): Unit = Effect[F].runAsync(Effect[F].delayAsync(call)) { outcome =>
+      outcome.left.foreach(failed)
+      callback(Right(()))
+    }
+    try ec.execute(() => run())
+    catch { case NonFatal(_) => run() }
   }
 
   /**

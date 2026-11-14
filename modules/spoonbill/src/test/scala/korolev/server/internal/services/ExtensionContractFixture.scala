@@ -40,11 +40,11 @@ private[services] object ExtensionContractFixture {
 
   def await[A](value: Future[A], limit: FiniteDuration = 5.seconds): A = Await.result(value, limit)
 
-  /** Keeps the reported errors, and the thread that reported each of them. */
+  /** Keeps the reported errors. Several threads can report at the same time. */
   final class Reports extends Reporter {
-    private val entries = new ConcurrentLinkedQueue[(String, Throwable, String)]()
+    private val entries = new ConcurrentLinkedQueue[(String, Throwable)]()
     private def keep(message: String, cause: Throwable): Unit = {
-      entries.add((message, cause, Thread.currentThread().getName))
+      entries.add(message -> cause)
       ()
     }
     def error(message: String, cause: Throwable): Unit                = keep(message, cause)
@@ -57,15 +57,8 @@ private[services] object ExtensionContractFixture {
     def debug(message: String, arg1: Any, arg2: Any): Unit            = ()
     def debug(message: String, arg1: Any, arg2: Any, arg3: Any): Unit = ()
 
-    def errors: Vector[(String, Throwable)] = entries.asScala.toVector.map(entry => entry._1 -> entry._2)
-
-    /** The name of the thread that reported `message`. */
-    def threadOf(message: String): Option[String] =
-      entries.asScala.collectFirst { case (reported, _, thread) if reported == message => thread }
+    def errors: Vector[(String, Throwable)] = entries.asScala.toVector
   }
-
-  /** The name the service gives its timer threads. */
-  val TimerThread = "spoonbill-scheduler"
 
   /** What the extensions of a test saw, as `name.callback(argument)`. */
   final class Log {

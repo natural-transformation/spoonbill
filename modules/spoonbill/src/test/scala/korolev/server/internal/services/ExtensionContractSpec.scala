@@ -1,6 +1,7 @@
 package spoonbill.server.internal.services
 
-import java.util.concurrent.Executors
+import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+import java.util.concurrent.atomic.AtomicBoolean
 import org.scalatest.concurrent.Eventually
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -26,12 +27,25 @@ class ExtensionContractSpec extends AnyFlatSpec with Matchers with Eventually {
 
   private val failure = new IllegalStateException("synthetic")
 
+  /** The name of the threads that `onPool` gives a session. */
+  private val PoolThread = "extension-contract-pool"
+
   /**
    * Runs a case on a thread pool. The other cases use an executor that runs
    * every task on the calling thread, which cannot show a change of thread.
+   *
+   * @param workers
+   *   the number of threads of the pool
    */
-  private def onPool[A](test: ExecutionContext => A): A = {
-    val pool = Executors.newFixedThreadPool(2)
+  private def onPool[A](workers: Int = 2)(test: ExecutionContext => A): A = {
+    val pool = Executors.newFixedThreadPool(
+      workers,
+      (task: Runnable) => {
+        val thread = new Thread(task, PoolThread)
+        thread.setDaemon(true)
+        thread
+      }
+    )
     try test(ExecutionContext.fromExecutorService(pool))
     finally { pool.shutdownNow(); () }
   }
@@ -39,7 +53,7 @@ class ExtensionContractSpec extends AnyFlatSpec with Matchers with Eventually {
   Mode.values.foreach(contract)
 
   // Ten seconds of real time. A guarded session shares the bound and had it before.
-  "A legacy session" should "give up on a setup that never completes" in onPool { pool =>
+  "A legacy session" should "give up on a setup that never completes" in onPool() { pool =>
     val log         = new Log
     val destroyedOn = Promise[String]()
     val view = new View(
@@ -63,32 +77,58 @@ class ExtensionContractSpec extends AnyFlatSpec with Matchers with Eventually {
     view.errors.map(_._1) should contain("Extension never: setup failed")
     view.registered shouldBe false
     // The bound expires on the timer thread of the service, which serves the
-    // timers of every view. Nothing that follows may run there: not the
-    // report, and not the rollback with its onDestroy call.
-    view.reports.threadOf("Extension never: setup failed").get should not startWith TimerThread
-    await(destroyedOn.future) should not startWith TimerThread
+    // timers of every view. The onDestroy call runs on a thread of the pool.
+    // Closing the view can move the rollback to the pool before that call, so
+    // this does not show that the call is a task of its own.
+    // ExtensionTeardownSchedulingSpec shows that.
+    await(destroyedOn.future) shouldBe PoolThread
   }
 
   // Ten seconds of real time, as above. The guarded bound once failed with a
   // denied access, which the report filter dropped.
-  "A guarded session" should "report an onDestroy that never completes" in onPool { pool =>
-    val log = new Log
+  //
+  // The session has one worker, and the destructor holds it. So this case
+  // also fails when the deadline of a bound needs a worker of the application:
+  // the report and the rest of the cleanup would then wait for the destructor.
+  "A guarded session" should "give up on an onDestroy that holds the only worker" in onPool(workers = 1) { pool =>
+    val log         = new Log
+    val destroyedOn = Promise[String]()
+    val hold        = new CountDownLatch(1)
+    // Set when the destructor gives the worker back.
+    val returned = new AtomicBoolean(false)
     val view = new View(
       Mode.Retained,
-      List(recorder(log, "never", onDestroy = (_, _) => Promise[Unit]().future)),
+      List(
+        recorder(
+          log,
+          "holding",
+          onDestroy = (_, _) => {
+            destroyedOn.success(Thread.currentThread().getName)
+            hold.await(60, TimeUnit.SECONDS)
+            returned.set(true)
+            Future.unit
+          }
+        )
+      ),
       executor = pool
     )
-    view.attach()
-    // The release waits for the teardown, so it is not awaited here.
-    view.attached.release()
-    eventually(log.of("never").last shouldBe s"never.onDestroy(${view.admitted})")
-    eventually(timeout(Span(20, Seconds)), interval(Span(100, Millis))) {
-      view.errors.collect { case ("Extension never: onDestroy failed", error) => error.getClass } shouldBe
-        Vector(classOf[ExtensionRuntime.TimedOut])
-    }
-    eventually(view.registered shouldBe false)
-    // The rest of the cleanup does not go on on the timer thread.
-    view.reports.threadOf("Extension never: onDestroy failed").get should not startWith TimerThread
+    try {
+      view.attach()
+      // The release waits for the teardown, so it is not awaited here.
+      view.attached.release()
+      eventually(log.of("holding").last shouldBe s"holding.onDestroy(${view.admitted})")
+      eventually(timeout(Span(20, Seconds)), interval(Span(100, Millis))) {
+        view.errors.collect { case ("Extension holding: onDestroy failed", error) => error.getClass } shouldBe
+          Vector(classOf[ExtensionRuntime.TimedOut])
+      }
+      // The rest of the cleanup did not wait for the worker either: the
+      // destructor still holds it.
+      eventually(view.registered shouldBe false)
+      returned.get() shouldBe false
+      // The release was asked for on this thread. The call runs on the thread
+      // of the pool.
+      await(destroyedOn.future) shouldBe PoolThread
+    } finally hold.countDown()
   }
 
   // A snapshot provider can attach private details to a rejection. Only the

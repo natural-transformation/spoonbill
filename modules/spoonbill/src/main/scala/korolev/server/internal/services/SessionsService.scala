@@ -166,7 +166,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       scheduler
         .scheduleOnce(10.seconds) {
           Effect[F].delay {
-            if (completed.compareAndSet(false, true)) offTimerThread(() => callback(Left(expired())))
+            // The deadline must not depend on the execution context of the
+            // application: a bound has to end a wait when every worker of the
+            // application is occupied. With `Future` it completes here, on
+            // the timer thread. With cats-effect and ZIO the timer thread has
+            // started this effect on the runtime of the effect.
+            if (completed.compareAndSet(false, true)) callback(Left(expired()))
           }
         }
         .flatMap { timer =>
@@ -180,22 +185,6 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           }
         }
     }
-
-  /**
-   * Runs `task` in a task of the execution context.
-   *
-   * One timer thread serves every bound, every idle timeout and every render
-   * timer of this service. With `Future`, what waits for a bound goes on on
-   * the thread that completes it: the rest of a teardown, with `onDestroy`
-   * calls and storage code of the application. That must not happen on the
-   * timer thread, where it would hold up the timers of every view.
-   *
-   * When the execution context refuses the task, it runs here: a waiter must
-   * not wait for ever.
-   */
-  private def offTimerThread(task: () => Unit): Unit =
-    try executionContext.execute(() => task())
-    catch { case scala.util.control.NonFatal(_) => task() }
 
   /**
    * The time bound of extension `setup` and `onDestroy` calls. It is the same
