@@ -267,6 +267,23 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     f.errors shouldBe Vector("Extension a: onDestroy failed" -> denied)
   }
 
+  it should "start every onDestroy in a task of the execution context" in {
+    val f = new ExtensionRuntimeFixture()(f => List(f.recorder("a"), f.recorder("b")))
+    f.attach()
+    f.taken()
+    // The thread that asks for the teardown can be a timer thread. It calls no
+    // extension itself.
+    val done = f.runtime.destroy()
+    f.logged shouldBe empty
+    f.worker.pending shouldBe 1
+    // The second call is a task of its own too, not a continuation of the first.
+    f.worker.one()
+    f.logged shouldBe Vector("b.onDestroy(0)")
+    f.worker.pending shouldBe 1
+    f.taken() shouldBe Vector("b.onDestroy(0)", "a.onDestroy(0)")
+    f.result(done)
+  }
+
   it should "wait for the callback in flight before the first onDestroy" in {
     val gate = Promise[Unit]()
     val f = new ExtensionRuntimeFixture()(f =>

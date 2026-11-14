@@ -40,13 +40,29 @@ class ExtensionSpec extends AnyFlatSpec {
     }
   }
 
-  it should "clean up a guarded attach that was interrupted during a setup" in {
-    ExtensionSessionChecks.cancelledGuardedAttach[Task] { attach =>
-      Unsafe.unsafe { implicit unsafe =>
-        val fiber = Runtime.default.unsafe.fork(attach)
-        () => { Runtime.default.unsafe.run(fiber.interrupt); () }
-      }
+  /**
+   * Starts an attach and returns the function that interrupts it and waits for
+   * that.
+   */
+  private def interruptible(attach: Task[Unit]): () => Unit =
+    Unsafe.unsafe { implicit unsafe =>
+      val fiber = Runtime.default.unsafe.fork(attach)
+      // A bound, so an interruption that never returns fails the test.
+      val interrupt = fiber.interrupt
+        .timeoutFail(new IllegalStateException("The interruption did not return"))(Duration.fromSeconds(30))
+      () => { Runtime.default.unsafe.run(interrupt).getOrThrowFiberFailure(); () }
     }
+
+  it should "clean up a guarded attach that was interrupted during a setup" in {
+    ExtensionSessionChecks.cancelledGuardedAttach[Task](interruptible)
+  }
+
+  it should "finish the rollback of a guarded attach that is interrupted meanwhile" in {
+    ExtensionSessionChecks.cancelledGuardedRollback[Task](interruptible)
+  }
+
+  it should "finish the cleanup of an attached view whose release is interrupted, before the interruption returns" in {
+    ExtensionSessionChecks.cancelledRelease[Task](interruptible)
   }
 
   // ZIO supervises the fibers that an effect forks. Each handler call runs in a

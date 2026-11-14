@@ -39,7 +39,16 @@ import spoonbill.web.{PathAndQuery, Request}
 class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
   private implicit val effect: Effect[Future] = Effect.futureEffect
 
-  private final case class Cost(attach: List[String], click: List[String], publish: List[String])
+  /**
+   * @param developmentMode
+   *   the attach sent the frame that only development mode sends
+   */
+  private final case class Cost(
+    attach: List[String],
+    click: List[String],
+    publish: List[String],
+    developmentMode: Boolean
+  )
 
   private val timeouts = Executors.newSingleThreadScheduledExecutor { task =>
     val thread = new Thread(task, "extension-cost-timeout")
@@ -66,22 +75,48 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
     result.future
   }
 
+  private def pause(): Future[Unit] = {
+    val done = Promise[Unit]()
+    timeouts.schedule(new Runnable { def run(): Unit = { done.trySuccess(()); () } }, 100L, TimeUnit.MILLISECONDS)
+    done.future
+  }
+
   /**
    * Attaches a view, clicks once and publishes one message. It returns the
    * guard observations of each step.
+   *
+   * Development mode is a switch of the whole JVM, and other suites turn it on
+   * while they run. In that mode an attach also reloads the style sheets: one
+   * more frame, and one more observation. Such a measurement says nothing about
+   * extensions, so it is repeated.
    *
    * @param stall
    *   the first extension never completes its `onState` call for the clicked
    *   state. The publish step is then skipped, because the lane is stalled.
    */
   private def measure(extensionCount: Int, reconstructed: Boolean, stall: Boolean = false): Future[Cost] = {
+    def attempt(remaining: Int): Future[Cost] =
+      measureOnce(extensionCount, reconstructed, stall).flatMap { cost =>
+        if (!cost.developmentMode) Future.successful(cost)
+        // The numbers below are those of a production attach. They cannot be
+        // measured while the whole JVM runs in development mode.
+        else if (remaining == 0) cancel("Development mode was on during every measurement")
+        else pause().flatMap(_ => attempt(remaining - 1))
+      }
+    attempt(remaining = 50)
+  }
+
+  private def measureOnce(extensionCount: Int, reconstructed: Boolean, stall: Boolean): Future[Cost] = {
     val observations = new ConcurrentLinkedQueue[String]()
     def observe(states: List[String]): Future[Unit] = {
       observations.add(states.mkString("[", ",", "]"))
       Future.unit
     }
+    val sawAttach  = Promise[Unit]()
     val sawClicked = Promise[Unit]()
     val sawMessage = Promise[Unit]()
+    // Every frame the measurement takes from the view.
+    val frames = new ConcurrentLinkedQueue[String]()
     val control = new SessionAccessControl[Future, String] {
       def authorizeHttp(request: Request.Head, state: String) = Future.unit
       def open(qsid: Qsid, request: Request.Head, connection: ConnectionId) =
@@ -103,7 +138,10 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       Extension.pure[Future, String, Any](s"extension-$index") { _ =>
         Extension.Handlers[Future, String, Any](
           onState = state =>
-            if (index == 0 && state == "clicked") {
+            if (index == 0 && state == "initial") {
+              sawAttach.trySuccess(())
+              Future.unit
+            } else if (index == 0 && state == "clicked") {
               sawClicked.trySuccess(())
               if (stall) Future.never else Future.unit
             } else Future.unit,
@@ -126,9 +164,10 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       if (remaining == 0) Future.failed(new AssertionError(s"The frame $prefix was not published"))
       else
         frontend.outgoingMessages.pull().flatMap {
-          case Some(frame) if frame.startsWith(prefix) => Future.unit
-          case Some(_)                                 => until(frontend, prefix, remaining - 1)
-          case None                                    => Future.failed(new AssertionError("Connection closed"))
+          case Some(frame) =>
+            frames.add(frame)
+            if (frame.startsWith(prefix)) Future.unit else until(frontend, prefix, remaining - 1)
+          case None => Future.failed(new AssertionError("Connection closed"))
         }
     def taken(): List[String] = {
       val result = observations.asScala.toList
@@ -141,11 +180,14 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
     val delivered = extensionCount > 0
 
     bounded(for {
-      _     <- service.initAppState(qsid, request)
-      _      = taken()
-      _     <- service.createAppIfNeeded(qsid, request, incoming.stream)
-      app   <- service.getApp(qsid).map(_.getOrElse(fail("Missing app")))
-      _     <- until(app.frontend, "[21,")
+      _   <- service.initAppState(qsid, request)
+      _    = taken()
+      _   <- service.createAppIfNeeded(qsid, request, incoming.stream)
+      app <- service.getApp(qsid).map(_.getOrElse(fail("Missing app")))
+      _   <- until(app.frontend, "[21,")
+      // The attach state is checked before it is delivered. Wait for the
+      // delivery itself, not for a number of turns.
+      _     <- if (delivered) sawAttach.future else Future.unit
       _     <- settle()
       attach = taken()
       target = app.topLevelComponentInstance.allEventHandlers.keys.collectFirst {
@@ -163,8 +205,15 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       _      <- settle()
       publish = taken()
       _      <- app.frontend.close()
-    } yield Cost(attach, click, publish))
+    } yield Cost(attach, click, publish, developmentMode = frames.asScala.exists(reloadsStyleSheets)))
   }
+
+  /**
+   * The frame that an attach sends only in development mode. A frame starts
+   * with the code of its procedure, and 8 is the reload of the style sheets.
+   */
+  private def reloadsStyleSheets(frame: String): Boolean =
+    frame.stripPrefix("[").takeWhile(_.isDigit) == "8"
 
   /**
    * The guard observations of an attach to a session with snapshots. Such a
@@ -233,8 +282,8 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       retained      <- measure(extensionCount = 0, reconstructed = false)
       reconstructed <- measure(extensionCount = 0, reconstructed = true)
     } yield {
-      retained.attach.size shouldBe 10
-      reconstructed.attach.size shouldBe 8
+      withClue(retained.attach)(retained.attach.size shouldBe 10)
+      withClue(reconstructed.attach)(reconstructed.attach.size shouldBe 8)
       retained.click shouldBe clickWithoutExtensions
       reconstructed.click shouldBe clickWithoutExtensions
       // Publishing is one interaction check. Nobody receives the message.
@@ -250,8 +299,8 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
     } yield {
       // The attach state is one delivery. A retained session already paid it
       // in 10.0.1, for the delivery of its connected state.
-      retained.attach.size shouldBe 11
-      reconstructed.attach.size shouldBe 9
+      withClue(retained.attach)(retained.attach.size shouldBe 11)
+      withClue(reconstructed.attach)(reconstructed.attach.size shouldBe 9)
       retained.click.sorted shouldBe clickWithExtensions.sorted
       reconstructed.click.sorted shouldBe clickWithExtensions.sorted
       // The publisher's interaction check, and the check before the delivery.

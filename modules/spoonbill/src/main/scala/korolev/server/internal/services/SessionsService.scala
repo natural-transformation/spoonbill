@@ -166,7 +166,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       scheduler
         .scheduleOnce(10.seconds) {
           Effect[F].delay {
-            if (completed.compareAndSet(false, true)) callback(Left(expired()))
+            if (completed.compareAndSet(false, true)) offTimerThread(() => callback(Left(expired())))
           }
         }
         .flatMap { timer =>
@@ -180,6 +180,22 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           }
         }
     }
+
+  /**
+   * Runs `task` in a task of the execution context.
+   *
+   * One timer thread serves every bound, every idle timeout and every render
+   * timer of this service. With `Future`, what waits for a bound goes on on
+   * the thread that completes it: the rest of a teardown, with `onDestroy`
+   * calls and storage code of the application. That must not happen on the
+   * timer thread, where it would hold up the timers of every view.
+   *
+   * When the execution context refuses the task, it runs here: a waiter must
+   * not wait for ever.
+   */
+  private def offTimerThread(task: () => Unit): Unit =
+    try executionContext.execute(() => task())
+    catch { case scala.util.control.NonFatal(_) => task() }
 
   /**
    * The time bound of extension `setup` and `onDestroy` calls. It is the same
@@ -285,36 +301,47 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
     }
 
-    def cleanup(): F[Unit] = Effect[F].delay(cleaned.compareAndSet(false, true)).flatMap {
-      case false => Effect[F].unit
-      case true =>
-        for {
-          // Stop extension delivery first: no callback starts once teardown began.
-          _ <- attempt(Effect[F].delay(extensionsRef.get().foreach(_.stop())))
-          // Retire component admission before any asynchronous close/drain can
-          // settle a lease and schedule a now-unnecessary per-node deletion.
-          _ <- attempt(Effect[F].delay(appRef.get().foreach(_.closeAdmission())))
-          _ <- Effect[F].delay { live.set(false); idleTimer.getAndSet(None).foreach(_.unsafeCancel()) }
-          _ <- attempt(ready.putEither((), Left(new SessionAccessDenied), silent = true))
-          _ <- attempt(frontendRef.get().fold(monitored.cancel())(_.close()))
-          // Drain already-admitted local storage writes before freeing this Qsid.
-          // Do not time out this barrier and then allow an unsafe local takeover.
-          _ <- managerRef.get().fold(Effect[F].unit)(_.closeAndDrain())
-          _ <- attempt(appRef.get().fold(Effect[F].unit)(_.destroy()))
-          _ <- attempt(guardRef.get().fold(Effect[F].unit)(guard => required(guard.close())))
-          // The view is closed by now, so the access fails inside onDestroy.
-          _ <- attempt(extensionsRef.get().fold(Effect[F].unit)(_.destroy()))
-          _ <- if (rawStateAcquired.get()) {
-                 Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)).recover { case error =>
-                   pendingStorageRemovals.put(qsid, ())
-                   config.reporter.error("Guarded storage cleanup failed; retry required before restoration", error)
-                   ()
-                 }
-               } else Effect[F].unit
-          _ <- attempt(apps.remove(qsid))
-          _ <- Effect[F].delay { guardedAttachments.remove(qsid, connectionId); () }
-        } yield ()
+    // The cleanup runs once, and to its end. It claims its turn before it does
+    // anything. If a cancelled request could stop it halfway, nobody would
+    // finish it: the next caller finds the turn taken and returns. The
+    // extensions that are set up would not be destroyed, and a setup that
+    // returns late would keep its handlers. So a cancellation waits until the
+    // cleanup is done, as it does when a legacy view is retired.
+    def cleanup(): F[Unit] = Effect[F].uncancelable {
+      Effect[F].delay(cleaned.compareAndSet(false, true)).flatMap {
+        case false => Effect[F].unit
+        case true  => teardown()
+      }
     }
+
+    /** Every step of the cleanup, in order. Call it through `cleanup` only. */
+    def teardown(): F[Unit] =
+      for {
+        // Stop extension delivery first: no callback starts once teardown began.
+        _ <- attempt(Effect[F].delay(extensionsRef.get().foreach(_.stop())))
+        // Retire component admission before any asynchronous close/drain can
+        // settle a lease and schedule a now-unnecessary per-node deletion.
+        _ <- attempt(Effect[F].delay(appRef.get().foreach(_.closeAdmission())))
+        _ <- Effect[F].delay { live.set(false); idleTimer.getAndSet(None).foreach(_.unsafeCancel()) }
+        _ <- attempt(ready.putEither((), Left(new SessionAccessDenied), silent = true))
+        _ <- attempt(frontendRef.get().fold(monitored.cancel())(_.close()))
+        // Drain already-admitted local storage writes before freeing this Qsid.
+        // Do not time out this barrier and then allow an unsafe local takeover.
+        _ <- managerRef.get().fold(Effect[F].unit)(_.closeAndDrain())
+        _ <- attempt(appRef.get().fold(Effect[F].unit)(_.destroy()))
+        _ <- attempt(guardRef.get().fold(Effect[F].unit)(guard => required(guard.close())))
+        // The view is closed by now, so the access fails inside onDestroy.
+        _ <- attempt(extensionsRef.get().fold(Effect[F].unit)(_.destroy()))
+        _ <- if (rawStateAcquired.get()) {
+               Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)).recover { case error =>
+                 pendingStorageRemovals.put(qsid, ())
+                 config.reporter.error("Guarded storage cleanup failed; retry required before restoration", error)
+                 ()
+               }
+             } else Effect[F].unit
+        _ <- attempt(apps.remove(qsid))
+        _ <- Effect[F].delay { guardedAttachments.remove(qsid, connectionId); () }
+      } yield ()
 
     def create(): F[SessionStart[F]] = for {
       localExists <- stateStorage.exists(qsid.deviceId, qsid.sessionId)

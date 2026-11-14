@@ -26,7 +26,7 @@ import spoonbill.snapshot.ViewSnapshotException
  *     or cancelled effect.
  *   - A call starts in a task of the execution context: never inside the call
  *     that announces a write, and never on the thread that completed the
- *     previous call.
+ *     previous call. This holds for `onState`, `onMessage` and `onDestroy`.
  *   - `destroy` waits for the call in flight, then calls `onDestroy` once per
  *     extension, in reverse setup order, each with a time bound.
  *
@@ -312,11 +312,23 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
 
   /**
    * A failed call and a call that runs out of time are reported, not passed on.
+   * The call starts in a task of the execution context, as `onState` and
+   * `onMessage` do. A teardown can get here on any thread: a timer thread after
+   * an idle timeout, or the thread that completed the previous `onDestroy`.
    */
   private def destroyOne(entry: Active): F[Unit] =
-    Effect[F].delayAsync {
+    onExecutionContext.flatMap { _ =>
       bound(Effect[F].delayAsync(entry.handlers.onDestroy(lastState(entry))), (_: Unit) => Effect[F].unit)
     }.recover { case error => report(entry.name, OnDestroy, error) }
+
+  /**
+   * Completes in a task of the execution context. When the execution context
+   * refuses the task, it completes here: a teardown must not wait for ever.
+   */
+  private def onExecutionContext: F[Unit] = Effect[F].promise[Unit] { callback =>
+    try ec.execute(() => callback(Right(())))
+    catch { case NonFatal(_) => callback(Right(())) }
+  }
 
   /**
    * The last state that this extension's `onState` received, or the admitted

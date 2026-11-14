@@ -30,19 +30,15 @@ final class InvalidDevRenderContextSpec extends AnyFlatSpec with Matchers {
   private val corruptBytes = Array.fill[Byte](24)(0)
   private val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
 
-  private def withDevMode(test: scala.collection.mutable.Buffer[File] => Unit): Unit = {
-    val previous = sys.props.get("spoonbill.dev")
-    val files = scala.collection.mutable.ArrayBuffer.empty[File]
-    sys.props.update("spoonbill.dev", "true")
-    try test(files)
-    finally {
-      files.foreach(file => Files.deleteIfExists(file.toPath))
-      previous match {
-        case Some(value) => sys.props.update("spoonbill.dev", value)
-        case None        => sys.props.remove("spoonbill.dev")
-      }
+  // Development mode is a switch of the whole JVM, and suites run in parallel.
+  // The fixture lets one suite at a time switch it: two suites that save and
+  // restore the flag at the same time can leave it switched on for good.
+  private def withDevMode(test: scala.collection.mutable.Buffer[File] => Unit): Unit =
+    spoonbill.SystemPropertyFixture.withSystemProperty("spoonbill.dev", "true") {
+      val files = scala.collection.mutable.ArrayBuffer.empty[File]
+      try test(files)
+      finally files.foreach(file => Files.deleteIfExists(file.toPath))
     }
-  }
 
   private def savedFile(qsid: Qsid, files: scala.collection.mutable.Buffer[File]): File = {
     val file = new DevMode.ForRenderContext(qsid.toString).file

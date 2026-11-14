@@ -5,13 +5,12 @@ import avocet.dsl.html.*
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 import spoonbill.{Context, Extension, Qsid}
-import spoonbill.effect.{Effect, Queue}
-import spoonbill.internal.TimerTestSupport.Reports
+import spoonbill.effect.{Effect, Queue, Reporter}
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.security.Versions.ViewOwnershipEpoch
 import spoonbill.server.*
@@ -40,6 +39,33 @@ private[services] object ExtensionContractFixture {
   type Access = Context.BaseAccess[Future, String, String]
 
   def await[A](value: Future[A], limit: FiniteDuration = 5.seconds): A = Await.result(value, limit)
+
+  /** Keeps the reported errors, and the thread that reported each of them. */
+  final class Reports extends Reporter {
+    private val entries = new ConcurrentLinkedQueue[(String, Throwable, String)]()
+    private def keep(message: String, cause: Throwable): Unit = {
+      entries.add((message, cause, Thread.currentThread().getName))
+      ()
+    }
+    def error(message: String, cause: Throwable): Unit                = keep(message, cause)
+    def error(message: String): Unit                                  = keep(message, null)
+    def warning(message: String, cause: Throwable): Unit              = ()
+    def warning(message: String): Unit                                = ()
+    def info(message: String): Unit                                   = ()
+    def debug(message: String): Unit                                  = ()
+    def debug(message: String, arg1: Any): Unit                       = ()
+    def debug(message: String, arg1: Any, arg2: Any): Unit            = ()
+    def debug(message: String, arg1: Any, arg2: Any, arg3: Any): Unit = ()
+
+    def errors: Vector[(String, Throwable)] = entries.asScala.toVector.map(entry => entry._1 -> entry._2)
+
+    /** The name of the thread that reported `message`. */
+    def threadOf(message: String): Option[String] =
+      entries.asScala.collectFirst { case (reported, _, thread) if reported == message => thread }
+  }
+
+  /** The name the service gives its timer threads. */
+  val TimerThread = "spoonbill-scheduler"
 
   /** What the extensions of a test saw, as `name.callback(argument)`. */
   final class Log {
@@ -144,13 +170,18 @@ private[services] object ExtensionContractFixture {
    * @param limitedReads
    *   the guarded session stores its state where `failReadsAfter` can make a
    *   read fail
+   * @param executor
+   *   the execution context of the session. The default runs every task at once
+   *   on the calling thread, which keeps the cases simple. A case that asks
+   *   which thread runs something passes a thread pool.
    */
   final class View(
     mode: Mode,
     extensions: List[Extension[Future, String, String]],
     initial: String = "initial",
     rendered: Boolean = true,
-    limitedReads: Boolean = false
+    limitedReads: Boolean = false,
+    executor: ExecutionContext = defaultExecutor
   ) {
     val reports               = new Reports
     private val allowance     = new AtomicInteger(Int.MaxValue)
@@ -174,7 +205,7 @@ private[services] object ExtensionContractFixture {
         case Mode.Reconstructed => Some(control(allowance, commitFailure, reconstructed = true))
         case Mode.Snapshots     => Some(control(allowance, commitFailure, reconstructed = false, snapshots = true))
       }
-    )
+    )(executor)
     private val service = new SessionsService(config, new PageService(config))
     private val qsid    = Qsid("contract-device", UUID.randomUUID().toString)
 

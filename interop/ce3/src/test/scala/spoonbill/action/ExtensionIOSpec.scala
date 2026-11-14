@@ -38,10 +38,29 @@ class ExtensionIOSpec extends AnyFlatSpec {
     }
   }
 
+  /**
+   * Starts an attach and returns the function that cancels it and waits for
+   * that.
+   */
+  private def cancelable(attach: IO[Unit]): () => Unit = {
+    val cancel = attach.unsafeRunCancelable()
+    () => { Await.result(cancel(), 30.seconds); () }
+  }
+
   it should "clean up a guarded attach that was cancelled during a setup" in {
-    ExtensionSessionChecks.cancelledGuardedAttach[IO] { attach =>
-      val cancel = attach.unsafeRunCancelable()
-      () => { Await.result(cancel(), 10.seconds); () }
-    }
+    ExtensionSessionChecks.cancelledGuardedAttach[IO](cancelable)
+  }
+
+  it should "finish the rollback of a guarded attach that is cancelled meanwhile" in {
+    ExtensionSessionChecks.cancelledGuardedRollback[IO](cancelable)
+  }
+
+  it should "finish the cleanup of an attached view whose release is cancelled, before the cancellation returns" in {
+    ExtensionSessionChecks.cancelledRelease[IO](cancelable)
+  }
+
+  // Ten seconds of real time: the bound of the setup has to expire.
+  it should "finish a rollback after a timeout that is cancelled meanwhile, and destroy the late setup result" in {
+    ExtensionSessionChecks.cancelledTimeoutRollback[IO](cancelable)
   }
 }

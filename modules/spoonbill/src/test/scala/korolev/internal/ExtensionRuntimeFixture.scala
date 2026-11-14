@@ -59,18 +59,29 @@ private[internal] final class ExtensionRuntimeFixture(
 
   val runtime = new ExtensionRuntime[Future, Int, String](build(this), reports, bound, checks)
 
-  def result[A](future: Future[A]): A = Await.result(future, 5.seconds)
+  /** The result of a future that needs no turn of the worker. */
+  private def await[A](future: Future[A]): A = Await.result(future, 5.seconds)
+
+  /**
+   * Runs the queued work, then returns the result. A future of the runtime can
+   * need the worker: a teardown starts every `onDestroy` call in a task of it.
+   */
+  def result[A](future: Future[A]): A = {
+    worker.drain()
+    await(future)
+  }
 
   def setup(admitted: Int = 0, proceed: () => Future[Unit] = () => Future.unit): Future[Unit] =
     runtime.setup(null, admitted, proceed)
 
   /**
    * Sets every extension up with the given admitted state, then starts
-   * delivery.
+   * delivery. It does not run the worker, so the attach state is still on its
+   * way when this returns.
    */
   def attach(admitted: Int = 0): Unit = {
-    result(setup(admitted))
-    result(runtime.start())
+    await(setup(admitted))
+    await(runtime.start())
   }
 
   /** The reported failures: message and cause. */
