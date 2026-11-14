@@ -846,6 +846,10 @@ The numbers with extensions are the same for one and for three extensions.
 The one increase is the attach state of a session that did not receive it
 before.
 
+End-to-end click latency was compared with the click harness, with and
+without extensions. It did not change beyond the spread between runs; see the
+[event latency report](event-latency-performance.md#extensions).
+
 The lane was also run under load on a thread pool: a burst of 100,000
 notifications, and a backlog of 200,000 notifications behind a pending
 callback. Both complete in well under a second on a development machine.

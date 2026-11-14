@@ -286,6 +286,35 @@ the provider, so this is not an external store's network cost; one node served
 everything, so restoration never crossed a process; every cell is one pass on a
 loaded shared machine; and the client does not render.
 
+### Extensions
+
+Measured 2026-11-14 for the [extension contract](extension-contract-design.md),
+on the same machine. The base is 10.0.1. The change is the extension runtime.
+The `plain-extensions` and `memory-extensions` modes add three extensions that
+receive every state change. Each cell is the median over the runs of p50 / p99,
+in milliseconds from click to patch. The two builds ran in turns.
+
+| Mode | Users | Runs | 10.0.1 | With the extension runtime |
+| --- | ---: | ---: | ---: | ---: |
+| `plain` | 1 | 3 | 0.44 / 1.47 | 0.41 / 1.07 |
+| `memory` | 1 | 3 | 0.49 / 1.13 | 0.47 / 1.05 |
+| `plain-extensions` | 1 | 3 | 0.40 / 0.85 | 0.43 / 1.11 |
+| `memory-extensions` | 1 | 3 | 0.48 / 1.11 | 0.46 / 1.03 |
+| `plain-extensions` | 16 | 2 | 1.30 / 5.83 | 1.14 / 6.17 |
+| `memory` | 16 | 6 | 1.12 / 5.79 | 1.14 / 5.74 |
+| `memory-extensions` | 16 | 6 | 1.08 / 6.11 | 1.17 / 5.28 |
+
+No cell differs by more than the spread between the runs of one build. With 16
+users, single runs ranged from 1.0 to 1.9 ms at p50 in both builds. A one-user
+run made 2,000 clicks after 300 warmup clicks. A 16-user run made 300 or 500
+clicks per user.
+
+Extensions are not on the click path. Delivery runs on its own lane, off the
+thread that writes the state, and rendering does not wait for it. A guarded
+session makes one more authority observation per delivered state, as in
+10.0.1. With the in-memory provider that is not visible here. With JDBC it is
+one more provider transaction per state change; that was not measured.
+
 ## Remaining limits
 
 Without the opt-in, guarded JDBC authorization is serialized per realm, as
@@ -317,6 +346,9 @@ See the [harness README](../misc/event-latency/README.md). The commands used:
 nix develop --no-write-lock-file --command bash misc/event-latency/prepare.sh
 nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local memory 1 300 50
 nix develop --no-write-lock-file --command bash misc/event-latency/memory.sh local memory 200
+# The extension modes: three extensions that receive every state change.
+nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local plain-extensions 1 2000 300
+nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local memory-extensions 16 500 150
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 bash misc/event-latency/run.sh local jdbc 16 60 10 200
 # The concurrent-checks matrix: both modes, maintenance every second, cap 16.
