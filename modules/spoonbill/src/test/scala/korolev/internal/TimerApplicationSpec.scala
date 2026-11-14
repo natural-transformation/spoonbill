@@ -41,6 +41,8 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
       authorize = authorize,
       viewRecoveryEpoch = if (recovery) Some(ViewOwnershipEpoch.initial) else None
     )
+    // Every top-level write that the instance announces to its observer.
+    val observed = new java.util.concurrent.ConcurrentLinkedQueue[Int]()
     val app = new ApplicationInstance[Future, Int, Unit](
       Qsid("timer", java.util.UUID.randomUUID().toString),
       frontend,
@@ -68,7 +70,11 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
       awaitReady = ready,
       authorizeProduced = if (recovery) Some(_ => Future.unit) else None,
       timerDeadlines = Some(clock),
-      timerClock = () => clock.now
+      timerClock = () => clock.now,
+      observer = Some(new ApplicationInstance.Observer[Int, Unit] {
+        def state(value: Int): Unit    = { observed.add(value); () }
+        def message(value: Unit): Unit = ()
+      })
     )
     def start(): Unit = { result(app.initialize()); worker.drain() }
     def change(value: Int): Unit = {
@@ -333,15 +339,15 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     val f       = new App(_ => Html(body(binding)), ready = Some(() => ready.future))
     f.start()
     f.clock.active shouldBe empty
-    val subscriber = result(f.app.stateStream)
-    val first      = subscriber.pull()
     f.clock.advance(10.millis)
     ready.success(())
     f.worker.drain()
     f.clock.active.head.duration shouldBe Duration.Zero
     f.clock.fire()
     f.worker.drain()
-    result(first).get._2 shouldBe 1
+    // The observer exists from the creation of the instance, so it sees the
+    // first timer write.
+    f.observed.toArray.toList shouldBe List(1)
     f.close()
   }
 

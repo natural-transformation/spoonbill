@@ -16,21 +16,69 @@
 
 package spoonbill
 
-import java.util.concurrent.atomic.AtomicBoolean
-
 import Extension.Handlers
+import java.util.concurrent.atomic.AtomicBoolean
 import spoonbill.effect.Effect
 import spoonbill.effect.syntax.*
+import spoonbill.util.Lens
 
-trait Extension[F[_], S, M] {
+/**
+ * Server code that lives as long as one attached view.
+ *
+ * The runtime sets an extension up once per view. It tells the extension about
+ * state changes and published messages, and it destroys the extension when the
+ * view ends. The callbacks of one view never run at the same time.
+ *
+ * @see
+ *   docs/extension-contract-design.md for the full contract.
+ */
+trait Extension[F[_], S, M] { self =>
 
+  /**
+   * Names this extension in failure reports.
+   */
   def name: String
 
   /**
-   * Invokes then new sessions created
+   * Runs when a connection attaches to a view. It does not run for the HTTP
+   * page render.
+   *
+   * Extensions are set up one at a time, in registration order. Each call has a
+   * time bound. A failed `setup` fails the attach: the view is closed, and the
+   * extensions that are already set up are destroyed.
+   *
    * @return
+   *   the handlers of this extension for this view
    */
   def setup(access: Context.BaseAccess[F, S, M]): F[Handlers[F, S, M]]
+
+  /**
+   * Runs this extension inside an application with a larger state.
+   *
+   * The extension reads and writes its part of the state through `read` and
+   * `write`. Messages pass through unchanged. The lifecycle is not changed:
+   * `setup` and `onDestroy` pass straight through.
+   *
+   * @param read
+   *   takes the part this extension works on out of the larger state
+   * @param write
+   *   puts a changed part back into the larger state
+   */
+  def imapState[S0](read: S0 => S, write: (S0, S) => S0)(using F: Effect[F]): Extension[F, S0, M] =
+    new Extension[F, S0, M] {
+      val name: String = self.name
+
+      private val lens = Lens[S0, S]({ case state => read(state) }, { case (state, part) => write(state, part) })
+
+      def setup(access: Context.BaseAccess[F, S0, M]): F[Handlers[F, S0, M]] =
+        F.delayAsync(self.setup(access.imap(lens))).map { handlers =>
+          new Handlers[F, S0, M] {
+            def onState(state: S0): F[Unit]       = handlers.onState(read(state))
+            def onMessage(message: M): F[Unit]    = handlers.onMessage(message)
+            def onDestroy(lastState: S0): F[Unit] = handlers.onDestroy(read(lastState))
+          }
+        }
+    }
 }
 
 object Extension {
@@ -38,83 +86,133 @@ object Extension {
   trait Handlers[F[_], S, M] {
 
     /**
-     * Invokes when state updated.
-     * @return
+     * Runs with the state the view has when delivery starts, and then once for
+     * every later write of the top-level state, in order.
+     *
+     * States that were written before delivery started are folded into the
+     * first call. Only the newest one is delivered.
      */
     def onState(state: S): F[Unit]
 
     /**
-     * Invokes when message published.
+     * Runs once for every published message, in publish order.
      * @see
      *   Context.BaseAccess.publish
      */
     def onMessage(message: M): F[Unit]
 
     /**
-     * Invokes when user closes tab.
-     * @return
+     * Runs once when the view ends: the browser closed or left the page, the
+     * idle timeout fired, access was denied or revoked, the view was replaced,
+     * or the attach failed.
+     *
+     * It is the last callback. The view is already closed, so calls on the
+     * access fail.
+     *
+     * @param lastState
+     *   the last state that was passed to `onState`. If none was, the state the
+     *   view was accepted with.
      */
-    def onDestroy(): F[Unit]
+    def onDestroy(lastState: S): F[Unit]
   }
 
-  private final class HandlersImpl[F[_]: Effect, S, M](
-    _onState: S => F[Unit],
-    _onMessage: M => F[Unit],
-    _onDestroy: () => F[Unit]
+  private final class FunctionHandlers[F[_], S, M](
+    state: S => F[Unit],
+    message: M => F[Unit],
+    destroy: S => F[Unit]
   ) extends Handlers[F, S, M] {
-    override def onState(state: S): F[Unit]     = _onState(state)
-    override def onMessage(message: M): F[Unit] = _onMessage(message)
-    override def onDestroy(): F[Unit]           = _onDestroy()
+    def onState(value: S): F[Unit]       = state(value)
+    def onMessage(value: M): F[Unit]     = message(value)
+    def onDestroy(lastState: S): F[Unit] = destroy(lastState)
   }
 
-  private class UnnamedExtension[F[_], S, M](f: Context.BaseAccess[F, S, M] => F[Handlers[F, S, M]])
-      extends Extension[F, S, M] {
-    final val name: String = "unnamed"
-    override def setup(access: Context.BaseAccess[F, S, M]): F[Handlers[F, S, M]] =
-      f(access)
+  private final class NamedExtension[F[_], S, M](
+    val name: String,
+    run: Context.BaseAccess[F, S, M] => F[Handlers[F, S, M]]
+  ) extends Extension[F, S, M] {
+    def setup(access: Context.BaseAccess[F, S, M]): F[Handlers[F, S, M]] = run(access)
   }
 
   object Handlers {
 
     /**
+     * Builds handlers from total functions. A callback that is left out does
+     * nothing.
+     *
      * @param onState
-     *   Invokes when state updated.
+     *   Invokes with the attach state and with every later state.
      * @param onMessage
      *   Invokes when message published.
      * @param onDestroy
-     *   Invokes when user closes tab.
+     *   Invokes once when the view ends, with the last state.
      */
-    def apply[F[_]: Effect, S, M](
-      onState: S => F[Unit] = null,
-      onMessage: M => F[Unit] = null,
-      onDestroy: () => F[Unit] = null
+    def apply[F[_], S, M](using F: Effect[F])(
+      onState: S => F[Unit] = (_: S) => F.unit,
+      onMessage: M => F[Unit] = (_: M) => F.unit,
+      onDestroy: S => F[Unit] = (_: S) => F.unit
     ): Handlers[F, S, M] =
-      new HandlersImpl(
-        if (onState == null) _ => Effect[F].unit else onState,
-        if (onMessage == null) _ => Effect[F].unit else onMessage,
-        if (onDestroy == null) () => Effect[F].unit else onDestroy
+      new FunctionHandlers(onState, onMessage, onDestroy)
+
+    /**
+     * Like [[apply]], but a state or a message that is not matched is ignored.
+     * So a handler lists only the cases it cares about.
+     *
+     * `onDestroy` stays a total function, so cleanup is never skipped by
+     * accident.
+     */
+    def partial[F[_], S, M](using F: Effect[F])(
+      onState: PartialFunction[S, F[Unit]] = PartialFunction.empty,
+      onMessage: PartialFunction[M, F[Unit]] = PartialFunction.empty,
+      onDestroy: S => F[Unit] = (_: S) => F.unit
+    ): Handlers[F, S, M] =
+      new FunctionHandlers(
+        state => onState.applyOrElse(state, (_: S) => F.unit),
+        message => onMessage.applyOrElse(message, (_: M) => F.unit),
+        onDestroy
       )
   }
 
-  def apply[F[_], S, M](f: Context.BaseAccess[F, S, M] => F[Handlers[F, S, M]]): Extension[F, S, M] =
-    new UnnamedExtension(f)
+  /**
+   * @param name
+   *   names the extension in failure reports
+   */
+  def apply[F[_], S, M](name: String)(
+    setup: Context.BaseAccess[F, S, M] => F[Handlers[F, S, M]]
+  ): Extension[F, S, M] =
+    new NamedExtension(name, setup)
 
-  def pure[F[_]: Effect, S, M](f: Context.BaseAccess[F, S, M] => Handlers[F, S, M]): Extension[F, S, M] =
-    new UnnamedExtension(access => Effect[F].pure(f(access)))
+  /**
+   * An extension whose handlers are built without an effect.
+   */
+  def pure[F[_]: Effect, S, M](name: String)(
+    setup: Context.BaseAccess[F, S, M] => Handlers[F, S, M]
+  ): Extension[F, S, M] =
+    new NamedExtension(name, access => Effect[F].delay(setup(access)))
 
-  def managed[F[_]: Effect, S, M, R](
+  /**
+   * An extension around one resource. The resource is released exactly once:
+   * after `onDestroy`, or at once when building the handlers fails.
+   */
+  def managed[F[_]: Effect, S, M, R](name: String)(
     acquire: Context.BaseAccess[F, S, M] => F[R],
     release: R => F[Unit]
-  )(f: (R, Context.BaseAccess[F, S, M]) => Handlers[F, S, M]): Extension[F, S, M] =
-    managedF(acquire, release) { (resource, access) =>
-      Effect[F].delay(f(resource, access))
+  )(handlers: (R, Context.BaseAccess[F, S, M]) => Handlers[F, S, M]): Extension[F, S, M] =
+    managedF(name)(acquire, release) { (resource, access) =>
+      Effect[F].delay(handlers(resource, access))
     }
 
-  def managedF[F[_]: Effect, S, M, R](
+  /**
+   * Like [[managed]], but the handlers are built with an effect.
+   *
+   * When building the handlers fails, the resource is released inside `setup`,
+   * before the runtime learns of the failure. The view is still open then. This
+   * is the one cleanup that the runtime does not own.
+   */
+  def managedF[F[_]: Effect, S, M, R](name: String)(
     acquire: Context.BaseAccess[F, S, M] => F[R],
     release: R => F[Unit]
-  )(f: (R, Context.BaseAccess[F, S, M]) => F[Handlers[F, S, M]]): Extension[F, S, M] =
-    Extension { access =>
+  )(handlers: (R, Context.BaseAccess[F, S, M]) => F[Handlers[F, S, M]]): Extension[F, S, M] =
+    Extension(name) { access =>
       acquire(access).flatMap { resource =>
         val released = new AtomicBoolean(false)
 
@@ -122,23 +220,23 @@ object Extension {
           if (released.compareAndSet(false, true)) release(resource)
           else Effect[F].unit
 
-        f(resource, access)
-          .map { handlers =>
-            Handlers(
-              onState = state => handlers.onState(state),
-              onMessage = message => handlers.onMessage(message),
-              onDestroy = () =>
-                handlers
-                  .onDestroy()
-                  .recoverF { case error =>
-                    releaseOnce().flatMap(_ => Effect[F].fail(error))
-                  }
+        def releaseAndFail[A](error: Throwable): F[A] =
+          releaseOnce().flatMap(_ => Effect[F].fail[A](error))
+
+        Effect[F]
+          .delayAsync(handlers(resource, access))
+          .map[Handlers[F, S, M]] { built =>
+            new Handlers[F, S, M] {
+              def onState(state: S): F[Unit]     = built.onState(state)
+              def onMessage(message: M): F[Unit] = built.onMessage(message)
+              def onDestroy(lastState: S): F[Unit] =
+                Effect[F]
+                  .delayAsync(built.onDestroy(lastState))
+                  .recoverF { case error => releaseAndFail[Unit](error) }
                   .flatMap(_ => releaseOnce())
-            )
+            }
           }
-          .recoverF { case error =>
-            releaseOnce().flatMap(_ => Effect[F].fail(error))
-          }
+          .recoverF { case error => releaseAndFail[Handlers[F, S, M]](error) }
       }
     }
 }

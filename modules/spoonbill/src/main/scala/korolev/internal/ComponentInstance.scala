@@ -132,7 +132,7 @@ final class ComponentInstance[
                         case None => Effect[F].unit
                         case Some(value) =>
                           val next = value.asInstanceOf[CS]
-                          stateManager.write(nodeId, next).flatMap(_ => stateQueue.enqueue(nodeId, next, None))
+                          stateManager.write(nodeId, next).flatMap(_ => publishState(next, None))
                       }
                     }
                 }
@@ -142,6 +142,19 @@ final class ComponentInstance[
   }
 
   @volatile private var eventSubscription = Option.empty[E => _]
+  @volatile private var stateSubscription = Option.empty[CS => Unit]
+
+  /**
+   * Announces a written state: first to the state subscriber, then to the
+   * render queue. Without a subscriber this is only the enqueue, so nested
+   * components pay nothing for the subscription.
+   */
+  private def publishState(value: CS, rendered: Option[Effect.Promise[Unit]]): F[Unit] =
+    stateSubscription match {
+      case None => stateQueue.enqueue(nodeId, value, rendered)
+      case Some(callback) =>
+        Effect[F].delay(callback(value)).flatMap(_ => stateQueue.enqueue(nodeId, value, rendered))
+    }
 
   private[spoonbill] case class BrowserAccess(dem: DomEventMessage, departure: Option[Long])
       extends BaseAccessDefault[F, CS, E] {
@@ -312,6 +325,14 @@ final class ComponentInstance[
   def setEventsSubscription(callback: E => _): Unit =
     eventSubscription = Some(callback)
 
+  /**
+   * Subscribes to the state writes of this component instance. The callback
+   * runs for every write, in the order the writes are announced, before the
+   * write is queued for rendering. It must be quick and must not throw.
+   */
+  def setStateSubscription(callback: CS => Unit): Unit =
+    stateSubscription = Some(callback)
+
   def applyRenderContext(
     parameters: P,
     rc: StatefulRenderContext[Binding[F, AS, M]],
@@ -418,7 +439,7 @@ final class ComponentInstance[
     if (establishBaseline) owner.establishBaseline()
     baselineReady = true
     loading = false
-  }.flatMap(_ => stateQueue.enqueue(nodeId, state, None))
+  }.flatMap(_ => publishState(state, None))
 
   private def loadWhenReady(parameters: P): Unit = if (!loading) {
     loading = true
@@ -502,7 +523,7 @@ final class ComponentInstance[
               case None => discard()
               case Some(lease) =>
                 lease.run {
-                  stateManager.write(nodeId, value).flatMap(_ => stateQueue.enqueue(nodeId, value, rendered))
+                  stateManager.write(nodeId, value).flatMap(_ => publishState(value, rendered))
                 }
             }
         }

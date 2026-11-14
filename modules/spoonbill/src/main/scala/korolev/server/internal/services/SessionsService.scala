@@ -20,10 +20,10 @@ import java.util.UUID
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.*
-import spoonbill.{Extension, Qsid}
+import spoonbill.Qsid
 import spoonbill.effect.{AsyncTable, Effect, Hub, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
-import spoonbill.internal.{ApplicationInstance, DevMode, Frontend, SensitiveAuthorization}
+import spoonbill.internal.{ApplicationInstance, DevMode, ExtensionRuntime, Frontend, SensitiveAuthorization}
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.server.{
   ApplicationStateInitialization,
@@ -45,8 +45,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   import config.executionContext
   import config.reporter.Implicit
 
-  type App                = ApplicationInstance[F, S, M]
-  type ExtensionsHandlers = List[Extension.Handlers[F, S, M]]
+  type App        = ApplicationInstance[F, S, M]
+  type Extensions = ExtensionRuntime[F, S, M]
 
   private val apps               = AsyncTable.unsafeCreateEmpty[F, Qsid, App]
   private val guardedAttachments = TrieMap.empty[Qsid, ConnectionId]
@@ -156,13 +156,17 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
    * Mandatory checks have a bounded wait. A late successful open is released;
    * timeout cannot cancel an already-running external database operation.
    */
-  private def required[A](operation: => F[A], late: Option[A => F[Unit]] = None): F[A] =
+  private def required[A](
+    operation: => F[A],
+    late: Option[A => F[Unit]] = None,
+    expired: () => Throwable = () => new SessionAccessDenied
+  ): F[A] =
     Effect[F].promiseF[A] { callback =>
       val completed = new AtomicBoolean(false)
       scheduler
         .scheduleOnce(10.seconds) {
           Effect[F].delay {
-            if (completed.compareAndSet(false, true)) callback(Left(new SessionAccessDenied))
+            if (completed.compareAndSet(false, true)) callback(Left(expired()))
           }
         }
         .flatMap { timer =>
@@ -175,6 +179,15 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
             }
           }
         }
+    }
+
+  /**
+   * The time bound of extension `setup` and `onDestroy` calls. It is the same
+   * bounded wait that guarded checks use.
+   */
+  private def extensionBound(expired: () => Throwable): ExtensionRuntime.Bound[F] =
+    new ExtensionRuntime.Bound[F] {
+      def apply[A](operation: => F[A], late: A => F[Unit]): F[A] = required(operation, Some(late), expired)
     }
 
   private def createGuarded(
@@ -194,7 +207,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     val frontendRef       = new AtomicReference(Option.empty[Frontend[F]])
     val managerRef        = new AtomicReference(Option.empty[GuardedStateManager[F, S]])
     val rawStateAcquired  = new AtomicBoolean(false)
-    val extensionRef      = new AtomicReference(List.empty[Extension.Handlers[F, S, M]])
+    val extensionsRef     = new AtomicReference(Option.empty[Extensions])
     val idleTimer         = new AtomicReference(Option.empty[Scheduler.JobHandler[F, Unit]])
 
     def requireLive(): F[Unit] = Effect[F].delay(if (!live.get()) throw new SessionAccessDenied)
@@ -274,6 +287,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       case false => Effect[F].unit
       case true =>
         for {
+          // Stop extension delivery first: no callback starts once teardown began.
+          _ <- attempt(Effect[F].delay(extensionsRef.get().foreach(_.stop())))
           // Retire component admission before any asynchronous close/drain can
           // settle a lease and schedule a now-unnecessary per-node deletion.
           _ <- attempt(Effect[F].delay(appRef.get().foreach(_.closeAdmission())))
@@ -285,7 +300,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           _ <- managerRef.get().fold(Effect[F].unit)(_.closeAndDrain())
           _ <- attempt(appRef.get().fold(Effect[F].unit)(_.destroy()))
           _ <- attempt(guardRef.get().fold(Effect[F].unit)(guard => required(guard.close())))
-          _ <- extensionRef.get().map(handler => attempt(required(handler.onDestroy()))).sequence.unit
+          // The view is closed by now, so the access fails inside onDestroy.
+          _ <- attempt(extensionsRef.get().fold(Effect[F].unit)(_.destroy()))
           _ <- if (rawStateAcquired.get()) {
                  Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)).recover { case error =>
                    pendingStorageRemovals.put(qsid, ())
@@ -433,6 +449,26 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                    replacementCompletion = guard.replacementCompletion
                  )
       _ <- Effect[F].delay(frontendRef.set(Some(frontend)))
+      // One runtime owns the extensions of this view. It observes the
+      // application instance from its creation. A view without extensions has
+      // none: nothing is recorded, buffered or checked for it.
+      extensions = Option.when(config.extensions.nonEmpty) {
+                     new ExtensionRuntime[F, S, M](
+                       config.extensions,
+                       config.reporter,
+                       extensionBound(() => new SessionAccessDenied),
+                       // These checks guard extension callbacks only.
+                       Some(new ExtensionRuntime.Checks[F, S, M] {
+                         // One fresh observation for the delivered and the current presentation.
+                         def state(changed: S): F[Unit] = rawManager.read[S](avocet.Id.TopLevel).flatMap {
+                           case Some(current) => authorizeAll(guard, List(changed, current))
+                           case None          => deny(new SessionAccessDenied)
+                         }
+                         def message(message: M): F[Unit] = authorizeCurrent()
+                       })
+                     )
+                   }
+      _ <- Effect[F].delay(extensionsRef.set(extensions))
       app =
         new ApplicationInstance[F, S, M](
           qsid,
@@ -450,7 +486,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           Some(() => ready.get(())),
           Some(state => authorize(guard, state)),
           Some(outputAuthorization.fold[S => () => F[Unit]](completeOutput)(output => state => output.producer(state))),
-          timerSettings = config.timerSettings
+          timerSettings = config.timerSettings,
+          observer = extensions
         )
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
@@ -459,37 +496,22 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _         <- authorize(guard, connected)
       _ <- if (initializeApplication) Effect[F].unit
            else required(app.topLevelComponentInstance.browserAccess.transitionForce(_ => connected))
-      handlers <- config.extensions.map { extension =>
-                    required(
-                      extension.setup(app.topLevelComponentInstance.browserAccess),
-                      Some((handler: Extension.Handlers[F, S, M]) => handler.onDestroy())
-                    ).map { handler =>
-                      extensionRef.updateAndGet(existing => handler :: existing); handler
-                    }
-                  }.sequence
+      // The connected state is the admitted state: it passed its check above.
+      // Setup stops once the connection is gone.
+      _ <- extensions.fold(Effect[F].unit)(
+             _.setup(
+               app.topLevelComponentInstance.browserAccess,
+               connected,
+               () => if (terminalSignalled.get()) Effect[F].fail[Unit](new SessionAccessDenied) else requireLive()
+             )
+           )
       _ <- requireLive()
       _ <- apps.put(qsid, app)
       // Publish before arming cleanup, so an early disconnect cannot be followed
       // by a late put resurrecting a closed app in the local registry.
       _ <- Effect[F].start(terminal.get(()).flatMap(_ => cleanup()))
-      // These checks guard extension callbacks only. Without extensions there
-      // is no callback to run, so no observation is made per state change. The
-      // streams are still drained: an eager effect subscribes them at creation.
-      stateEvents <- app.stateStream
-      _ <- Effect[F].start(stateEvents.foreach { case (id, changed) =>
-             if (id != avocet.Id.TopLevel || handlers.isEmpty) Effect[F].unit
-             else
-               rawManager.read[S](avocet.Id.TopLevel).flatMap {
-                 case Some(current) => authorizeAll(guard, List(changed.asInstanceOf[S], current))
-                 case None          => deny(new SessionAccessDenied)
-               }.flatMap(_ => handlers.map(_.onState(changed.asInstanceOf[S])).sequence.unit)
-           })
-      _ <- Effect[F].start(
-             app.messagesStream.foreach(message =>
-               if (handlers.isEmpty) Effect[F].unit
-               else authorizeCurrent().flatMap(_ => handlers.map(_.onMessage(message)).sequence.unit)
-             )
-           )
+      // Delivery starts with the newest state written so far.
+      _ <- extensions.fold(Effect[F].unit)(_.start())
       _ <- ready.put((), ())
       _ <- frontend.readyForUserEvents()
       _ <- touch()
@@ -528,12 +550,33 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     val (incomingConsumed, managedIncomingStream) = incomingStream.handleConsumed
     val incomingHub: Hub[F, String]               = Hub(managedIncomingStream)
 
-    def handleAppOrWsOutgoingCloseOrTimeout(frontend: Frontend[F], app: App, ehs: ExtensionsHandlers): F[Unit] = {
+    def attempt(operation: => F[Unit]): F[Unit] = Effect[F].delayAsync(operation).recover { case error =>
+      config.reporter.error("Legacy session cleanup failed", error)
+      ()
+    }
 
-      def attempt(operation: => F[Unit]): F[Unit] = Effect[F].delayAsync(operation).recover { case error =>
-        config.reporter.error("Legacy session cleanup failed", error)
-        ()
+    // The close watcher and a failed extension setup both retire the view.
+    val retired = new AtomicBoolean(false)
+
+    /** Closes the view, then destroys its extensions. Runs once. */
+    def retire(frontend: Frontend[F], app: App, extensions: Option[Extensions]): F[Unit] =
+      Effect[F].delay(retired.compareAndSet(false, true)).flatMap {
+        case false => Effect[F].unit
+        case true =>
+          for {
+            // Stop extension delivery first: no callback starts once teardown began.
+            _ <- attempt(Effect[F].delay(extensions.foreach(_.stop())))
+            _ <- attempt(incomingStream.cancel())
+            _ <- attempt(frontend.close())
+            _ <- attempt(app.destroy())
+            // The view is closed by now, so the access fails inside onDestroy.
+            _ <- attempt(extensions.fold(Effect[F].unit)(_.destroy()))
+            _ <- Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId))
+            _ <- apps.remove(qsid)
+          } yield ()
       }
+
+    def handleAppOrWsOutgoingCloseOrTimeout(frontend: Frontend[F], app: App, extensions: Option[Extensions]): F[Unit] = {
 
       val consumed: F[Unit] = Effect[F].promise[Unit] { cb =>
         val invoked = new AtomicBoolean(false)
@@ -571,38 +614,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         incomingConsumed.runAsync(invokeOnce("due connection close"))
       }
 
-      for {
-        _ <- consumed
-        _ <- attempt(incomingStream.cancel())
-        _ <- attempt(frontend.close())
-        _ <- attempt(app.destroy())
-        _ <- ehs.map { handler =>
-               Effect[F].delayAsync(handler.onDestroy()).recover { case error =>
-                 config.reporter.error(s"Unable to destroy extension for $qsid", error)
-                 ()
-               }
-             }.sequence
-        _ <- Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId))
-        _ <- apps.remove(qsid)
-      } yield ()
+      consumed.flatMap(_ => retire(frontend, app, extensions))
     }
-
-    def handleStateChange(app: App, ehs: ExtensionsHandlers): F[Unit] =
-      app.stateStream.flatMap { stream =>
-        stream.foreach { case (id, state) =>
-          if (id != avocet.Id.TopLevel) Effect[F].unit
-          else
-            ehs
-              .map(_.onState(state.asInstanceOf[S]))
-              .sequence
-              .unit
-        }
-      }
-
-    def handleMessages(app: App, ehs: ExtensionsHandlers): F[Unit] =
-      app.messagesStream.foreach { m =>
-        ehs.map(_.onMessage(m)).sequence.unit
-      }
 
     def create(): F[ApplicationInstance[F, S, M]] = {
       config.reporter.debug(s"Create session $qsid")
@@ -616,6 +629,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           )(Effect[F].pure(_))
         in      <- incomingHub.newStream()
         frontend = new Frontend[F](in, config.heartbeatLimit)
+        // One runtime owns the extensions of this view, as in a guarded
+        // session. A legacy session has no checks before a delivery.
+        extensions = Option.when(config.extensions.nonEmpty) {
+                       new ExtensionRuntime[F, S, M](
+                         config.extensions,
+                         config.reporter,
+                         extensionBound(() => new ExtensionRuntime.TimedOut),
+                         None
+                       )
+                     }
         app <- Effect[F].delay(new ApplicationInstance[F, S, M](
                 qsid,
                 frontend,
@@ -629,28 +652,30 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                 config.reporter,
                 config.recovery,
                 config.delayedRender,
-                timerSettings = config.timerSettings
+                timerSettings = config.timerSettings,
+                observer = extensions
               )).recoverF { case error: DevMode.InvalidSavedRenderContext =>
                 frontend.close().recover { case cleanupError => error.addSuppressed(cleanupError); () }
                   .flatMap(_ => Effect[F].fail(error))
               }
-        browserAccess = app.topLevelComponentInstance.browserAccess
-        _ <- config.extensions.map { extension =>
-               extension
-                 .setup(browserAccess)
-                 .recover { error =>
-                   config.reporter.error(s"Unable to initialize extension ${extension.name}", error)
-                   Extension.Handlers[F, S, M]()
-                 }
-             }.sequence.flatMap { ehs =>
-               config.reporter.debug("Extensions init")
-               for {
-                 _ <- Effect[F].start(handleStateChange(app, ehs))
-                 _ <- Effect[F].start(handleMessages(app, ehs))
-                 _ <- Effect[F].start(handleAppOrWsOutgoingCloseOrTimeout(frontend, app, ehs))
-               } yield ()
-             }.start
+        // Armed before initialization, so a view that fails to start is still
+        // retired when its connection closes.
+        _ <- Effect[F].start(handleAppOrWsOutgoingCloseOrTimeout(frontend, app, extensions))
         _ <- app.initialize()
+        // The state this instance was created with is the admitted state. A
+        // failed setup fails the attach: the view is closed first, then the
+        // extensions that are already set up are destroyed. When the
+        // connection closes during setup, the watcher stops the runtime, and
+        // the remaining extensions are not set up.
+        _ <- extensions.fold(Effect[F].unit) { runtime =>
+               config.reporter.debug("Extensions init")
+               runtime
+                 .setup(app.topLevelComponentInstance.browserAccess, initialState, () => Effect[F].unit)
+                 .flatMap(_ => runtime.start())
+                 .recoverF { case error =>
+                   retire(frontend, app, extensions).flatMap(_ => Effect[F].fail[Unit](error))
+                 }
+             }
       } yield {
         app
       }

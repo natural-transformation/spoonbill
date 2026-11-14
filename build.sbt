@@ -256,6 +256,7 @@ lazy val spoonbill = project
   .settings(
     normalizedName := "spoonbill",
     Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-conformance",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "extension-runtime-tests",
     Test / unmanagedSourceDirectories ++= Seq("common", "memory").map(
       (LocalRootProject / baseDirectory).value / "misc" / "browser-auth-baseline" / _
     ),
@@ -408,6 +409,7 @@ lazy val ce3 = project
   .settings(
     normalizedName                         := "spoonbill-ce3",
     Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "render-timers-tests",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "extension-runtime-tests",
     libraryDependencies += "org.typelevel" %% "cats-effect" % ce3Version
   )
   .dependsOn(effect, spoonbill % "test->compile", http % "test->compile")
@@ -442,6 +444,7 @@ lazy val zio2 = project
   .settings(
     normalizedName := "spoonbill-zio2",
     Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "render-timers-tests",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "extension-runtime-tests",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio"               % zio2Version,
       "dev.zio" %% "zio-test"          % zio2Version % Test,

@@ -43,7 +43,7 @@ object EvalJsExample extends SimpleAkkaHttpSpoonbillApp {
         }
       },
       extensions = List(
-        Extension { access =>
+        Extension("callback-listener") { access =>
           for (_ <- access.registerCallback("myCallback")(arg => Future(println(arg))))
             yield Extension.Handlers()
         }
