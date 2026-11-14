@@ -296,18 +296,27 @@ in milliseconds from click to patch. The two builds ran in turns.
 
 | Mode | Users | Runs | 10.0.1 | With the extension runtime |
 | --- | ---: | ---: | ---: | ---: |
-| `plain` | 1 | 3 | 0.44 / 1.47 | 0.41 / 1.07 |
-| `memory` | 1 | 3 | 0.49 / 1.13 | 0.47 / 1.05 |
-| `plain-extensions` | 1 | 3 | 0.40 / 0.85 | 0.43 / 1.11 |
-| `memory-extensions` | 1 | 3 | 0.48 / 1.11 | 0.46 / 1.03 |
-| `plain-extensions` | 16 | 2 | 1.30 / 5.83 | 1.14 / 6.17 |
-| `memory` | 16 | 6 | 1.12 / 5.79 | 1.14 / 5.74 |
-| `memory-extensions` | 16 | 6 | 1.08 / 6.11 | 1.17 / 5.28 |
+| `plain` | 1 | 3 | 0.40 / 0.88 | 0.40 / 0.85 |
+| `memory` | 1 | 3 | 0.52 / 1.48 | 0.45 / 0.98 |
+| `plain-extensions` | 1 | 3 | 0.40 / 0.87 | 0.40 / 0.85 |
+| `memory-extensions` | 1 | 3 | 0.48 / 1.03 | 0.46 / 1.03 |
+| `plain-extensions` | 16 | 8 | 0.90 / 5.64 | 1.03 / 5.67 |
+| `memory` | 16 | 4 | 1.17 / 6.39 | 1.15 / 5.88 |
+| `memory-extensions` | 16 | 4 | 1.14 / 6.25 | 1.14 / 6.68 |
 
-No cell differs by more than the spread between the runs of one build. With 16
-users, single runs ranged from 1.0 to 1.9 ms at p50 in both builds. A one-user
-run made 2,000 clicks after 300 warmup clicks. A 16-user run made 300 or 500
-clicks per user.
+One cell differs: the unguarded mode with extensions and 16 users. Its median
+p50 is 0.13 ms higher, and the new build was the slower one in each of the 8
+paired runs. Its p99 did not move. This is the price of the hop: for each state
+change the lane is woken on the execution context, where 10.0.1 ran the
+callbacks on the writing thread. With one user, and in the guarded mode, it is
+not visible. The other cells differ by less than the spread between the runs
+of one build.
+
+A one-user run made 2,000 clicks after 300 warmup clicks. A 16-user run made
+500 clicks per user after 100 warmup clicks. The numbers are those of the
+build after the implementation review. The build before it measured the same
+in the cell that differs: a median p50 of 0.96 ms against 1.00 ms over 8
+paired runs, with overlapping ranges.
 
 Extensions are not on the click path. Delivery runs on its own lane, off the
 thread that writes the state, and rendering does not wait for it. A guarded

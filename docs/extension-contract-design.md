@@ -1,11 +1,12 @@
 # Extension contract: design
 
-Status: revision 4, 2026-11-14. The proposal is implemented: all six steps of
+Status: revision 5, 2026-11-14. The proposal is implemented: all six steps of
 the [implementation plan](#implementation-plan), with the cases of the
 [test plan](#test-plan). It changes behaviour and signatures, so it targets the
-next major release. It folds in two reviews; see
-[review record](#review-record). Where the code differs from the text of
-revision 3, [implementation notes](#implementation-notes) says so.
+next major release. It folds in three reviews: two of the design and one of
+the implementation; see [review record](#review-record). Where the code
+differs from the text of revision 3,
+[implementation notes](#implementation-notes) says so.
 
 ## Summary
 
@@ -265,9 +266,8 @@ This drops notifications that `Future` applications receive today. An example:
 `setup` of extension A writes `Loading(jobA)`, and `setup` of extension B
 replaces it with `Loading(jobB)`. Today `onState` is called for both. Under
 this proposal it is called once, with `Loading(jobB)`. If only that call
-starts the work, nothing starts job A. A legacy session has the same case when
-a user event writes a request during a slow `setup` and another write replaces
-it.
+starts the work, nothing starts job A. The same happens when a timer writes a
+request during a slow `setup` and another write replaces it.
 
 So there are two rules for requests:
 
@@ -303,22 +303,34 @@ it.
 - States arrive in publish order. Messages arrive in publish order. No order is
   promised between a state and a message. A handler that needs the current
   state reads `access.state`.
-- The behaviour is the same for `Future` and for lazy effects.
+- A callback starts in a task of the session's execution context. It never
+  starts inside the call that writes the state or publishes the message, and
+  never on the thread that completed the previous callback.
+- The order and the guarantees are the same for `Future` and for lazy effects.
+  One difference is listed below, for ZIO.
 
 A handler should return quickly. Long work belongs in the extension's own
 fiber or actor. A handler must not wait for a later notification of its own
 view, because that notification cannot be delivered before the handler returns.
 
+With ZIO, each callback runs in a fiber of its own. ZIO ends the fibers that
+an effect forks when the effect ends. So work that a handler starts with
+`.fork` is interrupted when the handler returns. A handler starts long work
+with `.forkDaemon`, or in a scope that the extension owns and closes in
+`onDestroy`. Before this change such a child lived as long as the view.
+
 A failed callback does not stop the lane:
 
 - Each call is wrapped. A failed effect and a thrown exception are treated the
-  same.
+  same. So is an effect that ends without a result: an interrupted ZIO effect
+  or a cancelled cats-effect `IO`.
 - The failure is reported once:
   `reporter.error("Extension <name>: onState failed", error)`.
 - Delivery continues with the next extension and the next notification.
 - A handler failure never closes the session.
-- A `SessionAccessDenied` from a handler is not reported while the view is
-  closing. It is the expected result of using `access` then.
+- A `SessionAccessDenied` from an `onState` or `onMessage` call is not
+  reported while the view is closing. It is the expected result of using
+  `access` then. A failed `onDestroy` is always reported.
 
 ### 4. Setup
 
@@ -330,6 +342,15 @@ A failed callback does not stop the lane:
 - `setup` fails closed, in both session modes. This applies when a `setup`
   fails, when it runs out of time, and when the connection closes during
   setup.
+- The connection is completed after setup, in both session modes. Until then
+  nothing is sent to the browser, and no user event is processed.
+
+So a `setup` must not wait for the browser. An `evalJs` result, a property
+read and a callback from the page cannot arrive before the last `setup` has
+completed. A `setup` that waits for one fails when that call or the bound runs
+out of time, and the attach fails with it. Start such a call without waiting
+for it, or make it from the first `onState`. Guarded sessions had this rule
+before. For legacy sessions it is new.
 
 The steps when setup does not finish:
 
@@ -338,21 +359,26 @@ The steps when setup does not finish:
 3. It destroys the extensions that are set up, in reverse order, as in
    [destroy](#5-destroy). `access` is closed in these `onDestroy` calls too.
    They receive the admitted state.
-4. The attach fails.
+4. A legacy session writes back the state the page was rendered with. Nothing
+   has reached the browser, so the next attach must not start from a state the
+   browser never saw.
+5. The attach fails.
 
 So rollback is owned by the runtime, not by any extension. The view is always
 closed before an `onDestroy` runs.
 
 A `setup` that is still running when the runtime gives up is not cancelled. An
 effect such as `Future` cannot be. If it completes later, its handlers are
-destroyed at once. If it never completes, whatever it acquired stays acquired.
+destroyed after the view is closed: with the teardown of the view, or at once
+when that teardown has already run. If it never completes, whatever it
+acquired stays acquired.
 
 An extension that should never fail an attach recovers inside its own `setup`
 and returns empty handlers.
 
-In a legacy session, user events are not held back during setup. A message
-they publish is delivered once setup is done. A state they write is folded
-into the attach state, like any write before delivery starts.
+A timer or a `setup` can still write and publish during setup. A message is
+delivered once setup is done. A state is folded into the attach state, like
+any write before delivery starts.
 
 ### 5. Destroy
 
@@ -371,8 +397,10 @@ The guarantees:
 - `onDestroy` runs exactly once for every extension whose `setup` completed.
 - It is the last callback. One exception: if the delivery in flight outlasts
   the wait in step 3, `onDestroy` can overlap with it. That is reported.
-- `access` is closed during `onDestroy`. Calls on it fail with
-  `SessionAccessDenied`.
+- `access` is closed during `onDestroy`. Nothing is written, published or
+  sent to the browser any more. A state read and `transitionForce` fail with
+  `SessionAccessDenied`. Other calls fail the same way or return without an
+  effect: a `transition` returns, and the change is dropped.
 - `lastState` is the last state that was delivered to this view's extensions.
   If no state was delivered, it is the admitted state.
 
@@ -500,16 +528,18 @@ children itself.
 | Change | Who is affected | What to do |
 | --- | --- | --- |
 | `onState` is called with the attach state | An extension that reads `access.state` in `setup` to handle the first state | Delete that code. Otherwise the first state is handled twice |
-| States written before delivery starts are folded into the attach state | An application whose `setup` writes state, and a legacy session where a user event can write state during setup, if either relies on one `onState` call per write | Publish a message for a request that must be handled every time. Keep a request that must survive a reconnect in the state until it is handled |
+| States written before delivery starts are folded into the attach state | An application whose `setup` or timer writes state during setup, if it relies on one `onState` call per write | Publish a message for a request that must be handled every time. Keep a request that must survive a reconnect in the state until it is handled |
 | A failed handler is reported, and delivery continues | Everyone | Nothing. Expect error reports that were silent before |
 | Callbacks of a view run one at a time | A handler that waits for a long effect | Move the long work to a fiber or actor |
 | A failed `setup` fails the attach in a legacy session | Legacy sessions with an extension that may fail | Recover inside that `setup` if the extension is optional |
 | `setup` is bounded by 10 seconds in a legacy session | Legacy sessions with a slow `setup` | Start slow work in `setup` without waiting for it |
+| The connection is completed after setup in a legacy session | Legacy sessions whose `setup` waits for the browser: an `evalJs` result, a property read, a callback from the page. Every legacy session with extensions: the WebSocket opens after the last `setup` | Start the call without waiting for it, or make it from the first `onState` |
+| With ZIO, each callback runs in a fiber of its own | ZIO extensions whose handler starts work with `.fork` | Use `.forkDaemon`, or a scope that the extension closes in `onDestroy` |
 | `setup` runs in order | `Future` users who relied on a concurrent start | Start work in parallel inside one extension |
 | Legacy sessions destroy in reverse order | Extensions that depend on the destroy order | Check the order |
 | `onDestroy()` becomes `onDestroy(lastState)` | Everyone | `() => stop()` becomes `_ => stop()`. Replace `access.state` in `onDestroy` with the parameter |
 | Constructors take a name | Users of `Extension.apply`, `pure`, `managed`, `managedF` | Add a name |
-| `Handlers.apply` takes its `Effect` in a leading `using` clause and has no `null` defaults | Callers that pass `null` or the `Effect` instance by hand | Leave the `null` argument out. Pass the instance as `Handlers(using effect)(...)` |
+| `Handlers.apply` takes its `Effect` in a leading `using` clause and has no `null` defaults | Callers that pass `null` or the `Effect` instance by hand | Leave the `null` argument out: it still compiles, and it is rejected when the handlers are built. Pass the instance as `Handlers(using effect)(...)` |
 | `Handlers.partial` is new | Nobody has to change | Handlers with a "do nothing" default case can move to it |
 
 Guarded sessions that use neither snapshots nor reconstruction already receive
@@ -636,8 +666,16 @@ these configurations; see [implementation notes](#implementation-notes).
   the reverse. Today the two loops are independent. Rendering is not affected:
   it does not wait for extensions.
 - **One hop to the execution context.** An idle lane is woken there, so an
-  extension callback starts a little later than the write that caused it. It
-  no longer delays that write.
+  extension callback starts a little later than the write that caused it. A
+  slow callback no longer delays that write. The hop itself has a price under
+  load: in an unguarded session with 16 concurrent users the median click took
+  0.13 ms longer; see [measured cost](#measured-cost). A callback that
+  completes later costs one more hop: the lane goes on in a new task, not on
+  the thread that completed the callback. With `Future` that thread is often
+  the one that renders.
+- **The connection waits for setup, now in legacy sessions too.** The
+  WebSocket upgrade, or the first long-poll answer, is delayed by the time the
+  `setup` calls take. A `setup` that waits for the browser cannot complete.
 - **One call at a time.** With `Future`, the handlers of one notification start
   together today. They will run one after another, so a slow extension delays
   the ones after it.
@@ -733,8 +771,11 @@ plan.
 
 ## Test plan
 
-Each case runs in a legacy and in a guarded session. The cases that depend on
-evaluation order also run with a lazy effect.
+The cases that a session can show run through a real session service, in a
+legacy session and in three kinds of guarded session. The cases that need
+control over time or threads run against the runtime with a manual worker and
+a manual bound. The [tests](#tests) table says which spec covers what. The
+cases that depend on evaluation order also run with a lazy effect.
 
 Attach and order:
 
@@ -756,8 +797,11 @@ Failures:
 
 - A handler that fails, and one that throws, are reported with the extension's
   name. Later notifications reach every extension.
+- A handler that is interrupted or cancelled is reported the same way, and
+  the extensions after it are still called.
 - A guarded check that fails before a delivery still denies the view. The
   handlers are not called for that notification.
+- A check that fails for another reason than a denied access is reported.
 
 Setup:
 
@@ -767,8 +811,14 @@ Setup:
   admitted state.
 - A `setup` that never completes fails the attach after the bound. The
   extensions before it are destroyed, so what they acquired is released. A late
-  result is destroyed.
-- The connection closes during setup: the remaining `setup` calls do not run.
+  result is destroyed after the view is closed.
+- The connection closes during setup: the remaining `setup` calls do not run,
+  the attach fails, and the view is not registered. This also holds when it
+  closes during the last `setup`.
+- A legacy attach that fails after a `setup` wrote state leaves the state the
+  page was rendered with.
+- An attach that is cancelled during a `setup` still hands the handlers of that
+  `setup` to the runtime.
 
 Destroy:
 
@@ -777,6 +827,7 @@ Destroy:
 - An `onDestroy` that fails, and one that never completes, do not keep the
   other extensions from being destroyed, and do not stop the rest of the
   cleanup.
+- An `onDestroy` that runs out of time is reported in both session modes.
 - `access` fails with `SessionAccessDenied` inside `onDestroy`.
 - The first delivery is rejected by the guarded check: `onDestroy` receives the
   admitted state, not the rejected one.
@@ -807,24 +858,52 @@ The [migration guide](migration-v11.md) lists what an application changes.
   waiting item, and a backlog of a few thousand items overflows the stack.
   `SerialLane` takes the next item in the same loop when a handler completes
   at once. Adding an item is constant-time.
-- **Delivery leaves the writing thread.** An idle lane is woken on the
-  session's execution context. So an extension callback no longer runs on the
-  thread that writes the state or publishes the message. One wake-up serves
-  every item that waits.
+- **One queue entry per call.** A notification is queued as one check and one
+  call per extension. So every call settles on its own: a call that fails, is
+  interrupted or is cancelled is reported, and the next call starts. Nothing
+  starts for a notification once the runtime is stopped.
+- **Delivery leaves the writing thread.** The loop of the lane runs only in
+  tasks of the session's execution context. An idle lane is woken there, and
+  one wake-up serves every item that waits while the callbacks complete at
+  once. After a callback or a guarded check that completes later, the lane
+  goes on in a new task. So an extension callback never runs on the thread
+  that writes the state, publishes the message or completes another callback.
+- **The lane has explicit states.** Nobody owns it, a loop is submitted, a
+  loop owns it, it was closed while a loop owned it, or it is closed for good.
+  Only the owner of the loop marks a closed lane idle, or `close` itself when
+  nobody owns the lane. So teardown never sees "idle" while a callback runs.
+  When the execution context refuses a loop, the items stay queued for the
+  next wake-up, and the refusal is reported once.
 - **Recording happens at the source.** The top-level component instance tells
   an observer about each write, before the write is queued for rendering. The
   hub and the two public streams of the application instance are gone. Before
-  delivery starts the runtime keeps only the newest state, so recording needs
-  constant memory.
+  delivery starts the runtime keeps only the newest state. Messages are never
+  folded, so every message that is published before delivery starts is kept
+  until then.
 - **Setup failures are reported.** The runtime reports a failed `setup` as
   `Extension <name>: setup failed`. Guarded sessions did not report it before.
-- **The bound has two errors.** A guarded session fails a call that runs out
-  of time with `SessionAccessDenied`, as before. A legacy session uses
-  `ExtensionRuntime.TimedOut`.
+- **The handlers are handed over inside the bounded call.** So the handlers
+  of a `setup` reach the runtime also when the attach has given up on that
+  `setup`, or was cancelled while it waited.
+- **The bound has one error.** A call that runs out of time fails with
+  `ExtensionRuntime.TimedOut` in both session modes. It is not a denied
+  access, so it is always reported. A guarded attach whose `setup` ran out of
+  time still fails with `SessionAccessDenied`, as before.
 - **A legacy session arms its close watcher before setup**, as it did for a
-  view without extensions. When the connection closes during setup, the
-  watcher stops the runtime, and the remaining extensions are not set up. A
-  guarded session checks its terminal signal before each `setup`.
+  view without extensions. The watcher waits for the connection to close, and
+  then for the attach to settle. The attach registers the view or rolls it
+  back, and it is not cancelable. So a retired view is never registered
+  afterwards. When the connection closes during setup, the next `setup` does
+  not start, and the attach is rolled back. A guarded session checks its
+  terminal signal before each `setup`.
+- **The guarded checks fail closed.** A check that cannot complete denies the
+  view, whatever the reason. The runtime reports a failure that is not a
+  denied access, so delivery never stops without a trace.
+- **A render wait fails when the view closes.** `transitionForce` waits for
+  its render. A view that closes drops its render queue, and the waiting call
+  then fails with `SessionAccessDenied`. Before, it stayed pending for ever.
+  Teardown waits for the callback in flight, so a callback that waited for
+  such a call would have cost the full bound.
 - **Teardown before the first delivery.** When a view ends after delivery was
   started but before the lane ran, the attach state is not delivered.
   `onDestroy` then receives the admitted state.
@@ -847,33 +926,67 @@ The one increase is the attach state of a session that did not receive it
 before.
 
 End-to-end click latency was compared with the click harness, with and
-without extensions. It did not change beyond the spread between runs; see the
-[event latency report](event-latency-performance.md#extensions).
+without extensions; see the
+[event latency report](event-latency-performance.md#extensions). One case
+changed: an unguarded session with three extensions and 16 concurrent users.
+Its median p50 rose from 0.90 to 1.03 ms. That is the hop to the execution
+context for each state change. With one user, in a guarded session and without
+extensions, latency did not change beyond the spread between runs.
 
 The lane was also run under load on a thread pool: a burst of 100,000
 notifications, and a backlog of 200,000 notifications behind a pending
 callback. Both complete in well under a second on a development machine.
-`ExtensionVolumeSpec` runs them with a 30-second limit, so it fails when
-delivery turns quadratic, overflows the stack or stops.
+`ExtensionVolumeSpec` runs them with a 30-second limit over adding and
+delivering, so it fails when either turns quadratic, overflows the stack or
+stops.
 
 ### Tests
 
 | Spec | What it covers |
 | --- | --- |
-| `SerialLaneSpec` | Order, one handler at a time, no handler on the adding thread, stack safety, close and idle, many adding threads |
-| `ExtensionRuntimeDeliverySpec` | The attach state, folding, order, one callback at a time, failure isolation, the guarded check |
-| `ExtensionRuntimeLifecycleSpec` | Setup order, failed and pending setup, late results, teardown order, `lastState`, pending and failing `onDestroy` |
-| `ExtensionContractSpec` | The contract through a real session service, in a legacy session and in guarded sessions that retain, reconstruct or snapshot their state |
+| `SerialLaneSpec` | Order, one handler at a time, no handler on the adding thread or on the completing thread, the failure hook, a refused execution context, stack safety, close and idle, racing writers and closes |
+| `ExtensionRuntimeDeliverySpec` | The attach state, folding, what is kept before delivery, order, one callback at a time, a new task after a late callback or check, failure isolation, the guarded check, a stop between two extensions |
+| `ExtensionRuntimeLifecycleSpec` | Setup order, failed and pending setup, late results, a connection that is gone, teardown order, `lastState`, pending and failing `onDestroy` |
+| `ExtensionContractSpec` | The contract through a real session service, in a legacy session and in guarded sessions that retain, reconstruct or snapshot their state. Also: a connection that closes during the last `setup`, a guard that rejects a delivery or the attach state, an `onDestroy` that never completes in a guarded session, and the state after a failed legacy attach |
 | `ExtensionImapStateSpec` | `imapState` in the same four session modes |
-| `ExtensionHandlersSpec` | `Handlers.apply`, `Handlers.partial` and the named constructors |
+| `ExtensionHandlersSpec` | `Handlers.apply`, `Handlers.partial`, a `null` callback and the named constructors |
 | `ExtensionCostSpec` | Guard observations per attach, click and message; rendering does not wait for an extension |
-| `ExtensionVolumeSpec` | A long burst and a large backlog |
-| `ExtensionAdapterChecks` | The contract under `Future`, cats-effect `IO` and ZIO |
+| `ExtensionVolumeSpec` | A long burst and a large backlog, each with a time limit over adding and delivering |
+| `ExtensionAdapterChecks` | The contract under `Future`, cats-effect `IO` and ZIO. With the two lazy effects also a handler that is interrupted or cancelled, and an attach that is cancelled during a `setup`. With ZIO also a child fiber and a daemon fiber of a handler |
+| `TimerApplicationSpec` | A `transitionForce` whose render can no longer happen fails |
 
 ## Review record
 
-Two reviews checked the design against the runtime. Every finding was checked
-before it was accepted.
+Two reviews checked the design against the runtime. A third one checked the
+implementation. Every finding was checked before it was accepted.
+
+### Third review (implementation)
+
+A review of commit `50f5edaf`, 2026-11-14. Eleven reviewers read the code from
+different angles, and their findings were merged into 31. For eight of them,
+independent checks confirmed the finding before the review ran out of budget.
+The other 23 were checked by hand against the code, most with a test.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| A legacy connection that closed during the last `setup` left the retired view registered for good. Later attaches of that session got a dead view | High | The close watcher waits until the attach has registered the view or rolled it back. A `setup` fails when its view was torn down meanwhile. A case in every session mode covers it |
+| With ZIO, an attach that was interrupted during a `setup` lost the handlers of that `setup`. They were neither kept nor destroyed | High | The handlers are handed over inside the bounded call. The legacy attach and the retirement of a view are not cancelable |
+| With ZIO, work that a handler starts with `.fork` is interrupted when the handler returns. In 10 it lived as long as the view | High | Kept. [Proposal 3](#3-one-ordered-lane-per-view) and the migration guide name `.forkDaemon`, and a test pins both behaviours |
+| A late idle signal of the lane could let `onDestroy` overlap a callback, without a report | Medium | The lane has explicit states. Only the owner of the loop marks a closed lane idle |
+| After a callback that completed later, the lane went on on the completing thread. With `Future` that can be the thread that renders | Medium | The lane goes on in a new task, also after a guarded check |
+| An `onDestroy` that ran out of time in a guarded session was not reported, and neither was one that failed with a denied access | Medium | The bound has its own error in both session modes. Only `onState` and `onMessage` are excused for a denied access |
+| An interrupted or cancelled handler skipped the extensions after it, and nothing was reported | Medium | Each call settles on its own. Every outcome that is not a success is reported |
+| A delivery check that failed without denying the view stopped delivery in silence | Medium | The checks deny the view on any failure. The runtime reports a failure that is not a denied access |
+| A legacy `setup` can no longer wait for the browser, and no document said so. The design said that user events run during setup, which cannot happen | Medium | The rule stays: guarded sessions always had it. [Setup](#4-setup), the breaking changes, the migration guide and the scaladoc state it, and the wrong sentence is corrected. Open question 4 keeps the alternative |
+| A failed legacy attach kept the state that a `setup` wrote. The next attach trusted a state the browser never got | Medium | The rollback writes back the state the page was rendered with |
+| A `transitionForce` whose render was dropped at close stayed pending. A callback that waited for it held teardown for the full bound | Medium | A closed render queue fails the waiting call |
+| With ZIO, a rollback that was interrupted was never finished | Medium | Retiring a view is not cancelable |
+| No test let a real guarded session reject a delivery. The backlog test's time limit covered neither the producing loop nor the drain | Medium | The session fixture has a guard that can be revoked, with cases for a rejected message and a rejected attach state. Both volume tests measure from the first notification |
+| The lane: a refused wake-up left items without a report, `idle` waited for a loop that was submitted but could not start a handler, and callbacks started after a stop for the extensions that had not seen the notification | Low | The refusal is reported and the next wake-up tries again. `close` settles a submitted loop. Each call checks the stop |
+| Setup and attach: a late `setup` result could be destroyed while the view was still open; with missing state a failed `setup` was answered with a reload; a failing storage removal kept the registration; with ZIO a failed `setup` could fail the attach with the wrong error | Low | A late result is destroyed with the teardown. Only a failed rebuild is answered with a reload. The removal is isolated. The entry is failed with the `setup` error before it is removed |
+| Documents: the README still named a message stream; the migration guide named a private type, said that a `null` callback fails to compile, and said that every call on a closed access fails; the user guide linked the new documents through the 10.0.1 tag; the test plan said that every case runs in both session kinds | Low | Corrected. A `null` callback is now rejected when the handlers are built |
+| Tests: two assertions on the recorded states could not fail, the guarded fixture could not tell the admitted state from the one before it, and the cost spec could hang instead of fail | Low | The runtime exposes what it records. The fixture's connected state differs. The cost measurements have a time bound |
+| With `delayedRender`, a burst of more than 17 writes stalls the render loop | Low, not from this change | Not fixed here. The cause is in `Stream.buffer` and `Queue.dequeueAll`, and it needs its own change |
 
 ### Second review (revision 2)
 
@@ -908,10 +1021,12 @@ A review of commit `ca493150`, 2026-11-14.
    Messages cannot be dropped silently.
 3. **Is 10 seconds right for `setup` in a legacy session?** It could become a
    setting.
-4. **Should legacy sessions hold user events back until setup is done?**
-   Guarded sessions already do. Without it, a user event can run before an
-   extension is ready, and a state that it writes during setup can be folded
-   into the attach state.
+4. **Should a legacy session complete its connection before setup?** It did
+   in 10, so a `setup` could wait for the browser. Now both session modes
+   complete the connection after setup, and no user event runs before the
+   extensions are ready. A legacy session could run setup after the attach
+   again, and close the view when a `setup` fails. The two modes would then
+   differ in when the browser can be reached.
 5. **Should `onDestroy` also get the reason the view ended?** No use is known
    yet.
 6. **Should a state and a message have a defined order?** One useful rule: a

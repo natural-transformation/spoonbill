@@ -99,7 +99,7 @@ flowchart LR
 
 ### Core runtime pieces
 
-- **`ApplicationInstance[F, S, M]`**: one running session. It owns the render loop, state stream, message stream, and the `Frontend`.
+- **`ApplicationInstance[F, S, M]`**: one running session. It owns the render loop and the `Frontend`. It announces each top-level state write and each published message to an optional observer, the extension runtime.
 - **`Frontend[F]`**: parses incoming client messages into typed streams (`domEventMessages`, `browserHistoryMessages`) and sends DOM changes back.
 - **`ComponentInstance[F, ...]`**: applies the Avocet document to the render context, collects event handlers, and runs transitions.
 - **`Effect[F[_]]`**: Spoonbill abstracts over the effect type (Future / cats-effect / ZIO / etc).

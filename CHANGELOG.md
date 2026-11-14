@@ -23,15 +23,28 @@ applications that register extensions are affected. See the
   are destroyed. A legacy session used to log the failure and run without that
   extension, and a `setup` that never completed left the session without
   cleanup.
+- **Breaking:** a legacy session completes its connection after the last
+  `setup`, as a guarded session does. A `setup` that waits for the browser
+  (an `evalJs` result, a property read, a callback from the page) can no
+  longer complete, and the WebSocket opens after the last `setup`.
 - **Breaking:** the callbacks of a view run one at a time. `onDestroy` runs
   last, once, in reverse setup order in every session mode.
+- **Breaking:** with ZIO, each callback runs in a fiber of its own. Work that
+  a handler starts with `.fork` is interrupted when the handler returns; use
+  `.forkDaemon`.
 - Fix: a failed `onState` or `onMessage` no longer stops delivery to every
   extension for the rest of the session. It is reported with the extension's
-  name, and delivery continues.
+  name, and delivery continues. A handler that is interrupted or cancelled is
+  treated the same.
 - Fix: with a lazy effect, a state written during `setup` is no longer missed.
+- Fix: `transitionForce` fails with `SessionAccessDenied` when the view closes
+  before the change was rendered. It used to stay pending for ever.
+- Fix: a legacy attach that fails for a reason other than an invalid saved
+  render context frees its session entry. Later attaches of that session used
+  to wait without an end.
 - Add `Extension.Handlers.partial`, which takes partial functions and ignores
   a state or a message that is not matched. `Handlers.apply` no longer has
-  `null` defaults.
+  `null` defaults: a `null` callback is rejected when the handlers are built.
 - Add `Extension#imapState`, which runs an extension that is written for a
   part of the state inside an application with a larger state.
 - A view without extensions pays nothing for the extension runtime. With
@@ -39,10 +52,13 @@ applications that register extensions are affected. See the
   delivered state and per message, whatever the number of extensions. A
   guarded session with snapshots or reconstruction makes one more observation
   per attach, for the attach state. `ExtensionCostSpec` pins these numbers.
-- Extension delivery no longer runs on the thread that writes the state, and
-  it is stack-safe under a backlog.
+- Extension delivery no longer runs on the thread that writes the state or on
+  the thread that completed the previous callback, and it is stack-safe under
+  a backlog.
 - Internal: `ApplicationInstance.stateStream` and `messagesStream` are
-  removed. An `ApplicationInstance.Observer` replaces them.
+  removed, without a replacement outside the `spoonbill` package.
+- Internal: `AsyncTable.settled` completes when a key is no longer being
+  filled.
 
 ## 10.0.1 — 2026-11-12
 
