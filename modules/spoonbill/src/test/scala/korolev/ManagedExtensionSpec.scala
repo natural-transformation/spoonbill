@@ -18,7 +18,7 @@ class ManagedExtensionSpec extends AnyFlatSpec with Matchers {
 
   "Extension.managed" should "release a resource once when destroyed more than once" in {
     val releases = new AtomicInteger(0)
-    val extension = Extension.managed[Future, String, Any, String](
+    val extension = Extension.managed[Future, String, Any, String]("managed")(
       acquire = _ => Future.successful("resource"),
       release = _ => Future.successful(releases.incrementAndGet()).map(_ => ())
     ) { (_, _) =>
@@ -27,15 +27,15 @@ class ManagedExtensionSpec extends AnyFlatSpec with Matchers {
 
     val handlers = await(extension.setup(null))
 
-    await(handlers.onDestroy())
-    await(handlers.onDestroy())
+    await(handlers.onDestroy("last"))
+    await(handlers.onDestroy("last"))
 
     releases.get() shouldBe 1
   }
 
   it should "release a resource when handler setup fails after acquisition" in {
     val releases = new AtomicInteger(0)
-    val extension = Extension.managedF[Future, String, Any, String](
+    val extension = Extension.managedF[Future, String, Any, String]("managed")(
       acquire = _ => Future.successful("resource"),
       release = _ => Future.successful(releases.incrementAndGet()).map(_ => ())
     ) { (_, _) =>
@@ -50,19 +50,19 @@ class ManagedExtensionSpec extends AnyFlatSpec with Matchers {
 
   it should "release a resource when a wrapped onDestroy handler fails" in {
     val releases = new AtomicInteger(0)
-    val extension = Extension.managed[Future, String, Any, String](
+    val extension = Extension.managed[Future, String, Any, String]("managed")(
       acquire = _ => Future.successful("resource"),
       release = _ => Future.successful(releases.incrementAndGet()).map(_ => ())
     ) { (_, _) =>
       Extension.Handlers[Future, String, Any](
-        onDestroy = () => Effect[Future].fail(new RuntimeException("destroy failed"))
+        onDestroy = _ => Effect[Future].fail(new RuntimeException("destroy failed"))
       )
     }
 
     val handlers = await(extension.setup(null))
 
     an[RuntimeException] shouldBe thrownBy {
-      await(handlers.onDestroy())
+      await(handlers.onDestroy("last"))
     }
     releases.get() shouldBe 1
   }

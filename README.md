@@ -64,6 +64,7 @@ the managed IO application.
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
 * [Qualifying a payload adapter](docs/recovery-adapter-qualification.md) — portable UI recovery for external snapshot storage
+* [Migrating to 11.0: the extension contract](docs/migration-v11.md)
 * [Migrating to 10.0: Avocet 2 and portable UI recovery](docs/migration-v10.md)
 * [Migrating to 8.0: bounded resources and retention](docs/migration-v8.md)
 * [Migrating to 7.0: explicit state updates](docs/migration-v7.md)
@@ -98,7 +99,7 @@ flowchart LR
 
 ### Core runtime pieces
 
-- **`ApplicationInstance[F, S, M]`**: one running session. It owns the render loop, state stream, message stream, and the `Frontend`.
+- **`ApplicationInstance[F, S, M]`**: one running session. It owns the render loop and the `Frontend`. It announces each top-level state write and each published message to an optional observer, the extension runtime.
 - **`Frontend[F]`**: parses incoming client messages into typed streams (`domEventMessages`, `browserHistoryMessages`) and sends DOM changes back.
 - **`ComponentInstance[F, ...]`**: applies the Avocet document to the render context, collects event handlers, and runs transitions.
 - **`Effect[F[_]]`**: Spoonbill abstracts over the effect type (Future / cats-effect / ZIO / etc).

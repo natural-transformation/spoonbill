@@ -246,6 +246,7 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     val worker                        = new Worker
     val reports                       = new Reports
     val deleteFailure                 = new IllegalStateException("Synthetic component delete failure")
+    val extensionFailure              = new IllegalStateException("Synthetic extension failure")
     var destroyed                     = Vector.empty[String]
     var removals                      = 0
     var manager: StateManager[Future] = null
@@ -268,14 +269,14 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
       document = state => Html(body(if (state == 0) child(()) else div("removed"))),
       reporter = reports,
       extensions = List(
-        Extension.pure(_ =>
-          Extension.Handlers[Future, Int, Any](onDestroy = () => {
-            destroyed :+= "throwing"; throw new IllegalStateException("Synthetic extension failure")
+        Extension.pure[Future, Int, Any]("first")(_ =>
+          Extension.Handlers[Future, Int, Any](onDestroy = _ => {
+            destroyed :+= "first"; Future.unit
           })
         ),
-        Extension.pure(_ =>
-          Extension.Handlers[Future, Int, Any](onDestroy = () => {
-            destroyed :+= "following"; Future.unit
+        Extension.pure[Future, Int, Any]("throwing")(_ =>
+          Extension.Handlers[Future, Int, Any](onDestroy = _ => {
+            destroyed :+= "throwing"; throw extensionFailure
           })
         )
       )
@@ -296,7 +297,9 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     reports.errors.map(_._2) should contain(deleteFailure)
     await(first.release())
     worker.drain()
-    destroyed shouldBe Vector("throwing", "following")
+    // Reverse setup order. The failing extension does not stop the other one.
+    destroyed shouldBe Vector("throwing", "first")
+    reports.errors should contain("Extension throwing: onDestroy failed" -> extensionFailure)
     removals shouldBe 1
     await(service.getApp(qsid)) shouldBe None
     reports.errors should contain("Legacy session cleanup failed" -> deleteFailure)
@@ -346,8 +349,8 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
       document = state => Html(body(state.toString)),
       reporter = new Reports,
       extensions = List(
-        Extension.pure(_ =>
-          Extension.Handlers[Future, Int, Any](onDestroy = () => {
+        Extension.pure[Future, Int, Any]("recorder")(_ =>
+          Extension.Handlers[Future, Int, Any](onDestroy = _ => {
             destroyed = true; Future.unit
           })
         )

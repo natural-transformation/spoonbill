@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased
+
+Extensions get one contract for legacy and guarded sessions. This changes two
+signatures and several behaviours, so the next release is a major one. Only
+applications that register extensions are affected. See the
+[extension contract design](docs/extension-contract-design.md) and the
+[migration guide](docs/migration-v11.md).
+
+- **Breaking:** `Extension.Handlers.onDestroy` takes the last state:
+  `onDestroy(lastState)`. The view is closed before it runs, so the access
+  cannot read the state there.
+- **Breaking:** `Extension.apply`, `pure`, `managed` and `managedF` take a
+  name. Failure reports use it.
+- **Breaking:** `onState` is called first with the state the view has when
+  delivery starts. States that were written before that are folded into this
+  call: only the newest one is delivered. Extensions that replay the first
+  state in `setup` must drop that code.
+- **Breaking:** `setup` runs for one extension at a time, in registration
+  order, with a 10-second bound in every session mode. A failed `setup` fails
+  the attach: the view is closed, and the extensions that are already set up
+  are destroyed. A legacy session used to log the failure and run without that
+  extension, and a `setup` that never completed left the session without
+  cleanup.
+- **Breaking:** a legacy session completes its connection after the last
+  `setup`, as a guarded session does. A `setup` that waits for the browser
+  (an `evalJs` result, a property read, a callback from the page) can no
+  longer complete, and the WebSocket opens after the last `setup`.
+- **Breaking:** the callbacks of a view run one at a time. `onDestroy` runs
+  last, once, in reverse setup order in every session mode.
+- **Breaking:** with ZIO, each callback runs in a fiber of its own. Work that
+  a handler starts with `.fork` is interrupted when the handler returns; use
+  `.forkDaemon`.
+- Fix: a failed `onState` or `onMessage` no longer stops delivery to every
+  extension for the rest of the session. It is reported with the extension's
+  name, and delivery continues. A handler that is interrupted or cancelled is
+  treated the same.
+- Fix: with a lazy effect, a state written during `setup` is no longer missed.
+- Fix: `transitionForce` fails with `SessionAccessDenied` when the view closes
+  before the change was rendered. It used to stay pending for ever.
+- Fix: a legacy attach that fails for a reason other than an invalid saved
+  render context frees its session entry. Later attaches of that session used
+  to wait without an end.
+- Fix: a guarded attach that is cancelled (cats-effect, ZIO) cleans up after
+  itself: the view is closed and its attachment is released. It used to keep
+  both.
+- Add `Extension.Handlers.partial`, which takes partial functions and ignores
+  a state or a message that is not matched. `Handlers.apply` no longer has
+  `null` defaults: a `null` callback is rejected when the handlers are built.
+- Add `Extension#imapState`, which runs an extension that is written for a
+  part of the state inside an application with a larger state.
+- A view without extensions pays nothing for the extension runtime. With
+  extensions, a guarded session still makes one authority observation per
+  delivered state and per message, whatever the number of extensions. A
+  guarded session with snapshots or reconstruction makes one more observation
+  per attach, for the attach state. `ExtensionCostSpec` pins these numbers.
+- Extension delivery no longer runs on the thread that writes the state or on
+  the thread that completed the previous callback, and it is stack-safe under
+  a backlog.
+- Internal: `ApplicationInstance.stateStream` and `messagesStream` are
+  removed, without a replacement outside the `spoonbill` package.
+- Internal: `AsyncTable.settled` completes when a key is no longer being
+  filled.
+
 ## 10.0.1 — 2026-11-12
 
 Upgrade all Spoonbill modules together to `10.0.1` and align explicit Avocet
