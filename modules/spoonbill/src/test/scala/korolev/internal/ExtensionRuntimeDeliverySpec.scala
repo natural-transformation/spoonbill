@@ -4,6 +4,7 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Future, Promise}
 import spoonbill.server.SessionAccessDenied
+import spoonbill.snapshot.{ViewSnapshotError, ViewSnapshotException}
 
 /** What an extension receives, and in which order. */
 class ExtensionRuntimeDeliverySpec extends AnyFlatSpec with Matchers {
@@ -175,6 +176,23 @@ class ExtensionRuntimeDeliverySpec extends AnyFlatSpec with Matchers {
       "b.onState(2)"
     )
     f.errors shouldBe Vector("Extension a: onState failed" -> failure, "Extension a: onMessage failed" -> failure)
+  }
+
+  it should "be reported without what a snapshot provider attached to it" in {
+    val rejected = new ViewSnapshotException(ViewSnapshotError.StorageFailure)
+    rejected.initCause(new IllegalArgumentException("private provider detail"))
+    rejected.addSuppressed(new IllegalArgumentException("private suppressed detail"))
+    // A handler that waits for a write whose snapshot commit is rejected.
+    val f = new ExtensionRuntimeFixture()(f => List(f.recorder("a", onMessage = _ => Future.failed(rejected))))
+    f.attach()
+    f.runtime.message("m")
+    f.taken()
+    f.errors.map(_._1) shouldBe Vector("Extension a: onMessage failed")
+    val reported = f.errors.head._2
+    reported should not be theSameInstanceAs(rejected)
+    reported.asInstanceOf[ViewSnapshotException].error shouldBe ViewSnapshotError.StorageFailure
+    reported.getCause shouldBe null
+    reported.getSuppressed shouldBe empty
   }
 
   "The guarded check" should "run once per notification, not once per extension" in {

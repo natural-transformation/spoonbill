@@ -9,6 +9,7 @@ import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 import spoonbill.internal.ExtensionRuntime
 import spoonbill.server.SessionAccessDenied
+import spoonbill.snapshot.{ViewSnapshotError, ViewSnapshotException}
 import spoonbill.testExecution.defaultExecutor
 
 /**
@@ -56,6 +57,27 @@ class ExtensionContractSpec extends AnyFlatSpec with Matchers with Eventually {
         Vector(classOf[ExtensionRuntime.TimedOut])
     }
     eventually(view.registered shouldBe false)
+  }
+
+  // A snapshot provider can attach private details to a rejection. Only the
+  // error code may reach the reporter, also through the extension runtime.
+  "A guarded session with snapshots" should "report a commit that is rejected during setup without its private details" in {
+    val rejected = new ViewSnapshotException(ViewSnapshotError.StorageFailure)
+    rejected.initCause(new IllegalArgumentException("private provider detail"))
+    rejected.addSuppressed(new IllegalArgumentException("private suppressed detail"))
+    val log  = new Log
+    val view = new View(Mode.Snapshots, List(recorder(log, "writer", onSetup = _.transitionForce(_ => "changed"))))
+    // The snapshot is initialized. The write of the setup is the first commit.
+    view.rejectCommits(rejected)
+    view.tryAttach().failed.get should be theSameInstanceAs rejected
+    view.errors.map(_._1) should contain("Extension writer: setup failed")
+    view.errors.foreach { case (_, reported) =>
+      reported should not be theSameInstanceAs(rejected)
+      reported.getCause shouldBe null
+      reported.getSuppressed shouldBe empty
+    }
+    view.errors.collect { case (_, reported: ViewSnapshotException) => reported.error }.distinct shouldBe
+      Vector(ViewSnapshotError.StorageFailure)
   }
 
   guarded.foreach(deniedDelivery)

@@ -4,7 +4,7 @@ import avocet.dsl.*
 import avocet.dsl.html.*
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
@@ -74,9 +74,12 @@ private[services] object ExtensionContractFixture {
   /**
    * @param allowance
    *   the number of states the guard still accepts
+   * @param commitFailure
+   *   once set, every snapshot commit fails with it
    */
   private def control(
     allowance: AtomicInteger,
+    commitFailure: AtomicReference[Option[Throwable]],
     reconstructed: Boolean,
     snapshots: Boolean = false
   ): SessionAccessControl[Future, String] =
@@ -92,7 +95,8 @@ private[services] object ExtensionContractFixture {
             Option.when(snapshots)(new ViewSnapshotSession[Future, String] {
               def ownerEpoch: ViewOwnershipEpoch            = ViewOwnershipEpoch.initial
               def initialize(fresh: String): Future[String] = Future.successful(fresh)
-              def commit(candidate: String): Future[Unit]   = Future.unit
+              def commit(candidate: String): Future[Unit] =
+                commitFailure.get().fold(Future.unit)(Future.failed)
             })
           def authorize(state: String): Future[Unit] =
             if (allowance.getAndDecrement() <= 0) Future.failed(new SessionAccessDenied) else Future.unit
@@ -148,9 +152,10 @@ private[services] object ExtensionContractFixture {
     rendered: Boolean = true,
     limitedReads: Boolean = false
   ) {
-    val reports           = new Reports
-    private val allowance = new AtomicInteger(Int.MaxValue)
-    private val readsLeft = new AtomicInteger(Int.MaxValue)
+    val reports               = new Reports
+    private val allowance     = new AtomicInteger(Int.MaxValue)
+    private val readsLeft     = new AtomicInteger(Int.MaxValue)
+    private val commitFailure = new AtomicReference(Option.empty[Throwable])
     // A legacy session gets a storage the test can read. A guarded session
     // keeps its own, unless the test wants to break its reads.
     private val storage =
@@ -165,9 +170,9 @@ private[services] object ExtensionContractFixture {
       extensions = extensions,
       sessionAccessControl = mode match {
         case Mode.Legacy        => None
-        case Mode.Retained      => Some(control(allowance, reconstructed = false))
-        case Mode.Reconstructed => Some(control(allowance, reconstructed = true))
-        case Mode.Snapshots     => Some(control(allowance, reconstructed = false, snapshots = true))
+        case Mode.Retained      => Some(control(allowance, commitFailure, reconstructed = false))
+        case Mode.Reconstructed => Some(control(allowance, commitFailure, reconstructed = true))
+        case Mode.Snapshots     => Some(control(allowance, commitFailure, reconstructed = false, snapshots = true))
       }
     )
     private val service = new SessionsService(config, new PageService(config))
@@ -187,6 +192,9 @@ private[services] object ExtensionContractFixture {
 
     /** From now on the guard rejects every state. */
     def revoke(): Unit = revokeAfter(0)
+
+    /** From now on a session with snapshots fails every commit with `error`. */
+    def rejectCommits(error: Throwable): Unit = commitFailure.set(Some(error))
 
     /**
      * The storage answers `reads` more state reads, and fails every read after

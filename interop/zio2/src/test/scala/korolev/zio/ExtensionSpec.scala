@@ -8,6 +8,7 @@ import scala.concurrent.duration.DurationInt
 import spoonbill.Extension
 import spoonbill.effect.{Effect, Reporter}
 import spoonbill.internal.{ExtensionAdapterChecks, ExtensionRuntime}
+import spoonbill.server.internal.services.ExtensionSessionChecks
 
 /** The shared extension checks under a lazy effect. */
 class ExtensionSpec extends AnyFlatSpec {
@@ -32,6 +33,15 @@ class ExtensionSpec extends AnyFlatSpec {
 
   it should "keep the handlers of a setup whose attach was interrupted" in {
     ExtensionAdapterChecks.cancelledAttach[Task] { attach =>
+      Unsafe.unsafe { implicit unsafe =>
+        val fiber = Runtime.default.unsafe.fork(attach)
+        () => { Runtime.default.unsafe.run(fiber.interrupt); () }
+      }
+    }
+  }
+
+  it should "clean up a guarded attach that was interrupted during a setup" in {
+    ExtensionSessionChecks.cancelledGuardedAttach[Task] { attach =>
       Unsafe.unsafe { implicit unsafe =>
         val fiber = Runtime.default.unsafe.fork(attach)
         () => { Runtime.default.unsafe.run(fiber.interrupt); () }

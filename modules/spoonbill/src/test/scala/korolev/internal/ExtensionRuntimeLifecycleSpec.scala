@@ -4,11 +4,32 @@ import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Future, Promise}
 import spoonbill.server.SessionAccessDenied
+import spoonbill.snapshot.{ViewSnapshotError, ViewSnapshotException}
 
 /** Setup and teardown: who is set up, who is destroyed, and in which order. */
 class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
 
   private val failure = new IllegalStateException("synthetic")
+
+  /**
+   * A snapshot rejection as a provider can raise it, with private details
+   * attached.
+   */
+  private def rejection(): ViewSnapshotException = {
+    val rejected = new ViewSnapshotException(ViewSnapshotError.StorageFailure)
+    rejected.initCause(new IllegalArgumentException("private provider detail"))
+    rejected.addSuppressed(new IllegalArgumentException("private suppressed detail"))
+    rejected
+  }
+
+  /** The report carries the error code of the rejection and nothing else. */
+  private def redacted(reported: Throwable, original: ViewSnapshotException): Unit = {
+    reported should not be theSameInstanceAs(original)
+    reported shouldBe a[ViewSnapshotException]
+    reported.asInstanceOf[ViewSnapshotException].error shouldBe original.error
+    reported.getCause shouldBe null
+    reported.getSuppressed shouldBe empty
+  }
 
   "Setup" should "run for one extension at a time, in registration order" in {
     val gate = Promise[Unit]()
@@ -31,6 +52,23 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     // The session closes the view, then asks for the rollback.
     f.result(f.runtime.destroy())
     f.taken() shouldBe Vector("a.onDestroy(5)")
+  }
+
+  it should "report a snapshot rejection of a setup without what its provider attached" in {
+    val rejected = rejection()
+    val f        = new ExtensionRuntimeFixture()(f => List(f.recorder("a", onSetup = () => Future.failed(rejected))))
+    // The attach still fails with the original error.
+    f.result(f.setup().failed) should be theSameInstanceAs rejected
+    f.errors.map(_._1) shouldBe Vector("Extension a: setup failed")
+    redacted(f.errors.head._2, rejected)
+  }
+
+  it should "redact a snapshot rejection that the extension wrapped" in {
+    val rejected = rejection()
+    val wrapped  = new IllegalStateException("The setup could not write", rejected)
+    val f        = new ExtensionRuntimeFixture()(f => List(f.recorder("a", onSetup = () => Future.failed(wrapped))))
+    f.result(f.setup().failed) should be theSameInstanceAs wrapped
+    redacted(f.errors.head._2, rejected)
   }
 
   it should "treat a setup that throws like one that fails" in {
@@ -120,6 +158,51 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     f.taken() shouldBe Vector("c.onDestroy(4)", "b.onDestroy(4)", "a.onDestroy(4)")
     f.result(f.runtime.destroy())
     f.taken() shouldBe empty
+  }
+
+  it should "pass each extension the last state that its own onState received" in {
+    val gate = Promise[Unit]()
+    val f = new ExtensionRuntimeFixture()(f =>
+      List(f.recorder("a", onState = state => if (state == 1) gate.future else Future.unit), f.recorder("b"))
+    )
+    f.attach(admitted = 0)
+    f.runtime.state(1)
+    f.taken() shouldBe Vector("a.setup", "b.setup", "a.onState(0)", "b.onState(0)", "a.onState(1)")
+    // The view ends while the first extension still handles state 1. The
+    // second extension never gets it.
+    val done = f.runtime.destroy()
+    f.bound.expire()
+    f.result(done)
+    f.taken() shouldBe Vector("b.onDestroy(0)", "a.onDestroy(1)")
+  }
+
+  it should "not pass a state that passed its check but reached no extension" in {
+    val gate = Promise[Unit]()
+    val checked = Some(new ExtensionRuntime.Checks[Future, Int, String] {
+      def state(value: Int): Future[Unit]      = if (value == 1) gate.future else Future.unit
+      def message(value: String): Future[Unit] = Future.unit
+    })
+    val f = new ExtensionRuntimeFixture(checked)(f => List(f.recorder("a")))
+    f.attach(admitted = 0)
+    f.taken() shouldBe Vector("a.setup", "a.onState(0)")
+    f.runtime.state(1)
+    f.taken() shouldBe empty
+    // The check of state 1 passes, and the view ends before the callback runs.
+    gate.success(())
+    f.logged shouldBe empty
+    f.result(f.runtime.destroy())
+    // An extension that cleans up after the state it last saw must get state 0.
+    f.taken() shouldBe Vector("a.onDestroy(0)")
+  }
+
+  it should "report a snapshot rejection of onDestroy without what its provider attached" in {
+    val rejected = rejection()
+    val f        = new ExtensionRuntimeFixture()(f => List(f.recorder("a", onDestroy = _ => Future.failed(rejected))))
+    f.attach()
+    f.taken()
+    f.result(f.runtime.destroy())
+    f.errors.map(_._1) shouldBe Vector("Extension a: onDestroy failed")
+    redacted(f.errors.head._2, rejected)
   }
 
   it should "pass the admitted state when no state was delivered" in {

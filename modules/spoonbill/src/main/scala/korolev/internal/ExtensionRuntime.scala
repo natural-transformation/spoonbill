@@ -8,6 +8,7 @@ import spoonbill.{Context, Extension}
 import spoonbill.effect.{Effect, Reporter}
 import spoonbill.effect.syntax.*
 import spoonbill.server.SessionAccessDenied
+import spoonbill.snapshot.ViewSnapshotException
 
 /**
  * Owns the extensions of one attached view: setup, delivery and teardown.
@@ -49,7 +50,12 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
 
   import ExtensionRuntime.*
 
-  private final case class Active(name: String, handlers: Extension.Handlers[F, S, M])
+  private final class Active(val name: String, val handlers: Extension.Handlers[F, S, M]) {
+    // The last state that was passed to this extension's onState. It is set
+    // when the call is made, not when the state passes its check: a view can
+    // end between the two, and then this extension never got that state.
+    @volatile var received = Option.empty[S]
+  }
 
   // What the lane handles. One notification is a check followed by one call
   // per extension, so every call settles on its own and none can hold back or
@@ -75,10 +81,9 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
   // took the list: an extension that completes later destroys itself.
   private val active = new AtomicReference(Option(List.empty[Active]))
 
-  @volatile private var stopped       = false
-  @volatile private var admitted      = Option.empty[S]
-  @volatile private var lastDelivered = Option.empty[S]
-  @volatile private var ordered       = List.empty[Active]
+  @volatile private var stopped  = false
+  @volatile private var admitted = Option.empty[S]
+  @volatile private var ordered  = List.empty[Active]
 
   // --- Observer: called by the application instance on the writing thread ---
 
@@ -139,7 +144,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
           bound(
             Effect[F]
               .delayAsync(extension.setup(access))
-              .flatMap(handlers => register(Active(extension.name, handlers))),
+              .flatMap(handlers => register(new Active(extension.name, handlers))),
             (_: Boolean) => Effect[F].unit
           ).recoverF { case error =>
             report(extension.name, Setup, error)
@@ -199,14 +204,14 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
         checks match {
           // A legacy session has no checks, and then this costs nothing.
           case None =>
-            admit(delivery)
+            delivery.admitted = true
             Effect[F].unit
           case Some(guarded) =>
             val check = delivery.notification match {
               case Notification.State(value)   => guarded.state(value)
               case Notification.Message(value) => guarded.message(value)
             }
-            check.map(_ => admit(delivery))
+            check.map(_ => delivery.admitted = true)
         }
     case Call(delivery, entry) =>
       // Nothing starts once teardown began, also not for the extensions that
@@ -214,17 +219,11 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
       if (stopped || !delivery.admitted) Effect[F].unit
       else
         delivery.notification match {
-          case Notification.State(value)   => entry.handlers.onState(value)
+          case Notification.State(value) =>
+            entry.received = Some(value)
+            entry.handlers.onState(value)
           case Notification.Message(value) => entry.handlers.onMessage(value)
         }
-  }
-
-  private def admit(delivery: Delivery): Unit = {
-    delivery.notification match {
-      case Notification.State(value) => lastDelivered = Some(value)
-      case _                         => ()
-    }
-    delivery.admitted = true
   }
 
   /**
@@ -261,8 +260,12 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
     case _                                                                                   => reportError(s"Extension $name: $callback failed", error)
   }
 
+  /**
+   * Every report of the runtime passes through here. A snapshot rejection can
+   * carry private details of its provider, so only its error code is reported.
+   */
   private def reportError(message: String, error: Throwable): Unit =
-    try reporter.error(message, error)
+    try reporter.error(message, ViewSnapshotException.reportable(error))
     catch { case NonFatal(_) => () }
 
   // --- Teardown ---
@@ -312,15 +315,15 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    */
   private def destroyOne(entry: Active): F[Unit] =
     Effect[F].delayAsync {
-      bound(Effect[F].delayAsync(entry.handlers.onDestroy(lastState)), (_: Unit) => Effect[F].unit)
+      bound(Effect[F].delayAsync(entry.handlers.onDestroy(lastState(entry))), (_: Unit) => Effect[F].unit)
     }.recover { case error => report(entry.name, OnDestroy, error) }
 
   /**
-   * The last delivered state, or the admitted state. Both passed a check
-   * earlier.
+   * The last state that this extension's `onState` received, or the admitted
+   * state. Both passed a check earlier.
    */
-  private def lastState: S =
-    lastDelivered.orElse(admitted).getOrElse(throw new IllegalStateException("No admitted state"))
+  private def lastState(entry: Active): S =
+    entry.received.orElse(admitted).getOrElse(throw new IllegalStateException("No admitted state"))
 
   /** Steps that wait in the lane. For tests and diagnostics. */
   private[spoonbill] def pending: Int = lane.size

@@ -122,8 +122,10 @@ object Extension {
      * access fails, and nothing can be written or published any more.
      *
      * @param lastState
-     *   the last state that was passed to `onState`. If none was, the state the
-     *   view was accepted with.
+     *   the last state that was passed to `onState` of these handlers. A state
+     *   that was written but did not reach `onState` before the view ended is
+     *   not passed here either. If no state was passed, the state the view was
+     *   accepted with.
      */
     def onDestroy(lastState: S): F[Unit]
   }

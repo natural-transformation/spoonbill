@@ -531,30 +531,51 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // does not release a session that is about to be attached.
     } yield SessionStart.Attached(frontend.outgoingMessages, () => cleanup())
 
-    Effect[F].delay {
+    // Whether this attach holds the attachment of the view, and whether it has
+    // completed. In between, the attach owns everything it has created so far.
+    val owned    = new AtomicBoolean(false)
+    val attached = new AtomicBoolean(false)
+
+    val attach = Effect[F].delay {
       if (config.sessionIdleTimeout.toMillis <= 0 || guardedAttachments.putIfAbsent(qsid, connectionId).nonEmpty)
         throw new SessionAccessDenied
+      owned.set(true)
     }.flatMap { _ =>
-      retryStorageRemoval(qsid).flatMap(_ => create()).recoverF[SessionStart[F]] {
-        // A missing baseline can be discovered after the guard is acquired.
-        // Cleanup still closes that guard; the successful recovery result is reload.
-        case MissingLocalView => cleanup().map(_ => SessionStart.Reload(): SessionStart[F])
-        case error =>
-          cleanup() *> Effect[F].delay {
-            error match {
-              case snapshot: spoonbill.snapshot.ViewSnapshotException =>
-                // Report only the closed error code, never a caller-supplied
-                // cause, suppressed exception, view identity or projection.
-                try
-                  config.reporter.error(
-                    "Guarded view snapshot setup rejected",
-                    new spoonbill.snapshot.ViewSnapshotException(snapshot.error)
-                  )
-                catch { case scala.util.control.NonFatal(_) => () }
-              case _ => ()
-            }
-          } *> Effect[F].fail(error)
-      }
+      retryStorageRemoval(qsid)
+        .flatMap(_ => create())
+        .map[SessionStart[F]] { started =>
+          attached.set(true)
+          started
+        }
+        .recoverF[SessionStart[F]] {
+          // A missing baseline can be discovered after the guard is acquired.
+          // Cleanup still closes that guard; the successful recovery result is reload.
+          case MissingLocalView => cleanup().map(_ => SessionStart.Reload(): SessionStart[F])
+          case error =>
+            cleanup() *> Effect[F].delay {
+              error match {
+                case snapshot: spoonbill.snapshot.ViewSnapshotException =>
+                  // Report only the closed error code, never a caller-supplied
+                  // cause, suppressed exception, view identity or projection.
+                  try
+                    config.reporter.error(
+                      "Guarded view snapshot setup rejected",
+                      new spoonbill.snapshot.ViewSnapshotException(snapshot.error)
+                    )
+                  catch { case scala.util.control.NonFatal(_) => () }
+                case _ => ()
+              }
+            } *> Effect[F].fail(error)
+        }
+    }
+
+    // A cancelled attach has no caller left to clean up after it, and its close
+    // watcher is not armed yet. So the attach cleans up itself: the view is
+    // closed, and the extensions that are set up are destroyed. A setup that
+    // returns afterwards finds the teardown done and destroys its handlers.
+    // After a failure the cleanup has run already, and it runs only once.
+    Effect[F].guarantee(attach) {
+      if (owned.get() && !attached.get()) cleanup() else Effect[F].unit
     }
   }
 

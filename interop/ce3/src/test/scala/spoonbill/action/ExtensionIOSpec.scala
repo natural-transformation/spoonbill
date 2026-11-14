@@ -8,6 +8,7 @@ import scala.concurrent.duration.*
 import spoonbill.cats.IO3Effect
 import spoonbill.effect.Effect
 import spoonbill.internal.ExtensionAdapterChecks
+import spoonbill.server.internal.services.ExtensionSessionChecks
 
 /** The shared extension checks under a lazy effect. */
 class ExtensionIOSpec extends AnyFlatSpec {
@@ -32,6 +33,13 @@ class ExtensionIOSpec extends AnyFlatSpec {
 
   it should "keep the handlers of a setup whose attach was cancelled" in {
     ExtensionAdapterChecks.cancelledAttach[IO] { attach =>
+      val cancel = attach.unsafeRunCancelable()
+      () => { Await.result(cancel(), 10.seconds); () }
+    }
+  }
+
+  it should "clean up a guarded attach that was cancelled during a setup" in {
+    ExtensionSessionChecks.cancelledGuardedAttach[IO] { attach =>
       val cancel = attach.unsafeRunCancelable()
       () => { Await.result(cancel(), 10.seconds); () }
     }
