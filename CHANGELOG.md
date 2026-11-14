@@ -44,7 +44,11 @@ applications that register extensions are affected. See the
   to wait without an end.
 - Fix: a guarded attach that is cancelled (cats-effect, ZIO) cleans up after
   itself: the view is closed and its attachment is released. It used to keep
-  both.
+  both. A cleanup that has started is not cancelable any more, so a
+  cancellation waits until it is done.
+- Fix: with `Future`, a 10-second bound that expires no longer continues the
+  teardown on the timer thread of the service, which serves the timers of
+  every view. `onDestroy` starts in a task of the execution context.
 - Add `Extension.Handlers.partial`, which takes partial functions and ignores
   a state or a message that is not matched. `Handlers.apply` no longer has
   `null` defaults: a `null` callback is rejected when the handlers are built.

@@ -1,9 +1,9 @@
 # Extension contract: design
 
-Status: revision 6, 2026-11-14. The proposal is implemented: all six steps of
+Status: revision 7, 2026-11-14. The proposal is implemented: all six steps of
 the [implementation plan](#implementation-plan), with the cases of the
 [test plan](#test-plan). It changes behaviour and signatures, so it targets the
-next major release. It folds in four reviews: two of the design and two of
+next major release. It folds in five reviews: two of the design and three of
 the implementation; see [review record](#review-record). Where the code
 differs from the text of revision 3,
 [implementation notes](#implementation-notes) says so.
@@ -305,7 +305,8 @@ it.
   state reads `access.state`.
 - A callback starts in a task of the session's execution context. It never
   starts inside the call that writes the state or publishes the message, and
-  never on the thread that completed the previous callback.
+  never on the thread that completed the previous callback. `onDestroy`
+  starts the same way.
 - The order and the guarantees are the same for `Future` and for lazy effects.
   One difference is listed below, for ZIO.
 
@@ -706,6 +707,12 @@ these configurations; see [implementation notes](#implementation-notes).
   flight and each `onDestroy` have their own 10-second bound, and they run in
   sequence. A guarded view cannot reattach until its cleanup is done. Without
   hanging handlers nothing changes.
+- **A cancelled request waits for the cleanup of its view.** With cats-effect
+  and ZIO an attach can be cancelled. When the cleanup of its view has
+  started, the cancellation returns when that cleanup is done, and a legacy
+  attach is not cancelable at all. So a cancellation can take as long as the
+  bounds of the cleanup. The other choice loses work: a cleanup that stops
+  halfway leaves extensions undestroyed.
 - **The lane is unbounded**, like the queues it replaces.
 - **Review cost.** Session creation is security-sensitive code. Moving the
   extension loops out of it must not change the order of the guarded checks.
@@ -837,6 +844,9 @@ Setup:
 - A guarded attach that is cancelled during a `setup` cleans up itself: the
   view is closed, and the handlers that the `setup` returns afterwards are
   destroyed with a closed access.
+- A guarded attach that is cancelled during its rollback still finishes the
+  rollback: the extensions that are set up are destroyed, also one whose
+  `setup` returns late, and the view is released.
 
 Destroy:
 
@@ -849,6 +859,11 @@ Destroy:
   other extensions from being destroyed, and do not stop the rest of the
   cleanup.
 - An `onDestroy` that runs out of time is reported in both session modes.
+- `onDestroy` starts in a task of the execution context. After a bound has
+  expired, neither the report nor the rest of the teardown runs on the timer
+  thread.
+- The release of an attached view that is cancelled still finishes the
+  cleanup, and the cancellation returns only then.
 - `access` fails with `SessionAccessDenied` inside `onDestroy`.
 - The first delivery is rejected by the guarded check: `onDestroy` receives the
   admitted state, not the rejected one.
@@ -941,6 +956,18 @@ The [migration guide](migration-v11.md) lists what an application changes.
   takes the list of handlers, so a `setup` that returns later destroys its
   handlers at once, with a closed view. A legacy attach is not cancelable at
   all.
+- **Nothing of an extension runs on the timer thread.** One timer thread
+  serves every bound, idle timeout and render timer of a service. With
+  `Future`, what waits for a bound goes on on the thread that completes it. So
+  an expired bound hands its waiter over to the execution context, and every
+  `onDestroy` call starts in a task of the execution context. Otherwise a slow
+  `onDestroy` after an expired bound would hold up the timers of every view.
+- **The guarded cleanup is not cancelable.** It claims its turn before it does
+  anything, so that it runs once. A cleanup that a cancelled request stopped
+  halfway would then never be finished: the next caller finds the turn taken.
+  So a cancellation waits until the cleanup is done, as it does when a legacy
+  view is retired. Every wait inside the cleanup that this change added has a
+  bound.
 
 ### Measured cost
 
@@ -958,6 +985,14 @@ The numbers are guard observations in a guarded session, counted by
 The numbers with extensions are the same for one and for three extensions.
 The one increase is the attach state of a session that did not receive it
 before.
+
+The numbers are those of production mode. In development mode an attach also
+reloads the style sheets, which is one more frame and one more observation.
+Development mode is a switch of the whole JVM, and two other suites turn it on
+while they run. `ExtensionCostSpec` sees the extra frame and repeats such a
+measurement. Those two suites now switch the flag under one lock. Before, two
+of them could save and restore it at the same time and leave it on for the
+rest of a run with parallel suites.
 
 End-to-end click latency was compared with the click harness, with and
 without extensions; see the
@@ -984,16 +1019,37 @@ stops.
 | `ExtensionContractSpec` | The contract through a real session service, in a legacy session and in guarded sessions that retain, reconstruct or snapshot their state. Also: a connection that closes during the last `setup`, a guard that rejects a delivery or the attach state, a state read that fails before a delivery, an `onDestroy` that never completes in a guarded session, an attach after the state was rebuilt, and the state after a failed legacy attach |
 | `ExtensionImapStateSpec` | `imapState` in the same four session modes |
 | `ExtensionHandlersSpec` | `Handlers.apply`, `Handlers.partial`, a `null` callback and the named constructors |
-| `ExtensionCostSpec` | Guard observations per attach, click and message; rendering does not wait for an extension |
+| `ExtensionCostSpec` | Guard observations per attach, click and message; rendering does not wait for an extension. A measurement that ran in development mode is repeated |
 | `ExtensionVolumeSpec` | A long burst and a large backlog, each with a time limit over adding and delivering |
 | `ExtensionAdapterChecks` | The contract under `Future`, cats-effect `IO` and ZIO. With the two lazy effects also a handler that is interrupted or cancelled, and an attach that is cancelled during a `setup`. With ZIO also a child fiber and a daemon fiber of a handler |
-| `ExtensionSessionChecks` | With cats-effect `IO` and ZIO, through a real session service: a guarded attach that is cancelled during a `setup` |
+| `ExtensionSessionChecks` | With cats-effect `IO` and ZIO, through a real session service: a guarded attach that is cancelled during a `setup`, one that is cancelled during its rollback, and an attached view whose release is cancelled. With cats-effect also a rollback after a `setup` ran out of time, with a late result |
 | `TimerApplicationSpec` | A `transitionForce` whose render can no longer happen fails |
 
 ## Review record
 
-Two reviews checked the design against the runtime. Two more checked the
+Two reviews checked the design against the runtime. Three more checked the
 implementation. Every finding was checked before it was accepted.
+
+### Fifth review (implementation, follow-up)
+
+A review of commit `fa7f632d`, 2026-11-14. It found the redaction and the
+per-extension `lastState` resolved, and the cancelled attach partly resolved.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| A guarded rollback claims its once-only cleanup before it does anything. A request that was cancelled while the cleanup waited for the guard to close stopped it there. The finalizer of the attach then found the cleanup claimed and returned, so the extensions were not destroyed, and a `setup` that returned late kept its handlers | P2 | The guarded cleanup is not cancelable, like the retirement of a legacy view. A cancellation waits until it is done. Three real-session checks failed before the fix: a cancelled rollback under cats-effect and ZIO, and under cats-effect the reviewed case, a rollback after a `setup` ran out of time with a late result |
+| In one full run of the main module two `ExtensionCostSpec` assertions saw one observation too many for a retained attach. The run did not repeat | Test | The cause is development mode, a switch of the whole JVM that two other suites turn on while they run. In that mode an attach reloads the style sheets: one more frame and one more observation. Forcing the mode on gives exactly the two failures. The two suites saved and restored the flag without a common lock, so with parallel suites it could stay on; they now switch it under one lock. The spec detects the extra frame and repeats the measurement, waits for the attach delivery itself instead of a number of turns, and prints the observations when a count is wrong. Three runs of the main module with parallel suites pass |
+
+The fix was then checked by four independent reviewers, each with its own
+lens: cancellation under cats-effect, interruption under ZIO, the runtime and
+possible hangs, and the tests. One skeptic tried to refute each finding. They
+found no defect in the fix and no way for the cleanup to hang or deadlock.
+They found the two points below.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| With `Future`, an expired bound completed its waiter on the timer thread of the service. The rest of the teardown went on there: the report, the next `onDestroy` calls, the storage removal. That thread serves the timers of every view | Low | An expired bound hands its waiter over to the execution context, and every `onDestroy` call starts in a task of the execution context. The two ten-second cases assert that neither the report nor `onDestroy` runs on the timer thread; they fail with the hand-over switched off |
+| The session checks asserted that the view was not registered, which cannot fail when the attach never completed. One check did not prove that the view was released, and a failing check could leave its gates closed | Test | The checks prove the release by attaching again, open their gates in a `finally`, and a new check cancels the release of an attached view, where the registry does hold the view |
 
 ### Fourth review (implementation, second pass)
 

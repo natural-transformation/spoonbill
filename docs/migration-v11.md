@@ -244,6 +244,9 @@ onState = { case State.Loading(request) => load(request).forkDaemon.unit }
   sessions used setup order in 10.
 - `onDestroy` is the last callback. The runtime waits up to 10 seconds for the
   callback that is still running.
+- `onDestroy` starts in a task of the session's execution context, like
+  `onState` and `onMessage`. In 10 it ran on whichever thread reached it,
+  which could be the timer thread of the service.
 - Each `onDestroy` has 10 seconds. A failure or a timeout is reported, and the
   other extensions are still destroyed. A timeout is an
   `ExtensionRuntime.TimedOut` in every session mode.
