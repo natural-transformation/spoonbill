@@ -58,6 +58,22 @@ class ExtensionHandlersSpec extends AnyFlatSpec with Matchers {
     await(handlers.onDestroy(2))
   }
 
+  "A null callback" should "be rejected when the handlers are built, with the name of the callback" in {
+    val state: Int => Future[Unit] = null
+    the[NullPointerException] thrownBy Extension.Handlers[Future, Int, String](onState = state) should have message
+      "onState is null. Leave it out for a callback that does nothing."
+    val message: PartialFunction[String, Future[Unit]] = null
+    (the[NullPointerException] thrownBy Extension.Handlers.partial[Future, Int, String](onMessage =
+      message
+    )).getMessage should
+      startWith("onMessage is null")
+    val destroy: Int => Future[Unit] = null
+    (the[NullPointerException] thrownBy Extension.Handlers.partial[Future, Int, String](onDestroy =
+      destroy
+    )).getMessage should
+      startWith("onDestroy is null")
+  }
+
   "The constructors" should "name the extension" in {
     Extension[Future, Int, String]("plain")(_ => Future.failed(new IllegalStateException)).name shouldBe "plain"
     Extension.pure[Future, Int, String]("pure")(_ => Extension.Handlers[Future, Int, String]()).name shouldBe "pure"

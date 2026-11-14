@@ -4,7 +4,7 @@ import avocet.dsl.*
 import avocet.dsl.html.*
 import avocet.events.EventPhase
 import java.util.UUID
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentLinkedQueue, Executors, TimeoutException, TimeUnit}
 import org.scalatest.flatspec.AsyncFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Future, Promise}
@@ -40,6 +40,31 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
   private implicit val effect: Effect[Future] = Effect.futureEffect
 
   private final case class Cost(attach: List[String], click: List[String], publish: List[String])
+
+  private val timeouts = Executors.newSingleThreadScheduledExecutor { task =>
+    val thread = new Thread(task, "extension-cost-timeout")
+    thread.setDaemon(true)
+    thread
+  }
+
+  /**
+   * Fails a measurement that stalls. So a delivery that is lost fails its test,
+   * and does not hang the build.
+   */
+  private def bounded[A](operation: Future[A]): Future[A] = {
+    val result = Promise[A]()
+    val timeout = timeouts.schedule(
+      new Runnable {
+        def run(): Unit = { result.tryFailure(new TimeoutException("The cost measurement stalled")); () }
+      },
+      20L,
+      TimeUnit.SECONDS
+    )
+    operation.onComplete { value =>
+      timeout.cancel(false); result.tryComplete(value); ()
+    }
+    result.future
+  }
 
   /**
    * Attaches a view, clicks once and publishes one message. It returns the
@@ -115,7 +140,7 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       if (rounds == 0) Future.unit else Future(()).flatMap(_ => settle(rounds - 1))
     val delivered = extensionCount > 0
 
-    for {
+    bounded(for {
       _     <- service.initAppState(qsid, request)
       _      = taken()
       _     <- service.createAppIfNeeded(qsid, request, incoming.stream)
@@ -138,7 +163,7 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       _      <- settle()
       publish = taken()
       _      <- app.frontend.close()
-    } yield Cost(attach, click, publish)
+    } yield Cost(attach, click, publish))
   }
 
   /**
@@ -185,7 +210,7 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
     val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
     def settle(rounds: Int = 20): Future[Unit] =
       if (rounds == 0) Future.unit else Future(()).flatMap(_ => settle(rounds - 1))
-    for {
+    bounded(for {
       _     <- service.initAppState(qsid, request)
       _      = observations.clear()
       _     <- service.createAppIfNeeded(qsid, request, Queue[Future, String]().stream)
@@ -194,7 +219,7 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
       _     <- settle()
       attach = observations.asScala.toList
       _     <- app.frontend.close()
-    } yield attach
+    } yield attach)
   }
 
   // The click of GuardedEventObservationSpec: five boundaries, five observations.
@@ -260,7 +285,8 @@ class ExtensionCostSpec extends AsyncFlatSpec with Matchers {
   }
 
   "Rendering" should "not wait for an extension callback that never completes" in {
-    // measure fails when the patch or the event-counter update is not published.
+    // measure fails when the patch or the event-counter update is not
+    // published: its time bound ends the wait for the missing frame.
     measure(extensionCount = 2, reconstructed = false, stall = true).map { cost =>
       cost.click.sorted shouldBe clickWithExtensions.sorted
     }

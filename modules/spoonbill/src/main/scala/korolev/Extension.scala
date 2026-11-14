@@ -47,6 +47,11 @@ trait Extension[F[_], S, M] { self =>
    * time bound. A failed `setup` fails the attach: the view is closed, and the
    * extensions that are already set up are destroyed.
    *
+   * The connection is completed after the last `setup`. Until then nothing is
+   * sent to the browser. So a `setup` must not wait for the browser: an
+   * `evalJs` result, a property read or a callback from the page cannot arrive
+   * before it completes. Start such a call without waiting for it.
+   *
    * @return
    *   the handlers of this extension for this view
    */
@@ -96,6 +101,13 @@ object Extension {
 
     /**
      * Runs once for every published message, in publish order.
+     *
+     * Like `onState`, it runs in a task of the session's execution context, one
+     * callback of the view at a time. A callback that fails is reported, and
+     * the next one still runs. With ZIO each callback runs in a fiber of its
+     * own: start long work with `forkDaemon`, because a plain child fiber is
+     * interrupted when the callback returns.
+     *
      * @see
      *   Context.BaseAccess.publish
      */
@@ -106,8 +118,8 @@ object Extension {
      * idle timeout fired, access was denied or revoked, the view was replaced,
      * or the attach failed.
      *
-     * It is the last callback. The view is already closed, so calls on the
-     * access fail.
+     * It is the last callback. The view is already closed: a state read on the
+     * access fails, and nothing can be written or published any more.
      *
      * @param lastState
      *   the last state that was passed to `onState`. If none was, the state the
@@ -151,7 +163,11 @@ object Extension {
       onMessage: M => F[Unit] = (_: M) => F.unit,
       onDestroy: S => F[Unit] = (_: S) => F.unit
     ): Handlers[F, S, M] =
-      new FunctionHandlers(onState, onMessage, onDestroy)
+      new FunctionHandlers(
+        nonNull(onState, "onState"),
+        nonNull(onMessage, "onMessage"),
+        nonNull(onDestroy, "onDestroy")
+      )
 
     /**
      * Like [[apply]], but a state or a message that is not matched is ignored.
@@ -164,12 +180,22 @@ object Extension {
       onState: PartialFunction[S, F[Unit]] = PartialFunction.empty,
       onMessage: PartialFunction[M, F[Unit]] = PartialFunction.empty,
       onDestroy: S => F[Unit] = (_: S) => F.unit
-    ): Handlers[F, S, M] =
+    ): Handlers[F, S, M] = {
+      nonNull(onState, "onState")
+      nonNull(onMessage, "onMessage")
       new FunctionHandlers(
         state => onState.applyOrElse(state, (_: S) => F.unit),
         message => onMessage.applyOrElse(message, (_: M) => F.unit),
-        onDestroy
+        nonNull(onDestroy, "onDestroy")
       )
+    }
+
+    /**
+     * `null` once meant "no callback". It still compiles, so it is rejected
+     * here, when the handlers are built, and not at every delivery.
+     */
+    private def nonNull[A <: AnyRef](callback: A, name: String): A =
+      java.util.Objects.requireNonNull(callback, s"$name is null. Leave it out for a callback that does nothing.")
   }
 
   /**

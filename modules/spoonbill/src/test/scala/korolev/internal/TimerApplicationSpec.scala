@@ -530,6 +530,25 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     result(raw.read[Int](Id.TopLevel)) shouldBe Some(1)
   }
 
+  it should "fail a transitionForce whose render can no longer happen, so nothing waits for it" in {
+    val write = Promise[Unit]()
+    val raw   = StateManager.cached[Future](onWrite = (_, _) => write.future)
+    val f     = new App(_ => Html(body("no timer")), raw)
+    f.start()
+    // The write is admitted and waits for the storage.
+    val forced = f.app.topLevelComponentInstance.browserAccess.transitionForce(_ => 1)
+    f.worker.drain()
+    result(f.frontend.close())
+    val destroyed = f.app.destroy()
+    f.worker.drain()
+    forced.isCompleted shouldBe false
+    write.success(())
+    f.worker.drain()
+    result(destroyed)
+    // The render queue is closed. The caller is told, and does not wait for ever.
+    result(forced.failed) shouldBe a[spoonbill.server.SessionAccessDenied]
+  }
+
   it should "skip a loading-state tick and let a periodic timer run after initialization" in {
     import ctx.*
     for (periodic <- List(false, true)) {

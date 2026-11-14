@@ -183,11 +183,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
   /**
    * The time bound of extension `setup` and `onDestroy` calls. It is the same
-   * bounded wait that guarded checks use.
+   * bounded wait that guarded checks use, with its own error: an expired call
+   * is not a denied access, and it is always reported.
    */
-  private def extensionBound(expired: () => Throwable): ExtensionRuntime.Bound[F] =
+  private val extensionBound: ExtensionRuntime.Bound[F] =
     new ExtensionRuntime.Bound[F] {
-      def apply[A](operation: => F[A], late: A => F[Unit]): F[A] = required(operation, Some(late), expired)
+      def apply[A](operation: => F[A], late: A => F[Unit]): F[A] =
+        required(operation, Some(late), () => new ExtensionRuntime.TimedOut)
     }
 
   private def createGuarded(
@@ -456,15 +458,21 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                      new ExtensionRuntime[F, S, M](
                        config.extensions,
                        config.reporter,
-                       extensionBound(() => new SessionAccessDenied),
+                       extensionBound,
                        // These checks guard extension callbacks only.
                        Some(new ExtensionRuntime.Checks[F, S, M] {
+                         // A check that cannot complete denies the view, whatever
+                         // the reason. So a view never goes on without delivery.
+                         private def failClosed(check: F[Unit]): F[Unit] =
+                           Effect[F].delayAsync(check).recoverF { case error => deny(error) }
                          // One fresh observation for the delivered and the current presentation.
-                         def state(changed: S): F[Unit] = rawManager.read[S](avocet.Id.TopLevel).flatMap {
-                           case Some(current) => authorizeAll(guard, List(changed, current))
-                           case None          => deny(new SessionAccessDenied)
+                         def state(changed: S): F[Unit] = failClosed {
+                           rawManager.read[S](avocet.Id.TopLevel).flatMap {
+                             case Some(current) => authorizeAll(guard, List(changed, current))
+                             case None          => deny(new SessionAccessDenied)
+                           }
                          }
-                         def message(message: M): F[Unit] = authorizeCurrent()
+                         def message(message: M): F[Unit] = failClosed(authorizeCurrent())
                        })
                      )
                    }
@@ -503,7 +511,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                app.topLevelComponentInstance.browserAccess,
                connected,
                () => if (terminalSignalled.get()) Effect[F].fail[Unit](new SessionAccessDenied) else requireLive()
-             )
+             ).recoverF {
+               // The runtime has reported the timeout. A guarded attach that
+               // does not complete in time is denied, as before.
+               case _: ExtensionRuntime.TimedOut => Effect[F].fail[Unit](new SessionAccessDenied)
+             }
            )
       _ <- requireLive()
       _ <- apps.put(qsid, app)
@@ -555,28 +567,69 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       ()
     }
 
-    // The close watcher and a failed extension setup both retire the view.
+    /**
+     * What this attach created for the view.
+     *
+     * @param restore
+     *   writes back the state the page was rendered with
+     */
+    final case class View(frontend: Frontend[F], app: App, extensions: Option[Extensions], restore: () => F[Unit])
+
+    // The view of this attach, once it exists. A failed attach rolls it back.
+    val created = new AtomicReference(Option.empty[View])
+    // Set when the connection has closed. Setup then stops before the next
+    // extension, and delivery does not start.
+    val connectionClosed = new AtomicBoolean(false)
+    // The close watcher and a failed attach both retire the view.
     val retired = new AtomicBoolean(false)
 
-    /** Closes the view, then destroys its extensions. Runs once. */
-    def retire(frontend: Frontend[F], app: App, extensions: Option[Extensions]): F[Unit] =
+    /**
+     * Closes the view, then destroys its extensions. It runs once, and to its
+     * end: a cancelled request must not leave a view half retired.
+     *
+     * @param restore
+     *   runs when the view is closed, before its stored state is released
+     * @param registry
+     *   settles the registration of this view. It runs last.
+     */
+    def retire(view: View)(restore: () => F[Unit], registry: () => F[Unit]): F[Unit] = Effect[F].uncancelable {
       Effect[F].delay(retired.compareAndSet(false, true)).flatMap {
         case false => Effect[F].unit
         case true =>
           for {
             // Stop extension delivery first: no callback starts once teardown began.
-            _ <- attempt(Effect[F].delay(extensions.foreach(_.stop())))
+            _ <- attempt(Effect[F].delay(view.extensions.foreach(_.stop())))
             _ <- attempt(incomingStream.cancel())
-            _ <- attempt(frontend.close())
-            _ <- attempt(app.destroy())
+            _ <- attempt(view.frontend.close())
+            _ <- attempt(view.app.destroy())
             // The view is closed by now, so the access fails inside onDestroy.
-            _ <- attempt(extensions.fold(Effect[F].unit)(_.destroy()))
-            _ <- Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId))
-            _ <- apps.remove(qsid)
+            _ <- attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
+            _ <- attempt(restore())
+            // A failed removal must not keep the registration: later attaches
+            // of this session would wait for it without an end.
+            _ <- attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            _ <- attempt(registry())
           } yield ()
       }
+    }
 
-    def handleAppOrWsOutgoingCloseOrTimeout(frontend: Frontend[F], app: App, extensions: Option[Extensions]): F[Unit] = {
+    /**
+     * A failed attach. The view is closed and its extensions are destroyed.
+     * Nothing has reached the browser, so the state the page was rendered with
+     * is written back: the next attach must not trust a state the browser
+     * never saw. Every waiting attach gets the error.
+     */
+    def abandon(error: Throwable): F[Unit] = {
+      // Fail the entry before it is removed, so the waiters get this error
+      // and not the removal.
+      val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
+      created.get() match {
+        case Some(view) => retire(view)(view.restore, settle)
+        case None       => attempt(settle())
+      }
+    }
+
+    def handleAppOrWsOutgoingCloseOrTimeout(view: View): F[Unit] = {
 
       val consumed: F[Unit] = Effect[F].promise[Unit] { cb =>
         val invoked = new AtomicBoolean(false)
@@ -614,7 +667,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         incomingConsumed.runAsync(invokeOnce("due connection close"))
       }
 
-      consumed.flatMap(_ => retire(frontend, app, extensions))
+      consumed
+        .flatMap(_ => Effect[F].delay(connectionClosed.set(true)))
+        // Retire only when this attach has registered the view or rolled it
+        // back. So the registry never forgets a view that is registered
+        // afterwards, which would keep a retired view for good.
+        .flatMap(_ => apps.settled(qsid))
+        .flatMap(_ => retire(view)(() => Effect[F].unit, () => apps.remove(qsid)))
     }
 
     def create(): F[ApplicationInstance[F, S, M]] = {
@@ -632,12 +691,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         // One runtime owns the extensions of this view, as in a guarded
         // session. A legacy session has no checks before a delivery.
         extensions = Option.when(config.extensions.nonEmpty) {
-                       new ExtensionRuntime[F, S, M](
-                         config.extensions,
-                         config.reporter,
-                         extensionBound(() => new ExtensionRuntime.TimedOut),
-                         None
-                       )
+                       new ExtensionRuntime[F, S, M](config.extensions, config.reporter, extensionBound, None)
                      }
         app <- Effect[F].delay(new ApplicationInstance[F, S, M](
                 qsid,
@@ -658,23 +712,27 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                 frontend.close().recover { case cleanupError => error.addSuppressed(cleanupError); () }
                   .flatMap(_ => Effect[F].fail(error))
               }
-        // Armed before initialization, so a view that fails to start is still
-        // retired when its connection closes.
-        _ <- Effect[F].start(handleAppOrWsOutgoingCloseOrTimeout(frontend, app, extensions))
+        view = View(frontend, app, extensions, () => stateManager.write(avocet.Id.TopLevel, initialState))
+        // From here a failed attach rolls the view back. See attachOrReload.
+        _ <- Effect[F].delay(created.set(Some(view)))
+        // The watcher waits for the connection to close, and then for this
+        // attach to settle. So it never retires a view that is half attached.
+        _ <- Effect[F].start(handleAppOrWsOutgoingCloseOrTimeout(view))
         _ <- app.initialize()
         // The state this instance was created with is the admitted state. A
-        // failed setup fails the attach: the view is closed first, then the
-        // extensions that are already set up are destroyed. When the
-        // connection closes during setup, the watcher stops the runtime, and
-        // the remaining extensions are not set up.
+        // failed setup fails the attach. So does a connection that closes
+        // during setup: the remaining extensions are not set up.
         _ <- extensions.fold(Effect[F].unit) { runtime =>
                config.reporter.debug("Extensions init")
                runtime
-                 .setup(app.topLevelComponentInstance.browserAccess, initialState, () => Effect[F].unit)
+                 .setup(
+                   app.topLevelComponentInstance.browserAccess,
+                   initialState,
+                   () =>
+                     if (connectionClosed.get()) Effect[F].fail[Unit](new ExtensionRuntime.SetupAborted)
+                     else Effect[F].unit
+                 )
                  .flatMap(_ => runtime.start())
-                 .recoverF { case error =>
-                   retire(frontend, app, extensions).flatMap(_ => Effect[F].fail[Unit](error))
-                 }
              }
       } yield {
         app
@@ -692,11 +750,19 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     }
 
     def attachOrReload(): F[SessionStart[F]] =
-      apps.getFill(qsid) {
-        Effect[F].delayAsync(create()).recoverF { case error: DevMode.InvalidSavedRenderContext =>
-          // Settle all current waiters and retain a terminal failure for this old
-          // session. Removing the entry would let a reconnect trust the stale DOM.
-          apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
+      // The attach runs to its end, also when the request is cancelled: it
+      // registers the view or it rolls the view back. The close watcher waits
+      // for that.
+      Effect[F].uncancelable {
+        apps.getFill(qsid) {
+          Effect[F].delayAsync(create()).recoverF {
+            case error: DevMode.InvalidSavedRenderContext =>
+              // Settle all current waiters and retain a terminal failure for this old
+              // session. Removing the entry would let a reconnect trust the stale DOM.
+              apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
+            case error =>
+              abandon(error).flatMap(_ => Effect[F].fail(error))
+          }
         }
       }.map[SessionStart[F]](attached).recoverF { case error: DevMode.InvalidSavedRenderContext =>
         config.reporter.error(error.getMessage, error)
@@ -716,10 +782,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         // A failed rebuild is the recognized reload recovery, not an access failure.
         config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
         initAppState(qsid, rh)
-          .flatMap(_ => attachOrReload())
+          .map(_ => true)
           .recover { case error =>
             config.reporter.error(s"Unable to rebuild state for $qsid", error)
-            SessionStart.Reload()
+            false
+          }
+          .flatMap {
+            // A failed attach is not a failed rebuild. It fails here as it
+            // does when the state exists: a reload would only repeat it.
+            case true  => attachOrReload()
+            case false => Effect[F].pure[SessionStart[F]](SessionStart.Reload())
           }
     }
   }

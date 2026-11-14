@@ -34,6 +34,15 @@ object ExtensionAdapterChecks {
     def apply[A](operation: => F[A], late: A => F[Unit]): F[A] = operation
   }
 
+  /**
+   * Runs the operation on its own, as the session's bound does. So the caller
+   * only waits for it, and cancelling the caller does not cancel the operation.
+   */
+  private def detached[F[_]: Effect]: ExtensionRuntime.Bound[F] = new ExtensionRuntime.Bound[F] {
+    def apply[A](operation: => F[A], late: A => F[Unit]): F[A] =
+      Effect[F].promise[A](callback => Effect[F].runAsync(Effect[F].delayAsync(operation))(callback))
+  }
+
   /** What the extensions did, in the order it happened. */
   private final class Events {
     private val queue                            = new LinkedBlockingQueue[String]()
@@ -152,6 +161,73 @@ object ExtensionAdapterChecks {
     assert(reports.failures.poll(10, TimeUnit.SECONDS) == "Extension failing: setup failed")
     run(runtime.destroy())
     events.expect("before.onDestroy(7)")
+    events.expectNothing()
+  }
+
+  /**
+   * A handler that ends without a result: interrupted with ZIO, cancelled with
+   * cats-effect. It is reported like a failed handler, and the extensions after
+   * it still get the notification.
+   *
+   * @param interrupted
+   *   an effect that interrupts or cancels itself
+   */
+  def interruptedHandler[F[_]: Effect](interrupted: => F[Unit])(implicit ec: ExecutionContext): Unit = {
+    val F       = Effect[F]
+    val events  = new Events
+    val reports = new Reports
+    val leaving = Extension[F, Int, String]("leaving") { _ =>
+      F.pure(
+        Extension.Handlers[F, Int, String](
+          onMessage = message => F.flatMap(events.add[F](s"leaving.onMessage($message)"))(_ => interrupted)
+        )
+      )
+    }
+    val runtime =
+      new ExtensionRuntime[F, Int, String](List(leaving, recorder[F](events, "after")), reports, unbounded[F], None)
+    run(runtime.setup(null, 0, () => F.unit))
+    run(runtime.start())
+    events.expect("after.setup", "after.onState(0)")
+    runtime.message("first")
+    runtime.message("second")
+    events.expect(
+      "leaving.onMessage(first)",
+      "after.onMessage(first)",
+      "leaving.onMessage(second)",
+      "after.onMessage(second)"
+    )
+    assert(reports.failures.poll(10, TimeUnit.SECONDS) == "Extension leaving: onMessage failed")
+    assert(reports.failures.poll(10, TimeUnit.SECONDS) == "Extension leaving: onMessage failed")
+    run(runtime.destroy())
+    events.expect("after.onDestroy(0)")
+  }
+
+  /**
+   * The attach is cancelled while a `setup` runs. The handlers of that `setup`
+   * still reach the runtime, so the teardown destroys them.
+   *
+   * @param start
+   *   starts an effect and returns the function that cancels it
+   */
+  def cancelledAttach[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F      = Effect[F]
+    val events = new Events
+    val gate   = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+    val slow = Extension[F, Int, String]("slow") { _ =>
+      F.flatMap(events.add[F]("slow.setup started")) { _ =>
+        F.map(gate.get(())) { _ =>
+          Extension.Handlers[F, Int, String](onDestroy = last => events.add[F](s"slow.onDestroy($last)"))
+        }
+      }
+    }
+    val runtime = new ExtensionRuntime[F, Int, String](List(slow), new Reports, detached[F], None)
+    val cancel  = start(runtime.setup(null, 4, () => F.unit))
+    events.expect("slow.setup started")
+    cancel()
+    // The setup completes after the attach has gone away.
+    run(gate.put((), ()))
+    run(runtime.destroy())
+    events.expect("slow.onDestroy(4)")
     events.expectNothing()
   }
 }

@@ -53,11 +53,35 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     f.taken() shouldBe Vector("b.onDestroy(5)")
   }
 
+  it should "keep a late setup result for the teardown, so it is destroyed after the view is closed" in {
+    val late = Promise[Unit]()
+    val f    = new ExtensionRuntimeFixture()(f => List(f.recorder("a"), f.recorder("b", onSetup = () => late.future)))
+    val done = f.setup(admitted = 5)
+    f.taken() shouldBe Vector("a.setup", "b.setup")
+    f.bound.expire()
+    f.result(done.failed) shouldBe a[ExtensionRuntime.TimedOut]
+    // The result arrives while the session still closes the view. It waits.
+    late.success(())
+    f.taken() shouldBe empty
+    f.result(f.runtime.destroy())
+    f.taken() shouldBe Vector("b.onDestroy(5)", "a.onDestroy(5)")
+  }
+
   it should "not set up the remaining extensions once the connection is gone" in {
     var connected = true
     val f = new ExtensionRuntimeFixture()(f =>
       List(f.recorder("a", onSetup = () => Future.successful { connected = false }), f.recorder("b"))
     )
+    val done = f.setup(proceed = () => if (connected) Future.unit else Future.failed(new SessionAccessDenied))
+    f.result(done.failed) shouldBe a[SessionAccessDenied]
+    f.taken() shouldBe Vector("a.setup")
+    f.errors shouldBe empty
+  }
+
+  it should "fail when the connection is gone after the last setup, so delivery does not start" in {
+    var connected = true
+    val f =
+      new ExtensionRuntimeFixture()(f => List(f.recorder("a", onSetup = () => Future.successful { connected = false })))
     val done = f.setup(proceed = () => if (connected) Future.unit else Future.failed(new SessionAccessDenied))
     f.result(done.failed) shouldBe a[SessionAccessDenied]
     f.taken() shouldBe Vector("a.setup")
@@ -80,9 +104,11 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     f.result(f.runtime.destroy())
     f.taken() shouldBe Vector("a.setup")
     gate.success(())
-    f.result(done)
+    // The setup of a view that was torn down does not succeed.
+    f.result(done.failed) shouldBe a[ExtensionRuntime.SetupAborted]
     // Teardown had already run, so the extension is destroyed on arrival, once.
     f.taken() shouldBe Vector("a.onDestroy(3)")
+    f.errors shouldBe empty
   }
 
   "Teardown" should "call onDestroy once per extension, in reverse order, with the last delivered state" in {
@@ -146,6 +172,16 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     f.result(done)
     f.errors.map(_._1) shouldBe Vector("Extension c: onDestroy failed", "Extension b: onDestroy failed")
     f.errors.head._2 shouldBe a[ExtensionRuntime.TimedOut]
+  }
+
+  it should "report an onDestroy that fails with a denied access" in {
+    val denied = new SessionAccessDenied
+    val f      = new ExtensionRuntimeFixture()(f => List(f.recorder("a", onDestroy = _ => Future.failed(denied))))
+    f.attach()
+    f.taken()
+    f.result(f.runtime.destroy())
+    // Only a callback that was running when the view closed is excused.
+    f.errors shouldBe Vector("Extension a: onDestroy failed" -> denied)
   }
 
   it should "wait for the callback in flight before the first onDestroy" in {

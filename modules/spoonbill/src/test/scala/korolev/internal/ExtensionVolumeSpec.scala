@@ -14,7 +14,8 @@ import spoonbill.internal.TimerTestSupport.Reports
  * The extension lane under load, on a real thread pool.
  *
  * The time limits are generous. They do not measure speed. They fail when
- * delivery becomes quadratic, overflows the stack or stops.
+ * adding or delivering becomes quadratic, overflows the stack or stops. Each
+ * limit covers the whole test: adding the notifications and delivering them.
  */
 class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
 
@@ -65,6 +66,12 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
     }
   }
 
+  private val limit = 30.seconds
+
+  /** The time since `started` must stay under the limit. */
+  private def withinLimit(started: Long): Unit =
+    (System.nanoTime() - started).nanos should be < limit
+
   private def withPool[A](run: ExecutionContext => A): A = {
     val pool = Executors.newFixedThreadPool(4)
     try run(ExecutionContext.fromExecutorService(pool))
@@ -84,11 +91,13 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
     val total              = 50000
     val counter            = new Counter(total)
     val runtime            = start(counter)
+    val started            = System.nanoTime()
     (1 to total).foreach { index =>
       runtime.state(index)
       runtime.message(index.toString)
     }
-    counter.complete.await(30, TimeUnit.SECONDS) shouldBe true
+    counter.complete.await(limit.toSeconds, TimeUnit.SECONDS) shouldBe true
+    withinLimit(started)
     counter.states.get() shouldBe total + 1 // The attach state, then every write.
     counter.messages.get() shouldBe total
     counter.disordered.get() shouldBe false
@@ -106,13 +115,17 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
     val deadline = System.nanoTime() + 10.seconds.toNanos
     while (counter.states.get() < 1 && System.nanoTime() < deadline) Thread.sleep(1)
     counter.states.get() shouldBe 1
+    val started = System.nanoTime()
     (1 to total).foreach { index =>
       runtime.state(index)
       runtime.message(index.toString)
     }
-    runtime.pending shouldBe total * 2
+    // One check and one call per extension wait for each notification. The
+    // call of the second extension for the attach state waits too.
+    runtime.pending shouldBe total * 2 * 3 + 1
     gate.success(())
-    counter.complete.await(30, TimeUnit.SECONDS) shouldBe true
+    counter.complete.await(limit.toSeconds, TimeUnit.SECONDS) shouldBe true
+    withinLimit(started)
     counter.disordered.get() shouldBe false
     counter.overlapped.get() shouldBe false
     runtime.pending shouldBe 0
@@ -122,6 +135,8 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
     given ExecutionContext = pool
     val runtime            = new ExtensionRuntime[Future, Int, String](Nil, new Reports, unbounded, None)
     (1 to 100000).foreach(runtime.state)
+    // Only the newest state is kept, and the lane is not used yet.
+    runtime.recorded shouldBe 1
     runtime.pending shouldBe 0
   }
 }

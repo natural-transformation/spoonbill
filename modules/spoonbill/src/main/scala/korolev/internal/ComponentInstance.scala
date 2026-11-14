@@ -151,10 +151,27 @@ final class ComponentInstance[
    */
   private def publishState(value: CS, rendered: Option[Effect.Promise[Unit]]): F[Unit] =
     stateSubscription match {
-      case None => stateQueue.enqueue(nodeId, value, rendered)
+      case None => requestRender(value, rendered)
       case Some(callback) =>
-        Effect[F].delay(callback(value)).flatMap(_ => stateQueue.enqueue(nodeId, value, rendered))
+        Effect[F].delay(callback(value)).flatMap(_ => requestRender(value, rendered))
     }
+
+  /**
+   * Hands a written state to the render queue. A closed queue takes nothing,
+   * and nobody renders any more. Then a `transitionForce` that waits for its
+   * render fails. Otherwise it would wait for ever, and with it the extension
+   * callback that called it.
+   */
+  private def requestRender(value: CS, rendered: Option[Effect.Promise[Unit]]): F[Unit] = {
+    val request = (nodeId, value, rendered)
+    stateQueue.offer(request).flatMap {
+      case true => Effect[F].unit
+      case false if stateQueue.isClosed =>
+        Effect[F].delay(rendered.foreach(_(Left(new spoonbill.server.SessionAccessDenied))))
+      // The queue is full: wait for room, as before.
+      case false => stateQueue.enqueue(request)
+    }
+  }
 
   private[spoonbill] case class BrowserAccess(dem: DomEventMessage, departure: Option[Long])
       extends BaseAccessDefault[F, CS, E] {

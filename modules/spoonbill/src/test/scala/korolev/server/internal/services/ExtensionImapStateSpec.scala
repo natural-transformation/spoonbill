@@ -27,9 +27,11 @@ class ExtensionImapStateSpec extends AnyFlatSpec with Matchers with Eventually {
       var childAccess: Access = null
       val child               = recorder(log, "child", onSetup = access => { childAccess = access; Future.unit })
       val view                = new View(mode, List(child.imapState[String](read, write)), initial = "home:empty").attach()
-      eventually(log.of("child") shouldBe Vector("child.setup", "child.onState(empty)"))
+      // The child starts with its part of the state the view was accepted with.
+      val attachPart = read(view.admitted)
+      eventually(log.of("child") shouldBe Vector("child.setup", s"child.onState($attachPart)"))
 
-      await(childAccess.state) shouldBe "empty"
+      await(childAccess.state) shouldBe attachPart
       await(childAccess.transition(_ => "typed"))
       eventually(log.of("child").last shouldBe "child.onState(typed)")
       // The page part is untouched.

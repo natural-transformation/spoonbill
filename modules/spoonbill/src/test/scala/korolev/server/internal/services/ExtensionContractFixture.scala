@@ -4,6 +4,7 @@ import avocet.dsl.*
 import avocet.dsl.html.*
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
@@ -15,6 +16,7 @@ import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.security.Versions.ViewOwnershipEpoch
 import spoonbill.server.*
 import spoonbill.snapshot.ViewSnapshotSession
+import spoonbill.state.{DeviceId, SessionId, StateDeserializer, StateManager, StateSerializer, StateStorage}
 import spoonbill.state.javaSerialization.*
 import spoonbill.testExecution.defaultExecutor
 import spoonbill.web.{PathAndQuery, Request}
@@ -69,7 +71,15 @@ private[services] object ExtensionContractFixture {
       }
     }
 
-  private def control(reconstructed: Boolean, snapshots: Boolean = false): SessionAccessControl[Future, String] =
+  /**
+   * @param allowance
+   *   the number of states the guard still accepts
+   */
+  private def control(
+    allowance: AtomicInteger,
+    reconstructed: Boolean,
+    snapshots: Boolean = false
+  ): SessionAccessControl[Future, String] =
     new SessionAccessControl[Future, String] {
       def authorizeHttp(request: Request.Head, state: String): Future[Unit] = Future.unit
       def open(qsid: Qsid, request: Request.Head, connection: ConnectionId): Future[SessionGuard[Future, String]] =
@@ -84,32 +94,115 @@ private[services] object ExtensionContractFixture {
               def initialize(fresh: String): Future[String] = Future.successful(fresh)
               def commit(candidate: String): Future[Unit]   = Future.unit
             })
-          def authorize(state: String): Future[Unit]   = Future.unit
-          def connected(state: String): Future[String] = Future.successful(state)
+          def authorize(state: String): Future[Unit] =
+            if (allowance.getAndDecrement() <= 0) Future.failed(new SessionAccessDenied) else Future.unit
+          // A state of its own, so a test can tell the admitted state from the one before it.
+          def connected(state: String): Future[String] = Future.successful(state + Connected)
           def close(): Future[Unit]                    = Future.unit
         })
     }
 
-  /** The HTTP render has happened; `attach` plays the connection. */
-  final class View(mode: Mode, extensions: List[Extension[Future, String, String]], initial: String = "initial") {
-    val reports = new Reports
+  /** What a guarded session adds to a state when it accepts the attachment. */
+  private val Connected = "+connected"
+
+  /** The error of a state read that a test lets fail. */
+  val unreadable = new IllegalStateException("The state cannot be read")
+
+  /**
+   * A storage whose managers can run out of state reads.
+   *
+   * @param readsLeft
+   *   the number of reads that still succeed
+   */
+  private final class LimitedReads(underlying: StateStorage[Future, String], readsLeft: AtomicInteger)
+      extends StateStorage[Future, String] {
+    private def limited(manager: StateManager[Future]): StateManager[Future] = new StateManager[Future] {
+      def snapshot: Future[StateManager.Snapshot] = manager.snapshot
+      def read[T: StateDeserializer](nodeId: avocet.Id): Future[Option[T]] =
+        if (readsLeft.getAndDecrement() <= 0) Future.failed(unreadable) else manager.read[T](nodeId)
+      def delete(nodeId: avocet.Id): Future[Unit]                              = manager.delete(nodeId)
+      def write[T: StateSerializer](nodeId: avocet.Id, value: T): Future[Unit] = manager.write(nodeId, value)
+    }
+    def exists(deviceId: DeviceId, sessionId: SessionId): Future[Boolean] = underlying.exists(deviceId, sessionId)
+    def create(deviceId: DeviceId, sessionId: SessionId, state: String): Future[StateManager[Future]] =
+      underlying.create(deviceId, sessionId, state).map(limited)
+    def get(deviceId: DeviceId, sessionId: SessionId): Future[StateManager[Future]] =
+      underlying.get(deviceId, sessionId).map(limited)
+    def remove(deviceId: DeviceId, sessionId: SessionId): Unit = underlying.remove(deviceId, sessionId)
+  }
+
+  /**
+   * The HTTP render has happened; `attach` plays the connection.
+   *
+   * @param rendered
+   *   false leaves the state out, as after a restart of the server. The attach
+   *   then rebuilds it from the request.
+   * @param limitedReads
+   *   the guarded session stores its state where `failReadsAfter` can make a
+   *   read fail
+   */
+  final class View(
+    mode: Mode,
+    extensions: List[Extension[Future, String, String]],
+    initial: String = "initial",
+    rendered: Boolean = true,
+    limitedReads: Boolean = false
+  ) {
+    val reports           = new Reports
+    private val allowance = new AtomicInteger(Int.MaxValue)
+    private val readsLeft = new AtomicInteger(Int.MaxValue)
+    // A legacy session gets a storage the test can read. A guarded session
+    // keeps its own, unless the test wants to break its reads.
+    private val storage =
+      if (mode == Mode.Legacy) StateStorage[Future, String]()
+      else if (limitedReads) new LimitedReads(StateStorage.ephemeral[Future, String](), readsLeft)
+      else null
     private val config = SpoonbillServiceConfig[Future, String, String](
       stateLoader = StateLoader.default(initial),
+      stateStorage = storage,
       document = state => Html(body(div(state))),
       reporter = reports,
       extensions = extensions,
       sessionAccessControl = mode match {
         case Mode.Legacy        => None
-        case Mode.Retained      => Some(control(reconstructed = false))
-        case Mode.Reconstructed => Some(control(reconstructed = true))
-        case Mode.Snapshots     => Some(control(reconstructed = false, snapshots = true))
+        case Mode.Retained      => Some(control(allowance, reconstructed = false))
+        case Mode.Reconstructed => Some(control(allowance, reconstructed = true))
+        case Mode.Snapshots     => Some(control(allowance, reconstructed = false, snapshots = true))
       }
     )
-    private val service  = new SessionsService(config, new PageService(config))
-    private val qsid     = Qsid("contract-device", UUID.randomUUID().toString)
+    private val service = new SessionsService(config, new PageService(config))
+    private val qsid    = Qsid("contract-device", UUID.randomUUID().toString)
+
+    /**
+     * The state the view is accepted with. A guarded session writes its
+     * connected state.
+     */
+    val admitted: String = if (mode == Mode.Legacy) initial else initial + Connected
+
+    /**
+     * The guard accepts `checks` more states, and rejects every state after
+     * them.
+     */
+    def revokeAfter(checks: Int): Unit = allowance.set(checks)
+
+    /** From now on the guard rejects every state. */
+    def revoke(): Unit = revokeAfter(0)
+
+    /**
+     * The storage answers `reads` more state reads, and fails every read after
+     * them.
+     */
+    def failReadsAfter(reads: Int): Unit = readsLeft.set(reads)
+
+    /**
+     * The stored top-level state of a legacy session, also after its view was
+     * retired.
+     */
+    def storedState: Option[String] =
+      await(storage.get(qsid.deviceId, qsid.sessionId).flatMap(_.read[String](avocet.Id.TopLevel)))
     private val request  = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
     private val incoming = Queue[Future, String]()
-    await(service.initAppState(qsid, request))
+    if (rendered) await(service.initAppState(qsid, request))
 
     /** The outcome of the attach. A failed setup fails it. */
     def tryAttach(limit: FiniteDuration = 5.seconds): Try[SessionStart[Future]] =

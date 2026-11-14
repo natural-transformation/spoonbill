@@ -28,6 +28,9 @@ private[internal] final class ExtensionRuntimeFixture(
 
   def log(text: String): Unit = { events.updateAndGet(_ :+ text); () }
 
+  /** What happened since the last `taken`, without running the queued work. */
+  def logged: Vector[String] = events.get()
+
   /** Runs the queued work, then returns what happened since the last call. */
   def taken(): Vector[String] = {
     worker.drain()

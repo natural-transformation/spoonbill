@@ -48,12 +48,24 @@ class ExtensionRuntimeDeliverySpec extends AnyFlatSpec with Matchers {
     )
   }
 
-  it should "keep no state queued before delivery starts" in {
+  it should "keep one state, and nothing in the lane, before delivery starts" in {
     val f = new ExtensionRuntimeFixture()(f => List(f.recorder("a")))
     (1 to 10000).foreach(f.runtime.state)
     f.runtime.pending shouldBe 0
+    f.runtime.recorded shouldBe 1
     f.attach()
     f.taken() shouldBe Vector("a.setup", "a.onState(10000)")
+    f.runtime.recorded shouldBe 0
+  }
+
+  it should "keep every message that is published before delivery starts" in {
+    val f = new ExtensionRuntimeFixture()(f => List(f.recorder("a")))
+    (1 to 100).foreach(index => f.runtime.message(index.toString))
+    // Messages are never folded, so they are kept until delivery starts.
+    f.runtime.recorded shouldBe 100
+    f.attach()
+    f.taken().count(_.startsWith("a.onMessage")) shouldBe 100
+    f.runtime.recorded shouldBe 0
   }
 
   "Delivery" should "pass every later write and message on once, in the order they were announced" in {
@@ -103,6 +115,38 @@ class ExtensionRuntimeDeliverySpec extends AnyFlatSpec with Matchers {
       "a.onState(2)",
       "b.onState(2)"
     )
+  }
+
+  it should "go on in a new task after a callback that completed later" in {
+    val gate = Promise[Unit]()
+    val f = new ExtensionRuntimeFixture()(f =>
+      List(f.recorder("a", onState = state => if (state == 1) gate.future else Future.unit), f.recorder("b"))
+    )
+    f.attach()
+    f.taken()
+    f.runtime.state(1)
+    f.runtime.state(2)
+    f.taken() shouldBe Vector("a.onState(1)")
+    // This thread completes the callback, as a render thread would. No other
+    // callback may run on it: not the next extension, not the next state.
+    gate.success(())
+    f.logged shouldBe empty
+    f.taken() shouldBe Vector("b.onState(1)", "a.onState(2)", "b.onState(2)")
+  }
+
+  it should "run the callbacks after a guarded check in a new task, when the check completed later" in {
+    val gate = Promise[Unit]()
+    val f = new ExtensionRuntimeFixture(checks(onState = value => if (value == 1) gate.future else Future.unit))(f =>
+      List(f.recorder("a"))
+    )
+    f.attach()
+    f.taken()
+    f.runtime.state(1)
+    f.taken() shouldBe empty
+    // The thread that completes the check does not call the extension.
+    gate.success(())
+    f.logged shouldBe empty
+    f.taken() shouldBe Vector("a.onState(1)")
   }
 
   "A failed callback" should "be reported with the extension's name, and delivery continues" in {
@@ -162,6 +206,21 @@ class ExtensionRuntimeDeliverySpec extends AnyFlatSpec with Matchers {
     f.errors shouldBe empty
   }
 
+  it should "report a check that fails for another reason, and stop delivery" in {
+    val broken = new IllegalStateException("storage")
+    val f = new ExtensionRuntimeFixture(
+      checks(onState = value => if (value == 2) Future.failed(broken) else Future.unit)
+    )(f => List(f.recorder("a")))
+    f.attach()
+    f.taken()
+    f.runtime.state(1)
+    f.runtime.state(2)
+    f.runtime.state(3)
+    f.taken() shouldBe Vector("a.onState(1)")
+    // Delivery never stops without a trace.
+    f.errors shouldBe Vector("Extension delivery was stopped: its check failed" -> broken)
+  }
+
   "A stopped runtime" should "ignore what is announced afterwards" in {
     val f = new ExtensionRuntimeFixture()(f => List(f.recorder("a")))
     f.attach()
@@ -171,6 +230,21 @@ class ExtensionRuntimeDeliverySpec extends AnyFlatSpec with Matchers {
     f.runtime.message("m")
     f.taken() shouldBe empty
     f.runtime.pending shouldBe 0
+  }
+
+  it should "not call the remaining extensions for the notification in flight" in {
+    val gate = Promise[Unit]()
+    val f = new ExtensionRuntimeFixture()(f =>
+      List(f.recorder("a", onState = state => if (state == 1) gate.future else Future.unit), f.recorder("b"))
+    )
+    f.attach()
+    f.taken()
+    f.runtime.state(1)
+    f.taken() shouldBe Vector("a.onState(1)")
+    f.runtime.stop()
+    gate.success(())
+    // The second extension has not seen state 1, and it never will.
+    f.taken() shouldBe empty
   }
 
   it should "not report a denied access from a callback that was already running" in {

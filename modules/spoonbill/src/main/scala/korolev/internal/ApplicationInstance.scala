@@ -302,6 +302,16 @@ final class ApplicationInstance[
 
   def destroy(): F[Unit] = for {
     _ <- stateQueue.close()
+    // A closed queue is not rendered any more. The transitions that still wait
+    // for their render fail here, so none of them waits for ever.
+    unrendered <- stateQueue.dequeueAll()
+    _ <- Effect[F].delay {
+           unrendered.foreach(_._3.foreach { waiting =>
+             // One waiter that throws must not keep the instance from closing.
+             try waiting(Left(new spoonbill.server.SessionAccessDenied))
+             catch { case scala.util.control.NonFatal(_) => () }
+           })
+         }
     _ <- topLevelComponentInstance.destroy()
   } yield ()
 

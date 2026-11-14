@@ -1,7 +1,7 @@
 package spoonbill.internal
 
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Executors, TimeUnit}
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Executors, RejectedExecutionException, TimeUnit}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
@@ -21,10 +21,14 @@ class SerialLaneSpec extends AnyFlatSpec with Matchers {
     val worker                     = new Worker
     private given ExecutionContext = worker
     val handled                    = new ConcurrentLinkedQueue[Int]()
-    val lane = new SerialLane[Future, Item](item => {
-      handled.add(item.id)
-      handle(item.id)
-    })
+    val failures                   = new ConcurrentLinkedQueue[(Int, Throwable)]()
+    val lane = new SerialLane[Future, Item](
+      item => {
+        handled.add(item.id)
+        handle(item.id)
+      },
+      (item, error) => { failures.add(item.id -> error); () }
+    )
     def offer(ids: Int*): Unit = ids.foreach(id => lane.offer(new Item(id)))
     def taken(): List[Int] = {
       worker.drain()
@@ -59,14 +63,43 @@ class SerialLaneSpec extends AnyFlatSpec with Matchers {
     f.taken() shouldBe List(2, 3)
   }
 
-  it should "keep going after a handler fails or throws" in {
+  it should "go on in a new task after a handler that completed later" in {
+    val gate = Promise[Unit]()
+    val f    = new Fixture(id => if (id == 1) gate.future else Future.unit)
+    f.offer(1, 2, 3)
+    f.taken() shouldBe List(1)
+    // This thread completes the handler. It must not run the next ones.
+    gate.success(())
+    f.handled.isEmpty shouldBe true
+    f.worker.pending shouldBe 1
+    f.taken() shouldBe List(2, 3)
+  }
+
+  it should "pass a handler that fails or throws to the failure hook, and keep going" in {
+    val failed = new IllegalStateException("failed")
+    val thrown = new IllegalStateException("thrown")
     val f = new Fixture(id =>
-      if (id == 1) Future.failed(new IllegalStateException("failed"))
-      else if (id == 2) throw new IllegalStateException("thrown")
+      if (id == 1) Future.failed(failed)
+      else if (id == 2) throw thrown
       else Future.unit
     )
     f.offer(1, 2, 3)
     f.taken() shouldBe List(1, 2, 3)
+    f.failures.asScala.toList shouldBe List(1 -> failed, 2 -> thrown)
+  }
+
+  it should "keep going when the failure hook itself throws" in {
+    val worker             = new Worker
+    given ExecutionContext = worker
+    val handled            = new ConcurrentLinkedQueue[Int]()
+    val lane = new SerialLane[Future, Item](
+      item => { handled.add(item.id); Future.failed(new IllegalStateException("failed")) },
+      (_, _) => throw new IllegalStateException("hook")
+    )
+    lane.offer(new Item(1))
+    lane.offer(new Item(2))
+    worker.drain()
+    handled.asScala.toList shouldBe List(1, 2)
   }
 
   it should "not deepen the stack when many handlers complete at once" in {
@@ -92,9 +125,83 @@ class SerialLaneSpec extends AnyFlatSpec with Matchers {
     f.taken() shouldBe Nil
   }
 
-  it should "be idle at once when nothing runs" in {
-    val f = new Fixture
+  it should "be idle at once when it is closed and nothing runs" in {
+    val f    = new Fixture
+    val idle = f.lane.idle
+    // An open lane can still start a handler.
+    idle.isCompleted shouldBe false
+    f.lane.close()
+    Await.result(idle, 1.second)
     Await.result(f.lane.idle, 1.second)
+  }
+
+  it should "be idle at once when it is closed before a scheduled loop has started" in {
+    val f = new Fixture
+    f.offer(1)
+    // The loop is submitted, but the worker has not run it.
+    f.worker.pending shouldBe 1
+    f.lane.close()
+    Await.result(f.lane.idle, 1.second)
+    // The stale task finds the lane closed.
+    f.taken() shouldBe Nil
+  }
+
+  it should "be idle at once when it is closed after a handler completed and before the next task ran" in {
+    val gate = Promise[Unit]()
+    val f    = new Fixture(id => if (id == 1) gate.future else Future.unit)
+    f.offer(1, 2)
+    f.taken() shouldBe List(1)
+    gate.success(())
+    f.lane.close()
+    Await.result(f.lane.idle, 1.second)
+    f.taken() shouldBe Nil
+  }
+
+  it should "keep the items when the execution context refuses the loop, and handle them at the next wake-up" in {
+    val refuse  = new AtomicBoolean(true)
+    val worker  = new Worker
+    val refused = new RejectedExecutionException("refused")
+    given ExecutionContext = new ExecutionContext {
+      def execute(runnable: Runnable): Unit     = if (refuse.get()) throw refused else worker.execute(runnable)
+      def reportFailure(cause: Throwable): Unit = worker.reportFailure(cause)
+    }
+    val handled  = new ConcurrentLinkedQueue[Int]()
+    val rejected = new ConcurrentLinkedQueue[Throwable]()
+    val lane = new SerialLane[Future, Item](
+      item => { handled.add(item.id); Future.unit },
+      rejected = error => { rejected.add(error); () }
+    )
+    lane.offer(new Item(1))
+    rejected.asScala.toList shouldBe List(refused)
+    lane.size shouldBe 1
+    refuse.set(false)
+    lane.offer(new Item(2))
+    worker.drain()
+    handled.asScala.toList shouldBe List(1, 2)
+  }
+
+  it should "never report idle while a handler runs, under racing writers and closes" in {
+    val pool               = Executors.newFixedThreadPool(4)
+    given ExecutionContext = ExecutionContext.fromExecutorService(pool)
+    try
+      (1 to 3000).foreach { round =>
+        val inFlight = new AtomicInteger(0)
+        val lane = new SerialLane[Future, Item](_ => {
+          inFlight.incrementAndGet()
+          // Settles on another thread, so the loop gives the lane up in between.
+          Future { inFlight.decrementAndGet(); () }
+        })
+        val writer = new Thread(() => (1 to 20).foreach(id => lane.offer(new Item(id))))
+        writer.start()
+        if (round % 2 == 0) Thread.`yield`()
+        lane.close()
+        Await.result(lane.idle, 10.seconds)
+        // Closed and idle: no handler runs, and none starts afterwards.
+        inFlight.get() shouldBe 0
+        writer.join()
+        inFlight.get() shouldBe 0
+      }
+    finally pool.shutdownNow()
   }
 
   it should "handle every item once when many threads add at the same time" in {
