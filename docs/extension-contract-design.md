@@ -1,8 +1,8 @@
 # Extension contract: design
 
-Status: revision 2, 2026-11-14. This is a proposal. Nothing in it is
+Status: revision 3, 2026-11-14. This is a proposal. Nothing in it is
 implemented. It changes behaviour and signatures, so it targets the next major
-release. Revision 2 folds in one review; see [review record](#review-record).
+release. It folds in two reviews; see [review record](#review-record).
 
 ## Summary
 
@@ -39,8 +39,9 @@ The proposal:
 
 1. **One runtime, one contract.** A single internal class serves legacy and
    guarded sessions. It is the only owner of extension lifecycles.
-2. **`onState` starts with the state at attach.** After that it reports every
-   write once, in order. It never reports an older state after a newer one.
+2. **`onState` starts with the state at attach.** Writes made before delivery
+   starts are folded into it. After that it reports every write once, in order.
+   It never reports an older state after a newer one.
 3. **One ordered lane per view.** Callbacks never overlap. A failed callback is
    reported with the extension's name, and delivery continues.
 4. **Strict setup.** `setup` runs in order and is bounded. When one fails, the
@@ -122,6 +123,7 @@ All rows were run with `Future`, unless marked "from reading".
 | `access.state` inside `onDestroy` | Fails with `SessionAccessDenied` | Same |
 | A `setup` fails | Logged. The session runs without that extension | The attach fails. The other extensions are destroyed |
 | A `setup` never completes | No extension is ever notified. After the connection closes, the view stays registered and no `onDestroy` runs | The attach fails after 10 seconds |
+| Two `setup` calls each write a state and publish a message | Both states and both messages are delivered | Same, after the "connected" state |
 | Setup order | Every `setup` starts up front (from reading) | A later `setup` runs even when an earlier one failed |
 | Destroy order | Setup order | Reverse setup order |
 | `onState` and `onMessage` of one extension | Can overlap | Can overlap (from reading: same two loops) |
@@ -190,9 +192,9 @@ the HTTP page render, before any extension exists, so there is nobody to
 deliver a message to. A message is also held in memory only. It would be lost
 on a reconnect or a restart. State survives both.
 
-So a request that must outlive a reconnect belongs in the state. What is
-missing today is a reliable way for an extension to see that state. Proposal 2
-adds it.
+So a request that must outlive a reconnect belongs in the state, until it is
+handled. What is missing today is a reliable way for an extension to see that
+state. Proposal 2 adds it.
 
 ## Proposal
 
@@ -203,7 +205,9 @@ view. It owns setup, delivery and teardown. Legacy and guarded session creation
 both call it, so the contract is implemented once.
 
 The runtime is the only owner of extension lifecycles. It holds the handlers of
-every extension, bounds every call, and decides when an extension is destroyed.
+every extension, bounds every `setup` and `onDestroy` call, and decides when an
+extension is destroyed. Calls of `onState` and `onMessage` have no bound; see
+[open questions](#open-questions).
 
 A guarded session passes two hooks: a check to run before a state is delivered,
 and a check to run before a message is delivered. They are the checks that run
@@ -248,11 +252,26 @@ Revision 1 had one, and two writes between subscribing and reading could be
 delivered out of order. Recording from the moment the instance exists removes
 that gap: the admitted state and the recorded writes form one ordered history.
 
-The states that are dropped in step 4 were written before any extension could
-observe the view. The newest one stands for them, as the state after a
-reconnect stands for everything before it. A write made during `setup` is
-therefore not lost. It is either the attach state, or a newer state replaced
+State is a level, not a stream of events. An extension starts with the newest
+state. It is not told about the states that were written before delivery
+started. Any state subscription works this way: a new observer gets the
+current value, then the changes.
+
+This drops notifications that `Future` applications receive today. An example:
+`setup` of extension A writes `Loading(jobA)`, and `setup` of extension B
+replaces it with `Loading(jobB)`. Today `onState` is called for both. Under
+this proposal it is called once, with `Loading(jobB)`. If only that call
+starts the work, nothing starts job A. A legacy session has the same case when
+a user event writes a request during a slow `setup` and another write replaces
 it.
+
+So there are two rules for requests:
+
+- A request that must be handled every time is a message. Messages are never
+  folded. A message that is published during `setup` is delivered after the
+  attach state.
+- A request that must survive a reconnect stays in the state until it is
+  handled. The next request is added to it and does not replace it.
 
 Publish order is the order in which the application instance announces writes
 for rendering. The render loop sees the same order. The runtime does not
@@ -321,8 +340,9 @@ destroyed at once. If it never completes, whatever it acquired stays acquired.
 An extension that should never fail an attach recovers inside its own `setup`
 and returns empty handlers.
 
-In a legacy session, user events are not held back during setup. Their messages
-and state writes are recorded and are delivered once setup is done.
+In a legacy session, user events are not held back during setup. A message
+they publish is delivered once setup is done. A state they write is folded
+into the attach state, like any write before delivery starts.
 
 ### 5. Destroy
 
@@ -346,10 +366,14 @@ The guarantees:
 - `lastState` is the last state that was delivered to this view's extensions.
   If no state was delivered, it is the admitted state.
 
-Both sources passed the guarded check: a state is checked before it is
-delivered, and the admitted state is checked when the attachment is accepted.
-`onDestroy` never receives a state that failed its check, and never one that
-was written but not checked.
+Both sources passed a guarded check at an earlier point: a state is checked
+before it is delivered, and the admitted state is checked when the attachment
+is accepted. `lastState` is not checked again at teardown. The same value can
+even have failed a later check. When access is revoked during setup, the first
+delivery of the admitted state is rejected, and `onDestroy` still receives the
+admitted state. So `lastState` is data that was authorized earlier. It is not
+a fresh authorization. `onDestroy` never receives a state that was written but
+never passed a check.
 
 A view ends when the browser closes or leaves the page, when the idle timeout
 fires, when access is denied or revoked, when the view is replaced, or when the
@@ -466,6 +490,7 @@ children itself.
 | Change | Who is affected | What to do |
 | --- | --- | --- |
 | `onState` is called with the attach state | An extension that reads `access.state` in `setup` to handle the first state | Delete that code. Otherwise the first state is handled twice |
+| States written before delivery starts are folded into the attach state | An application whose `setup` writes state, and a legacy session where a user event can write state during setup, if either relies on one `onState` call per write | Publish a message for a request that must be handled every time. Keep a request that must survive a reconnect in the state until it is handled |
 | A failed handler is reported, and delivery continues | Everyone | Nothing. Expect error reports that were silent before |
 | Callbacks of a view run one at a time | A handler that waits for a long effect | Move the long work to a fiber or actor |
 | A failed `setup` fails the attach in a legacy session | Legacy sessions with an extension that may fail | Recover inside that `setup` if the extension is optional |
@@ -478,7 +503,10 @@ children itself.
 | `Handlers.partial` is new | Nobody has to change | Handlers with a "do nothing" default case can move to it |
 
 Guarded sessions that use neither snapshots nor reconstruction already receive
-the attach state through `onState`. For them the first row changes nothing.
+the "connected" state through `onState`. For them the first row changes
+nothing, as long as no `setup` writes state. If one does, the second row
+applies: the attach state is that newer write, and the "connected" state is no
+longer delivered on its own.
 
 Before:
 
@@ -530,11 +558,15 @@ The release needs a migration guide in the style of
   is delivered.
 - **Isolation.** Only failures of the extension's own code are isolated. A
   failed check is not a handler failure.
-- **`lastState`.** It is the last delivered state, or the admitted state. Both
-  passed their check. A state whose check failed is never handed to
-  `onDestroy`, and neither is a state that was written but not checked. This
-  holds when a `setup` fails before any delivery, and when the first delivery
-  is rejected.
+- **`lastState`.** It is the last delivered state, or the admitted state. Each
+  passed a check earlier: before its delivery, or at admission. It is not
+  checked again at teardown, so it is not a fresh authorization. After a
+  revocation, the admitted state can fail its first delivery check and still
+  be passed to `onDestroy` as the fallback. That is data that was authorized
+  earlier, which an extension could also have read through `access` during
+  `setup`. A state that was written but never passed a check is not handed to
+  `onDestroy`. This holds when a `setup` fails before any delivery, and when
+  the first delivery is rejected.
 - **Closed access in `onDestroy`.** The runtime closes the view before every
   `onDestroy`, also when it rolls back a failed setup. Nothing can be written
   or sent to the browser from there.
@@ -546,10 +578,11 @@ The release needs a migration guide in the style of
 
 ## Verified assumptions
 
-Three throwaway specs ran at commit `d39c52c1`. The first two ran against
-`SessionsService`, with `Future`, in both session modes. All three were deleted
-after the run. Step 1 of the [implementation plan](#implementation-plan) turns
-the first two into permanent specs.
+Four throwaway specs ran against the code of commit `d39c52c1`. The first, the
+second and the fourth ran against `SessionsService`, with `Future`, in both
+session modes. All four were deleted after the run. Step 1 of the
+[implementation plan](#implementation-plan) turns those three into permanent
+specs.
 
 1. **Notification probe.** Three extensions: one that fails on one state and
    one message, one that records what it receives and reads `access.state` in
@@ -571,6 +604,11 @@ the first two into permanent specs.
    - A stored function value does not compile against a `PartialFunction`
      parameter. The review found this. It is why `apply` keeps total
      functions.
+4. **Setup writes probe.** Two extensions each write a state and publish a
+   message in `setup`, and a third one records. Today both states and both
+   messages are delivered, in a legacy and in a guarded session. It gave the
+   row on two `setup` writes, and it confirmed the premise of the second
+   review.
 
 Not run: lazy effects, and guarded sessions with snapshots. Those rows come
 from reading the code. The proposal itself is not implemented, so its
@@ -581,9 +619,10 @@ them.
 
 - **The first `onState` call is new for most applications.** An extension that
   still replays the first state handles it twice until that code is removed.
-- **States before delivery are folded into the attach state.** An extension
-  does not see the intermediate states that were written before delivery
-  started.
+- **States before delivery are folded into the attach state.** An extension is
+  not called for the states that were written before delivery started. Work
+  that only such a call would start is not started. Today, with `Future`, each
+  of those writes is delivered. Proposal 2 gives two rules for requests.
 - **One lane.** A slow `onState` now delays `onMessage` for the same view, and
   the reverse. Today the two loops are independent. Rendering is not affected:
   it does not wait for extensions.
@@ -620,10 +659,13 @@ them.
   through `onState`.
 - **Subscribe to writes, then read the current state (revision 1).** Rejected.
   Two writes between the two steps are delivered as newer, older, newer.
-- **Deliver every recorded write, starting with the admitted state.** It keeps
-  every write. But an extension would first receive states from before it
-  existed, and in one guarded configuration it would receive the admitted
-  state twice. The newest state says the same in one call.
+- **Deliver every recorded write, starting with the admitted state.** It would
+  keep the notifications that folding drops. But the admitted state of a
+  guarded session comes from a read or from the guard, not from the recording.
+  So its place among the recorded writes is not known exactly. Delivering both
+  can repeat a state or step backwards, which is the defect of revision 1.
+  Folding needs no such alignment, and it matches how a state subscription
+  behaves.
 - **Run `onDestroy` before the view is closed, so `access` still works.**
   Rejected. Guarded teardown closes admission first on purpose. Extension code
   could otherwise write state or send output while the view is being retired.
@@ -687,6 +729,10 @@ Attach and order:
   reconstruction.
 - Two writes before delivery starts: the newer one is the attach state, and the
   older one never follows it. The test controls the order of both writes.
+- Two requests during setup: `setup` of one extension writes a state that names
+  job A and publishes a message, and `setup` of the next one writes job B and
+  publishes a message. `onState` is called once, with job B. Both messages are
+  delivered, in publish order.
 - A write that is published while the attach state is being delivered arrives
   after it.
 - States arrive in publish order. Messages arrive in publish order.
@@ -731,8 +777,19 @@ API:
 
 ## Review record
 
-One review checked revision 1 against the runtime. Every finding was checked
+Two reviews checked the design against the runtime. Every finding was checked
 before it was accepted.
+
+### Second review (revision 2)
+
+A review of commit `592beb0d`, 2026-11-14. It found the five findings of the
+first review resolved.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| The attach state drops the states that were written before delivery started. `Future` applications receive each of them today, so work that only an earlier state names is no longer started. The migration table did not list this, a `setup` write was called "not lost", and one kind of guarded session was called unchanged | P2 | Folding stays. A probe confirmed today's behaviour. [Proposal 2](#2-onstate-starts-with-the-state-at-attach) states the loss with a two-request example and gives two rules for requests. The migration table has a row, the unchanged claim is narrowed, and the test plan has the two-request case |
+| The runtime was said to bound every call, but a bound for `onState` and `onMessage` is an open question | Wording | Narrowed to `setup` and `onDestroy` |
+| The security text said that `lastState` never failed a check. After a revocation the admitted state can fail its first delivery check and still be the fallback | Wording | [Destroy](#5-destroy) and the security section say that `lastState` passed an earlier check and is not checked again |
 
 ### First review (revision 1)
 
@@ -757,8 +814,9 @@ A review of commit `ca493150`, 2026-11-14.
 3. **Is 10 seconds right for `setup` in a legacy session?** It could become a
    setting.
 4. **Should legacy sessions hold user events back until setup is done?**
-   Guarded sessions already do. Nothing is lost without it, but the first user
-   event can run before an extension is ready.
+   Guarded sessions already do. Without it, a user event can run before an
+   extension is ready, and a state that it writes during setup can be folded
+   into the attach state.
 5. **Should `onDestroy` also get the reason the view ended?** No use is known
    yet.
 6. **Should a state and a message have a defined order?** One useful rule: a
