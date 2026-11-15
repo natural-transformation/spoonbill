@@ -36,7 +36,13 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
   import DevModeSavedRenderContextSpec.context._
   import Reporter.PrintReporter.Implicit
 
-  "Saved render contexts" should "restore after a smaller snapshot replaces a larger file" in {
+  // Development mode is a switch of the whole JVM, and suites run in parallel.
+  // The fixture lets one suite at a time switch it: two suites that save and
+  // restore the flag at the same time can leave it switched on for good.
+  private def exclusively(test: => Unit): Unit =
+    SystemPropertyFixture.withSystemProperty("spoonbill.dev", "true")(test)
+
+  "Saved render contexts" should "restore after a smaller snapshot replaces a larger file" in exclusively {
     val devModeKey = "spoonbill.dev"
     val previous = sys.props.get(devModeKey)
     sys.props.update(devModeKey, "true")
@@ -77,7 +83,7 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
     }
   }
 
-  "Spoonbill dev mode" should "initialize from a saved render context and still process DOM events after a state transition" in {
+  "Spoonbill dev mode" should "initialize from a saved render context and still process DOM events after a state transition" in exclusively {
     val devModeKey = "spoonbill.dev"
     val prevDev    = sys.props.get(devModeKey)
 

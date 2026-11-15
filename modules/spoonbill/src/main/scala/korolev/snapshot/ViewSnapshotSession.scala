@@ -21,6 +21,40 @@ trait ViewSnapshotSession[F[_], S]:
 final class ViewSnapshotException(val error: ViewSnapshotError)
     extends RuntimeException(s"View snapshot operation rejected: $error")
 
+object ViewSnapshotException:
+
+  /** What may be handed to a reporter for `error`.
+    *
+    * A snapshot rejection carries what its provider attached to it: a cause and
+    * suppressed exceptions. They can hold private details of the provider. Only
+    * the error code is safe to report. So a rejection is replaced by a copy
+    * that has the code and nothing else.
+    *
+    * Application code can wrap a rejection in an exception of its own. So the
+    * causes and the suppressed exceptions of `error` are searched too.
+    */
+  private[spoonbill] def reportable(error: Throwable): Throwable =
+    rejection(error) match
+      case Some(found) => new ViewSnapshotException(found.error)
+      case None        => error
+
+  /** The first rejection among `error`, its causes and its suppressed exceptions. */
+  private def rejection(error: Throwable): Option[ViewSnapshotException] =
+    // Compared by identity, so a chain that refers back to itself ends.
+    val seen    = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Throwable, java.lang.Boolean]())
+    val pending = new java.util.ArrayDeque[Throwable]()
+    pending.add(error)
+    var found = Option.empty[ViewSnapshotException]
+    while found.isEmpty && !pending.isEmpty do
+      val next = pending.poll()
+      if seen.add(next) then
+        next match
+          case snapshot: ViewSnapshotException => found = Some(snapshot)
+          case other =>
+            Option(other.getCause).foreach(pending.add)
+            other.getSuppressed.foreach(pending.add)
+    found
+
 object ViewSnapshotSession:
   private enum Initialization:
     case Empty, Starting

@@ -77,6 +77,8 @@ object TimerAdapterChecks {
     val held       = AsyncTable.unsafeCreateEmpty[F, Unit, S]
     given Reporter = reports
     val writes     = new LinkedBlockingQueue[S]()
+    // What the instance announces to its observer, from its creation on.
+    val notified   = new LinkedBlockingQueue[S]()
     val storage    = StateManager.cached[F](onWrite = (_, value) => F.delay { writes.add(value.asInstanceOf[S]); () })
     val frontend   = new Frontend[F](Queue[F, String]().stream, None)
     def proxy(
@@ -108,21 +110,22 @@ object TimerAdapterChecks {
       Duration.Zero,
       awaitReady = if (waitForReadiness) Some(() => ready.get(())) else None,
       timerDeadlines = Some(clock),
-      timerClock = () => clock.now.get()
+      timerClock = () => clock.now.get(),
+      observer = Some(new ApplicationInstance.Observer[S, Any] {
+        def state(value: S): Unit     = { notified.add(value); () }
+        def message(value: Any): Unit = ()
+      })
     )
     try {
       run(app.initialize())
       assert(writes.isEmpty, "Inert binding changed state during startup")
-      val firstNotification = if (waitForReadiness) {
+      if (waitForReadiness) {
         assert(clock.tasks.isEmpty, "Timer armed before readiness")
-        val stream       = run(app.stateStream)
-        val notification = F.toFuture(stream.pull())
         run(ready.put((), ()))
-        Some(notification)
-      } else None
+      }
       clock.fire()
       assert(writes.poll(10, TimeUnit.SECONDS) == first)
-      firstNotification.foreach(value => assert(Await.result(value, 10.seconds).exists(_._2 == first)))
+      assert(notified.poll(10, TimeUnit.SECONDS) == first, "The observer missed the first timer write")
       clock.fire()
       assert(writes.poll(10, TimeUnit.SECONDS) == second)
       assert(reports.failures.isEmpty)

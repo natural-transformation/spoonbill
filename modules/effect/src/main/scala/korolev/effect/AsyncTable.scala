@@ -78,6 +78,25 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
     aux()
   }
 
+  /**
+   * Completes when nobody fills `key` any more: the key has a value or a
+   * failure, or it is absent. Unlike [[get]] it never adds the key.
+   */
+  def settled(key: K): F[Unit] = Effect[F].promise[Unit] { cb =>
+    @tailrec
+    def aux(): Unit = {
+      val ref = state.get
+      ref.get(key) match {
+        case Some(Left(xs)) =>
+          // Called with the value, the failure, or the removal of the key.
+          val waiter: Promise[V] = _ => cb(Right(()))
+          if (!state.compareAndSet(ref, ref.updated(key, Left(waiter :: xs)))) aux()
+        case _ => cb(Right(()))
+      }
+    }
+    aux()
+  }
+
   def getImmediately(key: K): F[Option[V]] =
     Effect[F].delay {
       val table = state.get

@@ -286,6 +286,44 @@ the provider, so this is not an external store's network cost; one node served
 everything, so restoration never crossed a process; every cell is one pass on a
 loaded shared machine; and the client does not render.
 
+### Extensions
+
+Measured 2026-11-14 for the [extension contract](extension-contract-design.md),
+on the same machine. The base is 10.0.1. The change is the extension runtime.
+The `plain-extensions` and `memory-extensions` modes add three extensions that
+receive every state change. Each cell is the median over the runs of p50 / p99,
+in milliseconds from click to patch. The two builds ran in turns.
+
+| Mode | Users | Runs | 10.0.1 | With the extension runtime |
+| --- | ---: | ---: | ---: | ---: |
+| `plain` | 1 | 3 | 0.40 / 0.88 | 0.40 / 0.85 |
+| `memory` | 1 | 3 | 0.52 / 1.48 | 0.45 / 0.98 |
+| `plain-extensions` | 1 | 3 | 0.40 / 0.87 | 0.40 / 0.85 |
+| `memory-extensions` | 1 | 3 | 0.48 / 1.03 | 0.46 / 1.03 |
+| `plain-extensions` | 16 | 8 | 0.90 / 5.64 | 1.03 / 5.67 |
+| `memory` | 16 | 4 | 1.17 / 6.39 | 1.15 / 5.88 |
+| `memory-extensions` | 16 | 4 | 1.14 / 6.25 | 1.14 / 6.68 |
+
+One cell differs: the unguarded mode with extensions and 16 users. Its median
+p50 is 0.13 ms higher, and the new build was the slower one in each of the 8
+paired runs. Its p99 did not move. This is the price of the hop: for each state
+change the lane is woken on the execution context, where 10.0.1 ran the
+callbacks on the writing thread. With one user, and in the guarded mode, it is
+not visible. The other cells differ by less than the spread between the runs
+of one build.
+
+A one-user run made 2,000 clicks after 300 warmup clicks. A 16-user run made
+500 clicks per user after 100 warmup clicks. The numbers are those of the
+build after the implementation review. The build before it measured the same
+in the cell that differs: a median p50 of 0.96 ms against 1.00 ms over 8
+paired runs, with overlapping ranges.
+
+Extensions are not on the click path. Delivery runs on its own lane, off the
+thread that writes the state, and rendering does not wait for it. A guarded
+session makes one more authority observation per delivered state, as in
+10.0.1. With the in-memory provider that is not visible here. With JDBC it is
+one more provider transaction per state change; that was not measured.
+
 ## Remaining limits
 
 Without the opt-in, guarded JDBC authorization is serialized per realm, as
@@ -317,6 +355,9 @@ See the [harness README](../misc/event-latency/README.md). The commands used:
 nix develop --no-write-lock-file --command bash misc/event-latency/prepare.sh
 nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local memory 1 300 50
 nix develop --no-write-lock-file --command bash misc/event-latency/memory.sh local memory 200
+# The extension modes: three extensions that receive every state change.
+nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local plain-extensions 1 2000 300
+nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local memory-extensions 16 500 150
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 bash misc/event-latency/run.sh local jdbc 16 60 10 200
 # The concurrent-checks matrix: both modes, maintenance every second, cap 16.

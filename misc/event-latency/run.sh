@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Usage (inside the spoonbill nix shell):
 #   run.sh <v1|v8|local> <plain|memory|jdbc|jdbc-concurrent|jdbc-snapshot|jdbc-reference> <users> <clicks> <warmup> [thinkMs]
+# plain-extensions and memory-extensions (local only) add BENCH_EXTENSIONS extensions
+# (default 3) that observe every state change, to the unguarded and the in-memory app.
 # jdbc modes must run under scripts/with-test-postgres.sh (SPOONBILL_JDBC_TEST_URL).
 # jdbc-concurrent (local only) enables concurrent checks with BENCH_CAP (default 8).
 # jdbc-snapshot and jdbc-reference (local only) serve authenticated views whose
@@ -18,6 +20,8 @@ port="$(node -e 'const s=require("node:net").createServer();s.listen(0,"127.0.0.
 log="$(mkdir -p "$here/target"; mktemp "$here/target/server.XXXXXX")"
 snapshot=''
 if [[ "$mode" == plain ]]; then main=(bench.PlainMain "$port")
+elif [[ "$mode" == plain-extensions ]]; then main=(bench.ExtensionMain plain "${BENCH_EXTENSIONS:-3}" "$port")
+elif [[ "$mode" == memory-extensions ]]; then main=(bench.ExtensionMain memory "${BENCH_EXTENSIONS:-3}" "$port")
 elif [[ "$mode" == jdbc-concurrent ]]; then main=(bench.ConcurrentMain "${BENCH_CAP:-8}" "$port")
 elif [[ "$mode" == jdbc-snapshot || "$mode" == jdbc-reference ]]; then main=(bench.SnapshotMain "$mode" "$port"); snapshot=1
 else main=(bench.GuardedMain "$mode" "$port"); fi

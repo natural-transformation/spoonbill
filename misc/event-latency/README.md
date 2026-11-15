@@ -16,6 +16,11 @@ tree (`local`). Results and their interpretation are in the
   concurrent checks enabled (`BENCH_CAP` concurrent checks, default 8). The
   server reports the coordinator's counters at `/bench-stats`, which `run.sh`
   includes as `coordinator`.
+- `local-only`, `ExtensionMain`: the `plain-extensions` and `memory-extensions`
+  modes add `BENCH_EXTENSIONS` extensions (default 3) to the unguarded and the
+  in-memory guarded app. Each extension counts the states it receives, and
+  `/bench-stats` reports the total as `statesDelivered`. Compare a run with its
+  `plain` or `memory` twin to see what extensions add to a click.
 - `local-only`, `SnapshotMain`: the `jdbc-snapshot` and `jdbc-reference` modes
   serve authenticated views whose presentation is a durable projection of the
   count plus `BENCH_PAYLOAD_BYTES` of padding (default 1024). `jdbc-snapshot`
@@ -65,7 +70,7 @@ Inside the repository's Nix environment, from the repository root:
 
 ```sh
 nix develop --no-write-lock-file --command bash misc/event-latency/prepare.sh
-# run.sh <v1|v8|local> <plain|memory|jdbc|jdbc-concurrent|jdbc-snapshot|jdbc-reference> <users> <clicks> <warmup> [thinkMs]
+# run.sh <v1|v8|local> <plain|memory|jdbc|jdbc-concurrent|jdbc-snapshot|jdbc-reference|plain-extensions|memory-extensions> <users> <clicks> <warmup> [thinkMs]
 nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local memory 1 200 50
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 bash misc/event-latency/run.sh local jdbc 8 60 10 200

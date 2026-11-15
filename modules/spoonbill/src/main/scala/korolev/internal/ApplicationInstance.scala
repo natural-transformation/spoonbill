@@ -20,7 +20,7 @@ import spoonbill.*
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import spoonbill.*
 import spoonbill.Context.*
-import spoonbill.effect.{Effect, Hub, Queue, Reporter, Scheduler, Stream}
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.Frontend.DomEventMessage
 import spoonbill.state.StateDeserializer
@@ -64,7 +64,10 @@ final class ApplicationInstance[
   captureProducedAuthorization: Option[S => (() => F[Unit])] = None,
   timerSettings: spoonbill.timer.TimerSettings = spoonbill.timer.TimerSettings(),
   timerDeadlines: Option[Frontend.RpcDeadlineScheduler] = None,
-  timerClock: () => Long = () => System.nanoTime()
+  timerClock: () => Long = () => System.nanoTime(),
+  // Receives every top-level state write and every published message from the
+  // creation of this instance. Nothing is recorded or buffered without it.
+  observer: Option[ApplicationInstance.Observer[S, M]] = None
 )(implicit ec: ExecutionContext) { application =>
 
   import reporter.Implicit
@@ -75,8 +78,6 @@ final class ApplicationInstance[
   private val devMode       = new DevMode.ForRenderContext(sessionId.toString)
   private val eventCounters = new TrieMap[(Id, String), Int]()
   private val stateQueue    = Queue[F, (Id, Any, Option[Effect.Promise[Unit]])]()
-  private val stateHub      = Hub(stateQueue.stream)
-  private val messagesQueue = Queue[F, M]()
   private val publishedEventHandlers = new AtomicReference(Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]])
   private val timers = new TimerRuntime[F](
     timerDeadlines.getOrElse(TimerRuntime.deadlineDriver(scheduler)),
@@ -142,7 +143,12 @@ final class ApplicationInstance[
       ec,
       timers = Some(timers)
     )
-    componentInstance.setEventsSubscription(messagesQueue.offerUnsafe)
+    // Subscribe before the instance can write or publish, so the observer
+    // misses nothing. Without an observer a published message is dropped here.
+    observer.foreach { target =>
+      componentInstance.setEventsSubscription((message: M) => target.message(message))
+      componentInstance.setStateSubscription(state => target.state(state))
+    }
     componentInstance
   }
 
@@ -288,24 +294,24 @@ final class ApplicationInstance[
     if (frontend.guarded) frontend.runBrowserAction(process, dem.renderRevision, dem.sensitiveDeparture) else process.start.unit
   }
 
+  // The render loop is the only reader of the state queue.
   private final val internalStateStream =
-    stateHub.newStreamUnsafe()
-
-  val stateStream: F[Stream[F, (Id, Any)]] =
-    stateHub.newStream().map { stream =>
-      stream.map { case (id, state, _) =>
-        (id, state)
-      }
-    }
-
-  val messagesStream: Stream[F, M] =
-    messagesQueue.stream
+    stateQueue.stream
 
   private[spoonbill] def closeAdmission(): Unit = topLevelComponentInstance.closeAdmission()
 
   def destroy(): F[Unit] = for {
     _ <- stateQueue.close()
-    _ <- messagesQueue.close()
+    // A closed queue is not rendered any more. The transitions that still wait
+    // for their render fail here, so none of them waits for ever.
+    unrendered <- stateQueue.dequeueAll()
+    _ <- Effect[F].delay {
+           unrendered.foreach(_._3.foreach { waiting =>
+             // One waiter that throws must not keep the instance from closing.
+             try waiting(Left(new spoonbill.server.SessionAccessDenied))
+             catch { case scala.util.control.NonFatal(_) => () }
+           })
+         }
     _ <- topLevelComponentInstance.destroy()
   } yield ()
 
@@ -470,5 +476,23 @@ final class ApplicationInstance[
       abortRender()
       Effect[F].fail(error)
     }
+  }
+}
+
+object ApplicationInstance {
+
+  /**
+   * Receives what an application instance announces to its extensions.
+   *
+   * Both methods are called on the thread that writes or publishes. They must
+   * be quick and must not throw.
+   */
+  private[spoonbill] trait Observer[-S, -M] {
+
+    /** A write of the top-level state, in the order the instance announces writes. */
+    def state(value: S): Unit
+
+    /** A message published on the top level, in publish order. */
+    def message(value: M): Unit
   }
 }

@@ -17,7 +17,7 @@ object ExtensionExample extends SimpleAkkaHttpSpoonbillApp {
     .queue[String](10, OverflowStrategy.fail)
     .preMaterialize()
 
-  private val topicListener = Extension.pure[Future, List[String], String] { access =>
+  private val topicListener = Extension.pure[Future, List[String], String]("topic-listener") { access =>
     val queueSink = queueSource.runWith(Sink.queue[String]())
     def aux(): Future[Unit] = queueSink.pull() flatMap {
       case Some(message) =>
@@ -30,7 +30,7 @@ object ExtensionExample extends SimpleAkkaHttpSpoonbillApp {
     aux()
     Extension.Handlers[Future, List[String], String](
       onMessage = message => queue.offer(message).map(_ => ()),
-      onDestroy = () => Future.successful(queueSink.cancel())
+      onDestroy = _ => Future.successful(queueSink.cancel())
     )
   }
 

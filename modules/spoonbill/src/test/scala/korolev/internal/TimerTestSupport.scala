@@ -37,13 +37,14 @@ private[spoonbill] object TimerTestSupport {
     def fire(): Unit                            = active.head.fire()
   }
 
+  /** Keeps what was reported. Several threads can report at the same time. */
   final class Reports extends Reporter {
-    var errors                                                        = Vector.empty[(String, Throwable)]
-    var warnings                                                      = Vector.empty[String]
-    def error(message: String, cause: Throwable): Unit                = errors :+= message -> cause
-    def error(message: String): Unit                                  = errors :+= message -> null
-    def warning(message: String, cause: Throwable): Unit              = warnings :+= message
-    def warning(message: String): Unit                                = warnings :+= message
+    @volatile var errors                                              = Vector.empty[(String, Throwable)]
+    @volatile var warnings                                            = Vector.empty[String]
+    def error(message: String, cause: Throwable): Unit                = synchronized(errors :+= message -> cause)
+    def error(message: String): Unit                                  = synchronized(errors :+= message -> null)
+    def warning(message: String, cause: Throwable): Unit              = synchronized(warnings :+= message)
+    def warning(message: String): Unit                                = synchronized(warnings :+= message)
     def info(message: String): Unit                                   = ()
     def debug(message: String): Unit                                  = ()
     def debug(message: String, arg1: Any): Unit                       = ()
