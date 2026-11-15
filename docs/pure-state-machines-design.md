@@ -295,6 +295,9 @@ private[spoonbill] object ExtensionMachine {
 
   def initial[S, M](guarded: Boolean): State[S, M]
   def step[S, M](state: State[S, M], event: Event[S, M]): (State[S, M], Vector[Command[S, M]])
+
+  /** The text of a report. None for a failure that is expected and stays silent. */
+  def reportOf(name: String, callback: Callback, failure: Failure, stopped: Boolean): Option[String]
 }
 ```
 
@@ -316,7 +319,7 @@ or `Recording` straight to `Stopped`.
 | | other | unchanged | none |
 | `Start(Check(d, n))` | `Delivering`, guarded | unchanged | `RunCheck(n)` |
 | | `Delivering`, not guarded | `passed = d` | none |
-| | `Stopped` | unchanged | none |
+| | other | unchanged | none |
 | `Passed(d)` | `Delivering` | `passed = d` | none |
 | | other | unchanged | none |
 | `Start(Call(d, slot, name, n))` | `Delivering`, and `passed = d` | for a state, `received` of the slot is set | `RunCall(slot, n)` |
@@ -329,7 +332,7 @@ or `Recording` straight to `Stopped`.
 | `Unscheduled` | not yet reported | reported | `Report("Extension delivery could not be scheduled")` |
 | | reported | unchanged | none |
 
-Four notes on the table.
+Five notes on the table.
 
 - **A step carries its own identity.** The lane hands a step back with its
   outcome, whether its effect started or not. So `Failed` depends on nothing
@@ -346,6 +349,10 @@ Four notes on the table.
   holds the same number of items as today, which specs read.
 - **`Take` also stops.** Today `destroy` always stops first. The machine makes
   it a rule: no call can start once the extensions are taken.
+- **One rule for every report of a callback.** `reportOf` holds the rule of
+  the `Failed` row for a call. The interpreter uses the same function for a
+  `setup` or an `onDestroy` that failed. Those two are not steps of the lane.
+  They are reported unless the failure is `Aborted`, as today.
 
 ### The interpreter
 
@@ -357,7 +364,9 @@ Four notes on the table.
   no extension code runs under it. Today's lock has the same shape: a few
   field updates and the adds.
 - **One field** under that lock: the machine's state and the handlers of each
-  slot.
+  slot. The handlers follow the slots in the same locked step. They join with
+  the `Register` that made their slot. `Take` removes them all and hands them
+  to its `Destroy` commands. So a retired view keeps no handlers, as today.
 - **The lane**, unchanged. Its item is the machine's `Step`: one item per
   check and per call, as today.
 - **The effect code**, unchanged: the bounded `setup` with its hand-over of
@@ -365,36 +374,51 @@ Four notes on the table.
   inside its bound, the redaction of snapshot rejections in reports.
 
 ```scala
-private final case class Held(machine: State[S, M], handlers: Vector[Extension.Handlers[F, S, M]])
+private type Handlers = Extension.Handlers[F, S, M]
+private final case class Held(machine: State[S, M], handlers: Vector[Handlers])
 private val lock = new Object
 private var held = Held(ExtensionMachine.initial(checks.nonEmpty), Vector.empty) // guarded by lock
 private val lane = new SerialLane[F, Step[S, M]](start, failed, unscheduled)
 
 /**
  * One pure step. The steps it offers enter the lane before the lock is
- * released. It returns the commands and the value it left behind.
+ * released. `added` are the handlers that come with a `Register`. It returns
+ * the commands, and the handlers as they were before the step.
  */
-private def advance(event: Event[S, M]): (Vector[Command[S, M]], Held) = lock.synchronized {
-  val (next, commands) = ExtensionMachine.step(held.machine, event)
-  held = held.copy(machine = next)
-  commands.foreach { case Command.Enqueue(steps) => steps.foreach(lane.enqueue); case _ => () }
-  (commands, held)
-}
+private def advance(event: Event[S, M], added: Option[Handlers] = None): (Vector[Command[S, M]], Vector[Handlers]) =
+  lock.synchronized {
+    val Held(machine, before) = held
+    val (next, commands)      = ExtensionMachine.step(machine, event)
+    val after = next.slots match {
+      case None                                    => Vector.empty    // taken: a retired view keeps none
+      case Some(slots) if slots.size > before.size => before ++ added // the step made a slot
+      case Some(_)                                 => before
+    }
+    held = Held(next, after)
+    commands.foreach { case Command.Enqueue(steps) => steps.foreach(lane.enqueue); case _ => () }
+    (commands, before)
+  }
 
-// `run` does what is left, outside the lock: wake or close the lane, report.
-def state(value: S): Unit = run(advance(Event.Written(value)))
+/**
+ * A step, and then what is left of it outside the lock: wake or close the
+ * lane, report. `Reject` and `Destroy` are effects. `register` and the
+ * teardown run them, where they run today.
+ */
+private def feed(event: Event[S, M], error: Option[Throwable] = None): Unit = run(advance(event)._1, error)
+
+def state(value: S): Unit = feed(Event.Written(value))
 
 private def start(step: Step[S, M]): F[Unit] = {
-  val (commands, seen) = advance(Event.Start(step))
+  val (commands, handlers) = advance(Event.Start(step))
   commands.collectFirst {
-    case Command.RunCheck(n)      => check(n).map(_ => run(advance(Event.Passed(step.delivery))))
+    case Command.RunCheck(n)      => check(n).map(_ => feed(Event.Passed(step.delivery)))
     // The handlers as they were in that step. A teardown can take them later.
-    case Command.RunCall(slot, n) => call(seen.handlers(slot), n)
+    case Command.RunCall(slot, n) => call(handlers(slot), n)
   }.getOrElse(Effect[F].unit)
 }
 
 private def failed(step: Step[S, M], error: Throwable): Unit =
-  run(advance(Event.Failed(step, classify(error))), error)
+  feed(Event.Failed(step, classify(error)), Some(error))
 ```
 
 What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
@@ -424,6 +448,7 @@ What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
 | One call at a time, each on its own | One lane item per call | The same |
 | `lastState` is the last state the extension received | `Active.received`, set before the call | `Slot.received`, set by `Start` |
 | Nothing starts after a stop | `stopped`, read before each call | `Phase.Stopped`, read by `Start` |
+| No `setup` starts after a stop | `stopped`, read before each `setup` | `Phase.Stopped`, read before each `setup` |
 | An extension is destroyed once, newest first | `active.getAndSet(None)` | `Take` |
 | A setup that completes after teardown is destroyed at once | `register` returns false | `Reject` |
 | A failed step is reported with its extension, also after teardown, and also when it never started | The lane item holds the extension | The step holds the name |
@@ -462,6 +487,8 @@ What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
      `Start` does not change it.
    - `Failed` for a call reports the name that the step carries, in every
      phase, also after `Take`.
+   - `reportOf` is silent in two cases only: the failure is `Aborted`, or it
+     is `Denied` for `onState` or `onMessage` after a stop.
    - `Passed` after `Halt` changes nothing.
    - Before delivery at most one state is kept.
 3. **Everything that exists.** The runtime, session, adapter, cost and volume
@@ -470,9 +497,9 @@ What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
 ### Cost
 
 Today a notification costs one lock and a few volatile reads. After the
-change it costs the same lock for the write, and one more short lock for each
-of its steps, with a small allocation. Nothing is retried. Two gates check
-that this cannot be seen:
+change it costs the same lock for the write, one more short lock for each of
+its steps, and one for a check that passes, each with a small allocation.
+Nothing is retried. Two gates check that this cannot be seen:
 
 - `ExtensionVolumeSpec`, with its 30-second limits, unchanged.
 - The click latency harness, `main` against the branch, for the cell that
@@ -721,7 +748,7 @@ Why this order:
 | Phase | Before it starts |
 | --- | --- |
 | 0 | A test of the timer overflow through `TimerRuntime`: what is reported, and that the timers stay stopped. It passes before and after. Only then does `step` become total, and the throw assertion of `TimerMachineSpec` is replaced |
-| 1 | The two characterization cases of the pilot |
+| 1 | The three characterization cases of the pilot |
 | 2 | A test of `SessionsService.required` that does not wait real seconds; tests of the lane budgets and of "closed after close" for the JDBC provider |
 | 4 | Cases for a teardown that is asked for twice at once, and for a drain that does not end |
 | 5 | A spec for `ComponentInstance`; a spec for the close of `Frontend` |
