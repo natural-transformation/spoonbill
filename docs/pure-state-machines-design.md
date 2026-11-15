@@ -1,7 +1,10 @@
 # Pure state machines: design and plan
 
-Status: draft 1, 2026-11-15. Nothing in this document is implemented. It asks
-for decisions first; see [decisions to confirm](#decisions-to-confirm).
+Status: draft 2, 2026-11-15. Nothing in this document is implemented. It asks
+for decisions first; see [decisions to confirm](#decisions-to-confirm). Draft
+2 follows a review: the pilot keeps what it needs to report a callback that
+fails after teardown, and the plan no longer promises an unchanged spec where
+a machine itself changes.
 
 ## Summary
 
@@ -66,9 +69,12 @@ Limits of the work:
 
 - **No behaviour change.** Every step is a refactor. Existing specs pass
   unchanged. Where a rule was not pinned by a test, a test is added first and
-  must pass on the old code. One exception: a spec that reads a private field
-  of an interpreter is rewritten first, in a change of its own. The Node tests
-  of the browser client are the main case.
+  must pass on the old code. Two exceptions. A spec that reads a private field
+  of an interpreter is rewritten first, in a change of its own; the Node tests
+  of the browser client are the main case. And the spec of a machine can
+  change together with that machine, once a spec of its interpreter pins what
+  can be observed. `TimerMachineSpec` expects a throw on overflow, and that
+  assertion is replaced when `step` becomes total.
 - **No public API change.** Machines are `private[spoonbill]` or private to
   their module.
 - **Main sources only.** State in tests is not in scope. The two published
@@ -172,8 +178,9 @@ the build.
 
 `TimerMachine.scala` is the only such file today, and the rules flag one line
 in it: `step` keeps its result in a local variable. The guard does not tell a
-local variable from a field. So that function is rewritten without it, with
-`TimerMachineSpec` as the proof that nothing changed.
+local variable from a field. So that function is rewritten without it, and
+`TimerMachineSpec` shows that the rewrite changed nothing. Making `step` total
+is a second, separate change of that spec; see [plan](#plan).
 
 Machines stay next to their interpreters. They do not move to `modules/core`:
 that module is the domain kernel of browser authentication, and the modules
@@ -238,8 +245,11 @@ private[spoonbill] object ExtensionMachine {
     case Stopped()
   }
 
-  /** The step that the lane is running now. */
-  enum Running { case Check; case Call(slot: Int, callback: Callback) }
+  /**
+   * The step that the lane is running now. A call keeps the name of its
+   * extension: it can fail after teardown has taken the slots.
+   */
+  enum Running { case Check; case Call(slot: Int, name: String, callback: Callback) }
 
   final case class State[S, M](
     guarded: Boolean,                 // a check runs before each delivery
@@ -293,24 +303,25 @@ or `Recording` straight to `Stopped`.
 | | `Stopped` | unchanged | none |
 | `Register(name)` | `slots` present | a new slot at the end | none |
 | | `slots` taken | unchanged | `Reject(admitted)` |
-| `Begin` | `Recording` | `Delivering`: `waiting` is the newest state, or else the admitted state, followed by the messages; `targets` is the number of slots | `Offer(n × (1 + targets))` for `n` waiting notifications |
+| `Begin` | `Recording` | `Delivering`: `waiting` is the newest state, or else the admitted state, followed by the messages; `targets` is the number of slots | `Offer(n × (1 + targets))` for `n` waiting notifications; none when nothing waits |
 | | other | unchanged | none |
-| `Next` | `Delivering`, nothing current, guarded | the head of `waiting` becomes current, unchecked; `running = Check` | `Check(notification)` |
+| `Next` | a step is running | unchanged | none |
+| | `Delivering`, nothing current, guarded | the head of `waiting` becomes current, unchecked; `running = Check` | `Check(notification)` |
 | | `Delivering`, nothing current, not guarded | the head of `waiting` becomes current, checked. With no slot, nothing stays current | none |
 | | `Delivering`, current is checked | for a state, `received` of the slot is set; `next` moves on; after the last slot nothing is current; `running = Call` | `Call(slot, notification)` |
 | | other | unchanged | none |
-| `Succeeded` | `running = Check` | the current notification is checked. With no slot, nothing stays current. `running` is empty | none |
-| | other | `running` is empty | none |
-| `Failed(f)` | `running = Check` | `Stopped` | `Close`, and `Report("Extension delivery was stopped: its check failed")` unless `f` is `Denied` |
-| | `running = Call` | `running` is empty | `Report("Extension <name>: <callback> failed")`, unless `f` is `Aborted`, or `f` is `Denied` and the phase is `Stopped` |
+| `Succeeded` | `Delivering`, `running = Check` | the current notification is checked. With no slot, nothing stays current. `running` is empty | none |
+| | other, also `Stopped` | `running` is empty; nothing else changes | none |
+| `Failed(f)` | `running = Check` | `Stopped`; `running` is empty | `Close`, and `Report("Extension delivery was stopped: its check failed")` unless `f` is `Denied` |
+| | `running = Call` | `running` is empty | `Report("Extension <name>: <callback> failed")`, with the name that `running` holds, unless `f` is `Aborted`, or `f` is `Denied` and the phase is `Stopped` |
 | | `running` empty | the step that `Next` would have started is skipped, and treated as failed in the same way. A skipped call does not set `received` | as above |
-| `Halt` | any | `Stopped`; what was recorded or waiting is dropped | `Close` |
-| `Take` | `slots` present | `slots` taken; `Stopped` | `Close` if the phase was not `Stopped`. Then `Destroy(slot, name, last)` for every slot, newest first, where `last` is `received`, or else `admitted` |
+| `Halt` | any | `Stopped`; what was recorded, waiting or current is dropped. `running` stays | `Close` |
+| `Take` | `slots` present | `slots` taken; `Stopped`. `running` stays | `Close` if the phase was not `Stopped`. Then `Destroy(slot, name, last)` for every slot, newest first, where `last` is `received`, or else `admitted` |
 | | `slots` taken | unchanged | none |
 | `Unscheduled` | not yet reported | reported | `Report("Extension delivery could not be scheduled")` |
 | | reported | unchanged | none |
 
-Three notes on the table.
+Four notes on the table.
 
 - **One step per token.** A notification is `1 + targets` steps: its check,
   then one call per extension. A session without a guard has no check, and
@@ -324,6 +335,12 @@ Three notes on the table.
   item itself is reported as failed, which is the same outcome.
 - **`Take` also stops.** Today `destroy` always stops first. The machine makes
   it a rule: no call can start once the extensions are taken.
+- **A step can settle after a stop.** The teardown waits for the step in
+  flight with a bound. When the bound runs out, it takes the extensions while
+  that step still runs. So `Halt` and `Take` leave `running` alone. A check
+  that succeeds afterwards changes nothing but `running`. A call that fails
+  afterwards is still reported with the name of its extension. Today the lane
+  item holds that extension; in the machine `running` holds the name.
 
 ### The interpreter
 
@@ -390,12 +407,13 @@ drops both.
 | A write and the start of delivery have one order | The lock | One atomic step of the cell |
 | Notifications are delivered in the order they arrived | The order of `enqueue` under the lock | `waiting` |
 | No extension is called before the check passed | `Delivery.admitted` | `Current.checked` |
-| One call at a time, each on its own | One lane item per call | One token per call |
+| One call at a time, each on its own | One lane item per call | One token per call; and `Next` hands out nothing while a step runs |
 | `lastState` is the last state the extension received | `Active.received`, set before the call | `Slot.received`, set in the step that hands the call out |
 | Nothing starts after a stop | `stopped`, read before each call | `Phase.Stopped` |
 | An extension is destroyed once, newest first | `active.getAndSet(None)` | `Take` |
 | A setup that completes after teardown is destroyed at once | `register` returns false | `Reject` |
 | A denied access after the view closed is not reported | `report` | `Failed` |
+| A callback that fails after teardown is reported with its extension's name | The lane item holds the extension | `Running.Call` holds the name |
 | A refused lane is reported once | `unscheduledReported` | `Unscheduled` |
 | A callback starts in a task, never on the writing thread | `SerialLane` | `SerialLane`, unchanged |
 | Bounds, cancellation, the thread of `onDestroy` | `ExtensionRuntime` | `ExtensionRuntime`, unchanged |
@@ -410,7 +428,8 @@ drops both.
    after it still arrive in order.
 2. **`ExtensionMachineSpec`.** One case per row of the table. Properties over
    generated event sequences:
-   - `Next` returns at most one `Check` or `Call`.
+   - `Next` returns at most one `Check` or `Call`, and none while a step is
+     running: between two of them there is a `Succeeded` or a `Failed`.
    - No `Call` for a notification whose `Check` has not succeeded.
    - The calls of one notification go to slot 0, 1, 2 and so on, each once.
      Notifications are served in the order of their events.
@@ -421,6 +440,10 @@ drops both.
    - The `last` of a slot is the last state a `Call` handed to it, or else the
      admitted state.
    - Before delivery at most one state is kept.
+   - A call is handed out, then `Halt`, then `Take`, then `Failed`: the report
+     names the extension of that call.
+   - A check is handed out, then `Halt`, then `Succeeded`: the phase stays
+     `Stopped`, and the next `Next` returns nothing.
    - When nothing stops the machine, one `Next` per offered step empties
      `waiting`, and one more `Next` changes nothing.
 3. **Everything that exists.** The runtime, session, adapter, cost and volume
@@ -627,8 +650,11 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
 1. **Tests first.** A rule that no test pins gets a test, and the test must
    pass on the old code. Then the refactor.
 2. **One machine per pull request.** Its behaviour does not change, and no
-   existing spec is edited. Where a spec reads a private field of an
-   interpreter, that spec is rewritten in a pull request of its own, first.
+   existing spec is edited. Two exceptions, as under
+   [goal and limits](#goal-and-limits): a spec that reads a private field of
+   an interpreter is rewritten in a pull request of its own, first; and the
+   spec of a machine changes with its machine, once a spec of the interpreter
+   pins what can be observed.
 3. **No fix inside a refactor.** The readers found suspected defects; see
    [defects](#defects-the-survey-suggests). Each is first shown with a failing
    test and fixed on its own, before the refactor of that area.
@@ -681,9 +707,9 @@ Why this order:
 
 | Phase | Before it starts |
 | --- | --- |
+| 0 | A test of the timer overflow through `TimerRuntime`: what is reported, and that the timers stay stopped. It passes before and after. Only then does `step` become total, and the throw assertion of `TimerMachineSpec` is replaced |
 | 1 | The two characterization cases of the pilot |
 | 2 | A test of `SessionsService.required` that does not wait real seconds; tests of the lane budgets and of "closed after close" for the JDBC provider |
-| 3 | A test of the timer overflow through the runtime |
 | 4 | Cases for a teardown that is asked for twice at once, and for a drain that does not end |
 | 5 | A spec for `ComponentInstance`; a spec for the close of `Frontend` |
 | 7 | A spec for the stream publisher |
@@ -698,8 +724,8 @@ because several items are in security code and most are not confirmed.
 An outside review of that list reproduced eight of them with probes, in the
 queue, the hub, `Stream.sort` and the browser connection. It took six out:
 two are deliberate or pinned by a spec, two are plain fields with no shown
-race, one is a design question, and one has no way to be reached. The other
-entries were read against the code and not run.
+race, one is a design question, and for one no reachable trigger has been
+shown. The other entries were read against the code and not run.
 
 Rule 3 of the plan applies to each: first a failing test, then a fix of its
 own. Two of them were already known from the work on the extension contract:
