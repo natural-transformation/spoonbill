@@ -1,14 +1,18 @@
 # Pure state machines: design and plan
 
-Status: draft 3, 2026-11-15. Nothing in this document is implemented. It asks
+Status: draft 4, 2026-11-15. Nothing in this document is implemented. It asks
 for decisions first; see [decisions to confirm](#decisions-to-confirm).
+Decision 4 is made. The others are open.
 
 Draft 2 followed a review: the plan no longer promises an unchanged spec where
-a machine itself changes. Draft 3 follows another and changes the pilot. In
+a machine itself changes. Draft 3 followed another and changed the pilot. In
 drafts 1 and 2 the lane held bare tokens, and the machine decided what each
 token stood for. Two reviews found three orders of events in which the machine
-then lacked what it needed to report a step. In draft 3 the lane item is the
-step itself, with its identity, as it is today. The lock of the runtime stays.
+then lacked what it needed to report a step. Since draft 3 the lane's thread
+holds the step itself, with its identity, as it does today. Draft 3 also kept
+the lock of the runtime for good. Draft 4 follows a decision about that lock:
+the pilot ends without it, in two steps. Step 1 is the pilot of draft 3. Step
+2 moves the waiting steps from the lane into the machine.
 
 ## Summary
 
@@ -27,9 +31,11 @@ This document proposes to make that the rule:
 1. **One pattern.** A machine is an immutable `State`, an `Event`, a `Command`
    and one function `step`. An interpreter holds the state in one cell, feeds
    events and runs commands. See [the pattern](#the-pattern).
-2. **A pilot.** The extension runtime is refactored first. Its mutable fields
-   become `ExtensionMachine`. Its lock stays, with one job. Its behaviour does
-   not change. See [pilot](#pilot-the-extension-runtime).
+2. **A pilot.** The extension runtime is refactored first, in two steps. Step
+   1 turns its mutable fields into `ExtensionMachine`, and keeps its lock and
+   its lane. Step 2 moves the waiting steps into the machine too, and the lock
+   becomes the shared cell. Its behaviour does not change. See
+   [pilot](#pilot-the-extension-runtime).
 3. **An inventory.** Every place in the main sources that holds state was
    read and sorted into eight kinds. About 65 places hide a machine. Five
    small protocols are written about forty times. See
@@ -168,11 +174,15 @@ It is a compare-and-set loop over an `AtomicReference`. It lives in the
 effect module, next to `Var`, so every module can use it.
 
 An interpreter can keep a lock in place of the cell when a command has to run
-inside the atomic section. The reason is then written at the lock. Two cases
-are known. The pilot puts the steps of an event into the lane under its lock,
-so that the lane has them in the order of the events. And the Reactive
-Streams subscriber of the Pekko adapter asks for the next element under its
-lock, on purpose; a retry would ask twice.
+inside the atomic section. The reason is then written at the lock. One case is
+known for good: the Reactive Streams subscriber of the Pekko adapter asks for
+the next element under its lock, on purpose; a retry would ask twice.
+
+The pilot is such a case between its two steps only. In step 1 it puts the
+steps of an event into the lane under its lock, so that the lane has them in
+the order of the events. In step 2 those steps are part of the state, and the
+cell is enough. Where it can be done, this is the way out of such a lock:
+when two things must change in one action, make them one value.
 
 ### The guard
 
@@ -227,9 +237,29 @@ The rules are spread over eleven methods: `state`, `message`, `enqueue`,
 `lastState`. They can only be tested through threads, an executor and
 effects.
 
+### Two steps
+
+The pilot ends with one immutable value in one cell, and without a lock. It
+gets there in two pull requests. Each changes one thing.
+
+| Step | What moves | What stays |
+| --- | --- | --- |
+| 1 | The rules. Eight of the nine places become `ExtensionMachine` | The lock, and the lane with its queue |
+| 2 | The ninth place. The waiting steps move from the lane's queue into the machine, and the lock becomes a `StateCell` | The rules of step 1 |
+
+The lock exists today because the phase and the queue are two things, and a
+write must change both in one action. Step 1 moves the rules and keeps that
+structure, so every order of events is the same as today. Step 2 puts the
+queue into the same value as the phase. One compare-and-set then covers both,
+and the lock has no job left.
+
+Step 1 is also a correct place to stop, should step 2 show a problem.
+
 ### The machine
 
-`ExtensionMachine.scala` sits next to `ExtensionRuntime.scala`.
+`ExtensionMachine.scala` sits next to `ExtensionRuntime.scala`. This is its
+shape in step 1. Step 2 changes it in three places; see
+[step 2](#step-2-the-waiting-steps-move-into-the-machine).
 
 ```scala
 private[spoonbill] object ExtensionMachine {
@@ -255,7 +285,11 @@ private[spoonbill] object ExtensionMachine {
 
   enum Phase[S, M] {
     case Recording(newest: Option[S], messages: Vector[M])
-    case Delivering(targets: Int)     // the first `targets` slots get notifications
+    case Delivering(
+      targets: Int,         // the first `targets` slots get notifications
+      deliveries: Long,     // the number of the last delivery
+      passed: Option[Long]  // the delivery whose check passed last
+    )
     case Stopped()
   }
 
@@ -264,8 +298,6 @@ private[spoonbill] object ExtensionMachine {
     phase: Phase[S, M],
     admitted: Option[S],              // the state the view was accepted with
     slots: Option[Vector[Slot[S]]],   // None once teardown took them
-    deliveries: Long,                 // the number of the last delivery
-    passed: Option[Long],             // the delivery whose check passed last
     unscheduledReported: Boolean
   )
 
@@ -302,7 +334,9 @@ private[spoonbill] object ExtensionMachine {
 ```
 
 The phases move in one direction: `Recording` to `Delivering` to `Stopped`,
-or `Recording` straight to `Stopped`.
+or `Recording` straight to `Stopped`. What belongs to one phase is a field of
+that phase. So a state that makes no sense cannot be built: there is no
+delivery number before delivery, and none after a stop.
 
 | Event | In | New state | Commands |
 | --- | --- | --- | --- |
@@ -354,7 +388,7 @@ Five notes on the table.
   `setup` or an `onDestroy` that failed. Those two are not steps of the lane.
   They are reported unless the failure is `Aborted`, as today.
 
-### The interpreter
+### Step 1: the interpreter keeps its lock
 
 `ExtensionRuntime` keeps its constructor and its methods. Inside, it has:
 
@@ -364,9 +398,9 @@ Five notes on the table.
   no extension code runs under it. Today's lock has the same shape: a few
   field updates and the adds.
 - **One field** under that lock: the machine's state and the handlers of each
-  slot. The handlers follow the slots in the same locked step. They join with
-  the `Register` that made their slot. `Take` removes them all and hands them
-  to its `Destroy` commands. So a retired view keeps no handlers, as today.
+  slot. The handlers follow the slots in the same step. They join with the
+  `Register` that made their slot. `Take` removes them all and hands them to
+  its `Destroy` commands. So a retired view keeps no handlers, as today.
 - **The lane**, unchanged. Its item is the machine's `Step`: one item per
   check and per call, as today.
 - **The effect code**, unchanged: the bounded `setup` with its hand-over of
@@ -380,6 +414,14 @@ private val lock = new Object
 private var held = Held(ExtensionMachine.initial(checks.nonEmpty), Vector.empty) // guarded by lock
 private val lane = new SerialLane[F, Step[S, M]](start, failed, unscheduled)
 
+/** The handlers follow the slots: one joins when the step made a slot, all leave when the slots are taken. */
+private def follow(before: Vector[Handlers], next: State[S, M], added: Option[Handlers]): Vector[Handlers] =
+  next.slots match {
+    case None                                    => Vector.empty // a retired view keeps none
+    case Some(slots) if slots.size > before.size => before ++ added
+    case Some(_)                                 => before
+  }
+
 /**
  * One pure step. The steps it offers enter the lane before the lock is
  * released. `added` are the handlers that come with a `Register`. It returns
@@ -389,12 +431,7 @@ private def advance(event: Event[S, M], added: Option[Handlers] = None): (Vector
   lock.synchronized {
     val Held(machine, before) = held
     val (next, commands)      = ExtensionMachine.step(machine, event)
-    val after = next.slots match {
-      case None                                    => Vector.empty    // taken: a retired view keeps none
-      case Some(slots) if slots.size > before.size => before ++ added // the step made a slot
-      case Some(_)                                 => before
-    }
-    held = Held(next, after)
+    held = Held(next, follow(before, next, added))
     commands.foreach { case Command.Enqueue(steps) => steps.foreach(lane.enqueue); case _ => () }
     (commands, before)
   }
@@ -421,29 +458,122 @@ private def failed(step: Step[S, M], error: Throwable): Unit =
   feed(Event.Failed(step, classify(error)), Some(error))
 ```
 
-What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
-`ordered`, `active`, `unscheduledReported`, the class `Active` with its
-`received`, and the mutable flag of `Delivery`. The lock stays, with one job.
+What goes away in step 1: `phase`, `newest`, `earlyMessages`, `stopped`,
+`admitted`, `ordered`, `active`, `unscheduledReported`, the class `Active`
+with its `received`, and the mutable flag of `Delivery`. The lock stays, with
+one job.
+
+### Step 2: the waiting steps move into the machine
+
+**The machine.** `Delivering` gets the waiting steps. There is one more event,
+and `Enqueue` gives way to two commands.
+
+```scala
+case Delivering(
+  targets: Int,
+  deliveries: Long,
+  passed: Option[Long],
+  waiting: Vector[Step[S, M]]   // new: the steps the lane has not taken yet, oldest first
+)
+
+case Next                       // new event: the lane asks for its next step
+
+case Wake                       // new command, in place of Enqueue: a step waits, wake the lane
+case Hand(step: Step[S, M])     // new command: the answer to Next
+
+/** The number of waiting steps. */
+def waiting[S, M](state: State[S, M]): Int
+```
+
+| Event | In | New state | Commands |
+| --- | --- | --- | --- |
+| `Written(s)`, `Published(m)` | `Delivering` | as in step 1, and the steps go to the end of `waiting` | `Wake` |
+| `Begin` | `Recording` | `Delivering`, with the same steps in `waiting` | `Wake`, when a step waits |
+| `Next` | `Delivering`, and a step waits | the oldest step leaves `waiting` | `Hand(step)` |
+| | other | unchanged | none |
+
+The other rows do not change. `Stopped` has no place for a step. So `Halt`, a
+failed check and `Take` drop the waiting steps by moving there, and no `Next`
+hands out a step afterwards.
+
+**The interpreter.** The lock and its field become one `StateCell`. `advance`
+no longer adds to the lane. Only the pure step runs inside the cell, so a
+retry is harmless.
+
+```scala
+private val cell = new StateCell(Held(ExtensionMachine.initial(checks.nonEmpty), Vector.empty))
+
+private def advance(event: Event[S, M], added: Option[Handlers] = None): (Vector[Command[S, M]], Vector[Handlers]) =
+  cell.modify { case Held(machine, before) =>
+    val (next, commands) = ExtensionMachine.step(machine, event)
+    (Held(next, follow(before, next, added)), (commands, before))
+  }
+
+/** The lane takes its steps from the machine. */
+private val steps = new SerialLane.Source[Step[S, M]] {
+  def poll(): Option[Step[S, M]] = advance(Event.Next)._1.collectFirst { case Command.Hand(step) => step }
+  def isEmpty: Boolean           = ExtensionMachine.waiting(cell.get.machine) == 0
+}
+private val lane = new SerialLane[F, Step[S, M]](start, failed, unscheduled, steps)
+```
+
+`follow`, `feed`, `start` and `failed` do not change. `run` wakes the lane for
+`Wake`. `pending` reads `waiting`.
+
+**The lane.** `SerialLane` reads its queue in four places: `wake`, the loop,
+`release` and `resume`. In step 2 those four go through a source. Without a
+source the lane uses its own queue, as today, and `enqueue`, `offer` and
+`size` belong to that queue. The states of the lane, its loop, `close` and
+`idle` do not change.
+
+A source owes the lane three things.
+
+1. `poll` and `isEmpty` are safe on any thread, and both see an add that has
+   completed.
+2. The owner calls `wake` after it has added.
+3. Once the owner has stopped, the source stays empty. The owner then calls
+   `close`.
+
+The cell gives the first, `Wake` the second, and `Stopped` the third.
+
+**The lane's thread holds the step.** It takes the step from the machine
+before it starts anything, and hands it back with the outcome, as it does with
+an item of its own queue today. So a step keeps its identity when the effect
+runtime refuses to start it, and when the view ends in between. `Start` still
+runs inside the effect, as today, so a stop that comes after the lane took a
+step and before its effect ran still prevents the call. This is where step 2
+differs from drafts 1 and 2; see [alternatives](#alternatives-considered).
+
+**What can be seen.** Nothing new. One window closes. Today, and in step 1,
+the lane can still take a step between the stop and the close of the lane.
+Such a step starts no callback. It is reported if the effect runtime refuses
+it. In step 2 no step can be taken after the stop. Every run of step 2 is a
+run that today's code allows.
+
+What goes away in step 2: the lock, `Enqueue`, and the use of the lane's own
+queue by this runtime.
 
 ### What does not change
 
 - The constructor and the methods of `ExtensionRuntime`, `Bound`, `Checks`,
   `TimedOut` and `SetupAborted`. `SessionsService` is not touched.
-- `SerialLane`, and how it is used: one item per check and per call, added
-  under the lock. Its guarantees were reviewed with the contract: a handler
-  starts in a task, one at a time, on no deeper stack.
+- In step 1, `SerialLane`. In step 2, its states, its loop, `close` and
+  `idle`. Its guarantees were reviewed with the contract, and they hold in
+  both steps: a handler starts in a task, one at a time, on no deeper stack.
 - Every existing spec, and the six probes of the outside review. None is
   edited.
-- `pending` and `recorded`, which the specs read.
+- `pending` and `recorded`, which the specs read. `pending` is the number of
+  waiting steps in both steps.
 
 ### Where each rule goes
 
-| Rule | Today | After |
+| Rule | Today | After step 1 |
 | --- | --- | --- |
 | Only the newest state is kept before delivery | `newest` under the lock | `Phase.Recording` |
 | The attach state comes first, then the early messages | `start` under the lock | `Begin` |
 | A write and the start of delivery have one order | The lock | The lock, around one step and its enqueue |
 | Notifications are delivered in the order they arrived | The order of `enqueue` under the lock | The same: `Enqueue` runs under the lock |
+| The waiting steps are dropped at a stop | `lane.close()` | The same, through `Close` |
 | No extension is called before the check passed | `Delivery.admitted` | `passed` |
 | One call at a time, each on its own | One lane item per call | The same |
 | `lastState` is the last state the extension received | `Active.received`, set before the call | `Slot.received`, set by `Start` |
@@ -457,10 +587,18 @@ What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
 | A callback starts in a task, never on the writing thread | `SerialLane` | `SerialLane`, unchanged |
 | Bounds, cancellation, the thread of `onDestroy` | `ExtensionRuntime` | `ExtensionRuntime`, unchanged |
 
+Step 2 moves three of them once more.
+
+| Rule | After step 1 | After step 2 |
+| --- | --- | --- |
+| A write and the start of delivery have one order | The lock | One compare-and-set |
+| Notifications are delivered in the order they arrived | `Enqueue` runs under the lock | The order of `waiting` |
+| The waiting steps are dropped at a stop | `Close` closes the lane, and the lane drops them | `Stopped` has no place for a step |
+
 ### Tests of the pilot
 
 1. **Characterization, before any change.** Three new cases against today's
-   runtime.
+   runtime. They pass on today's code, after step 1 and after step 2.
    - Writers on several threads race with `start`: the attach state is first,
      each writer's own order is kept, nothing is lost or doubled.
    - A step that the effect runtime refuses to start, with cats-effect and a
@@ -472,8 +610,8 @@ What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
      are taken first. In both, the report names the extension and the
      callback, and `onDestroy` gets the state from before that call: a
      callback that was never entered does not move `lastState`.
-2. **`ExtensionMachineSpec`.** One case per row of the table. Properties over
-   generated event sequences:
+2. **`ExtensionMachineSpec`, with step 1.** One case per row of the table.
+   Properties over generated event sequences:
    - An `Enqueue` holds one `Check` and then one `Call` per target, in slot
      order. Deliveries are numbered in the order of their events.
    - `Start` returns `RunCall` only for a delivery whose check passed, and
@@ -491,15 +629,33 @@ What goes away: `phase`, `newest`, `earlyMessages`, `stopped`, `admitted`,
      is `Denied` for `onState` or `onMessage` after a stop.
    - `Passed` after `Halt` changes nothing.
    - Before delivery at most one state is kept.
-3. **Everything that exists.** The runtime, session, adapter, cost and volume
-   specs, under `Future`, cats-effect and ZIO, and the six review probes.
+3. **`ExtensionMachineSpec`, with step 2.** The cases of `Enqueue` become
+   cases of `waiting`. Two properties are new, and they hold what the lock
+   held before:
+   - The steps that `Next` hands out are the steps of the events, in the order
+     of the events.
+   - After `Halt`, a failed check or `Take`, `Next` hands out nothing.
+4. **The lane with a source, with step 2.** A new spec runs the cases of
+   `SerialLaneSpec` against a source: the order, one handler at a time, a new
+   task after a handler that settled late, a close with a handler in flight, a
+   refused loop, and writers that race closes. `SerialLaneSpec` is not edited,
+   and keeps running against the lane's own queue.
+5. **Everything that exists, after each step.** The runtime, session, adapter,
+   cost and volume specs, under `Future`, cats-effect and ZIO, and the six
+   review probes.
 
 ### Cost
 
-Today a notification costs one lock and a few volatile reads. After the
-change it costs the same lock for the write, one more short lock for each of
-its steps, and one for a check that passes, each with a small allocation.
-Nothing is retried. Two gates check that this cannot be seen:
+Today a notification costs one lock and a few volatile reads.
+
+- **Step 1.** The same lock for the write, one more short lock for each of
+  its steps, and one for a check that passes, each with a small allocation.
+  Nothing is retried.
+- **Step 2.** No lock. One compare-and-set for the write, two for each of its
+  steps, `Next` and `Start`, and one for a check that passes. A
+  compare-and-set that loses a race runs the pure step again.
+
+Two gates check, after each step, that this cannot be seen:
 
 - `ExtensionVolumeSpec`, with its 30-second limits, unchanged.
 - The click latency harness, `main` against the branch, for the cell that
@@ -511,9 +667,12 @@ Nothing is retried. Two gates check that this cannot be seen:
 | Risk | Answer |
 | --- | --- |
 | The check order of a guarded session changes | `Start` returns `RunCall` only when the check of that delivery passed; a property pins it; `ExtensionCostSpec` counts the observations |
-| A step loses its identity before it settles | The step is the lane item, as today. The third characterization case pins the hardest order |
-| The lock does more than today | It covers one pure step and the adds. The two gates measure it |
-| A second review of code that was just reviewed | No spec is edited, and the probes of that review run unchanged |
+| A step loses its identity before it settles | The lane's thread holds the step, in both steps, as today. The third characterization case pins the hardest order |
+| Step 1: the lock does more than today | It covers one pure step and the adds. The two gates measure it |
+| Step 2: the lane loses a guarantee when it reads from a source | Its states and its loop do not change, only where it reads. A spec runs its cases against a source |
+| Step 2: a step that is retried does something twice | Only the pure step runs inside the cell. The guard on `*Machine.scala` keeps it pure |
+| Step 2: a burst makes the state large | The same steps wait in the lane's queue today. `ExtensionVolumeSpec` runs unchanged |
+| A second review of code that was just reviewed | No spec is edited, and the probes of that review run unchanged. Each step is a pull request of its own |
 
 ## Inventory
 
@@ -616,7 +775,7 @@ Risk is the risk of the refactor, not of the code today.
 | Baseline and loader | `ComponentInstance` | Two volatile flags and a `null`. `loading` is true in three different states | A | A baseline machine | High. No spec of its own |
 | Legacy delay | `DelayInstance` | Two volatile fields | A | One cell | Low to medium |
 | Sensitive presentations | `SensitiveRuntime` | The pure phase model exists, but the plaintext, the waiter and the timers sit beside it in separate cells. A five-second rule is written three times | A | A sensitive machine. The payload never enters its state | High. It is a security order |
-| Serial lane | `SerialLane` | Two state machines in `Int` constants | B | Two small tables. The queue stays | Medium |
+| Serial lane | `SerialLane` | Two state machines in `Int` constants | B | Two small tables. Its own queue stays as the default; step 2 of the pilot lets an owner supply the items | Medium |
 | Extension runtime | `ExtensionRuntime` | See the pilot | A | The pilot | Medium |
 
 #### Authentication and security
@@ -700,7 +859,8 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
    test and fixed on its own, before the refactor of that area.
 4. **A step per edge, not per element.** A machine runs once per lifecycle
    change or per chunk. It never runs per byte, per frame pull or per queue
-   element.
+   element. The pilot is the one exception: an element of its lane is one
+   callback call, not a piece of data, and its gates measure the cost.
 5. **A gate on every hot path.** The queue, the frames of `Frontend`, the
    decoders, the read of `RawDataSocket`, the pull of `SetupInput` and the
    extension lane are measured before and after.
@@ -713,7 +873,7 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
 | Phase | What | Items | Size |
 | --- | --- | --- | --- |
 | 0 | **Ground rules.** The guard on `*Machine.scala`. `StateCell`. `TimerMachine` passes the guard and becomes total | 3 | Small |
-| 1 | **Pilot.** `ExtensionMachine` | 1 | Medium |
+| 1 | **Pilot.** `ExtensionMachine`, in two steps: the rules first, then the waiting steps and the cell | 1 machine, 2 pull requests | Medium |
 | 2 | **Five shared machines.** Deadline, drain gate, once, pending registry, setup ownership. Each gets its spec first, then replaces its copies, a few per pull request | 5 machines, about 40 copies | Medium each |
 | 3 | **Lifecycles with strong specs.** The rest of the timers. Component ownership. The snapshot session. The presentation store. The long-polling topic. The coordinator gate. The serial lane | 7 | Medium each |
 | 4 | **Sessions.** The teardown as a list of steps. The legacy session. The guarded session with its registries | 3 | Large |
@@ -748,7 +908,7 @@ Why this order:
 | Phase | Before it starts |
 | --- | --- |
 | 0 | A test of the timer overflow through `TimerRuntime`: what is reported, and that the timers stay stopped. It passes before and after. Only then does `step` become total, and the throw assertion of `TimerMachineSpec` is replaced |
-| 1 | The three characterization cases of the pilot |
+| 1 | The three characterization cases of the pilot, before step 1. `StateCell` from phase 0, before step 2 |
 | 2 | A test of `SessionsService.required` that does not wait real seconds; tests of the lane budgets and of "closed after close" for the JDBC provider |
 | 4 | Cases for a teardown that is asked for twice at once, and for a drain that does not end |
 | 5 | A spec for `ComponentInstance`; a spec for the close of `Frontend` |
@@ -817,17 +977,28 @@ gets an `enum` in place of its number.
   specs unchanged.
 - **Only document the states.** Diagrams without code. Rejected: a diagram
   does not fail the build when the code moves away from it.
-- **In the pilot, keep the waiting notifications in the machine.** The lane
-  would hold bare tokens, and the machine would decide what each token stands
-  for. One compare-and-set per event would replace the lock, and the order of
-  the work would be a property of the machine. Drafts 1 and 2 proposed this.
-  Rejected in draft 3. Today a lane item carries the identity of its step.
-  With tokens the machine has to rebuild that identity, and two reviews found
-  three orders of events in which it could not: a call that fails after
-  teardown, a check that passes after a stop, and a step that cannot be
-  started after a stop. Each needed a rule of its own, and the last one also
-  an order in which the interpreter must close the lane. With the step as the
-  lane item, none of these rules is needed.
+- **In the pilot, look a step up late.** The lane would hold bare tokens, and
+  the machine would decide what a token stands for when its effect runs.
+  Drafts 1 and 2 proposed this. Rejected in draft 3. Today the lane's thread
+  holds the step it took, with its identity. With tokens the machine has to
+  keep track of that step by itself, and two reviews found three orders of
+  events in which it could not: a call that fails after teardown, a check
+  that passes after a stop, and a step that cannot be started after a stop.
+  What failed was this bookkeeping, not the place of the queue. Step 2 keeps
+  the queue in the machine too. But there the lane's thread takes the step
+  before it starts anything, holds it, and hands it back with the outcome.
+- **In the pilot, keep the lock for good.** Draft 3 proposed this. Not
+  chosen. The waiting steps then stay outside the machine, and two rules with
+  them: the order of delivery, and what a stop drops. It is step 1 now, and a
+  correct place to stop.
+- **In the pilot, drop the lock and keep the queue in the lane.** Rejected.
+  Two writers could then add their steps in the wrong order, and the lane
+  would have to put them back in order by their numbers. That is more
+  machinery than the lock it replaces.
+- **In the pilot, a mailbox for the events.** Every event is queued, and one
+  loop applies them: an actor. Rejected. A stop must hold when `stop`
+  returns: no call starts after it. A mailbox would only queue the stop.
+  Waiting for the mailbox would be a lock again, with more parts.
 
 ## Decisions to confirm
 
@@ -839,9 +1010,10 @@ gets an `enum` in place of its number.
    `*Machine.scala`, not in `modules/core`. The shared ones go to the effect
    module, the pending registry and setup ownership to the runtime module.
    The invocation decisions go to `modules/core`. Recommended.
-4. **The pilot keeps its steps in the lane, and its lock.** A step carries
-   its identity, and the machine decides. The other choice, a machine that
-   holds the queue, is under alternatives. Recommended.
+4. **The pilot ends without a lock, in two steps.** Decided on 2026-11-15.
+   Step 1 moves the rules into the machine and keeps the lock and the lane.
+   Step 2 moves the waiting steps into the machine, and the lock becomes the
+   shared cell. The other choices are under alternatives.
 5. **Suspected defects are fixed first, each in its own change.** The other
    choice keeps them and writes them into the machines as they are.
    Recommended: fix first.
