@@ -691,10 +691,15 @@ Why this order:
 
 ## Defects the survey suggests
 
-The readers reported about twenty-five places where the code seems to allow a
-wrong state. None was run. Some may be harmless by design. The list was
-handed over separately and is not part of this document, because several
-items are in security code and none is confirmed.
+The readers reported about forty places where the code seems to allow a wrong
+state. The list was handed over separately and is not part of this document,
+because several items are in security code and most are not confirmed.
+
+An outside review of that list reproduced eight of them with probes, in the
+queue, the hub, `Stream.sort` and the browser connection. It took six out:
+two are deliberate or pinned by a spec, two are plain fields with no shown
+race, one is a design question, and one has no way to be reached. The other
+entries were read against the code and not run.
 
 Rule 3 of the plan applies to each: first a failing test, then a fix of its
 own. Two of them were already known from the work on the extension contract:
