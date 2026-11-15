@@ -1,8 +1,8 @@
 # Pure state machines: design and plan
 
-Status: draft 4, 2026-11-15. Nothing in this document is implemented. It asks
-for decisions first; see [decisions to confirm](#decisions-to-confirm).
-Decision 4 is made. The others are open.
+Status: draft 5, 2026-11-15. Nothing in this document is implemented. Nine of
+its ten decisions are made; see [decisions](#decisions-to-confirm). Decision 6
+is open, and nothing before phase 8 needs it.
 
 Draft 2 followed a review: the plan no longer promises an unchanged spec where
 a machine itself changes. Draft 3 followed another and changed the pilot. In
@@ -13,6 +13,11 @@ holds the step itself, with its identity, as it does today. Draft 3 also kept
 the lock of the runtime for good. Draft 4 follows a decision about that lock:
 the pilot ends without it, in two steps. Step 1 is the pilot of draft 3. Step
 2 moves the waiting steps from the lane into the machine.
+
+Draft 5 records the decisions of the fifth review. An item whose code is
+already clear can stay as it is. A shared machine needs copies that behave the
+same. A suspicion is investigated before anything is fixed. The plan stops for
+a checkpoint after the pilot. The open questions have defaults.
 
 ## Summary
 
@@ -38,12 +43,13 @@ This document proposes to make that the rule:
    [pilot](#pilot-the-extension-runtime).
 3. **An inventory.** Every place in the main sources that holds state was
    read and sorted into eight kinds. About 65 places hide a machine. Five
-   small protocols are written about forty times. See
+   small protocols appear about forty times, going by their shape. See
    [inventory](#inventory).
 4. **A plan.** The shared small machines come first, then the lifecycles, one
-   machine per pull request. The kinds that hide no machine are left alone,
-   with the reason. See [plan](#plan) and
-   [what stays as it is](#what-stays-as-it-is).
+   machine per pull request. The inventory guides the work. It does not order
+   every rewrite: an item whose code is already clear and well tested can
+   stay. The kinds that hide no machine are left alone, with the reason. See
+   [plan](#plan) and [what stays as it is](#what-stays-as-it-is).
 
 It does not propose a general actor library, and it does not hand the
 interpreters to the ZIO or Pekko modules. [Alternatives
@@ -79,12 +85,15 @@ Limits of the work:
 
 - **No behaviour change.** Every step is a refactor. Existing specs pass
   unchanged. Where a rule was not pinned by a test, a test is added first and
-  must pass on the old code. Two exceptions. A spec that reads a private field
-  of an interpreter is rewritten first, in a change of its own; the Node tests
-  of the browser client are the main case. And the spec of a machine can
-  change together with that machine, once a spec of its interpreter pins what
-  can be observed. `TimerMachineSpec` expects a throw on overflow, and that
-  assertion is replaced when `step` becomes total.
+  must pass on the old code. Two exceptions. A spec that is tied to the layout
+  of fields, or to an incidental encoding of the state, is rewritten first, in
+  a change of its own; the Node tests of the browser client are the main case.
+  A spec that establishes a lifecycle guarantee stays, also when it uses an
+  internal seam: it may build `RequestDeadline` directly, or read a probe such
+  as `closeObserverCount` to show that a resource was released. And the spec
+  of a machine can change together with that machine, once a spec of its
+  interpreter pins what can be observed. `TimerMachineSpec` expects a throw on
+  overflow, and that assertion is replaced when `step` becomes total.
 - **No public API change.** Machines are `private[spoonbill]` or private to
   their module.
 - **Main sources only.** State in tests is not in scope. The two published
@@ -717,6 +726,11 @@ badly, and a few small machines are written again and again.
 This is the most useful finding. Five small protocols account for about forty
 hand-written copies.
 
+A caution. The copies were grouped by reading: they have the same shape. That
+they behave the same is not shown yet. A copy joins a shared machine only when
+a comparison of its behaviour says so; see rule 8 of the [plan](#plan). So
+forty is a ceiling.
+
 | Machine | What it does | Where it is written today |
 | --- | --- | --- |
 | **Deadline** | Arm once, complete in time or late, fire with a ticket, close | `RequestDeadline` and `MessageDeadline` (the same class twice, in two modules); `HttpClient.withSetupDeadline`; `SessionsService.required`; the idle deadline of a guarded session, of a legacy session and of a long-polling topic; `WebSocketFrameDeadline` in the zio-http runtime |
@@ -730,10 +744,13 @@ Three more things repeat, and are not machines:
 - **A serial lane.** `SerialLane` is used by the extension runtime only.
   `Frontend`, `ComponentInstance` and `GuardedStateManager` each build one
   from a queue and a loop.
-- **"The connection is closed."** One fact is stored in at least seven
-  objects: `Frontend`, `SessionsService`, `ComponentOwnership`,
-  `SensitiveRuntime`, `SensitiveDisclosureScope`, `OwnedBrowserRequests` and
-  each queue. Only the order of two cleanup methods keeps them equal.
+- **Closing.** At least seven objects keep a closed mark of their own:
+  `Frontend`, `SessionsService`, `ComponentOwnership`, `SensitiveRuntime`,
+  `SensitiveDisclosureScope`, `OwnedBrowserRequests` and each queue. These are
+  related facts, not one fact: admission has stopped, output is closed, the
+  admitted work has drained, sensitive resources are released, cleanup has
+  completed. `ComponentOwnership` alone tells three of them apart. Today only
+  the order of two cleanup methods relates the seven.
 - **A fence against stale input.** A generation in `TimerMachine`, a revision
   and a departure counter in `Frontend`, an event counter in
   `ApplicationInstance`, an object identity in `HttpServer`, a closure
@@ -756,7 +773,9 @@ in.
 
 ### By area
 
-Risk is the risk of the refactor, not of the code today.
+Risk is the risk of the refactor, not of the code today. The proposal of a row
+says where the item goes if it is refactored. Whether it is refactored,
+retained or deferred is decided per item; see rule 7 of the [plan](#plan).
 
 #### Sessions and stored state
 
@@ -832,7 +851,8 @@ Risk is the risk of the refactor, not of the code today.
 | Table | `AsyncTable` | The states of a key are a nested `Either` | C | An `enum` per key | Low to medium |
 | Resource pool | `AsyncResourcePool` | One value in one cell, a closure in a variable, and identity hash codes as names | C | A pool machine that issues its own ids | Medium |
 | Scheduler | `Scheduler` | Two small machines in variables and `null`s | B | Two small cells | Low |
-| Hub, `Stream.sort`, `Stream.buffer` | `Hub`, `Stream` | Routing by demand, with a pull lock | A | Not as they are; see [decisions](#decisions-to-confirm) | High |
+| Hub, `Stream.sort` | `Hub`, `Stream` | Routing by demand, with a pull lock | A | Open; see decision 6 under [decisions](#decisions-to-confirm) | High |
+| `Stream.buffer` | `Stream` | An eager pump into a queue. Whether the upstream has ended or failed is stored nowhere | A | Open; see decision 6 | High |
 
 #### Adapters
 
@@ -860,7 +880,9 @@ Risk is the risk of the refactor, not of the code today.
 
 ## Plan
 
-Nothing here starts before the [decisions](#decisions-to-confirm) are made.
+A phase starts when the decisions that it needs are made. A decision that only
+a later phase needs does not block it. The table under
+[decisions](#decisions-to-confirm) says which phase needs which.
 
 ### Rules for every step
 
@@ -868,13 +890,19 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
    pass on the old code. Then the refactor.
 2. **One machine per pull request.** Its behaviour does not change, and no
    existing spec is edited. Two exceptions, as under
-   [goal and limits](#goal-and-limits): a spec that reads a private field of
-   an interpreter is rewritten in a pull request of its own, first; and the
-   spec of a machine changes with its machine, once a spec of the interpreter
-   pins what can be observed.
-3. **No fix inside a refactor.** The readers found suspected defects; see
-   [defects](#defects-the-survey-suggests). Each is first shown with a failing
-   test and fixed on its own, before the refactor of that area.
+   [goal and limits](#goal-and-limits): a spec that is tied to the layout of
+   fields is rewritten in a pull request of its own, first; and the spec of a
+   machine changes with its machine, once a spec of the interpreter pins what
+   can be observed.
+3. **Investigate first, and no fix inside a refactor.** The readers found
+   suspected defects; see [defects](#defects-the-survey-suggests). A suspicion
+   in the area of a refactor is investigated before that refactor. It has one
+   of three outcomes. A confirmed defect has a permanent test that fails; it
+   is fixed first, in a change of its own. Intended behaviour is recorded as
+   intended. A question that stays open is recorded with the machine, and the
+   refactor keeps today's behaviour. A suspicion in another area blocks
+   nothing. And a confirmed defect does not wait for the refactor of its
+   area: it is fixed when its priority says so.
 4. **A step per edge, not per element.** A machine runs once per lifecycle
    change or per chunk. It never runs per byte, per frame pull or per queue
    element. The pilot is the one exception: an element of its lane is one
@@ -885,6 +913,19 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
 6. **The effect order of a security path is not touched.** For the items
    marked high, the interpreter keeps the order of its effects, line for
    line. Only the decisions move.
+7. **Refactor, retain or defer, per item.** The inventory guides the work. It
+   does not order a rewrite. Before an item's turn its code is read again. It
+   is retained when three things hold: its states are already one value or
+   one `enum` in one place, its specs fail on a wrong move, and no confirmed
+   defect sits in it. It is deferred when its contract is not settled. Either
+   outcome is written into the inventory, with the reason.
+8. **A shared machine comes from copies that behave the same.** Similar
+   fields or names are not enough. A shared machine starts with a table: what
+   each candidate does on each event of the machine, read from its code and
+   its specs. The machine is taken from the candidates whose rows match. A
+   candidate that differs stays out, or gets a machine of its own. The
+   literal duplicates go first: `RequestDeadline` with `MessageDeadline`, and
+   `UpgradeOwnership` in the two adapters.
 
 ### Phases
 
@@ -892,20 +933,27 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
 | --- | --- | --- | --- |
 | 0 | **Ground rules.** The guard on `*Machine.scala`. `StateCell`. `TimerMachine` passes the guard and becomes total | 3 | Small |
 | 1 | **Pilot.** `ExtensionMachine`, in two steps: the rules first, then the waiting steps and the cell | 1 machine, 2 pull requests | Medium |
-| 2 | **Five shared machines.** Deadline, drain gate, once, pending registry, setup ownership. Each gets its spec first, then replaces its copies, a few per pull request | 5 machines, about 40 copies | Medium each |
+| 2 | **Five shared machines.** Deadline, drain gate, once, pending registry, setup ownership. Each starts with a comparison of its candidates and gets its spec first. Then it replaces the copies that behave the same, a few per pull request | 5 machines, at most about 40 copies | Medium each |
 | 3 | **Lifecycles with strong specs.** The rest of the timers. Component ownership. The snapshot session. The presentation store. The long-polling topic. The coordinator gate. The serial lane. The legacy delay | 8 | Medium each |
 | 4 | **Sessions.** The teardown as a list of steps. The legacy session. The guarded session with its registries | 3 | Large |
 | 5 | **Connection and rendering.** The outgoing item as a type. The connection machine with the render cycle. The instance lifecycle. The baseline and loader. Sensitive presentations | 5 | Large, two of them very large |
 | 6 | **Authentication.** The one-use lease. The invocation decisions. The reference model. The view machine. Provider admission, memory and JDBC. The JDBC clock. The record store, last. On the way, `managedLifecycle` becomes a constructor argument | 7 | Medium to very large |
 | 7 | **Transport.** The chunked body. The reservation. The raw socket. Message assembly. The standalone WebSocket. The server connection. The client exchange. The stream subscriber and publisher. The text limit. The frame deadline of the zio-http runtime. On the way, `HttpUpgradeInput` gets its `enum` | 11 | Medium to large |
-| 8 | **Effect module.** The table. The pool. The scheduler. The queue, with a benchmark. `Hub`, `Stream.sort` and `Stream.buffer`, as decision 6 says | 5 | Medium |
+| 8 | **Effect module.** The table. The pool. The scheduler. The queue, with a benchmark. `Hub`, `Stream.sort` and `Stream.buffer`, once decision 6 is made | 5 | Medium |
 | 9 | **Browser client.** Its tests stop reading private fields. Then the connection machine, then the bridge with the sensitive barriers | 3 | Large |
 | 10 | **Test kits.** | 2 | Small |
 
-Roughly 70 pull requests in all, because the large items take more than
-one. Phases 0 to 4 hold most of the value: the shared machines remove the
-most copies, and the sessions are where the last reviews found the hardest
-defects.
+At most roughly 70 pull requests in all: the large items take more than one,
+and an item that is retained takes none. Phases 0 to 4 hold most of the value:
+the shared machines remove the most copies, and the sessions are where the
+last reviews found the hardest defects.
+
+**A checkpoint after the pilot.** Phase 2 is the first rollout: five machines
+and up to forty copies. It does not start by itself. After phase 1 the pilot
+is read as evidence: how the size and the clarity of the code changed, what a
+notification allocates, what the two gates measured, and what the reviews of
+its two steps found. That evidence can narrow phase 2, change it, or end the
+plan there.
 
 Why this order:
 
@@ -927,7 +975,7 @@ Why this order:
 | --- | --- |
 | 0 | A test of the timer overflow through `TimerRuntime`: what is reported, and that the timers stay stopped. It passes before and after. Only then does `step` become total, and the throw assertion of `TimerMachineSpec` is replaced |
 | 1 | The three characterization cases of the pilot, before step 1. `StateCell` from phase 0, before step 2 |
-| 2 | A test of `SessionsService.required` that does not wait real seconds; tests of the lane budgets and of "closed after close" for the JDBC provider |
+| 2 | The checkpoint after the pilot. For each shared machine, the comparison of its candidates. A test of `SessionsService.required` that does not wait real seconds; tests of the lane budgets and of "closed after close" for the JDBC provider |
 | 4 | Cases for a teardown that is asked for twice at once, and for a drain that does not end |
 | 5 | A spec for `ComponentInstance`; a spec for the close of `Frontend` |
 | 7 | A spec for the stream publisher |
@@ -945,8 +993,10 @@ two are deliberate or pinned by a spec, two are plain fields with no shown
 race, one is a design question, and for one no reachable trigger has been
 shown. The other entries were read against the code and not run.
 
-Rule 3 of the plan applies to each: first a failing test, then a fix of its
-own. Two of them were already known from the work on the extension contract:
+Rule 3 of the plan applies to each. It is investigated before the refactor of
+its area. Only a confirmed defect is fixed, in a change of its own; intended
+behaviour and open questions are recorded as such. Two of the entries were
+already known from the work on the extension contract:
 a guard that is not closed when an attach is cancelled at one point, and a
 render loop that stalls with `delayedRender` after a burst of writes.
 
@@ -1020,81 +1070,113 @@ gets an `enum` in place of its number.
 
 ## Decisions to confirm
 
-Each decision is worded as the choice that this document recommends. Where
-there is another choice, it is named. Decision 4 is made. The others are
-open.
+Nine of the ten decisions are made. They were confirmed on 2026-11-15, with
+the amendments of the fifth review. Those are part of the text below.
+Decision 6 is open.
 
-Seven open decisions are needed for phases 0 to 4: 1, 2, 3, 5, 8, 9 and 10.
-Decisions 6 and 7 are first needed in phases 8 and 9. They can wait for the
-second confirmation that decision 10 proposes.
+Only the decisions that the next phase needs block that phase. Phase 0 needs
+decisions 3, 5 and 10.
 
 | Decision | First needed in | Status |
 | --- | --- | --- |
-| 1. Scope | Phase 2 | Open |
-| 2. Order | Phase 2 | Open |
-| 3. Where machines live | Phase 0 | Open |
-| 4. The lock of the pilot | Phase 1 | Decided on 2026-11-15 |
-| 5. Suspected defects | Phase 0 | Open |
-| 6. `Hub`, `Stream.sort` and `Stream.buffer` | Phase 8 | Open, can wait |
-| 7. The browser client | Phase 9 | Open, can wait |
-| 8. The Akka adapter | Phase 2 | Open |
-| 9. The zio-http runtime | Phase 2 | Open |
-| 10. Two parts | Before phase 0 | Open |
+| 1. Scope | Phase 2 | Decided: the boundary, with a way to retain or defer an item |
+| 2. Order | Phase 2 | Decided: small and shared first, from copies that behave the same |
+| 3. Where machines live | Phase 0 | Decided |
+| 4. The lock of the pilot | Phase 1 | Decided: without a lock, in two steps |
+| 5. Suspected defects | Phase 0 | Decided, in new words: investigate first, fix what is confirmed |
+| 6. `Hub`, `Stream.sort` and `Stream.buffer` | Phase 8 | Open. A contract for each operator comes first |
+| 7. The browser client | Phase 9 | Decided: in scope. Its details are confirmed with the second part |
+| 8. The Akka adapter | Phase 2 | Decided: shared transitions, two interpreters |
+| 9. The zio-http runtime | Phase 2 | Decided: its own copy |
+| 10. The confirmation | Before phase 0 | Decided: in parts, with a checkpoint after the pilot |
 
 1. **Scope.** Kinds A, B and C, and the stores of kind D that have rules, are
-   refactored. Kinds E to H stay. The other choice turns those into machines
-   too; [what stays as it is](#what-stays-as-it-is) says why not.
-   Recommended: as stated.
-2. **Order.** The shared small machines before the large lifecycles. The
-   other choice starts where the last reviews found the hardest defects, with
-   the sessions and the connection. Recommended: small and shared first.
-3. **Where machines live.** Next to their interpreters, with the guard on
-   `*Machine.scala`, not in `modules/core`. The shared ones go to the effect
-   module, the pending registry and setup ownership to the runtime module.
-   The invocation decisions go to `modules/core`. The other choice puts every
-   machine into `modules/core`; see
-   [alternatives](#alternatives-considered). Recommended: as stated.
-4. **The pilot ends without a lock, in two steps.** Decided on 2026-11-15.
-   Step 1 moves the rules into the machine and keeps the lock and the lane.
-   Step 2 moves the waiting steps into the machine, and the lock becomes the
-   shared cell. The other choices are under alternatives.
-5. **Suspected defects are fixed first, each in its own change.** The other
-   choice keeps them and writes them into the machines as they are.
-   Recommended: fix first.
-6. **`Hub`, `Stream.sort` and `Stream.buffer` are replaced, not restated.**
-   Their routing by demand is the flaw, and `Frontend` already has the
-   replacement for guarded sessions: an eager pump into one queue per
-   consumer. The other choice restates them as machines and keeps the
-   routing. Recommended: replace. This changes behaviour for legacy sessions,
-   so it is confirmed on its own, before phase 8.
-7. **The browser client is in scope, and last.** Its tests read private
-   fields today, so they are rewritten first. The other choice leaves the
-   client out. Recommended: in scope, as phase 9.
-8. **The Akka adapter gets the same machines as the Pekko adapter.** The two
-   adapters are copies today. A machine that both use lives in the runtime
-   module, which both depend on. The other choices write each machine twice,
-   or leave the Akka adapter as it is. Recommended: share.
+   in scope. Kinds E to H stay; [what stays as it is](#what-stays-as-it-is)
+   says why. In scope does not mean rewritten. The inventory guides where the
+   work goes, and an item whose code is already clear and well tested is
+   retained; see rule 7 of the [plan](#plan).
+2. **Order.** The shared small machines before the large lifecycles. A shared
+   machine is taken from concrete copies that behave the same, not from
+   similar fields or names; see rule 8 of the plan.
+3. **Where machines live.** Runtime machines sit next to their interpreters,
+   with the guard on `*Machine.scala`. Reusable machines sit below their
+   users: the shared ones in the effect module, the pending registry and
+   setup ownership in the runtime module. Domain decisions go to
+   `modules/core`: the invocation decisions. The other choice, every machine
+   in `modules/core`, is under [alternatives](#alternatives-considered).
+4. **The pilot ends without a lock, in two steps.** Step 1 moves the rules
+   into the machine and keeps the lock and the lane. It is a stable place to
+   stop. Step 2 moves the waiting steps into the machine, and the lock
+   becomes the shared cell. Step 2 stays subject to its gates: the
+   characterization cases, the spec of the lane with a source, and the two
+   performance gates. The other choices are under alternatives.
+5. **A suspected defect is investigated before the refactor of its area.** A
+   confirmed defect is fixed first, in a change of its own. Intended
+   behaviour and open questions are recorded as such. A suspicion is not an
+   instruction to change behaviour, and it blocks no refactor of another
+   area; see rule 3 of the plan. Draft 4 said "suspected defects are fixed
+   first". That left no room for the two other outcomes.
+6. **Open: what becomes of `Hub`, `Stream.sort` and `Stream.buffer`.** Draft
+   4 proposed to replace all three, and named routing by demand as their
+   common flaw. That is wrong for `Stream.buffer`, which already starts an
+   eager pump into a queue. The three do not share one problem. So each
+   operator gets a written contract first:
+   - its backpressure, and what happens on overflow;
+   - what happens to buffered elements when the upstream completes or fails;
+   - who cancels the upstream and releases its resources.
+
+   The eager pump of `Frontend` for guarded sessions is evidence for that
+   work. It is not by itself the contract of a general stream operator.
+   Nothing before phase 8 needs this decision.
+7. **The browser client is in scope, and its refactor comes last.** Its tests
+   read private fields today, so they are rewritten first. "Last" is the
+   order of the refactor only: a confirmed defect of the client is fixed when
+   its priority says so. The details of phase 9 are confirmed with the second
+   part.
+8. **The Akka adapter and the Pekko adapter share their transitions.** The
+   two adapters are copies today. A machine that both use holds only what
+   does not depend on the framework. It lives in the runtime module, which
+   both depend on. The code that runs it stays in each adapter, and the specs
+   of both adapters run.
 9. **The zio-http runtime keeps its own copy of the frame deadline.** It is a
    patched upstream artifact with a pinned list of files and no dependency on
-   this repository. So it cannot use the shared deadline machine, and gets a
-   pure core in its own file. The other choice gives it a dependency on the
-   effect module. Recommended: its own copy.
-10. **The plan is confirmed in two parts.** Phases 0 to 4 now. Phases 5 to 10
-    again after phase 4, with what the first part has shown. The other choice
-    confirms all eleven phases now. Recommended: two parts.
+   this repository. A small duplicate on purpose is better than tying that
+   artifact to the effect module. The copy is a pure core in the same file.
+   The behaviour cases of the shared deadline machine also run against it,
+   from the tests of the adapter, so the two do not drift apart.
+10. **The plan is confirmed in parts.** Phases 0 to 4 now, with a checkpoint
+    after the pilot and before the rollout of phase 2; see [plan](#plan).
+    Phases 5 to 10 are confirmed again after phase 4, with what the first
+    part has shown.
 
-## Open questions
+## Defaults for the open questions
 
-1. **Should the session own "closed"?** Seven objects store that fact. A
-   session machine could be the only one, and tell the others. That is a
-   design of its own, after phase 4.
-2. **Should interpreters share more than the cell?** A helper that applies a
-   step and runs the commands is five lines. It may not be worth a name.
-3. **How are the specs treated that pin an interpreter's inside?** Some build
-   `RequestDeadline` or `SetupInput` directly, or read probes such as
-   `closeObserverCount`. The classes can stay as thin interpreters, so these
-   specs keep passing.
-4. **Does a machine get a diagram?** A transition table in the header of the
-   file may be enough.
-5. **Is a rule for the client's machines wanted?** For example: a file named
-   `*-machine.js` does not mention `window`, `document`, a timer or a socket.
+Draft 4 ended with five open questions. Each has a default now, and none
+blocks a phase.
+
+1. **The session owns the shutdown protocol, not every closed mark.** Each
+   subsystem keeps the local admission and completion state that its
+   guarantees need. The marks are not interchangeable: admission has stopped,
+   output is closed, the admitted work has drained, sensitive resources are
+   released, cleanup has completed. A closed parent establishes none of the
+   others. And a cleanup command that runs later cannot replace a local fence
+   that holds at once. Phase 4 uses this default. Whether more can be joined
+   is a later investigation.
+2. **No shared interpreter code beyond the cell, for now.** A helper earns a
+   name when several interpreters schedule, cancel and fail in the same way.
+   A five-line helper that hides their differences does not.
+3. **Specs: rewrite what is tied to the representation, keep what shows
+   behaviour.** A spec that depends on the layout of fields or on an
+   incidental encoding is rewritten. A spec that establishes a lifecycle
+   guarantee stays, also through an internal seam. This is the policy under
+   [goal and limits](#goal-and-limits).
+4. **Diagrams are optional.** The transition table and the tests are the
+   authority. A diagram is added where it makes a complicated lifecycle
+   clearer, not for every small machine.
+5. **The machines of the browser client follow the same purity rule.**
+   Transitions are synchronous. Inputs are explicit, and time and randomness
+   are passed in. The state is immutable, and commands are data. The DOM, the
+   network and timers stay outside. A static guard on `*-machine.js` catches
+   some violations. Tests catch others: the same input gives the same
+   output, and a transition does not change its input. The rule is agreed
+   now. Its guard and its tests are written in phase 9.
