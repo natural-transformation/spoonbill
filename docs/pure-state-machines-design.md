@@ -599,8 +599,21 @@ Step 2 moves three of them once more.
 
 1. **Characterization, before any change.** Three new cases against today's
    runtime. They pass on today's code, after step 1 and after step 2.
-   - Writers on several threads race with `start`: the attach state is first,
-     each writer's own order is kept, nothing is lost or doubled.
+   - Writers on several threads race with `start`. The first `onState` call
+     carries the newest state that was written before delivery started, or
+     else the admitted state. The older states from before are folded into it
+     and never arrive. `ExtensionRuntimeDeliverySpec` pins that folding
+     without a race. The new case pins the rest under a race. Every state
+     that is written after delivery started arrives once. Every message
+     arrives once, whether it was published before or after, and none before
+     the first `onState` call. Each writer's own order is kept. The test
+     cannot see where delivery started, so it checks what follows from these
+     rules:
+     - Of each writer's states an unbroken tail arrives, in order and without
+       repeats. The tail ends with that writer's last write, because every
+       writer goes on until `start` has returned.
+     - Of the states that were written before `start` was called, at most one
+       arrives, and only as the first `onState` call.
    - A step that the effect runtime refuses to start, with cats-effect and a
      pool that rejects one task: it is reported for the right extension, and
      the calls after it still arrive in order.
@@ -614,6 +627,11 @@ Step 2 moves three of them once more.
    Properties over generated event sequences:
    - An `Enqueue` holds one `Check` and then one `Call` per target, in slot
      order. Deliveries are numbered in the order of their events.
+   - Until a stop, the notifications that are enqueued are, in this order:
+     the newest state written before `Begin`, or else the admitted state;
+     every message published before `Begin`; then every write and every
+     message after `Begin`, each once. A state that was written before
+     `Begin` and is not the newest is never enqueued.
    - `Start` returns `RunCall` only for a delivery whose check passed, and
      never in `Stopped`.
    - After `Halt` or `Take`, every `Start` returns nothing, and a write
