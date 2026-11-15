@@ -893,12 +893,12 @@ Nothing here starts before the [decisions](#decisions-to-confirm) are made.
 | 0 | **Ground rules.** The guard on `*Machine.scala`. `StateCell`. `TimerMachine` passes the guard and becomes total | 3 | Small |
 | 1 | **Pilot.** `ExtensionMachine`, in two steps: the rules first, then the waiting steps and the cell | 1 machine, 2 pull requests | Medium |
 | 2 | **Five shared machines.** Deadline, drain gate, once, pending registry, setup ownership. Each gets its spec first, then replaces its copies, a few per pull request | 5 machines, about 40 copies | Medium each |
-| 3 | **Lifecycles with strong specs.** The rest of the timers. Component ownership. The snapshot session. The presentation store. The long-polling topic. The coordinator gate. The serial lane | 7 | Medium each |
+| 3 | **Lifecycles with strong specs.** The rest of the timers. Component ownership. The snapshot session. The presentation store. The long-polling topic. The coordinator gate. The serial lane. The legacy delay | 8 | Medium each |
 | 4 | **Sessions.** The teardown as a list of steps. The legacy session. The guarded session with its registries | 3 | Large |
 | 5 | **Connection and rendering.** The outgoing item as a type. The connection machine with the render cycle. The instance lifecycle. The baseline and loader. Sensitive presentations | 5 | Large, two of them very large |
-| 6 | **Authentication.** The one-use lease. The invocation decisions. The reference model. The view machine. Provider admission, memory and JDBC. The JDBC clock. The record store, last | 7 | Medium to very large |
-| 7 | **Transport.** The chunked body. The reservation. The raw socket. Message assembly. The standalone WebSocket. The server connection. The client exchange. The stream subscriber and publisher | 9 | Medium to large |
-| 8 | **Effect module.** The table. The pool. The scheduler. The queue, with a benchmark | 4 | Medium |
+| 6 | **Authentication.** The one-use lease. The invocation decisions. The reference model. The view machine. Provider admission, memory and JDBC. The JDBC clock. The record store, last. On the way, `managedLifecycle` becomes a constructor argument | 7 | Medium to very large |
+| 7 | **Transport.** The chunked body. The reservation. The raw socket. Message assembly. The standalone WebSocket. The server connection. The client exchange. The stream subscriber and publisher. The text limit. The frame deadline of the zio-http runtime. On the way, `HttpUpgradeInput` gets its `enum` | 11 | Medium to large |
+| 8 | **Effect module.** The table. The pool. The scheduler. The queue, with a benchmark. `Hub`, `Stream.sort` and `Stream.buffer`, as decision 6 says | 5 | Medium |
 | 9 | **Browser client.** Its tests stop reading private fields. Then the connection machine, then the bridge with the sensitive barriers | 3 | Large |
 | 10 | **Test kits.** | 2 | Small |
 
@@ -1020,14 +1020,40 @@ gets an `enum` in place of its number.
 
 ## Decisions to confirm
 
+Each decision is worded as the choice that this document recommends. Where
+there is another choice, it is named. Decision 4 is made. The others are
+open.
+
+Seven open decisions are needed for phases 0 to 4: 1, 2, 3, 5, 8, 9 and 10.
+Decisions 6 and 7 are first needed in phases 8 and 9. They can wait for the
+second confirmation that decision 10 proposes.
+
+| Decision | First needed in | Status |
+| --- | --- | --- |
+| 1. Scope | Phase 2 | Open |
+| 2. Order | Phase 2 | Open |
+| 3. Where machines live | Phase 0 | Open |
+| 4. The lock of the pilot | Phase 1 | Decided on 2026-11-15 |
+| 5. Suspected defects | Phase 0 | Open |
+| 6. `Hub`, `Stream.sort` and `Stream.buffer` | Phase 8 | Open, can wait |
+| 7. The browser client | Phase 9 | Open, can wait |
+| 8. The Akka adapter | Phase 2 | Open |
+| 9. The zio-http runtime | Phase 2 | Open |
+| 10. Two parts | Before phase 0 | Open |
+
 1. **Scope.** Kinds A, B and C, and the stores of kind D that have rules, are
-   refactored. Kinds E to H stay. Recommended.
-2. **Order.** The shared small machines before the large lifecycles.
-   Recommended.
+   refactored. Kinds E to H stay. The other choice turns those into machines
+   too; [what stays as it is](#what-stays-as-it-is) says why not.
+   Recommended: as stated.
+2. **Order.** The shared small machines before the large lifecycles. The
+   other choice starts where the last reviews found the hardest defects, with
+   the sessions and the connection. Recommended: small and shared first.
 3. **Where machines live.** Next to their interpreters, with the guard on
    `*Machine.scala`, not in `modules/core`. The shared ones go to the effect
    module, the pending registry and setup ownership to the runtime module.
-   The invocation decisions go to `modules/core`. Recommended.
+   The invocation decisions go to `modules/core`. The other choice puts every
+   machine into `modules/core`; see
+   [alternatives](#alternatives-considered). Recommended: as stated.
 4. **The pilot ends without a lock, in two steps.** Decided on 2026-11-15.
    Step 1 moves the rules into the machine and keeps the lock and the lane.
    Step 2 moves the waiting steps into the machine, and the lock becomes the
@@ -1038,17 +1064,24 @@ gets an `enum` in place of its number.
 6. **`Hub`, `Stream.sort` and `Stream.buffer` are replaced, not restated.**
    Their routing by demand is the flaw, and `Frontend` already has the
    replacement for guarded sessions: an eager pump into one queue per
-   consumer. This changes behaviour for legacy sessions, so it is its own
-   decision.
+   consumer. The other choice restates them as machines and keeps the
+   routing. Recommended: replace. This changes behaviour for legacy sessions,
+   so it is confirmed on its own, before phase 8.
 7. **The browser client is in scope, and last.** Its tests read private
-   fields today, so they are rewritten first.
-8. **The Akka adapter shares the machines of the Pekko adapter.** They are
-   copies today.
+   fields today, so they are rewritten first. The other choice leaves the
+   client out. Recommended: in scope, as phase 9.
+8. **The Akka adapter gets the same machines as the Pekko adapter.** The two
+   adapters are copies today. A machine that both use lives in the runtime
+   module, which both depend on. The other choices write each machine twice,
+   or leave the Akka adapter as it is. Recommended: share.
 9. **The zio-http runtime keeps its own copy of the frame deadline.** It is a
    patched upstream artifact with a pinned list of files and no dependency on
-   this repository.
+   this repository. So it cannot use the shared deadline machine, and gets a
+   pure core in its own file. The other choice gives it a dependency on the
+   effect module. Recommended: its own copy.
 10. **The plan is confirmed in two parts.** Phases 0 to 4 now. Phases 5 to 10
-    again after phase 4, with what the first part has shown. Recommended.
+    again after phase 4, with what the first part has shown. The other choice
+    confirms all eleven phases now. Recommended: two parts.
 
 ## Open questions
 
