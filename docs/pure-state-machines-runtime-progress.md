@@ -138,3 +138,40 @@ The command ran through `nix develop --no-write-lock-file --command sbt --batch
 --supershell=false -Dsbt.server.autostart=false`, with `JAVA_HOME` unset and
 `SBT_NATIVE_CLIENT=false`, as above. The purity guard reports nine machines and no
 violations; scoped new-file formatting and diff whitespace checks pass.
+
+## Component ownership extraction
+
+`ComponentOwnershipMachine` now defines registry admission/incarnations/current
+address owners/live owner metadata and explicit per-owner phases: gated, open,
+blocked by predecessor failure, retired before predecessor settlement, draining,
+cleaning, cleaned and cleanup failed. Admitted turns and established/unestablished
+baseline revisions move through pure functions. Snapshot admission and cleanup
+selection use explicit registry/owner inputs. Arithmetic exhaustion is returned
+as a decision and translated to the same arithmetic exception by the interpreter.
+
+The interpreter retains its existing monitor, owner handle maps/sets and their
+iteration order. It keeps predecessor failure causes and all storage/worker
+operations outside model state. Registry and resource-table updates remain in
+the same critical sections. In particular, whole-view closure still suppresses
+per-node deletion, and predecessor failures still propagate through successor
+cleanup. The per-lease settled flag remains a one-use capability local to that
+lease, not a new global registry.
+
+The readiness/completion signals adopt `CompletionLatchMachine` while preserving
+FIFO callbacks and publishing/detaching their result/handles atomically before
+callbacks run. A new concurrent whole-view drain case passed with all 14 original
+ownership interpreter cases before the production refactor.
+
+After extraction, 196 tests across 20 suites passed:
+
+```
+spoonbill/testOnly *ComponentOwnership*Spec *TimerApplicationSpec *SessionsServiceSpec *Extension*Spec
+```
+
+This was run through the repository Nix flake with the standard sbt flags shown
+above. Pure cases cover successor fencing, failure retention, baseline versions,
+retirement/drain/cleanup and generated once-only cleanup histories. The unchanged
+interpreter tests cover stalled writes and notifications, failed deletion,
+retired predecessor chains, snapshot invalidation and concurrent replacement.
+The purity guard passes with ten machines; scoped new-model formatting and diff
+whitespace checks pass. These are correctness checks, not a new performance claim.
