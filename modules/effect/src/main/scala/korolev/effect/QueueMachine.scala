@@ -6,7 +6,11 @@ package spoonbill.effect
  */
 private[effect] object QueueMachine {
   enum Admission { case Open, Stopped, Closed }
-  final case class State(admission: Admission = Admission.Open, error: Option[Throwable] = None)
+  final case class State(
+    admission: Admission = Admission.Open,
+    error: Option[Throwable] = None,
+    cancellation: CompletionLatchMachine.State = CompletionLatchMachine.State.Pending
+  )
   enum Pull {
     case Buffered, End, Wait
     case Failed(error: Throwable)
@@ -28,4 +32,13 @@ private[effect] object QueueMachine {
     if (isClosed(state)) state else state.copy(admission = Admission.Stopped)
   def close(state: State): State                  = state.copy(admission = Admission.Closed)
   def fail(state: State, error: Throwable): State = state.copy(error = Some(error))
+
+  def cancel(state: State): (State, Boolean) = {
+    val (next, command) = CompletionLatchMachine.step(state.cancellation, CompletionLatchMachine.Event.Complete)
+    (state.copy(admission = Admission.Closed, cancellation = next), command == CompletionLatchMachine.Command.Publish)
+  }
+
+  def cancellationReplays(state: State): Boolean =
+    CompletionLatchMachine.step(state.cancellation, CompletionLatchMachine.Event.Observe)._2 ==
+      CompletionLatchMachine.Command.Replay
 }

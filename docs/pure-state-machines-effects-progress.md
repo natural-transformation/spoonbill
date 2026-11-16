@@ -114,9 +114,23 @@ provenance. The packaged analyzer reproduces the original summary byte-for-byte.
 Full validation after the AsyncTable integration follow-up passed 72 effect and
 819 runtime tests; purity, shell syntax, targeted formatting and diff checks pass.
 
+The late `Queue.cancelSignal` question is resolved as a confirmed liveness defect,
+not an intended difference: FS2 conversion starts its producer asynchronously and
+can return the queue stream before `interruptWhen` registers its listener. Early
+consumer cancellation stranded that producer. Both a direct Queue regression and
+the real FS2 adapter with a gated producer failed before the fix (the latter
+terminated only after a second cancel in test cleanup). Explicit stream cancellation
+now publishes/replays the shared completion latch; ordinary `close` still does not
+signal cancellation. The change is separate from the representation benchmark.
+All 73 effect tests, four FS2-CE3 tests and 819 runtime tests pass, along with the
+purity guard. The first manual-executor FS2 harness stalled during construction;
+its captured thread dump identified the startup acknowledgment dependency, and
+the permanent test uses bounded startup/registration gates instead.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
-reset on removal; queue cancellation does not currently replay to late listeners;
-`handleConsumed` signals EOF only; pool disposal claims precede physical cleanup.
+reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
+physical cleanup. Queue cancellation joins the shared latch after the separate
+confirmed late-listener fix above.
 Those differences must not disappear in a shared-helper migration.
 
 Decision 6 remains explicit. Hub currently pulls on demand, drops offers to full

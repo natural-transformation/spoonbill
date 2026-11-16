@@ -70,10 +70,11 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     def cancel(): F[Unit] = Effect[F].delay {
       unsafeClose()
       @tailrec def aux(): Unit = {
-        val ref      = state.get
-        val newValue = ref.copy(cancelCallbacks = Nil)
+        val ref                  = state.get
+        val (lifecycle, publish) = QueueMachine.cancel(ref.lifecycle)
+        val newValue             = ref.copy(lifecycle = lifecycle, cancelCallbacks = Nil)
         if (state.compareAndSet(ref, newValue)) {
-          ref.cancelCallbacks.foreach(cb => cb(unitToken))
+          if (publish) ref.cancelCallbacks.foreach(cb => cb(unitToken))
         } else {
           aux()
         }
@@ -253,15 +254,18 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     Effect[F].delay(failUnsafe(e))
 
   /**
-   * Resolves only if `stream.cancel` ran.
+   * Resolves once `stream.cancel` ran, including for listeners registered
+   * later. Closing the queue without explicit stream cancellation does not
+   * signal it.
    * @return
    */
   def cancelSignal: F[Unit] = Effect[F].promise { cb =>
     @tailrec def aux(): Unit = {
-      val ref      = state.get
-      val newValue = ref.copy(cancelCallbacks = cb :: ref.cancelCallbacks)
-      if (!state.compareAndSet(ref, newValue)) {
-        aux()
+      val ref = state.get
+      if (QueueMachine.cancellationReplays(ref.lifecycle)) cb(unitToken)
+      else {
+        val newValue = ref.copy(cancelCallbacks = cb :: ref.cancelCallbacks)
+        if (!state.compareAndSet(ref, newValue)) aux()
       }
     }
     aux()
