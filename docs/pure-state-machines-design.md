@@ -3,7 +3,8 @@
 Status: draft 5, with phases 0 and 1 implemented for review on
 2026-11-16. The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
-and validation. Phase 2 has not started. Nine of the ten decisions are made;
+and validation. The first phase-2 deadline machine is ready for review; the
+rest of phase 2 has not started. Nine of the ten decisions are made;
 see [decisions](#decisions-to-confirm). Decision 6 is open, and nothing before
 phase 8 needs it.
 
@@ -1187,8 +1188,8 @@ blocks a phase.
 ## Pilot implementation checkpoint
 
 Phases 0 and 1 are implemented on `claude/extension-pure-machine`, on top of
-`93288bbdafa466b797ead3de9a82bdf245a365d4`. This checkpoint is ready for review.
-No rollout beyond the pilot has started.
+`93288bbdafa466b797ead3de9a82bdf245a365d4`. This pilot record is followed by the
+[first shared-machine review](#first-shared-machine-review-deadline).
 
 ### What changed
 
@@ -1280,7 +1281,7 @@ measurements before adopting this pattern in more hot paths. That evidence
 must include CAS retries, allocation rate, throughput, GC pauses and tail
 latency under concurrent writers and sustained backlogs, with realistic
 extension counts and a comparison against main. The click-latency trial below
-is evidence for the pilot only; phase 2 has not started.
+is evidence for the pilot only; phase 2 is limited to the first deadline review unit.
 
 ### Contention and GC follow-up
 
@@ -1406,5 +1407,119 @@ without editing main's sources. The added late-start
 test passed on unchanged main and failed before the correction, recorded in
 `/private/tmp/spoonbill-pr34-late-exhaustion-{main,before}.log`. Intermediate
 step logs and the baseline characterizations are under the same
-`/private/tmp/spoonbill-pr34-` prefix. The checkpoint awaits review; phase 2
-requires that decision before further rollout.
+`/private/tmp/spoonbill-pr34-` prefix. Broader rollout remains gated; the only
+additional implementation is the first deadline review unit below.
+
+## First shared-machine review: deadline
+
+Scope confirmed on 2026-11-16: stop after the first shared machine. This review
+unit adds `DeadlineMachine` and adopts it only in `RequestDeadline` and
+`MessageDeadline`. The branch is stacked on the pilot; all other shared machines
+and lifecycle migrations remain out of this change. The contention findings
+above keep the broader CAS gate closed. Both deadline interpreters retain their
+existing monitors; this change does not introduce a CAS loop into transport.
+
+### Candidate comparison
+
+The candidates were compared by their code, existing integration specs, and ten
+new lifecycle characterization cases that passed before the extraction.
+
+| Event or observation | `RequestDeadline` | `MessageDeadline` | Shared decision |
+| --- | --- | --- | --- |
+| First start | Record monotonic time, advance ticket, schedule once | Same | Ready → Armed; schedule the configured duration |
+| Start while armed or closed | No-op, without reading the clock | Same | No-op |
+| Complete strictly before the duration elapsed | Cancel; invalidate ticket; return `true`; allow reuse | Cancel; invalidate ticket; return normally; allow reuse | Armed → Ready; timely completion |
+| Complete exactly at/after the duration | Cancel; invalidate ticket; return `false` | Cancel; invalidate ticket; throw `TimeoutException` | Armed → Closed; late completion |
+| Complete before start or a duplicate completion | Close permanently; return `false` | Close permanently; throw `TimeoutException` | Ready/Closed → Closed; rejected completion |
+| Current scheduled ticket fires | Close; forget the handle; shut down outside the monitor | Same | Armed → Closed; expire once |
+| Stale ticket fires | Ignore | Same | No-op |
+| Explicit close | Close, invalidate ticket and cancel; ignore completion result | Close, invalidate ticket and cancel | Closed; no shutdown or failed-completion callback |
+| Scheduler rejects installation | Pending job stays absent; the consumed ticket is not reused; exception propagates | Same | Armed → Ready via `ScheduleFailed`; interpreter rethrows |
+| Clock/ticket signed wrap | Wrapping `Long` subtraction/increment | Same | Preserve the existing arithmetic |
+
+The completion result and scheduler thread names remain interpreter details.
+The existing methods and constructor signatures are unchanged. A scheduled
+fire is trusted; only completion compares elapsed time, as before. A timely
+completion permits another interval, whereas an unstarted/late/duplicate
+completion permanently closes admission.
+
+Each interpreter now holds the immutable machine state and its optional
+`ScheduledFuture` in one value under its existing monitor. Scheduling and
+cancellation remain inside that monitor so a selected callback cannot observe
+an incompletely published handle. Physical shutdown remains outside it and
+does not need an application worker. A scheduler rejection is fed back to the
+machine before the exception propagates. The shared machine contains no clock,
+effect value, callback, handle, lock or mutable field.
+
+The purity guard now distinguishes a standalone package declaration from a
+runtime dependency, allowing a pure machine to live in `spoonbill.effect`.
+Imports, qualified runtime uses, inline executable code and effect types remain
+checked. A regression verifies that this does not suppress an executable
+statement following a package declaration.
+
+### Investigated defect: early setup close
+
+The survey's NET-1 suspicion was confirmed on unchanged main: an already closed
+`RawDataSocket` invokes its close subscriber inline before the setup deadline is
+started. `complete()` then returns false, turning an `AsynchronousCloseException`
+into a timeout even when the supplied clock stays at zero. The permanent
+`HttpClientClosedSetupSpec` failed on main with exactly that wrong exception.
+
+Commit `85ba959a` fixes this separately, before the refactor commit: arm the
+setup deadline before registering the close subscriber, with both still before
+TCP/TLS setup. Late registration already observes a closed socket, so closure
+cannot be missed. Real deadline expiry still takes the timeout path. The new
+regression and the eight existing setup-deadline cases passed in an isolated
+snapshot of that commit with the original deadline wrapper.
+
+This is the only intentional behavior correction in the review unit. The
+subsequent extraction preserves the characterized deadline behavior.
+
+### Other candidates and next boundary
+
+| Candidate | Disposition in this review |
+| --- | --- |
+| `HttpClient.withSetupDeadline` | Already delegates timing to `RequestDeadline`; retains its effect/completion ownership and the separate early-close fix |
+| `SessionsService.required` | Deferred: late-result delivery and cancellation are not the assembly-deadline protocol; its deterministic lifecycle-bound seam is a prerequisite for its own adoption |
+| Session/long-polling idle deadlines | Deferred: idle rearming and owner lifecycle must be compared independently |
+| zio-http frame deadline | Deferred to its planned independent-copy work and adapter cases; no dependency is introduced into the patched artifact |
+| Drain gate / once / pending registry / setup ownership | Not started; each requires its own candidate comparison and review |
+| JDBC lane-budget and close characterization | Remains a prerequisite for the JDBC drain-gate adoption; no JDBC provider code is changed by this narrow unit |
+
+No conclusion about a candidate's compatibility is drawn from similar field
+names alone. Review this machine and its two interpreters before expanding the
+candidate set or proceeding to the next shared machine.
+
+### Verification of this review unit
+
+Commands below use the repository-local Nix flake and the standard invocation:
+
+```sh
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false '<task>'
+```
+
+| Task/check | Result | Evidence |
+| --- | --- | --- |
+| `http/testOnly *RequestDeadlineLifecycleSpec` before extraction | Pass, 5 tests | Unstarted/duplicate completion, repeated start, reuse, exact deadline, signed wrap, closed-clock behavior |
+| `standalone/testOnly *MessageDeadlineLifecycleSpec` before extraction | Pass, 5 tests | The same lifecycle cases, retaining the throwing completion API |
+| `http/testOnly *HttpClientClosedSetupSpec` on main | Expected failure | Confirmed the pre-existing timeout misclassification; fixed separately |
+| `http/testOnly *HttpClientClosedSetupSpec *HttpClientSetupDeadlineSpec` on isolated `85ba959a` | Pass, 9 tests | Bug fix works with the original wrapper, before extraction |
+| `effect/testOnly *DeadlineMachineSpec` | Pass, 6 tests | Transition cases, stale/rejected tickets, wrap and 1,000 generated histories |
+| `http/testOnly *RequestDeadlineLifecycleSpec *HttpClientSetupDeadlineSpec *HttpServerHeaderLimitsSpec` | Pass, 21 tests | HTTP admission and expiry behavior after extraction |
+| `standalone/testOnly *MessageDeadline*Spec *StandaloneSetupDeadlineSpec` | Pass, 20 tests | Message assembly, reuse, expiry and setup ownership |
+| `http/testOnly *HttpClientClosedSetupSpec *HttpClientSetupDeadlineSpec *HttpServerBodyFramingSpec *HttpClientResponseSafetySpec *HttpClientBodylessResponseSpec` | Pass, 43 tests | Early close, response/header/body deadlines, framing and cleanup |
+| `standalone/testOnly *StandaloneDeadlineIsolationSpec *StandaloneWebSocketLimitsSpec *StandaloneLifecycleSpec` | Pass, 13 tests | Expiration under blocked cleanup and WebSocket lifecycle paths |
+| `node scripts/check-core-purity.mjs` through Nix | Pass | Nine core files and all three machine files |
+| `node --test misc/core-purity-tests.mjs` through Nix | Pass, 5 tests | Namespace handling and existing forbidden-API/discovery checks |
+| Changed-file `scalafmtOnly`; `git diff --check` | Pass | Formatting and whitespace |
+
+Some suites appear in more than one invocation; counts are per command, not
+additive unique-test totals. Logs are `/private/tmp/spoonbill-phase2-deadline-before.log`,
+`/private/tmp/spoonbill-phase2-deadline-after.log`,
+`/private/tmp/spoonbill-phase2-closed-setup-{before,isolated}.log`,
+`/private/tmp/spoonbill-phase2-integration.log`, and
+`/private/tmp/spoonbill-phase2-purity.log`. No full repository, JDBC or browser
+suite was rerun for this control-path-only extraction. Scheduler rejection is
+covered by the pure-machine cases; the wrappers retain their concrete static
+executors. This is the next review point, not completion of phase 2.

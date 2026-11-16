@@ -9,6 +9,12 @@ test('pure immutable decisions accept explicit time and typed results', () => {
   assert.deepEqual(violations('import java.time.Instant\nfinal case class Value(expiry: Instant) { def valid(now: Instant) = now.isBefore(expiry) }'), []);
 });
 
+test('a machine may live in the effect module without importing effect types', () => {
+  assert.deepEqual(violations('package spoonbill.effect\nobject DeadlineMachine { case class State(now: Long) }'), []);
+  assert.ok(violations('package spoonbill.effect\nimport spoonbill.effect.Effect').length > 0);
+  assert.ok(violations('package spoonbill.protocol; val now = System.nanoTime()').length > 0);
+});
+
 test('ambient runtime APIs and qualified calls cannot enter core', () => {
   for (const value of [
     'java.time.Instant.now()', 'java.util.UUID.randomUUID()', 'System.getenv("HOME")',

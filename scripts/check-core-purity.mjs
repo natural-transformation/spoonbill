@@ -18,11 +18,11 @@ const forbidden = [
 ];
 
 export function violations(source) {
-  // Remove comments only. Keeping strings makes forbidden names in reflection
-  // calls visible too. A false positive must be reviewed rather than suppressed.
+  // Package declarations name a namespace, not a dependency. Keep imports,
+  // qualified uses and strings (including reflection names) visible.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, match => match.replace(/[^\n]/g, ' '))
     .replace(/\/\/[^\n]*/g, '');
-  return code.split('\n').flatMap((line, index) => forbidden
+  return code.split('\n').flatMap((line, index) => /^\s*package\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*;?\s*$/.test(line) ? [] : forbidden
     .filter(([, pattern]) => pattern.test(line)).map(([rule]) => ({line: index + 1, rule})));
 }
 
