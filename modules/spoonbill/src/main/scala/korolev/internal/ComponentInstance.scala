@@ -699,13 +699,24 @@ private[spoonbill] object ComponentInstance {
     deadlines: Option[Frontend.RpcDeadlineScheduler] = None
   ) {
 
-    @volatile private var handler  = Option.empty[() => Unit]
-    @volatile private var finished = false
+    import LegacyDelayMachine.{Command, Event, State}
+    private final case class Held(state: State, handler: Option[() => Unit])
+    private val lifecycle = new Object
+    @volatile private var held = Held(State.Uninstalled, None)
 
-    def isFinished: Boolean = finished
+    private def advance(event: Event, installed: Option[() => Unit] = None): (Command, Option[() => Unit]) =
+      lifecycle.synchronized {
+        val before = held
+        val (next, command) = LegacyDelayMachine.step(before.state, event)
+        val handler = if (command == Command.RetainHandle) installed else before.handler
+        if (next != before.state || command == Command.RetainHandle) held = Held(next, handler)
+        (command, if (command == Command.CancelHandle) before.handler else None)
+      }
+
+    def isFinished: Boolean = LegacyDelayMachine.finished(held.state)
 
     def cancel(): Unit =
-      handler.foreach(_())
+      advance(Event.Cancel)._2.foreach(_())
 
     private def report(error: Throwable): Unit = error match {
       case _: spoonbill.server.SessionAccessDenied => ()
@@ -720,10 +731,9 @@ private[spoonbill] object ComponentInstance {
           () => job.unsafeCancel()
         }
       })
-      try
-        handler = Some(driver.schedule(delay.duration) { () =>
-          finished = true
-          try
+      try {
+        val cancel = driver.schedule(delay.duration) { () =>
+          if (advance(Event.Fired)._1 == Command.RunCallback) try
             Effect[F]
               .fork(Effect[F].delayAsync {
                 authorize().flatMap { _ =>
@@ -735,8 +745,12 @@ private[spoonbill] object ComponentInstance {
                 case Right(_)    => ()
               }
           catch { case NonFatal(error) => report(error) }
-        })
-      catch { case NonFatal(error) => finished = true; report(error) }
+        }
+        advance(Event.Installed, Some(cancel))
+        ()
+      } catch { case NonFatal(error) =>
+        if (advance(Event.ScheduleFailed)._1 == Command.ReportFailure) report(error)
+      }
     }
   }
 }

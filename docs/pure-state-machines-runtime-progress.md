@@ -57,3 +57,33 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --comm
 Result: all 8 tests passed after the ownership fix. The new regression was run
 first on original production code and failed at the final replacement-preservation
 assertion. `git diff --check` passed.
+
+## Legacy delay extraction and retained explicit protocols
+
+`LegacyDelayMachine` names uninstalled/armed and finished-uninstalled/finished-armed
+states. Installation, firing, schedule failure and cancellation are pure events.
+The runtime pairs the state with its physical cancellation handle and invokes all
+scheduler/application effects outside that small critical section. Cancellation
+still invokes an available handle without marking completion; inline firing before
+handle installation and scheduling failure retain their original outcomes.
+
+The old-code characterizations passed all 6 `LegacyDelaySpec` tests before the
+production refactor. After extraction, this selection passed 73 tests in six
+suites, including the new exhaustive/generated delay decisions:
+
+```
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'spoonbill/testOnly *LegacyDelay*Spec *TimerApplicationSpec *ViewSnapshotSessionSpec *SerialLaneSpec *SerialLaneSourceSpec'
+```
+
+The source-purity guard passes with eight machine files; scoped new-file formatting
+and `git diff --check` pass. Only the nested `DelayInstance` region changed in
+`ComponentInstance`; baseline/loader work is a separate phase-5 unit.
+
+The same run closes the retain validation for `ViewSnapshotSession` and
+`SerialLane`. Both satisfy the plan's retain criterion: one explicit state value
+per protocol, strong tests rejecting wrong transitions, and no confirmed defect
+in the reviewed protocols. Their implementation and effect/scheduling boundaries
+remain unchanged. SerialLane's completion waiter table is already one atomic
+optional value and is not expanded merely to adopt the shared latch helper.
