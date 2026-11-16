@@ -113,3 +113,28 @@ The test fixture uses the repository's standard execution context. The first tes
 compilation identified that missing implicit import; after adding it, the full
 selection passed. This is evidence for a subsequent first-winner race extraction,
 not permission to change timeout into an absolute elapsed-time check.
+
+## Orphan topic subscription/activity extraction
+
+After the separately committed stale-owner fix, `OrphanTopicMachine` now owns an
+explicit Orphan/Subscribed state with the last activity timestamp. Subscribe and
+Activity transitions are pure; the first subscription requests timer cancellation
+and all later subscriptions are inert. A late publication can update activity
+without reopening subscription. Expiry policy takes both time samples explicitly.
+
+The interpreter keeps its existing cancel-then-schedule effect order and physical
+timer handle. It also preserves expiry's subscription-check, clock-sample,
+latest-activity-read order. Registry membership remains independently fenced to
+the concrete TopicEntry, as established by the preceding regression fix.
+
+Validation through Nix passed 17 tests across the pure model, messaging and reload
+integration suites:
+
+```
+spoonbill/testOnly *OrphanTopicMachineSpec *MessagingServiceSpec *MissingViewReloadSpec *InvalidDevRenderContextSpec
+```
+
+The command ran through `nix develop --no-write-lock-file --command sbt --batch
+--supershell=false -Dsbt.server.autostart=false`, with `JAVA_HOME` unset and
+`SBT_NATIVE_CLIENT=false`, as above. The purity guard reports nine machines and no
+violations; scoped new-file formatting and diff whitespace checks pass.

@@ -29,7 +29,8 @@ import spoonbill.server.DeflateCompressionService
 import spoonbill.web.Request.Head
 import spoonbill.web.Response
 import spoonbill.web.Response.Status
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
+import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.FiniteDuration
@@ -48,8 +49,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
 
   private final case class TopicEntry(
     queue: Queue[F, String],
-    subscribed: AtomicBoolean,
-    lastActivityMillis: AtomicLong,
+    lifecycle: AtomicReference[OrphanTopicMachine.State],
     orphanCleanup: AtomicReference[Option[Scheduler.JobHandler[F, Unit]]]
   )
 
@@ -59,6 +59,12 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] =
       scheduler.scheduleOnce(delay)(job)
   })
+  @tailrec private def advanceTopic(entry: TopicEntry, event: OrphanTopicMachine.Event): OrphanTopicMachine.Command = {
+    val before = entry.lifecycle.get()
+    val (next, command) = OrphanTopicMachine.step(before, event)
+    if ((next eq before) || entry.lifecycle.compareAndSet(before, next)) command
+    else advanceTopic(entry, event)
+  }
   private def runAsyncForget(effect: F[Unit]): Unit =
     Effect[F].runAsync(effect) {
       case Left(err) => reporter.error("Unhandled error", err)
@@ -267,8 +273,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
       case None =>
         val entry = TopicEntry(
           queue = Queue[F, String](),
-          subscribed = new AtomicBoolean(false),
-          lastActivityMillis = new AtomicLong(orphanTiming.nowMillis()),
+          lifecycle = new AtomicReference(OrphanTopicMachine.initial(orphanTiming.nowMillis())),
           orphanCleanup = new AtomicReference(None)
         )
         longPollingTopics.putIfAbsent(qsid, entry) match {
@@ -283,7 +288,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
 
   private[services] def createTopic(qsid: Qsid): Stream[F, String] = {
     val entry = getOrCreateTopicUnsafe(qsid)
-    if (entry.subscribed.compareAndSet(false, true)) {
+    if (advanceTopic(entry, OrphanTopicMachine.Event.Subscribe) == OrphanTopicMachine.Command.CancelCleanup) {
       runAsyncForget(cancelOrphanCleanup(entry))
     }
     entry.queue.stream
@@ -296,19 +301,19 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     }
 
   private def scheduleOrphanCleanup(qsid: Qsid, entry: TopicEntry): F[Unit] = {
-    if (entry.subscribed.get()) {
-      Effect[F].unit
-    } else if (orphanTopicTimeout.toMillis <= 0) {
+    if (!OrphanTopicMachine.shouldSchedule(entry.lifecycle.get(), orphanTopicTimeout.toMillis)) {
       Effect[F].unit
     } else {
       for {
         _   <- cancelOrphanCleanup(entry)
-        _   <- Effect[F].delay(entry.lastActivityMillis.set(orphanTiming.nowMillis()))
+        _   <- Effect[F].delay { advanceTopic(entry, OrphanTopicMachine.Event.Activity(orphanTiming.nowMillis())); () }
         job <- orphanTiming.scheduleOnce(orphanTopicTimeout) {
                  Effect[F].delay {
-                   if (!entry.subscribed.get()) {
-                     val elapsed = orphanTiming.nowMillis() - entry.lastActivityMillis.get()
-                     if (elapsed >= orphanTopicTimeout.toMillis) {
+                   if (!OrphanTopicMachine.subscribed(entry.lifecycle.get())) {
+                     // Preserve the clock-before-activity observation of an in-flight expiry.
+                     val now = orphanTiming.nowMillis()
+                     val lastActivity = entry.lifecycle.get().lastActivityMillis
+                     if (OrphanTopicMachine.due(lastActivity, now, orphanTopicTimeout.toMillis)) {
                        reporter.debug(s"Remove orphan long-polling topic for $qsid")
                        longPollingTopics.remove(qsid, entry)
                        ()
