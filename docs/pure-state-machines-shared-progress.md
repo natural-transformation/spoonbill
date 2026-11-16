@@ -119,3 +119,51 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --comm
 
 Result: 2 pure model tests, 4 socket tests and 61 guarded-write/provider/snapshot
 tests passed. No performance claim is made for this admission-only extraction.
+
+## Shared completion-latch decisions
+
+`effect.CompletionLatchMachine` defines Pending/Completed with four decisions:
+Observe registers while pending and replays after completion; the first Complete
+publishes, and subsequent Complete events are ignored. The interpreter must pair
+the state with its outcome and callback handles in the same atomic section.
+Callbacks and their order are not stored in the machine.
+
+This matches `ComponentOwnership.Signal` (FIFO callbacks), `SerialLane` close
+waiters (LIFO callbacks), and the intended scheduler result latch after its
+separately characterized lost-waiter defect is fixed. Their interpreter adoption
+is owned by the corresponding lifecycle/effect units. It does not model claiming
+an effect execution, and therefore does not replace `releaseOnce`.
+
+Validation: `effect/testOnly *CompletionLatchMachineSpec` passes both exhaustive
+and generated-history cases. The observation event is named `Observe` because
+the source-purity guard reserves the token `Await` for effect execution. No
+effect execution API is used by this machine.
+
+## Completed JDBC lane admission unit
+
+JDBC's ordinary, reserved cleanup and check lanes now each use the shared drain
+state. One `AdmissionLanes` value is still changed under the existing lifecycle
+monitor. The ordinary and cleanup budgets remain `pendingJobs`; concurrent checks
+retain `maxConcurrentChecks + 1` (otherwise `pendingJobs`). Closing seals all
+three in one critical section, and waiters are detached only after all drain.
+The provider's separate once-only owned-view cleanup, failure/result replay,
+clock renewal shutdown, transactions and authorization order are unchanged.
+
+A deterministic public-API characterization filled each lane through a controlled
+transaction executor before the refactor. It verifies independent budgets,
+reserved cleanup admission, complete three-lane draining, concurrent/repeated
+close and post-close behavior. It passed against the original provider using an
+owned disposable PostgreSQL instance.
+
+After extraction the complete provider suite passed, 96 tests:
+
+```
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  bash scripts/with-test-postgres.sh sbt --batch --supershell=false \
+  -Dsbt.server.autostart=false 'securityJdbc/testOnly *JdbcBrowserPersistenceSpec'
+```
+
+The script creates, runs and removes its own loopback-only test database; it does
+not use a production database. The test characterization selects
+`-- -z "independent lane budgets"` in the same suite. No DB effect moved across an
+admission or cleanup boundary.
