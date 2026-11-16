@@ -12,7 +12,7 @@ import spoonbill.timer.{RestartKey, TimerSettings}
 class TimerExhaustionSpec extends AnyFlatSpec with Matchers {
   private given Effect[Future] = Effect.futureEffect
 
-  "Timer token exhaustion" should "report once, cancel installed arms and keep later renders stopped" in {
+  "Timer token exhaustion" should "report once when no execution is pending, cancel arms and keep later renders stopped" in {
     val worker  = new Worker
     val clock   = new Deadlines
     val reports = new Reports
@@ -96,5 +96,67 @@ class TimerExhaustionSpec extends AnyFlatSpec with Matchers {
     reports.warnings.size shouldBe 1
     runtime.close(target.owner)
     runtime.snapshot.slots shouldBe empty
+  }
+
+  it should "keep late periodic execution inert across repeated exhaustion and a final available rearm" in {
+    for (remaining <- List(3L, 4L)) {
+      val worker  = new Worker
+      val clock   = new Deadlines
+      val reports = new Reports
+      val runtime = new TimerRuntime[Future](clock, () => clock.now, worker, reports, TimerSettings(4))
+      var queued  = Option.empty[ComponentLaneEntry[Future]]
+      var offers  = 0
+      var writes  = 0
+      val target = new TimerRuntime.Target[Future] {
+        val owner  = TimerMachine.Owner(1)
+        def active = true
+        def offer(entry: ComponentLaneEntry[Future]): Boolean = {
+          offers += 1
+          queued = Some(entry)
+          true
+        }
+        def deliver(select: () => Option[Any => Option[Any]]): Future[Unit] = {
+          select().flatMap(_(0)).foreach(_ => writes += 1)
+          Future.unit
+        }
+      }
+      val id = Context[Future, Int, Unit].timerId("periodic")
+      def render(key: RestartKey): Unit = {
+        runtime.beginRender()
+        runtime.collect(target, id, 1000000L, true, key, (n: Int) => Some(n + 1))
+        runtime.prepareRender(); runtime.acceptTimerRender(); runtime.flush()
+      }
+      val field = runtime.getClass.getDeclaredField("state")
+      field.setAccessible(true)
+      field.set(runtime, runtime.snapshot.copy(serial = Long.MaxValue - remaining))
+      runtime.start()
+      render(RestartKey.Stable)
+      clock.advance(1.millis); clock.fire(); worker.drain()
+      offers shouldBe 1
+      render(RestartKey.Number(2)) // Failed replacement retains the queued execution.
+      reports.warnings.size shouldBe 1
+      runtime.retainedDescriptions shouldBe 0
+      val running = queued.get.run()
+      worker.drain(); Await.result(running, 5.seconds); runtime.flush()
+      writes shouldBe 0
+      if (remaining == 4L) {
+        // One token survived the rolled-back replacement, so rearming can
+        // succeed. Its wake exhausts dispatch without invoking a reducer.
+        reports.warnings.size shouldBe 1
+        clock.active.size shouldBe 1
+        clock.advance(1.millis); clock.fire(); worker.drain(); runtime.flush()
+      }
+      reports.warnings shouldBe Vector.fill(2)(
+        "Render timer token space exhausted; timers remain stopped until remount."
+      )
+      clock.active shouldBe empty
+      offers shouldBe 1
+      writes shouldBe 0
+      render(RestartKey.Number(3))
+      runtime.retainedDescriptions shouldBe 0
+      clock.active shouldBe empty
+      reports.warnings.size shouldBe 2
+      runtime.close(target.owner)
+    }
   }
 }

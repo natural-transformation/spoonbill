@@ -1242,6 +1242,26 @@ render to retain a reducer again. The new runtime test passed on main and
 failed on the intermediate implementation. The interpreter now unconditionally
 drops descriptions while the machine is exhausted, preserving main's rule.
 
+A subsequent review found that the new generated test claimed more than the
+existing exhaustion behavior guarantees. Starting at `Long.MaxValue - 3`, its
+history `[0, 3, 1, 4, 5]` accepts a periodic timer, queues it, exhausts tokens
+during replacement, starts the queued execution, and settles it. That late
+start changes `Failed` to `Executing`; settlement attempts to rearm and reports
+exhaustion again. The property incorrectly prohibited that second diagnostic.
+
+The compatibility decision is to preserve this behavior. Exhaustion permanently
+closes render admission and releases application reducers; it does not make all
+events inert or guarantee a single diagnostic. At the adjacent boundary,
+`Long.MaxValue - 4`, the failed two-token replacement leaves one token available
+for a periodic rearm. Its next wake exhausts dispatch without running an
+application reducer. Both histories are now deterministic cases that also run
+the generated property's assertions. A runtime characterization covers repeated
+reports, the final available rearm, and the absence of application writes.
+The generated property checks monotonic tokens, rollback on a failed allocation,
+and permanently closed render admission over 1,000 histories, including seven
+positions near exhaustion. No production code changes accompany this correction.
+Making every post-exhaustion event inert would require a separate behavior change.
+
 Allocation is a material cost. The same `ExtensionAllocationSpec` was run on
 main, the lock-preserving step, and the final pilot. It warms five 10,000-state
 bursts, measures another burst through three no-op extensions with a manual
@@ -1255,8 +1275,12 @@ worker, and includes enqueue and delivery allocations on that thread:
 
 These are observations from the JDK thread-allocation counter, not retained
 heap or whole-server allocation rates. CAS contention can add retries. The
-increase should be considered at the checkpoint before adopting this pattern
-in more hot paths.
+increase keeps broader rollout gated on representative contention and GC
+measurements before adopting this pattern in more hot paths. That evidence
+must include CAS retries, allocation rate, throughput, GC pauses and tail
+latency under concurrent writers and sustained backlogs, with realistic
+extension counts and a comparison against main. The click-latency trial below
+is evidence for the pilot only; phase 2 has not started.
 
 ### Click-latency gate
 
@@ -1307,8 +1331,9 @@ env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --comm
 | Check | Result | Outcome |
 | --- | --- | --- |
 | `effect/testOnly *StateCellSpec` | Pass, 2 tests | Atomic publication, returned results, throwing changes, concurrent writers |
-| `spoonbill/test` | Pass, 808 tests | Full runtime suite, including timer properties, startup race, both lane sources, session/cost/volume checks; before the final exhaustion review correction |
-| `spoonbill/testOnly *Timer*Spec` | Pass, 58 tests | Rerun after the final exhaustion correction, including the added late-start regression |
+| `spoonbill/test` | Pass, 808 tests | Original pilot full-runtime run, before the later timer-only review corrections; includes startup race, both lane sources, session/cost/volume checks |
+| `spoonbill/testOnly *Timer*Spec` | Pass, 61 tests | Latest run after correcting the generated property; includes both deterministic exhaustion histories and 1,000 generated histories |
+| `spoonbill/testOnly *TimerExhaustionSpec` on unchanged main | Pass, 3 tests | The same runtime characterization injected through temporary `Test / unmanagedSources`; repeated reports and the final available rearm preserve existing behavior |
 | `ce3/testOnly *Extension*Spec` | Pass, 12 tests | Existing lifecycle/cancellation checks and all three refusal characterizations |
 | `zio2/testOnly *Extension*Spec` | Pass, 9 tests | Existing lifecycle, interruption and child-fiber guarantees |
 | `nix develop --no-write-lock-file --command node scripts/check-core-purity.mjs` | Pass | Core and both machines satisfy the source guard |
@@ -1324,8 +1349,12 @@ files ran. Full repository CI, browser suites and external transport suites
 were not run; this change alters neither the browser protocol nor transport
 adapters.
 
-The main test log is `/private/tmp/spoonbill-pr34-final-tests.log`; the final
-timer rerun is `/private/tmp/spoonbill-pr34-final-timers.log`. The added late-start
+The main test log is `/private/tmp/spoonbill-pr34-final-tests.log`; the latest
+timer rerun is `/private/tmp/spoonbill-pr34-feedback-timers.log`, and the unchanged
+main comparison is `/private/tmp/spoonbill-pr34-feedback-main.log`. Both latest
+checks used the Nix/sbt prefix above. For the main comparison, a temporary
+`Test / unmanagedSources` setting loaded this branch's `TimerExhaustionSpec.scala`
+without editing main's sources. The added late-start
 test passed on unchanged main and failed before the correction, recorded in
 `/private/tmp/spoonbill-pr34-late-exhaustion-{main,before}.log`. Intermediate
 step logs and the baseline characterizations are under the same

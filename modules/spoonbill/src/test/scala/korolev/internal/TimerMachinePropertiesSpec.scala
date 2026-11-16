@@ -14,7 +14,7 @@ class TimerMachinePropertiesSpec extends AnyFlatSpec with Matchers with ScalaChe
   private val other  = Identity(Owner(2), ctx.timerId("other"))
   private val config = Configuration(10L, true, RestartKey.Stable)
 
-  "Total timer transitions" should "roll back partial token allocation and report exhaustion once" in {
+  "Total timer transitions" should "roll back partial token allocation and ignore later admissions and stale events" in {
     val waiting               = step(State(), Event.Accept(Vector(id -> config)), 0L)._1
     val before                = waiting.copy(serial = Long.MaxValue - 1L)
     val (exhausted, commands) = step(before, Event.Accept(Vector(id -> config, other -> config)), 1L)
@@ -53,9 +53,41 @@ class TimerMachinePropertiesSpec extends AnyFlatSpec with Matchers with ScalaChe
     settled.slots(id).phase shouldBe Phase.Failed
   }
 
-  it should "keep identities fenced and stop allocating after exhaustion over generated histories" in {
-    forAll(Gen.listOf(Gen.choose(0, 7)), Gen.oneOf(0L, Long.MaxValue - 3L, Long.MaxValue)) { (inputs, serial) =>
-      inputs.zipWithIndex.foldLeft(State(serial = serial)) { case (before, (input, tick)) =>
+  it should "report exhaustion again when a queued periodic execution starts and settles after a failed replacement" in {
+    // The review's [0, 3, 1, 4, 5] history must exercise the same assertions as
+    // the generated histories, independently of ScalaCheck's random seed.
+    val history = exercise(List(0, 3, 1, 4, 5), Long.MaxValue - 3L)
+    history.map(_._1.slots(id).phase) shouldBe
+      Vector(Phase.Waiting, Phase.Queued, Phase.Failed, Phase.Executing, Phase.Failed)
+    history(2)._2 shouldBe Vector(Command.Exhausted)
+    history(4)._2 shouldBe Vector(Command.Exhausted)
+    history.last._1.slots(id).entry should not be empty
+  }
+
+  it should "allow the last available arm of an already queued execution after a failed replacement" in {
+    // A replacement needs two tokens, but a periodic rearm needs only one.
+    // Exhaustion blocks Accept; it does not make every other event inert.
+    val history = exercise(List(0, 3, 1, 4, 5, 3), Long.MaxValue - 4L)
+    history(2)._2 shouldBe Vector(Command.Exhausted)
+    val rearmed = history(4)._1
+    rearmed.exhausted shouldBe true
+    rearmed.slots(id).phase shouldBe Phase.Waiting
+    history(4)._2 shouldBe Vector(Command.Schedule(id, rearmed.slots(id).generation, Arm(Long.MaxValue), 50L))
+    history(5)._2 shouldBe Vector(Command.Cancel(id, Arm(Long.MaxValue)), Command.Exhausted)
+    history.last._1.slots(id).entry shouldBe None
+  }
+
+  it should "keep tokens fenced and render admission closed after exhaustion over generated histories" in {
+    val serial = Gen.oneOf(Gen.const(0L), Gen.choose(0, 6).map(offset => Long.MaxValue - offset))
+    forAll(Gen.listOf(Gen.choose(0, 7)), serial, minSuccessful(1000)) { (inputs, start) =>
+      exercise(inputs, start)
+      ()
+    }
+  }
+
+  private def exercise(inputs: List[Int], serial: Long): Vector[(State, Vector[Command])] =
+    inputs.zipWithIndex
+      .scanLeft((State(serial = serial), Vector.empty[Command])) { case ((before, _), (input, tick)) =>
         val slot = before.slots.get(id)
         val event = input match {
           case 0 => Event.Accept(Vector(id -> config))
@@ -82,12 +114,26 @@ class TimerMachinePropertiesSpec extends AnyFlatSpec with Matchers with ScalaChe
         }
         if (before.exhausted) {
           next.exhausted shouldBe true
-          commands.collect {
-            case c: Command.Schedule => c; case c: Command.Dispatch => c; case Command.Exhausted => Command.Exhausted
-          } shouldBe empty
+          if (event.isInstanceOf[Event.Accept]) (next, commands) shouldBe (before, Vector.empty)
         }
-        next
+        commands.foreach {
+          case Command.Schedule(_, _, arm, _) =>
+            arm.value should be > before.serial
+            arm.value should be <= next.serial
+          case Command.Dispatch(_, _, execution) =>
+            execution.value should be > before.serial
+            execution.value should be <= next.serial
+          case Command.Exhausted =>
+            next.exhausted shouldBe true
+            next.serial shouldBe before.serial // Partial allocations do not escape a failed transition.
+            next.slots.values.foreach { slot =>
+              slot.phase shouldBe Phase.Failed
+              slot.arm shouldBe None
+            }
+          case _ => ()
+        }
+        (next, commands)
       }
-    }
-  }
+      .tail
+      .toVector
 }
