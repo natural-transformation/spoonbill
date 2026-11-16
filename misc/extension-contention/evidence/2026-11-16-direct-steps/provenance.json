@@ -1,0 +1,133 @@
+{
+  "recordedOn": "2026-11-16",
+  "protocol": "runtime-contended-extensions-v1-three-way",
+  "baselineRevision": "3d8c68538f50003b1c7225465bf75d642f3c0aa8",
+  "casCompiledSourceRevision": "15672bc07dd7e1c5cb1fe3a99d88729aea1ab117",
+  "casReferenceRevision": "1b63f9c4f4e3def753b9bd6c9d7cfaf20bc50123",
+  "casIdentityNote": "The compiled CAS sources and fixture are unchanged between these revisions; reused the isolated review classpath.",
+  "optimizedBaseRevision": "1b63f9c4f4e3def753b9bd6c9d7cfaf20bc50123",
+  "optimizedChange": "Construct Check and ordered Calls directly in one Vector.tabulate; no lifecycle, queue, synchronization or callback-boundary change.",
+  "fixtureHashes": {
+    "ExtensionRuntimeBenchmark.scala": "caeb7f8ff113bd4fb1bab5cb2b06635d4eacbda700abac9f53a7aaaf8a390ec7",
+    "prepare.sh": "7dd299c28f22e7b51e8a293f05dccbfcf7ff2a3762d51552e9ab6d03d6f5f45b",
+    "run.sh": "8faaf233949d95de7b0a199db6ef09da74246b8490e975c68080226886759e44",
+    "analyze.mjs": "118f5b8f823e2b919d9fb96fb3d41087a711f045c513bbac573ad2bcf8b7a357"
+  },
+  "sourceHashes": {
+    "baseline": {
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": "4c10760f7a7fb60b99acad43bd13f87bf0cdd71b8d191a3b872914edf5831f6d",
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala": null,
+      "modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala": "a0b3b8937efa9673dae57b3458061fb3d0e59c713e0c2764cd78b09c875fd83f",
+      "modules/effect/src/main/scala/korolev/effect/StateCell.scala": null
+    },
+    "cas": {
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": "60d2f47b99a5cc9d9a9ff64930ab5f3facc303438a45207de677da1541e50f1f",
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala": "9f6c20c16b0e8d803f4bf024b36498d38eafe618d84dd5b9debe29bb03245621",
+      "modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala": "46908dfd3369b220391a186635fd8ac06b06ffdfd3f5b62895c00c67fef17540",
+      "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90"
+    },
+    "optimized": {
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": "60d2f47b99a5cc9d9a9ff64930ab5f3facc303438a45207de677da1541e50f1f",
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala": "a60707e7f823c55c2842485425e18ec38f4501d1ee664f8e5d5950ec2230cab9",
+      "modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala": "46908dfd3369b220391a186635fd8ac06b06ffdfd3f5b62895c00c67fef17540",
+      "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90"
+    }
+  },
+  "flakeSha256": "91cbfc15f544ab3e1b9a9a8101043811ef232a58dbe8c9b0136a36767fa55f90",
+  "flakeLockSha256": "76b66faedcba7922a095a732ecf8bf03e53d179170441b1d93c931afef2af3e4",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "javaVersion": "openjdk version \"21.0.8\" 2025-07-15 LTS\nOpenJDK Runtime Environment Zulu21.44+17-CA (build 21.0.8+9-LTS)\nOpenJDK 64-Bit Server VM Zulu21.44+17-CA (build 21.0.8+9-LTS, mixed mode, sharing)",
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "release": "27.2.0",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16,
+    "totalMemoryBytes": 137438953472
+  },
+  "repetitions": 3,
+  "warmupSeconds": 5,
+  "measurementSeconds": 5,
+  "runOrder": [
+    [
+      "baseline",
+      "cas",
+      "optimized"
+    ],
+    [
+      "cas",
+      "optimized",
+      "baseline"
+    ],
+    [
+      "optimized",
+      "baseline",
+      "cas"
+    ]
+  ],
+  "jfrFiles": {
+    "backlog-baseline-1.jfr": "a463349802e0d6b671ae71613994aa4b241567f12c495b82c35bca5573133fe0",
+    "backlog-baseline-2.jfr": "6377689b27369cfbf2cb970474b288f8374bb656105dbb632a80ebbf45303cd6",
+    "backlog-baseline-3.jfr": "1264b0fa9246b39d5027d295c4dcb00f5f3d9319bdd513f0d0ef36c13b8a6531",
+    "backlog-cas-1.jfr": "854237c828d6482bbdd13fe5e318c9dd521833480d10d1fc9d66c6f8e2a789e7",
+    "backlog-cas-2.jfr": "f9fdb29c88d06a3d7b36cc2ec0bbde7059814aa23758c5cce4eb04143f0fa28f",
+    "backlog-cas-3.jfr": "316255df4abc018d6d3d3a72a08766bd45f768ac91e75a4cf214da201908e1e5",
+    "backlog-optimized-1.jfr": "b482e7eb1b547e38c5d0c8fa4be145fd825f302fcee5788188d53b0ef1cc1fa0",
+    "backlog-optimized-2.jfr": "0727253e7e8cb064229deac5693a893ce9ada7722080649a40ab607ddec91db5",
+    "backlog-optimized-3.jfr": "e51633d8d34f839ff52ff930f8120a34f4f1252700ae30f940279986a29b1e57",
+    "contended-baseline-1.jfr": "e47681ce97f92898cfaeca555b64db0c9538d7a375cb597ab8617ef25b4802fe",
+    "contended-baseline-2.jfr": "cf932e1fb4f028d49ee6e43ac0b4979d120c37bccdc3adc8a5df887ff26dc03c",
+    "contended-baseline-3.jfr": "db2dad75e40b6c3738f3fe04ecb783b0a5952aa691d7bc382b93fa59e073d746",
+    "contended-cas-1.jfr": "806cdce1544475a24186a17e202719f308dcdfc50c831e1f3c03770507cfc6e8",
+    "contended-cas-2.jfr": "dce825fbdf0425b0aa6ee47d574ea1cccd6c1833e0ceebe2c461a7d9760054d0",
+    "contended-cas-3.jfr": "ffd5f1f7c57f316a59825278e89df266f254aebd023e7d39e3abe6680c248b75",
+    "contended-optimized-1.jfr": "cdbc5b4be256c83a13ffb4a4edb84e7ef2e1419ffbf17c89e329e4aa2ad0e631",
+    "contended-optimized-2.jfr": "78080172d52f60ba113778292e64eb9882f3a4da1847472f98076ff71712316e",
+    "contended-optimized-3.jfr": "0f0e60b4268213c62279b7003a88ca0f37649d1808fa03d9d5a3e4af2e0dfd5b",
+    "extensions-baseline-1.jfr": "a85216bbbbeb08879688efd7ff5adf2ff72482c00097da9afb279c748b93bf68",
+    "extensions-baseline-2.jfr": "bf8539e9735cc521c5ef954d6f1e837292d617f9a2ad00ce7bb1956f5e30f6bc",
+    "extensions-baseline-3.jfr": "70fe5fdc36a02465f539f74246d32cf7a269f22ba952bd26aa6d2ba128115980",
+    "extensions-cas-1.jfr": "d562ff08051b6b3748f331e7ad67d23272e5af5515c9b5d71376a85924f18ec2",
+    "extensions-cas-2.jfr": "adf49625b347237d03a0cc8e59955abc04f98d38e360ad1993a27107ffa54cb3",
+    "extensions-cas-3.jfr": "bac7be6dfcf699e0413bf03538069241b28e162cff73886e8895529c76d01d8a",
+    "extensions-optimized-1.jfr": "5f5400187fafeb64653e1282f90e36f6c8359a3b1f73ca1a28f78793c3cdb1a9",
+    "extensions-optimized-2.jfr": "285113a33afce24fcd369a2027ea8a984df599ede7e1796a44d7959dca893598",
+    "extensions-optimized-3.jfr": "2daeb3e562aa0297afa22e42c8b0257a74c8631a784d77f3d61b6b9c15c6b9f3",
+    "isolated-baseline-1.jfr": "5926c7ef09c1704390212d52058f50b8576c26636cc61544484ad0abf09ff9b4",
+    "isolated-baseline-2.jfr": "53cde745647f00ec495f2cde697033a47699ac30e0672b274a1d5ceaf8dcb551",
+    "isolated-baseline-3.jfr": "c72bf7fabf8472f1c594c5d8a17f9a77b191b43f995d1356e51636687c48a794",
+    "isolated-cas-1.jfr": "91c37279b565071c7c16f5ce776978a9a6cc9be490edbc07a892ce7c251d31fc",
+    "isolated-cas-2.jfr": "b57eca3bb3b4749b71c8a07ce9a39968068bdda0edaedbcb145fdd5457c08d4e",
+    "isolated-cas-3.jfr": "81fbe9c0a172019dd7fbe1c8a5d321676e48d1940700eedd78f3842bb933bef2",
+    "isolated-optimized-1.jfr": "4deb00bed0503ce34fbfb6e5460860f0b90ec3a5c1d311713f44069bb5d13dd9",
+    "isolated-optimized-2.jfr": "89d7327f4493ba9625d3e7b61b1b8768a318bedfd0542fddf0e0394e1a91b938",
+    "isolated-optimized-3.jfr": "317ef6ad324798a8d9c36ea0b964b1b161c956a4e8c2b5a12c3d6d857a3100ed"
+  },
+  "rawJfrDirectory": "/tmp/spoonbill-extension-performance-comparison",
+  "screeningNote": "One two-second warmup/measurement per implementation preceded the full comparison. All three screening rows are retained separately and excluded from summary.json.",
+  "validation": {
+    "extensionLaneTests": 161,
+    "catsEffectTests": 12,
+    "zioTests": 9,
+    "finalMachineTests": 7,
+    "purityTests": 4,
+    "logs": {
+      "/tmp/spoonbill-extension-performance-first-tests.log": "762a768bb3f16960744c7e1866c26ecc140cde373b3979f70c83dfc859b78252",
+      "/tmp/spoonbill-extension-performance-regression-formatted.log": "9ce5f7beba3bcbf805a1430cd953e19d031fa5969a83d1a929ef1533c379c191",
+      "/tmp/spoonbill-extension-performance-purity.log": "a5253fe9e592be1a3504dc2e606c0843d1a60543832272cd27838a89ce0b92a9"
+    }
+  },
+  "pilotMergeGateCleared": false,
+  "limitations": [
+    "synthetic runtime workloads, no browser/HTTP",
+    "shared developer machine, no CPU affinity",
+    "allocation and GC include fixture/JVM overhead",
+    "three trials, no confidence interval",
+    "local improvement does not establish main parity or owner acceptance of the pilot cost"
+  ]
+}

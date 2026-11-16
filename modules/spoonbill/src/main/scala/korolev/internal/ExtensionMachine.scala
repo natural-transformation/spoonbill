@@ -96,10 +96,15 @@ private[spoonbill] object ExtensionMachine {
     state.phase match {
       case Phase.Delivering(targets, deliveries, passed, waiting) =>
         val delivery = deliveries + 1L // Only adjacent deliveries must differ; signed wrap is safe.
-        val calls = state.slots.toVector.flatten.take(targets).zipWithIndex.map { case (slot, index) =>
-          Step.Call(delivery, index, slot.name, notification)
+        val slots    = state.slots.getOrElse(Vector.empty)
+        val count    = math.max(0, math.min(targets, slots.size))
+        val steps = Vector.tabulate[Step[S, M]](count + 1) { position =>
+          if (position == 0) Step.Check(delivery, notification)
+          else {
+            val index = position - 1
+            Step.Call(delivery, index, slots(index).name, notification)
+          }
         }
-        val steps = Step.Check(delivery, notification) +: calls
         (state.copy(phase = Phase.Delivering(targets, delivery, passed, waiting ++ steps)), Vector(Command.Wake))
       case _ => (state, Vector.empty)
     }

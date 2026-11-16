@@ -143,3 +143,24 @@ position once across three rounds: main/CAS/lock, CAS/lock/main, lock/main/CAS.
 The analyzer requires all 36 trials, checks equal workload/JVM settings, and
 reports each candidate relative to the concurrently collected main baseline.
 All medians and ranges remain observations rather than an acceptance decision.
+
+The optional seventh `run.sh` argument names the third implementation; it
+defaults to `locked` for compatibility. Use `optimized` when comparing a hot-path
+change against main and the unchanged CAS pilot, then pass
+`baseline,cas,optimized` to the analyzer. This changes labels only: the workloads,
+JVM settings, rotation and correctness checks are identical.
+
+The [direct-step comparison](evidence/2026-11-16-direct-steps/) measures this
+optimization against main and the preceding CAS implementation. It improves
+contended throughput by 19.7% and reduces allocation by 32.9%, while preserving
+all delivery assertions. It does not establish parity with main or clear the
+pilot merge gate. The two-second screening rows are separate from the full
+five-second, 36-trial summary.
+
+```sh
+nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
+  /tmp/acceptance/main.txt /tmp/acceptance/cas.txt /tmp/acceptance/optimized-comparison \
+  3 5 /tmp/acceptance/optimized.txt optimized
+nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
+  /tmp/acceptance/optimized-comparison 3 baseline,cas,optimized
+```

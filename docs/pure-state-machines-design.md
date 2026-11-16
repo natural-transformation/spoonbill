@@ -1416,6 +1416,63 @@ Raw recordings and compilation/measurement logs remain under
 `/private/tmp/spoonbill-pilot-lock-validation.log`. The provenance file records
 source, patch and recording hashes. No unfavorable trial was dropped or replaced.
 
+### Direct construction of delivery steps
+
+The next optimization builds each notification's check and ordered calls in one
+`Vector.tabulate`. It removes the `toVector.flatten.take.zipWithIndex.map`
+pipeline and the intermediate calls vector. The pure state, CAS ownership,
+waiting queue and per-callback effect boundaries are unchanged. A regression
+covers zero, one and 33 targets, late registration, buffered state/message order
+and preservation of the original queue snapshot.
+
+A fresh 36-trial comparison used the same four workloads and rotated main,
+the unchanged CAS pilot and the optimized pilot through each run position.
+Each fresh JVM warmed for five seconds and measured for five seconds, then
+drained every notification. All delivery-count and ordering assertions passed.
+The table shows median per-run results, unchanged CAS → optimized:
+
+| Workload | Notifications/second | Bytes/notification | Delivery p99 (ms) |
+| --- | ---: | ---: | ---: |
+| Independent views | 1,066,535 → 1,070,370 | 6,228 → 5,145 | 3.489 → 3.549 |
+| Four writers, one view | 843,652 → 1,009,854 | 27,681 → 18,563 | 1.737 → 1.514 |
+| Eight writers, eight extensions | 89,818 → 91,717 | 13,743 → 11,870 | 28.3 → 27.5 |
+| Sustained backlog | 128,723 → 130,652 | 6,835 → 5,752 | 75.7 → 70.0 |
+
+The contended workload improves throughput by 19.7%, reduces allocation by
+32.9% and lowers p99 by 12.8%. Its optimized throughput range, 999,367–1,023,563,
+is above the unchanged pilot's range, 810,013–917,314. Allocation falls by
+13.6–17.4% in the other workloads; their throughput and delivery-tail observations
+show no material regression. The independent-view p99 medians differ by 1.7% and
+their ranges overlap. Backlog admission p99 moves from 6 to 7 microseconds, one
+histogram bucket, with overlapping ranges. These remain three-trial observations
+on a shared machine, without a confidence interval.
+
+This is a meaningful improvement over the current pilot, sufficient for the
+requested local optimization commit. **It does not clear the pilot merge gate.**
+Main's fresh contended median is 2,425,947 notifications/second; the optimized
+pilot reaches only 41.6% of that. The remaining ownership and synchronization
+costs have not been changed or accepted.
+
+The [36 raw rows, summary and provenance](../misc/extension-contention/evidence/2026-11-16-direct-steps/)
+retain every trial and source/JFR hash. Three earlier two-second screening rows
+are retained separately and excluded from the summary. The runtime fixture is
+unchanged; the runner's optional candidate label names this comparison
+`baseline,cas,optimized`. Raw JFRs remain under
+`/tmp/spoonbill-extension-performance-comparison`.
+
+Validation through the repository-local flake:
+
+- `sbt 'spoonbill/testOnly *Extension*Spec *SerialLane*Spec' 'ce3/testOnly *Extension*Spec' 'zio2/testOnly *Extension*Spec'`:
+  pass, 161 + 12 + 9 tests before adding the new boundary regression.
+- `sbt 'spoonbill/testOnly *ExtensionMachineSpec'`: pass, seven tests including
+  that regression; only the two changed Scala files were formatted.
+- `node scripts/check-core-purity.mjs` and `node --test misc/core-purity-tests.mjs`:
+  pass, including all four guard tests.
+- `bash misc/extension-contention/run.sh <main-cp> <cas-cp> <new-output> 3 5 <optimized-cp> optimized`:
+  pass, all 36 trials. `node misc/extension-contention/analyze.mjs <output> 3 baseline,cas,optimized`
+  reproduces the packaged summary exactly.
+- `bash -n misc/extension-contention/run.sh` and `git diff --check`: pass.
+
 ### Click-latency gate
 
 The existing harness ran with `local plain-extensions 16 200 50`: three

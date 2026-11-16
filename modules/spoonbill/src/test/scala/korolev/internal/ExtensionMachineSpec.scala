@@ -49,6 +49,30 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
     step(active, Event.Next) shouldBe (active, Vector.empty)
   }
 
+  it should "preserve buffered delivery order and frozen targets for empty, single and large extension lists" in {
+    for (targets <- Vector(0, 1, 33)) {
+      val admitted = step(initial[Int, String](false), Event.Admit(7))._1
+      val configured = (0 until targets).foldLeft(admitted) { (state, index) =>
+        step(state, Event.Register(s"observer-$index"))._1
+      }
+      val begun    = step(configured, Event.Begin)._1
+      val late     = step(begun, Event.Register("late"))._1
+      val written  = step(late, Event.Written(8))._1
+      val buffered = step(written, Event.Published("buffered"))._1
+      def expected(delivery: Long, notification: Notification[Int, String]): Vector[Item] =
+        Vector(Step.Check(delivery, notification)) ++ Vector.tabulate(targets) { index =>
+          Step.Call(delivery, index, s"observer-$index", notification)
+        }
+      val attach = expected(1L, Notification.State(7))
+      withClue(s"targets=$targets: ") {
+        drain(buffered)._2 shouldBe
+          (attach ++ expected(2L, Notification.State(8)) ++ expected(3L, Notification.Message("buffered")))
+        // Appending later notifications must preserve the earlier persistent queue.
+        drain(begun)._2 shouldBe attach
+      }
+    }
+  }
+
   it should "admit each call only after its check and remember only states whose calls started" in {
     val (active, Vector(check, first, second)) = delivering(true): @unchecked
     step(active, Event.Start(first))._2 shouldBe empty
