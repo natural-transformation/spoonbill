@@ -804,6 +804,16 @@ class InMemoryBrowserPersistenceSpec extends BrowserReplacementConformance {
     }
   }
 
+  it should "keep admission closed after repeated provider close" in {
+    Using.resource(new MemoryFixture) { db =>
+      val view = db.open()
+      await(db.persistence.close())
+      await(db.persistence.close())
+      await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Closed)
+      await(db.persistence.resources) shouldBe InMemoryBrowserPersistence.Resources(0, 0, 0, 0, 0, 0)
+    }
+  }
+
   it should "reject excess callbacks before monitor entry without consuming their ceremony" in {
     implicit val executionContext: ExecutionContext = ExecutionContext.global
     Using.resource(new MemoryFixture(BrowserPersistenceLimits(pendingJobs = 1))) { db =>
