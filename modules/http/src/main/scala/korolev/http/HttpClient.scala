@@ -417,10 +417,11 @@ object HttpClient {
         }
       }
       try {
-        // Install before TCP starts. A timeout cannot depend on connect or TLS
-        // completing, including a delegated handshake task that never returns.
-        detach = raw.subscribeClose(_ => complete(Left(new java.nio.channels.AsynchronousCloseException)))
+        // A late close subscription can call complete inline. Arm first so
+        // an already closed transport is not mistaken for an elapsed deadline.
+        // Both are installed before TCP or TLS setup starts.
         deadline.start()
+        detach = raw.subscribeClose(_ => complete(Left(new java.nio.channels.AsynchronousCloseException)))
         Effect[F].delayAsync(setup).runAsync(complete)
       } catch { case NonFatal(error) => complete(Left(error)) }
     }.recoverF { case NonFatal(error) =>
