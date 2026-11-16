@@ -36,6 +36,12 @@ before `putEither`, so failures are cached exactly like explicit `fail(key)`.
 Publication conflicts are not recaught as factory failures; explicit puts and
 the existing put-on-absent behavior after removal remain characterized. All
 effect tests and all 50 recovery-testkit tests pass after the isolated fix.
+The subsequent representation-only table change names each key's `Waiting` and
+`Settled` states instead of nesting `Either`. The map remains one atomic value,
+callbacks still run only after the winning CAS, and removal still starts a fresh
+key lifecycle. This follows the inventory's per-key-enum proposal rather than
+introducing per-element event objects or a second callback registry. All 50 effect
+and 50 recovery-testkit tests pass unchanged after this refactor.
 
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; queue cancellation does not currently replay to late listeners;
