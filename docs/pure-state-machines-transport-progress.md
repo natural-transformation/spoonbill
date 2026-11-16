@@ -119,7 +119,7 @@ confirmed defect in the socket ownership transitions.
 Disposition: retain under rule 7. The state is already one value, direct laws and
 the HTTP integration suites reject wrong transitions, and no confirmed defect was
 found. Extracting callback/handle tables into an additional model is not needed
-to name this lifecycle and would alter a measured hot-path representation. No
+to name this lifecycle and would alter its hot-path representation. No
 socket production code or native-effect order changed.
 
 Four new read-ownership characterizations join the three existing close-observer
@@ -127,6 +127,29 @@ laws and four dispatcher cases. On unchanged socket code,
 `sbt 'http/testOnly *RawDataSocket*Spec *SocketCloseDispatcherSpec'` passed all 11.
 The preceding complete HTTP run passed 159 tests, including deadline, framing,
 pooling and physical-cleanup integration.
+
+## HTTP server body ownership
+
+`HttpBodyOwnershipMachine` names Ready, Reading(owner) and Abandoned(owner?) in
+place of the server's active-body/null and sticky-abandonment fields. Its owner
+identities are supplied by the interpreter. Completion can release framing, but
+never undo cancellation; cancellation of an older body cannot poison a subsequent
+request. A generated comparison checks these decisions against the previous two
+field rules, including all event orderings.
+
+The existing monitor remains because deadline arming and completion checks must
+stay ordered with ownership changes. Native shutdown, failure publication,
+response construction and header/body deadline effects keep their original order.
+The per-body cancellation and first-error flags remain distinct one-shot facts.
+Header timing uses the separately shared deadline; upgrade ownership uses the
+explicit upgrade-input enum. The connection is decomposed by these protocols,
+not consolidated into a new hot-path CAS cell.
+
+The seven existing `HttpServerBodyFramingSpec` cases already pinned sticky
+cancellation, old-owner fencing, unread framing and deadlines before extraction.
+After extraction, `sbt 'http/test'` passed all 165 HTTP tests, including the two
+new model cases and four raw-read characterizations. The machine purity guard
+also passed. No transport effect was moved across a security decision.
 
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.
