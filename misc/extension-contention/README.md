@@ -83,3 +83,63 @@ nix develop --no-write-lock-file --command bash -c '
 Arguments are writers, extensions, maximum waiting notifications and writes per
 writer. Report each configuration separately and retain every repeat. Baseline
 uses a monitor for admission, so it has no corresponding CAS-retry count.
+
+## Pilot acceptance comparison
+
+The [36-trial acceptance comparison](evidence/2026-11-16-pilot-acceptance/)
+preserves all observations and variant identities. The lock candidate reduced
+allocation but did not recover main's contention throughput, and some tail
+latencies were worse. Neither candidate has been selected or its cost accepted.
+
+The performance gate applies to the implementation in PR #34 itself. A draft
+status is deliberate: neither correctness nor a favorable click-latency sample
+accepts its measured allocation/contention cost. A merge requires an agreed
+workload/performance budget met by the selected implementation, or explicit
+acceptance of the measured cost for the intended workloads.
+
+`variants/lock-preserving.patch` is a reviewable candidate, not an active runtime
+change. It applies to pilot commit `15672bc07dd7e1c5cb1fe3a99d88729aea1ab117`, moves
+waiting steps back to the lane's own queue, and updates machine state and handler
+ownership under one monitor. It retains the current `SerialLane` implementation
+in its queue-owned mode. Its pure-machine spec follows `Enqueue` commands instead
+of `Next`; the interpreter, session, adapter and lane contract specs are unchanged.
+The candidate passed 161 selected main-module tests, 12 cats-effect tests and 9
+ZIO tests before measurement.
+
+To reproduce without changing the active pilot:
+
+```sh
+git worktree add --detach /tmp/spoonbill-lock-candidate 15672bc07dd7e1c5cb1fe3a99d88729aea1ab117
+git -C /tmp/spoonbill-lock-candidate apply --unidiff-zero /path/to/pilot/misc/extension-contention/variants/lock-preserving.patch
+# In that worktree, through its flake, validate the candidate first:
+cd /tmp/spoonbill-lock-candidate
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'spoonbill/testOnly *Extension*Spec *SerialLane*Spec' \
+  'ce3/testOnly *Extension*Spec' 'zio2/testOnly *Extension*Spec'
+```
+
+The optional `--runtime-only` preparation mode compiles just the runtime benchmark
+fixture. This avoids coupling measurements to a candidate's test representation
+or including the CAS-only retry diagnostic. It does not replace the contract
+validation above. Use the same preparation mode for all compared variants, and
+do not compile or test in those worktrees while measurements run.
+
+```sh
+# From the pilot checkout, prepare main, the unchanged CAS pilot, and the candidate.
+nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh /path/to/main /tmp/acceptance/main.txt --runtime-only
+nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh /path/to/pilot /tmp/acceptance/cas.txt --runtime-only
+nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh /tmp/spoonbill-lock-candidate /tmp/acceptance/locked.txt --runtime-only
+nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
+  /tmp/acceptance/main.txt /tmp/acceptance/cas.txt /tmp/acceptance/comparison 3 5 /tmp/acceptance/locked.txt
+nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
+  /tmp/acceptance/comparison 3 baseline,cas,locked
+```
+
+Providing the final classpath argument selects a three-way comparison. The four
+workloads, five-second warmup/measurement, full drain, heap/GC settings and
+correctness assertions are unchanged. Each implementation occupies each run
+position once across three rounds: main/CAS/lock, CAS/lock/main, lock/main/CAS.
+The analyzer requires all 36 trials, checks equal workload/JVM settings, and
+reports each candidate relative to the concurrently collected main baseline.
+All medians and ranges remain observations rather than an acceptance decision.

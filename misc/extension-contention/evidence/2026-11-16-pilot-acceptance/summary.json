@@ -1,0 +1,616 @@
+{
+  "repetitions": 3,
+  "trials": 36,
+  "variants": [
+    "baseline",
+    "cas",
+    "locked"
+  ],
+  "statistics": "median and range of independent JVM trials; no confidence interval",
+  "results": [
+    {
+      "scenario": "isolated",
+      "baseline": {
+        "notificationsPerSecond": {
+          "median": 1084618.0409369573,
+          "min": 1039059.7488987752,
+          "max": 1113225.990327372
+        },
+        "bytesPerNotification": {
+          "median": 1064.6467208736447,
+          "min": 1064.1926488753286,
+          "max": 1065.4351758275577
+        },
+        "allocatedBytesPerSecond": {
+          "median": 1154735040.683928,
+          "min": 1107050806.2633045,
+          "max": 1184686915.4433472
+        },
+        "deliveryP99Ms": {
+          "median": 3.98,
+          "min": 3.958,
+          "max": 4.268
+        },
+        "deliveryP999Ms": {
+          "median": 17.3,
+          "min": 13.7,
+          "max": 24.9
+        },
+        "admissionP99Ms": {
+          "median": 0.002,
+          "min": 0.002,
+          "max": 0.002
+        },
+        "gcPauseMsPerSecond": {
+          "median": 3.533753868996596,
+          "min": 3.2789250099246656,
+          "max": 3.5563207202557465
+        },
+        "gcPauseMaxMs": {
+          "median": 0.786291,
+          "min": 0.681083,
+          "max": 0.966083
+        }
+      },
+      "cas": {
+        "notificationsPerSecond": {
+          "median": 985236.1703776477,
+          "min": 935239.3237375867,
+          "max": 1005490.8654539905
+        },
+        "bytesPerNotification": {
+          "median": 6046.195739978441,
+          "min": 5969.423284008611,
+          "max": 6051.868884803081
+        },
+        "allocatedBytesPerSecond": {
+          "median": 5962520123.691032,
+          "min": 5654640015.042516,
+          "max": 6002200584.09902
+        },
+        "deliveryP99Ms": {
+          "median": 4.287,
+          "min": 4.166,
+          "max": 5.713
+        },
+        "deliveryP999Ms": {
+          "median": 25.6,
+          "min": 17,
+          "max": 28
+        },
+        "admissionP99Ms": {
+          "median": 0.004,
+          "min": 0.004,
+          "max": 0.004
+        },
+        "gcPauseMsPerSecond": {
+          "median": 14.234867090315634,
+          "min": 14.15424101752623,
+          "max": 14.82420130842666
+        },
+        "gcPauseMaxMs": {
+          "median": 0.875,
+          "min": 0.867625,
+          "max": 1.088
+        }
+      },
+      "locked": {
+        "notificationsPerSecond": {
+          "median": 1000517.693503122,
+          "min": 953265.1324383431,
+          "max": 1035634.041475822
+        },
+        "bytesPerNotification": {
+          "median": 3854.0513062830228,
+          "min": 3746.373310480054,
+          "max": 3879.3761161028024
+        },
+        "allocatedBytesPerSecond": {
+          "median": 3856046523.6049843,
+          "min": 3698073987.094883,
+          "max": 3879871732.4096127
+        },
+        "deliveryP99Ms": {
+          "median": 4.709,
+          "min": 3.361,
+          "max": 5.114
+        },
+        "deliveryP999Ms": {
+          "median": 17,
+          "min": 16,
+          "max": 34.5
+        },
+        "admissionP99Ms": {
+          "median": 0.004,
+          "min": 0.003,
+          "max": 0.004
+        },
+        "gcPauseMsPerSecond": {
+          "median": 9.522165559075725,
+          "min": 9.147861383552659,
+          "max": 9.706981609532576
+        },
+        "gcPauseMaxMs": {
+          "median": 0.717,
+          "min": 0.6745,
+          "max": 0.773
+        }
+      },
+      "ratios": {
+        "cas": {
+          "notificationsPerSecond": 0.9083715494226358,
+          "bytesPerNotification": 5.679062943073697,
+          "allocatedBytesPerSecond": 5.16353961178795,
+          "deliveryP99Ms": 1.07713567839196,
+          "deliveryP999Ms": 1.4797687861271676,
+          "admissionP99Ms": 2,
+          "gcPauseMsPerSecond": 4.028256527769321,
+          "gcPauseMaxMs": 1.1128195540836663
+        },
+        "locked": {
+          "notificationsPerSecond": 0.9224608624791226,
+          "bytesPerNotification": 3.6200283443510766,
+          "allocatedBytesPerSecond": 3.339334468728965,
+          "deliveryP99Ms": 1.1831658291457285,
+          "deliveryP999Ms": 0.9826589595375722,
+          "admissionP99Ms": 2,
+          "gcPauseMsPerSecond": 2.694631802916011,
+          "gcPauseMaxMs": 0.9118761374605585
+        }
+      }
+    },
+    {
+      "scenario": "contended",
+      "baseline": {
+        "notificationsPerSecond": {
+          "median": 1945657.821343389,
+          "min": 1871407.5517718573,
+          "max": 2160645.171648962
+        },
+        "bytesPerNotification": {
+          "median": 1058.0325103640353,
+          "min": 1057.9548174481533,
+          "max": 1058.0377339140107
+        },
+        "allocatedBytesPerSecond": {
+          "median": 2058569229.0253656,
+          "min": 1979864634.805891,
+          "max": 2286044121.2037163
+        },
+        "deliveryP99Ms": {
+          "median": 0.84,
+          "min": 0.741,
+          "max": 1.016
+        },
+        "deliveryP999Ms": {
+          "median": 1.639,
+          "min": 1.489,
+          "max": 1.919
+        },
+        "admissionP99Ms": {
+          "median": 0.013,
+          "min": 0.01,
+          "max": 0.014
+        },
+        "gcPauseMsPerSecond": {
+          "median": 7.7488641836519605,
+          "min": 7.57712942832,
+          "max": 8.39377107567041
+        },
+        "gcPauseMaxMs": {
+          "median": 0.7785,
+          "min": 0.772083,
+          "max": 0.815291
+        }
+      },
+      "cas": {
+        "notificationsPerSecond": {
+          "median": 824280.48602122,
+          "min": 802594.482837395,
+          "max": 824378.0015315262
+        },
+        "bytesPerNotification": {
+          "median": 25207.421928531952,
+          "min": 24746.87027641509,
+          "max": 25968.98942902777
+        },
+        "allocatedBytesPerSecond": {
+          "median": 20780444113.205143,
+          "min": 19861701551.343475,
+          "max": 21405731228.038933
+        },
+        "deliveryP99Ms": {
+          "median": 1.862,
+          "min": 1.777,
+          "max": 1.868
+        },
+        "deliveryP999Ms": {
+          "median": 6.583,
+          "min": 5.981,
+          "max": 7.531
+        },
+        "admissionP99Ms": {
+          "median": 0.044,
+          "min": 0.043,
+          "max": 0.044
+        },
+        "gcPauseMsPerSecond": {
+          "median": 43.71783462008975,
+          "min": 43.521915960780895,
+          "max": 44.295723108898734
+        },
+        "gcPauseMaxMs": {
+          "median": 0.906166,
+          "min": 0.673209,
+          "max": 3.29525
+        }
+      },
+      "locked": {
+        "notificationsPerSecond": {
+          "median": 797934.3657398602,
+          "min": 753778.1500327233,
+          "max": 851161.8893538651
+        },
+        "bytesPerNotification": {
+          "median": 3943.231733196448,
+          "min": 3942.8773550993296,
+          "max": 3944.1731644432684
+        },
+        "allocatedBytesPerSecond": {
+          "median": 3147191312.3382163,
+          "min": 2972054798.5326896,
+          "max": 3356328572.187605
+        },
+        "deliveryP99Ms": {
+          "median": 1.972,
+          "min": 1.909,
+          "max": 2.163
+        },
+        "deliveryP999Ms": {
+          "median": 8.496,
+          "min": 7.492,
+          "max": 10.3
+        },
+        "admissionP99Ms": {
+          "median": 0.015,
+          "min": 0.014,
+          "max": 0.019
+        },
+        "gcPauseMsPerSecond": {
+          "median": 12.725324480526709,
+          "min": 12.554014374661929,
+          "max": 13.344990417509806
+        },
+        "gcPauseMaxMs": {
+          "median": 0.842,
+          "min": 0.841625,
+          "max": 1.021917
+        }
+      },
+      "ratios": {
+        "cas": {
+          "notificationsPerSecond": 0.42365131061539457,
+          "bytesPerNotification": 23.82480848330349,
+          "allocatedBytesPerSecond": 10.094605427986355,
+          "deliveryP99Ms": 2.216666666666667,
+          "deliveryP999Ms": 4.0164734594264795,
+          "admissionP99Ms": 3.3846153846153846,
+          "gcPauseMsPerSecond": 5.641837769246586,
+          "gcPauseMaxMs": 1.1639897238278742
+        },
+        "locked": {
+          "notificationsPerSecond": 0.41011032720487434,
+          "bytesPerNotification": 3.7269476075359043,
+          "allocatedBytesPerSecond": 1.528824616614065,
+          "deliveryP99Ms": 2.3476190476190477,
+          "deliveryP999Ms": 5.183648566198902,
+          "admissionP99Ms": 1.153846153846154,
+          "gcPauseMsPerSecond": 1.6422180307887901,
+          "gcPauseMaxMs": 1.081567116249197
+        }
+      }
+    },
+    {
+      "scenario": "extensions",
+      "baseline": {
+        "notificationsPerSecond": {
+          "median": 104768.0679740708,
+          "min": 103972.61656613837,
+          "max": 106943.73803793994
+        },
+        "bytesPerNotification": {
+          "median": 2368.273641450142,
+          "min": 2367.7421725239615,
+          "max": 2369.505569372642
+        },
+        "allocatedBytesPerSecond": {
+          "median": 248063772.8760645,
+          "min": 246235607.24618787,
+          "max": 253403782.8904276
+        },
+        "deliveryP99Ms": {
+          "median": 23.4,
+          "min": 23,
+          "max": 23.9
+        },
+        "deliveryP999Ms": {
+          "median": 28.4,
+          "min": 26.9,
+          "max": 34.1
+        },
+        "admissionP99Ms": {
+          "median": 0.002,
+          "min": 0.002,
+          "max": 0.003
+        },
+        "gcPauseMsPerSecond": {
+          "median": 2.694273527033358,
+          "min": 2.6093349413097866,
+          "max": 2.70732214416245
+        },
+        "gcPauseMaxMs": {
+          "median": 1.823167,
+          "min": 1.816375,
+          "max": 1.870833
+        }
+      },
+      "cas": {
+        "notificationsPerSecond": {
+          "median": 86298.3682395122,
+          "min": 85782.35763252707,
+          "max": 86390.8305160973
+        },
+        "bytesPerNotification": {
+          "median": 13974.954709293213,
+          "min": 13893.924872973908,
+          "max": 14560.225951789385
+        },
+        "allocatedBytesPerSecond": {
+          "median": 1207307943.760686,
+          "min": 1191853632.372911,
+          "max": 1256523740.8380222
+        },
+        "deliveryP99Ms": {
+          "median": 30.3,
+          "min": 26,
+          "max": 31.9
+        },
+        "deliveryP999Ms": {
+          "median": 37.7,
+          "min": 28.6,
+          "max": 46.1
+        },
+        "admissionP99Ms": {
+          "median": 0.008,
+          "min": 0.006,
+          "max": 0.009
+        },
+        "gcPauseMsPerSecond": {
+          "median": 4.87159802245498,
+          "min": 4.164127683909936,
+          "max": 5.04720896099283
+        },
+        "gcPauseMaxMs": {
+          "median": 1.548541,
+          "min": 0.928666,
+          "max": 1.5695
+        }
+      },
+      "locked": {
+        "notificationsPerSecond": {
+          "median": 90166.67829069779,
+          "min": 87759.48882571058,
+          "max": 90745.80117853134
+        },
+        "bytesPerNotification": {
+          "median": 7908.889680061135,
+          "min": 7769.185615480967,
+          "max": 7909.216604383041
+        },
+        "allocatedBytesPerSecond": {
+          "median": 713118311.4186921,
+          "min": 681819758.2066733,
+          "max": 717728197.4592823
+        },
+        "deliveryP99Ms": {
+          "median": 37.3,
+          "min": 34.7,
+          "max": 38.3
+        },
+        "deliveryP999Ms": {
+          "median": 62,
+          "min": 55.4,
+          "max": 63.4
+        },
+        "admissionP99Ms": {
+          "median": 0.004,
+          "min": 0.004,
+          "max": 0.005
+        },
+        "gcPauseMsPerSecond": {
+          "median": 9.499949546974625,
+          "min": 9.34224927654751,
+          "max": 9.512301686485541
+        },
+        "gcPauseMaxMs": {
+          "median": 2.369417,
+          "min": 2.306875,
+          "max": 2.602125
+        }
+      },
+      "ratios": {
+        "cas": {
+          "notificationsPerSecond": 0.8237086920498554,
+          "bytesPerNotification": 5.900903706691625,
+          "allocatedBytesPerSecond": 4.866925669004764,
+          "deliveryP99Ms": 1.294871794871795,
+          "deliveryP999Ms": 1.3274647887323945,
+          "admissionP99Ms": 4,
+          "gcPauseMsPerSecond": 1.8081304565312843,
+          "gcPauseMaxMs": 0.8493687084068546
+        },
+        "locked": {
+          "notificationsPerSecond": 0.8606312976298587,
+          "bytesPerNotification": 3.33951682847695,
+          "allocatedBytesPerSecond": 2.8747378270948665,
+          "deliveryP99Ms": 1.594017094017094,
+          "deliveryP999Ms": 2.183098591549296,
+          "admissionP99Ms": 2,
+          "gcPauseMsPerSecond": 3.5259781353509934,
+          "gcPauseMaxMs": 1.299615997876223
+        }
+      }
+    },
+    {
+      "scenario": "backlog",
+      "baseline": {
+        "notificationsPerSecond": {
+          "median": 140634.11041390325,
+          "min": 139962.00001895442,
+          "max": 141151.50234806837
+        },
+        "bytesPerNotification": {
+          "median": 1079.210311099663,
+          "min": 1078.4424147942295,
+          "max": 1079.8444342642583
+        },
+        "allocatedBytesPerSecond": {
+          "median": 151862961.39815858,
+          "min": 150940957.27987123,
+          "max": 152332156.7612437
+        },
+        "deliveryP99Ms": {
+          "median": 66.2,
+          "min": 64.8,
+          "max": 67.6
+        },
+        "deliveryP999Ms": {
+          "median": 72.7,
+          "min": 69.8,
+          "max": 78.8
+        },
+        "admissionP99Ms": {
+          "median": 0.002,
+          "min": 0.002,
+          "max": 0.002
+        },
+        "gcPauseMsPerSecond": {
+          "median": 2.8617118149499468,
+          "min": 2.7785790955811906,
+          "max": 2.8670908413921063
+        },
+        "gcPauseMaxMs": {
+          "median": 3.101291,
+          "min": 2.852417,
+          "max": 3.131458
+        }
+      },
+      "cas": {
+        "notificationsPerSecond": {
+          "median": 125261.19730773065,
+          "min": 124886.55771034086,
+          "max": 126675.97588869372
+        },
+        "bytesPerNotification": {
+          "median": 6887.523118936579,
+          "min": 6600.821496138035,
+          "max": 7103.773045979276
+        },
+        "allocatedBytesPerSecond": {
+          "median": 872483712.5472307,
+          "min": 824353874.7131013,
+          "max": 889827117.1417488
+        },
+        "deliveryP99Ms": {
+          "median": 84.5,
+          "min": 81,
+          "max": 95.2
+        },
+        "deliveryP999Ms": {
+          "median": 103.8,
+          "min": 95,
+          "max": 108
+        },
+        "admissionP99Ms": {
+          "median": 0.008,
+          "min": 0.006,
+          "max": 0.009
+        },
+        "gcPauseMsPerSecond": {
+          "median": 4.540942610127299,
+          "min": 4.484456547837185,
+          "max": 4.657149100440116
+        },
+        "gcPauseMaxMs": {
+          "median": 1.32575,
+          "min": 1.170958,
+          "max": 1.365542
+        }
+      },
+      "locked": {
+        "notificationsPerSecond": {
+          "median": 131008.55669158784,
+          "min": 127081.11260756015,
+          "max": 131126.96504747416
+        },
+        "bytesPerNotification": {
+          "median": 3867.3022842065584,
+          "min": 3860.01465678102,
+          "max": 3867.487454617795
+        },
+        "allocatedBytesPerSecond": {
+          "median": 506152006.9824628,
+          "min": 491484608.72861016,
+          "max": 506649690.5439821
+        },
+        "deliveryP99Ms": {
+          "median": 115.1,
+          "min": 85.9,
+          "max": 116.2
+        },
+        "deliveryP999Ms": {
+          "median": 137.3,
+          "min": 105.7,
+          "max": 138.4
+        },
+        "admissionP99Ms": {
+          "median": 0.005,
+          "min": 0.003,
+          "max": 0.005
+        },
+        "gcPauseMsPerSecond": {
+          "median": 11.85354043187401,
+          "min": 11.807714695510628,
+          "max": 12.1056824759298
+        },
+        "gcPauseMaxMs": {
+          "median": 4.071625,
+          "min": 3.982667,
+          "max": 4.22675
+        }
+      },
+      "ratios": {
+        "cas": {
+          "notificationsPerSecond": 0.8906885885584354,
+          "bytesPerNotification": 6.382002699657796,
+          "allocatedBytesPerSecond": 5.745204126895223,
+          "deliveryP99Ms": 1.2764350453172204,
+          "deliveryP999Ms": 1.4277854195323245,
+          "admissionP99Ms": 4,
+          "gcPauseMsPerSecond": 1.5867924178824846,
+          "gcPauseMaxMs": 0.4274832642277039
+        },
+        "locked": {
+          "notificationsPerSecond": 0.9315560521271388,
+          "bytesPerNotification": 3.5834556475521118,
+          "allocatedBytesPerSecond": 3.3329523033297055,
+          "deliveryP99Ms": 1.7386706948640482,
+          "deliveryP999Ms": 1.8885832187070153,
+          "admissionP99Ms": 2.5,
+          "gcPauseMsPerSecond": 4.142115348565011,
+          "gcPauseMaxMs": 1.3128806680830662
+        }
+      }
+    }
+  ]
+}

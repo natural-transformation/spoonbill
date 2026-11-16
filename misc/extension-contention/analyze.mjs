@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import {existsSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
-const [directory, repetitionsArg = '3'] = process.argv.slice(2);
+const [directory, repetitionsArg = '3', variantsArg = 'baseline,pilot'] = process.argv.slice(2);
 const repetitions = Number(repetitionsArg);
+const variants = variantsArg.split(',');
+assert.equal(variants[0], 'baseline');
+assert.ok(variants.length >= 2 && new Set(variants).size === variants.length);
+assert.ok(variants.every(value => /^[a-z]+$/.test(value)));
 const scenarios = ['isolated', 'contended', 'extensions', 'backlog'];
 const packaged = join(directory, 'trials.jsonl');
 const records = existsSync(packaged)
@@ -22,7 +26,7 @@ const rows = records.map(value => {
   }
   return value;
 });
-assert.equal(rows.length, scenarios.length * 2 * repetitions, 'Missing or extra trial');
+assert.equal(rows.length, scenarios.length * variants.length * repetitions, 'Missing or extra trial');
 const median = values => {
   const sorted = values.toSorted((a, b) => a - b);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
@@ -39,17 +43,26 @@ const metrics = {
   gcPauseMaxMs: row => row.gcPauseMaxMs,
 };
 const results = scenarios.map(scenario => {
-  const versions = Object.fromEntries(['baseline', 'pilot'].map(version => {
+  const reference = rows.find(row => row.label === `${scenario}-baseline-1`);
+  assert.ok(reference, `Missing baseline for ${scenario}`);
+  const versions = Object.fromEntries(variants.map(version => {
     const trials = Array.from({length: repetitions}, (_, index) => {
       const selected = rows.filter(row => row.label === `${scenario}-${version}-${index + 1}`);
       assert.equal(selected.length, 1);
+      for (const key of ['views', 'writers', 'extensions', 'windowPerView', 'callbackNanos', 'workers',
+        'seconds', 'warmupSeconds', 'java', 'processors', 'maxHeapBytes']) {
+        assert.equal(selected[0][key], reference[key], `Incomparable ${key} in ${selected[0].label}`);
+      }
       return selected[0];
     });
     return [version, Object.fromEntries(Object.entries(metrics).map(([key, select]) => [key, distribution(trials.map(select))]))];
   }));
-  return {scenario, ...versions, ratios: Object.fromEntries(Object.keys(metrics).map(key => [key,
-    versions.baseline[key].median === 0 ? null : versions.pilot[key].median / versions.baseline[key].median]))};
+  const ratiosFor = version => Object.fromEntries(Object.keys(metrics).map(key => [key,
+    versions.baseline[key].median === 0 ? null : versions[version][key].median / versions.baseline[key].median]));
+  return {scenario, ...versions, ratios: variants.length === 2 ? ratiosFor(variants[1])
+    : Object.fromEntries(variants.slice(1).map(version => [version, ratiosFor(version)]))};
 });
-const result = {repetitions, trials: rows.length, statistics: 'median and range of independent JVM trials; no confidence interval', results};
+const result = {repetitions, trials: rows.length, ...(variants.length > 2 ? {variants} : {}),
+  statistics: 'median and range of independent JVM trials; no confidence interval', results};
 writeFileSync(join(directory, 'summary.json'), JSON.stringify(result, null, 2) + '\n');
 console.log(JSON.stringify(result, null, 2));
