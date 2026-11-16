@@ -159,7 +159,10 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   def dequeueAll(): F[Seq[T]] = Effect[F].delay {
     def aux(): Seq[T] = {
       val s = state.get()
-      if (state.compareAndSet(s, s.copy(queue = IQueue.empty))) {
+      if (state.compareAndSet(s, s.copy(queue = IQueue.empty, canOfferCallbacks = Nil))) {
+        // A bulk drain frees capacity just like individual pulls. Wake all
+        // registered capacity waiters; enqueue rechecks available space.
+        s.canOfferCallbacks.foreach(_(unitToken))
         s.queue
       } else {
         aux()

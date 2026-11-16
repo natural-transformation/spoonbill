@@ -51,6 +51,13 @@ The separate fix publishes one cached result plus all registered callbacks under
 one monitor, invoking callbacks outside it, and captures job construction in the
 effect. All 54 effect tests pass. Cancellation semantics are unchanged.
 
+`Queue.dequeueAll` cleared the buffer without notifying capacity waiters, so a
+producer already blocked by a full buffer could remain stranded indefinitely.
+Both single- and multiple-waiter regressions failed before the fix. Bulk drain now
+atomically detaches those waiters with the drained buffer and publishes capacity
+hints after its CAS; enqueue rechecks capacity normally. All 56 effect tests pass.
+This fixes the backpressure edge without changing per-element queue decisions.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; queue cancellation does not currently replay to late listeners;
 `handleConsumed` signals EOF only; pool disposal claims precede physical cleanup.
