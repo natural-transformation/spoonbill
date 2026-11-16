@@ -49,6 +49,37 @@ final class AkkaUpgradeOwnershipSpec extends AnyFreeSpec with Matchers with Befo
   }
 
   "Upgrade ownership" - {
+    "rejects a second prepared response without replacing the first owner" in {
+      val input = new ProbeInput
+      val first = Promise[Unit]()
+      val second = Promise[Unit]()
+      val owner = new UpgradeOwnership[Future](HttpRequest(), input, 30.seconds)
+      Await.result(owner.finish(response(first, new AtomicInteger(0)))(Future.successful(HttpResponse())), timeout)
+      intercept[TimeoutException] {
+        Await.result(owner.finish(response(second, new AtomicInteger(0)))(Future.successful(HttpResponse())), timeout)
+      }
+      Await.result(second.future, timeout)
+      first.isCompleted shouldBe false
+      Await.result(owner.abort(), timeout)
+      Await.result(first.future, timeout)
+      input.cancellations.get() shouldBe 1
+    }
+
+    "rejects attachment before preparation and after a successful handoff" in {
+      val input = new ProbeInput
+      val released = Promise[Unit]()
+      val owner = new UpgradeOwnership[Future](HttpRequest(), input, 30.seconds)
+      intercept[TimeoutException](owner.attached())
+      Await.result(owner.finish(response(released, new AtomicInteger(0)))(Future.successful(HttpResponse())), timeout)
+      owner.attached()
+      intercept[TimeoutException](owner.attached())
+      Await.result(owner.abort(), timeout)
+      Await.result(owner.abort(), timeout)
+      input.cancellations.get() shouldBe 0
+      released.isCompleted shouldBe false
+      Await.result(input.cancel(), timeout)
+    }
+
     "lets abort win before attachment and disposes a prepared response" in {
       val input = new ProbeInput
       val released = Promise[Unit]()

@@ -25,6 +25,26 @@ final class WebSocketSetupSpec extends AnyFlatSpec with Matchers {
     check(program, (true, false, 1))
   }
 
+  it should "reject duplicate preparation without replacing the retained response" in {
+    val program = for {
+      inputs <- Ref.make(0)
+      first <- Ref.make(0)
+      second <- Ref.make(0)
+      setup <- WebSocketSetup.make(inputs.update(_ + 1), 30.seconds)
+      premature <- setup.attach
+      accepted <- setup.prepare(() => first.update(_ + 1))
+      duplicate <- setup.prepare(() => second.update(_ + 1))
+      before <- first.get
+      _ <- setup.abandon
+      _ <- setup.abandon
+      attached <- setup.attach
+      closed <- inputs.get
+      releasedFirst <- first.get
+      releasedSecond <- second.get
+    } yield (premature, accepted, duplicate, before, attached, closed, releasedFirst, releasedSecond)
+    check(program, (false, true, false, 0, false, 1, 1, 1))
+  }
+
   it should "dispose of a response acquired after setup expired" in {
     val program = for {
       inputClosed <- Promise.make[Nothing, Unit]
