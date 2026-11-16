@@ -268,7 +268,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     def withRunner(
       runner: TransactionExecutor[Future, Direct, Connection],
       limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
-      newId: () => UUID = () => UUID.randomUUID()
+      newId: () => UUID = () => UUID.randomUUID(),
+      concurrent: Option[JdbcConcurrentChecks] = None
     ): JdbcBrowserPersistence[Future, String] =
       new JdbcBrowserPersistence(
         source,
@@ -281,7 +282,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         ownership = if (exclusive) BrowserOwnership.ExclusiveScope else BrowserOwnership.SharedViews,
         limits = limits,
         existingRunner = Some(runner),
-        newId = newId
+        newId = newId,
+        concurrentChecks = concurrent
       )
     def withConcurrentChecks(
       cap: Int,
@@ -2973,6 +2975,62 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.committedSessions shouldBe 1
       db.retained("spoonbill_browser_replacement", "successor_session_id IS NOT NULL") shouldBe 0
     } finally { release.trySuccess(()); await(provider.close()) }
+  }
+
+  "JDBC admission lanes" should "preserve independent lane budgets and drain every lane before repeated close" in Using.resource(new Fixture) { db =>
+    val pending = new ConcurrentLinkedQueue[() => Unit]()
+    val runner = new TransactionExecutor[Future, Direct, Connection] {
+      val program = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = {
+        val result = Promise[Either[TransactionFailure, A]]()
+        pending.add(() => { result.trySuccess(Left(TransactionFailure.RolledBack)); () })
+        result.future
+      }
+    }
+    val view = open(db.persistence)
+    val provider = db.withRunner(runner, BrowserPersistenceLimits(pendingJobs = 1),
+      concurrent = Some(JdbcConcurrentChecks(db.source, 1)))
+    def releaseOne(): Unit = Option(pending.poll()).getOrElse(fail("No admitted transaction"))()
+    try {
+      val ordinary = provider.capture(binding, None, activate = false)
+      val cleanup = provider.release(view)
+      val firstCheck = provider.authorize(view)
+      val secondCheck = provider.authorize(view)
+      pending.size() shouldBe 4 // one ordinary, one cleanup, cap + maintenance slot for checks
+      await(provider.capture(binding, None, activate = false)) shouldBe Left(BrowserFailure.Capacity)
+      intercept[JdbcAuthException](await(provider.release(view)))
+      await(provider.authorize(view)) shouldBe Left(BrowserFailure.Capacity)
+      pending.size() shouldBe 4
+
+      val closing = provider.close()
+      val joining = provider.close()
+      closing.isCompleted shouldBe false
+      joining.isCompleted shouldBe false
+      await(provider.capture(binding, None, activate = false)) shouldBe Left(BrowserFailure.Closed)
+      await(provider.authorize(view)) shouldBe Left(BrowserFailure.Closed)
+      await(provider.release(view)) // release after close remains an idempotent no-op
+      pending.size() shouldBe 4
+
+      releaseOne()
+      await(ordinary).isLeft shouldBe true
+      closing.isCompleted shouldBe false
+      releaseOne()
+      intercept[JdbcAuthException](await(cleanup))
+      closing.isCompleted shouldBe false
+      releaseOne()
+      await(firstCheck).isLeft shouldBe true
+      closing.isCompleted shouldBe false
+      releaseOne()
+      await(secondCheck).isLeft shouldBe true
+      await(closing)
+      await(joining)
+      await(provider.close())
+      await(provider.authorize(view)) shouldBe Left(BrowserFailure.Closed)
+    } finally {
+      while (!pending.isEmpty) releaseOne()
+      await(provider.close())
+    }
   }
 
   "Concurrent checks" should "be an explicit opt-in that refuses shared views" in Using.resource(new Fixture) { db =>
