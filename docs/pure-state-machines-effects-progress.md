@@ -58,6 +58,12 @@ atomically detaches those waiters with the drained buffer and publishes capacity
 hints after its CAS; enqueue rechecks capacity normally. All 56 effect tests pass.
 This fixes the backpressure edge without changing per-element queue decisions.
 
+`Queue.stop` also retained already-completed pull waiters, so a second stop or
+subsequent close completed their promises again and failed. The new regression
+failed with `Promise already completed` while stop/drain order and failure-over-close
+characterizations passed. Empty-buffer stop now detaches its notified waiters in
+the same CAS. All 59 effect tests pass; normal draining and failure precedence stay.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; queue cancellation does not currently replay to late listeners;
 `handleConsumed` signals EOF only; pool disposal claims precede physical cleanup.

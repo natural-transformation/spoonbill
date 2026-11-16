@@ -17,10 +17,10 @@
 package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
-import spoonbill.effect.Effect.Promise
-import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue => IQueue}
+import spoonbill.effect.Effect.Promise
+import spoonbill.effect.syntax._
 
 /**
  * Nonblocking, concurrent, asynchronous queue.
@@ -97,7 +97,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
           // A prior dequeue may have left other capacity waiters behind. Direct
           // handoff keeps the buffer free, so pass that hint to one more waiter.
           val canOfferCallback = ref.canOfferCallbacks.headOption
-          val newValue = ref.copy(pullCallbacks = Nil, canOfferCallbacks = ref.canOfferCallbacks.drop(1))
+          val newValue         = ref.copy(pullCallbacks = Nil, canOfferCallbacks = ref.canOfferCallbacks.drop(1))
           if (state.compareAndSet(ref, newValue)) {
             val token = Right(Some(item))
             ref.pullCallbacks.foreach(cb => cb(token))
@@ -127,7 +127,10 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   def unsafeStop(): Unit = {
     @tailrec def aux(): Unit = {
       val ref = state.get
-      if (state.compareAndSet(ref, ref.copy(stopped = true))) {
+      val next =
+        if (ref.queue.isEmpty) ref.copy(stopped = true, canOfferCallbacks = Nil, pullCallbacks = Nil)
+        else ref.copy(stopped = true)
+      if (state.compareAndSet(ref, next)) {
         if (ref.queue.isEmpty) {
           ref.canOfferCallbacks.foreach(cb => cb(unitToken))
           ref.pullCallbacks.foreach(cb => cb(noneToken))
