@@ -51,6 +51,15 @@ The separate fix publishes one cached result plus all registered callbacks under
 one monitor, invoking callbacks outside it, and captures job construction in the
 effect. All 54 effect tests pass. Cancellation semantics are unchanged.
 
+`Scheduler.schedule` had three separately characterized cancellation failures:
+cancel before the first pull did not close admission, cancel after a completed
+tick invoked its callback twice, and cancel with two pending pulls stranded one.
+All three regressions failed on the original implementation. The fix tracks each
+pending tick under one monitor, detaches completion ownership once, and cancels a
+handle installed after its tick was already consumed/canceled. Concurrent pulls
+remain supported rather than being rejected; cancellation settles all of them.
+All 64 effect tests pass. Timer execution and callbacks remain outside the monitor.
+
 `Queue.dequeueAll` cleared the buffer without notifying capacity waiters, so a
 producer already blocked by a full buffer could remain stranded indefinitely.
 Both single- and multiple-waiter regressions failed before the fix. Bulk drain now

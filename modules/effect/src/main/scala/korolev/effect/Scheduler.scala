@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
+import scala.util.control.NonFatal
 import spoonbill.effect.Effect.Promise
 import spoonbill.effect.syntax._
 
@@ -42,22 +43,48 @@ final class Scheduler[F[_]: Effect] {
 
   def schedule(delay: FiniteDuration): F[Stream[F, Unit]] = Effect[F].delay {
     new Stream[F, Unit] {
-      var canceled                                    = false
-      var cb: Either[Throwable, Option[Unit]] => Unit = _
-      var task: ScheduledFuture[?]                    = _
-      def pull(): F[Option[Unit]] = Effect[F].promise { cb =>
-        if (canceled) cb(Right(None))
-        else {
-          this.cb = cb
-          this.task = after(delay)(cb(Right(Some(()))))
-        }
+      private final class Tick(val callback: Promise[Option[Unit]]) {
+        var task = Option.empty[ScheduledFuture[?]]
       }
+      private val monitor  = new Object
+      private var canceled = false
+      private var pending  = Set.empty[Tick]
+
+      private def take(tick: Tick): Boolean = monitor.synchronized {
+        val owned = pending.contains(tick)
+        pending -= tick
+        owned
+      }
+
+      def pull(): F[Option[Unit]] = Effect[F].promise { cb =>
+        val tick = new Tick(cb)
+        val admitted = monitor.synchronized {
+          if (canceled) false
+          else { pending += tick; true }
+        }
+        if (!admitted) cb(Right(None))
+        else
+          try {
+            val task = after(delay)(if (take(tick)) cb(Right(Some(()))))
+            val installed = monitor.synchronized {
+              if (pending.contains(tick)) { tick.task = Some(task); true }
+              else false
+            }
+            // A zero-delay tick or cancellation can win before handle installation.
+            if (!installed) task.cancel(false)
+          } catch { case NonFatal(error) => if (take(tick)) cb(Left(error)) }
+      }
+
       def cancel(): F[Unit] = Effect[F].delay {
-        if (task != null) {
+        val ticks = monitor.synchronized {
           canceled = true
-          task.cancel(false)
-          task = null
-          cb(Right(None))
+          val ticks = pending
+          pending = Set.empty
+          ticks
+        }
+        ticks.foreach { tick =>
+          tick.task.foreach(_.cancel(false))
+          tick.callback(Right(None))
         }
       }
     }
