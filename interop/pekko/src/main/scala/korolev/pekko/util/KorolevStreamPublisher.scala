@@ -16,6 +16,7 @@
 
 package spoonbill.pekko.util
 
+import java.util.concurrent.atomic.AtomicBoolean
 import spoonbill.effect.{Effect, Hub, Reporter, Stream}
 import spoonbill.effect.syntax._
 import spoonbill.pekko.util.SpoonbillStreamPublisher.MultipleSubscribersProhibitedException
@@ -28,7 +29,7 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
 
   private implicit val reporter: Reporter = Reporter.PrintReporter
 
-  private var hasActualSubscriber = false
+  private val hasActualSubscriber = new AtomicBoolean(false)
 
   private val hub =
     if (fanout) Hub(stream)
@@ -73,11 +74,12 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
         subscriber.onSubscribe(subscription)
       }
     } else {
-      if (hasActualSubscriber)
+      // Claim before application code can reenter subscribe, and atomically
+      // against another thread attempting the same single-subscriber slot.
+      if (!hasActualSubscriber.compareAndSet(false, true))
         throw MultipleSubscribersProhibitedException()
       subscriber.onSubscribe(new StreamSubscription(stream, subscriber))
     }
-    hasActualSubscriber = true
   }
 }
 

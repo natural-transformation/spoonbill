@@ -21,5 +21,19 @@ Validation:
 - `sbt 'http/testOnly *HttpUpgradeInputSpec *HttpServerPublicUpgradeSpec'` after
   the enum change: pass, 10 tests, including real public HTTP/WebSocket upgrades.
 
+## Publisher: confirmed defect fixed separately
+
+The Pekko and Akka publisher bodies are equivalent apart from their namespaces
+and unused imports. Both admitted a second single-mode subscriber reentrantly
+from the first subscriber's `onSubscribe`, because their claim happened after
+application code returned. Their five-case characterization suites each passed
+four existing-behavior cases and failed the new reentrant-claim case before the
+fix. A single atomic claim now precedes the callback, also serializing concurrent
+subscription attempts. Fanout and the demand/terminal loop are unchanged.
+
+Validation after this isolated fix: `sbt 'pekko/test' 'akka/test'` passed both
+complete adapter suites. Publisher lifecycle extraction remains a separate audit
+decision; this commit does not treat that work as complete.
+
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.
