@@ -1,8 +1,11 @@
 # Pure state machines: design and plan
 
-Status: draft 5, 2026-11-15. Nothing in this document is implemented. Nine of
-its ten decisions are made; see [decisions](#decisions-to-confirm). Decision 6
-is open, and nothing before phase 8 needs it.
+Status: draft 5, with phases 0 and 1 implemented for review on
+2026-11-16. The proposal below retains the original before/after descriptions;
+[the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
+and validation. Phase 2 has not started. Nine of the ten decisions are made;
+see [decisions](#decisions-to-confirm). Decision 6 is open, and nothing before
+phase 8 needs it.
 
 Draft 2 followed a review: the plan no longer promises an unchanged spec where
 a machine itself changes. Draft 3 followed another and changed the pilot. In
@@ -1180,3 +1183,151 @@ blocks a phase.
    some violations. Tests catch others: the same input gives the same
    output, and a transition does not change its input. The rule is agreed
    now. Its guard and its tests are written in phase 9.
+
+## Pilot implementation checkpoint
+
+Phases 0 and 1 are implemented on `claude/extension-pure-machine`, on top of
+`93288bbdafa466b797ead3de9a82bdf245a365d4`. This checkpoint is ready for review.
+No rollout beyond the pilot has started.
+
+### What changed
+
+- `StateCell`, private to Spoonbill in the effect module, commits an immutable
+  value and returns only the winning transition's result. Its tests cover
+  exception safety and contending writers.
+- The purity guard checks main-source `*Machine.scala` files in both `modules`
+  and `interop`, in addition to the core module. The discovery test verifies
+  that adapter machines are included and tests/build output are excluded.
+- `TimerMachine` uses an immutable transition accumulator. Exhaustion is part
+  of its state and produces cancellation and diagnostic commands; the runtime
+  no longer catches arithmetic overflow or edits the machine's slots itself.
+  A new runtime characterization test passed before this change. The original
+  machine tests also passed after removing mutation but before changing their
+  overflow assertion.
+- `ExtensionMachine` owns recording, admission, delivery, reporting decisions,
+  per-extension received state, and once-only teardown. The first implementation
+  kept the lock and lane queue and passed its tests and latency comparison.
+  The second moved waiting steps into `Delivering`, replaced the lock with
+  `StateCell`, and added the lane's optional `Source`. Machine state and handler
+  ownership change in the same cell update; `Take` drops the handler table.
+- `SerialLane` retains its ownership states and scheduling loop. Its four reads
+  now use a source; the default source reads its existing queue. The original
+  `SerialLaneSpec` is unchanged, and `SerialLaneSourceSpec` runs its cases with
+  an external source, including concurrent writers and close races.
+
+All existing extension, session and adapter specs are unchanged. The only
+existing Scala spec changed is the allowed replacement of the timer machine's
+throw assertion. The new startup-race test and three cats-effect refusal tests
+passed against the original runtime before either pilot step. They verify
+ordered state tails, all early messages, failure identity after stop and after
+teardown, and that an unstarted callback does not advance its teardown state.
+
+### Review observations
+
+The original extension runtime was 427 lines. The final interpreter is 327
+lines and the machine is 202: 529 combined, excluding the shared cell and lane
+source. The rules are centralized and executable as pure tests; the total code
+is larger. The interpreter still owns bounds, cancellation, callback placement,
+and snapshot-error redaction. `SessionsService` has not changed.
+
+The timer survey item TMR-1 is the planned overflow refactor, rather than a
+separate behavior fix. The missing-description concern REV-1 remains unproven;
+this change preserves installation and cleanup order. A generated test also
+confirmed that a late `Fail` can mark a retired timer `Failed` before settlement;
+that existing behavior is retained.
+
+Final review caught a refactor regression around a queued execution starting
+after token exhaustion: its `Executing` marker could allow a later accepted
+render to retain a reducer again. The new runtime test passed on main and
+failed on the intermediate implementation. The interpreter now unconditionally
+drops descriptions while the machine is exhausted, preserving main's rule.
+
+Allocation is a material cost. The same `ExtensionAllocationSpec` was run on
+main, the lock-preserving step, and the final pilot. It warms five 10,000-state
+bursts, measures another burst through three no-op extensions with a manual
+worker, and includes enqueue and delivery allocations on that thread:
+
+| Version | Bytes per notification, observed |
+| --- | ---: |
+| Main | 991 |
+| Step 1, lock and lane queue | 3,839 |
+| Step 2, cell and machine queue | 6,631 |
+
+These are observations from the JDK thread-allocation counter, not retained
+heap or whole-server allocation rates. CAS contention can add retries. The
+increase should be considered at the checkpoint before adopting this pattern
+in more hot paths.
+
+### Click-latency gate
+
+The existing harness ran with `local plain-extensions 16 200 50`: three
+extensions, 16 users, 50 warmup clicks and 200 measured clicks per user. Each
+trial contains 3,200 samples. Five main/step-1 trials were followed by five
+alternating main/final-pilot trials, after compilation and tests finished.
+The interpreter and machine use the same application and harness. There were
+no reconnects in these trials.
+
+| Version | Per-run p50 range (ms) | Median per-run p50 (ms) | Per-run p95 range (ms) | Median per-run mean (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Main, first comparison | 0.92–0.99 | 0.96 | 1.89–2.23 | 1.15 |
+| Step 1 | 0.92–0.99 | 0.96 | 1.85–2.18 | 1.20 |
+| Main, final alternating comparison | 0.93–0.97 | 0.94 | 1.79–2.35 | 1.17 |
+| Step 2, final alternating comparison | 0.90–1.00 | 0.92 | 2.03–2.28 | 1.15 |
+
+The pilot shows no sustained latency regression beyond the spread of these
+runs. This does not establish equal allocation or performance on other loads.
+The unchanged `ExtensionVolumeSpec` also passed its 30-second limits after
+each step. The final raw results are
+`/private/tmp/spoonbill-pr34-final-{main,pilot}-latency.jsonl`; the earlier
+step-1 results are `/private/tmp/spoonbill-pr34-step1-latency.jsonl`.
+
+One final pilot trial counted 12,041 extension callbacks rather than 12,048.
+The client closes each socket immediately after its last render; the delivery
+contract permits dropping waiting callbacks at that close. Thus this counter
+is an observation, not a delivery-completion barrier. The ordered-delivery
+and volume specs verify every notification while the view remains open.
+A temporary diagnostic copy of the client waited 250 ms before its final
+close; all three diagnostic trials delivered 12,048 callbacks with no
+reconnects. That copy is outside the repository and is not used for the
+latency table above. Its results are
+`/private/tmp/spoonbill-pr34-drained-latency.jsonl`.
+
+### Validation
+
+All dependency-backed checks used the repository-local flake. The full-runtime
+Scala invocation, after formatting only the changed files, was:
+
+```sh
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'effect/testOnly *StateCellSpec' 'spoonbill/test' \
+  'ce3/testOnly *Extension*Spec' 'zio2/testOnly *Extension*Spec'
+```
+
+| Check | Result | Outcome |
+| --- | --- | --- |
+| `effect/testOnly *StateCellSpec` | Pass, 2 tests | Atomic publication, returned results, throwing changes, concurrent writers |
+| `spoonbill/test` | Pass, 808 tests | Full runtime suite, including timer properties, startup race, both lane sources, session/cost/volume checks; before the final exhaustion review correction |
+| `spoonbill/testOnly *Timer*Spec` | Pass, 58 tests | Rerun after the final exhaustion correction, including the added late-start regression |
+| `ce3/testOnly *Extension*Spec` | Pass, 12 tests | Existing lifecycle/cancellation checks and all three refusal characterizations |
+| `zio2/testOnly *Extension*Spec` | Pass, 9 tests | Existing lifecycle, interruption and child-fiber guarantees |
+| `nix develop --no-write-lock-file --command node scripts/check-core-purity.mjs` | Pass | Core and both machines satisfy the source guard |
+| `nix develop --no-write-lock-file --command node --test misc/core-purity-tests.mjs` | Pass, 4 tests | Forbidden APIs and machine discovery |
+| Project `scalafmtOnly`, with explicit changed-file paths | Pass | Formatting limited to the changed Scala files |
+| `git diff --check` | Pass | No whitespace errors |
+
+The six temporary outside-review probes referenced by the plan could not be
+rerun: `/private/tmp/spoonbill-pr33-review/` no longer exists. Their committed
+regressions for redaction, cancellation, per-extension teardown state and
+destructor scheduling ran unchanged. No claim is made that the missing probe
+files ran. Full repository CI, browser suites and external transport suites
+were not run; this change alters neither the browser protocol nor transport
+adapters.
+
+The main test log is `/private/tmp/spoonbill-pr34-final-tests.log`; the final
+timer rerun is `/private/tmp/spoonbill-pr34-final-timers.log`. The added late-start
+test passed on unchanged main and failed before the correction, recorded in
+`/private/tmp/spoonbill-pr34-late-exhaustion-{main,before}.log`. Intermediate
+step logs and the baseline characterizations are under the same
+`/private/tmp/spoonbill-pr34-` prefix. The checkpoint awaits review; phase 2
+requires that decision before further rollout.

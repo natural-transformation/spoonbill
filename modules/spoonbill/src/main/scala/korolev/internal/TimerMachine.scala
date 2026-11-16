@@ -23,7 +23,7 @@ private[spoonbill] object TimerMachine {
     arm: Option[Arm] = None,
     entry: Option[Entry] = None
   )
-  final case class State(serial: Long = 0L, slots: Map[Identity, Slot] = Map.empty)
+  final case class State(serial: Long = 0L, slots: Map[Identity, Slot] = Map.empty, exhausted: Boolean = false)
 
   enum Event {
     case Accept(values: Vector[(Identity, Configuration)])
@@ -37,6 +37,7 @@ private[spoonbill] object TimerMachine {
     case Schedule(id: Identity, generation: Generation, arm: Arm, deadline: Long)
     case Cancel(id: Identity, arm: Arm)
     case Dispatch(id: Identity, generation: Generation, execution: Execution)
+    case Exhausted
   }
 
   def due(now: Long, deadline: Long): Boolean = now - deadline >= 0L
@@ -44,57 +45,76 @@ private[spoonbill] object TimerMachine {
     if (due(now, deadline)) 0L
     else { val nanos = deadline - now; nanos / 1000000L + (if (nanos % 1000000L == 0L) 0L else 1L) }
 
+  private case class Change(state: State, commands: Vector[Command] = Vector.empty) {
+    def put(id: Identity, slot: Slot): Change = copy(state = state.copy(slots = state.slots.updated(id, slot)))
+    def remove(id: Identity): Change          = copy(state = state.copy(slots = state.slots - id))
+    def emit(command: Command): Change        = copy(commands = commands :+ command)
+    def next: Option[(Change, Long)] =
+      Option.when(state.serial != Long.MaxValue) {
+        val serial = state.serial + 1L
+        (copy(state = state.copy(serial = serial)), serial)
+      }
+    def cancel(id: Identity, slot: Slot): Change = slot.arm.fold(this)(arm => emit(Command.Cancel(id, arm)))
+    def retire(id: Identity, slot: Slot): Change = {
+      val canceled = cancel(id, slot)
+      if (slot.entry.isEmpty) canceled.remove(id)
+      else canceled.put(id, slot.copy(config = None, phase = Phase.Retired, arm = None))
+    }
+    def arm(id: Identity, slot: Slot): Option[Change] = next.map { case (change, serial) =>
+      val token = Arm(serial)
+      change.put(id, slot.copy(arm = Some(token))).emit(Command.Schedule(id, slot.generation, token, slot.deadline))
+    }
+    def dispatch(id: Identity, slot: Slot): Option[Change] = next.map { case (change, serial) =>
+      val execution = Execution(serial)
+      change
+        .put(id, slot.copy(phase = Phase.Queued, arm = None, entry = Some(Entry(slot.generation, execution))))
+        .emit(Command.Dispatch(id, slot.generation, execution))
+    }
+  }
+
   def step(initial: State, event: Event, now: Long): (State, Vector[Command]) = {
-    var state                                  = initial
-    val commands                               = Vector.newBuilder[Command]
-    def next(): Long                           = { state = state.copy(serial = Math.addExact(state.serial, 1L)); state.serial }
-    def put(id: Identity, slot: Slot): Unit    = state = state.copy(slots = state.slots.updated(id, slot))
-    def cancel(id: Identity, slot: Slot): Unit = slot.arm.foreach(arm => commands += Command.Cancel(id, arm))
-    def retire(id: Identity, slot: Slot): Unit = {
-      cancel(id, slot)
-      if (slot.entry.isEmpty) state = state.copy(slots = state.slots - id)
-      else put(id, slot.copy(config = None, phase = Phase.Retired, arm = None))
-    }
-    def arm(id: Identity, slot: Slot): Unit = {
-      val token = Arm(next())
-      put(id, slot.copy(arm = Some(token)))
-      commands += Command.Schedule(id, slot.generation, token, slot.deadline)
-    }
-    def dispatch(id: Identity, slot: Slot): Unit = {
-      val execution = Execution(next())
-      put(id, slot.copy(phase = Phase.Queued, arm = None, entry = Some(Entry(slot.generation, execution))))
-      commands += Command.Dispatch(id, slot.generation, execution)
-    }
-    event match {
+    val current = Change(initial)
+    val result: Option[Change] = event match {
+      case Event.Accept(_) if initial.exhausted => Some(current)
       case Event.Accept(values) =>
         val present = values.iterator.map(_._1).toSet
-        state.slots.toVector.foreach { case (id, slot) => if (!present(id)) retire(id, slot) }
-        values.foreach { case (id, config) =>
-          state.slots.get(id) match {
-            case Some(slot) if slot.config.contains(config) => ()
-            case previous =>
-              previous.foreach(cancel(id, _))
-              val slot = Slot(
-                Generation(next()),
-                Some(config),
-                now + config.nanos,
-                Phase.Waiting,
-                entry = previous.flatMap(_.entry)
-              )
-              arm(id, slot)
+        val retired = initial.slots.foldLeft(current) { case (change, (id, slot)) =>
+          if (present(id)) change else change.retire(id, slot)
+        }
+        values.foldLeft(Option(retired)) { case (pending, (id, config)) =>
+          pending.flatMap { change =>
+            change.state.slots.get(id) match {
+              case Some(slot) if slot.config.contains(config) => Some(change)
+              case previous =>
+                val canceled = previous.fold(change)(change.cancel(id, _))
+                canceled.next.flatMap { case (allocated, generation) =>
+                  allocated.arm(
+                    id,
+                    Slot(
+                      Generation(generation),
+                      Some(config),
+                      now + config.nanos,
+                      Phase.Waiting,
+                      entry = previous.flatMap(_.entry)
+                    )
+                  )
+                }
+            }
           }
         }
       case Event.Wake(id, generation, token) =>
-        state.slots.get(id).filter(s => s.generation == generation && s.arm.contains(token)).foreach { slot =>
-          val consumed = slot.copy(arm = None)
-          put(id, consumed)
-          if (!due(now, slot.deadline)) arm(id, consumed)
-          else if (slot.entry.isEmpty) dispatch(id, consumed)
+        initial.slots.get(id).filter(s => s.generation == generation && s.arm.contains(token)).fold(Option(current)) {
+          slot =>
+            val consumed = slot.copy(arm = None)
+            val change   = current.put(id, consumed)
+            if (!due(now, slot.deadline)) change.arm(id, consumed)
+            else if (slot.entry.isEmpty) change.dispatch(id, consumed)
+            else Some(change)
         }
       case Event.Start(id, execution) =>
-        state.slots.get(id).foreach { slot =>
-          slot.entry.filter(_.execution == execution).foreach { entry =>
-            put(
+        Some(initial.slots.get(id).fold(current) { slot =>
+          slot.entry.filter(_.execution == execution).fold(current) { entry =>
+            current.put(
               id,
               slot.copy(
                 entry = Some(entry.copy(started = true)),
@@ -102,30 +122,45 @@ private[spoonbill] object TimerMachine {
               )
             )
           }
-        }
+        })
       case Event.Settle(id, execution, failed) =>
-        state.slots.get(id).foreach { slot =>
-          slot.entry.filter(_.execution == execution).foreach { entry =>
+        initial.slots.get(id).fold(Option(current)) { slot =>
+          slot.entry.filter(_.execution == execution).fold(Option(current)) { entry =>
             val settled = slot.copy(entry = None)
-            if (slot.config.isEmpty) state = state.copy(slots = state.slots - id)
+            if (slot.config.isEmpty) Some(current.remove(id))
             else if (entry.generation != slot.generation) {
-              put(id, settled)
+              val change = current.put(id, settled)
               if (settled.arm.isEmpty && settled.phase == Phase.Waiting && due(now, settled.deadline))
-                dispatch(id, settled)
-            } else if (failed || slot.phase == Phase.Failed) put(id, settled.copy(phase = Phase.Failed))
-            else if (slot.config.get.periodic) {
-              arm(id, settled.copy(phase = Phase.Waiting, deadline = now + slot.config.get.nanos))
-            } else put(id, settled.copy(phase = Phase.Completed))
+                change.dispatch(id, settled)
+              else Some(change)
+            } else if (failed || slot.phase == Phase.Failed) Some(current.put(id, settled.copy(phase = Phase.Failed)))
+            else if (slot.config.get.periodic)
+              current.arm(id, settled.copy(phase = Phase.Waiting, deadline = now + slot.config.get.nanos))
+            else Some(current.put(id, settled.copy(phase = Phase.Completed)))
           }
         }
       case Event.Fail(id, generation) =>
-        state.slots.get(id).filter(_.generation == generation).foreach { slot =>
-          cancel(id, slot)
-          put(id, slot.copy(phase = Phase.Failed, arm = None))
-        }
+        Some(initial.slots.get(id).filter(_.generation == generation).fold(current) { slot =>
+          current.cancel(id, slot).put(id, slot.copy(phase = Phase.Failed, arm = None))
+        })
       case Event.Close(owner) =>
-        state.slots.toVector.foreach { case (id, slot) => if (id.owner == owner) retire(id, slot) }
+        Some(initial.slots.foldLeft(current) { case (change, (id, slot)) =>
+          if (id.owner == owner) change.retire(id, slot) else change
+        })
     }
-    (state, commands.result())
+    // Discard partial decisions on exhaustion, just as the interpreter's old
+    // overflow handler did. Installed arms are canceled and entries may still settle.
+    val completed = result.getOrElse(
+      Change(
+        initial.copy(
+          exhausted = true,
+          slots = initial.slots.map { case (id, slot) =>
+            id -> slot.copy(phase = Phase.Failed, arm = None)
+          }
+        ),
+        initial.slots.toVector.flatMap { case (id, slot) => slot.arm.map(Command.Cancel(id, _)) } :+ Command.Exhausted
+      )
+    )
+    (completed.state, completed.commands)
   }
 }

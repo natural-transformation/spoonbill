@@ -1,4 +1,4 @@
-import {readFileSync, readdirSync} from 'node:fs';
+import {existsSync, readFileSync, readdirSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
@@ -14,6 +14,7 @@ const forbidden = [
   ['ambient clock or entropy', /\b(?:Instant|LocalDate|LocalDateTime|ZonedDateTime|OffsetDateTime)\s*\.\s*now\b|\bUUID\s*\.\s*randomUUID\b|\b(?:SecureRandom|Random)\b/],
   ['mutable lifecycle', /\b(?:var|synchronized|AtomicBoolean|AtomicReference|AtomicInteger|ThreadLocal)\b/],
   ['effect execution', /\b(?:Await|Future|Promise|ExecutionContext|println|printStackTrace|unsafeRun)\b/],
+  ['effect type', /\b(?:Effect|IO|ZIO|UIO|URIO|RIO|Task)\b/],
 ];
 
 export function violations(source) {
@@ -44,9 +45,36 @@ export function checkCore(root) {
   return {files, failures};
 }
 
+/** Machines stay beside their interpreters, including in adapter modules. */
+export function checkMachines(root) {
+  const failures = [];
+  let files = 0;
+  function visit(directory) {
+    for (const entry of readdirSync(directory, {withFileTypes: true})) {
+      const path = join(directory, entry.name);
+      // Compiled/generated output is not a main source tree.
+      if (entry.name === 'target' || entry.name.startsWith('.')) continue;
+      if (entry.isSymbolicLink()) failures.push({file: relative(root, path), rule: 'symlink bypasses source boundary'});
+      else if (entry.isDirectory()) visit(path);
+      else if (entry.isFile() && entry.name.endsWith('Machine.scala') && /[/\\]src[/\\]main[/\\]/.test(path)) {
+        files++;
+        failures.push(...violations(readFileSync(path, 'utf8')).map(value => ({file: relative(root, path), ...value})));
+      }
+    }
+  }
+  for (const area of ['modules', 'interop']) {
+    const directory = join(root, area);
+    if (existsSync(directory)) visit(directory);
+  }
+  if (files === 0) failures.push({rule: 'no machine sources inspected'});
+  return {files, failures};
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const result = checkCore(root);
+  const core = checkCore(root);
+  const machines = checkMachines(root);
+  const result = {coreFiles: core.files, machineFiles: machines.files, failures: [...core.failures, ...machines.failures]};
   console.log(JSON.stringify(result, null, 2));
   if (result.failures.length) process.exitCode = 1;
 }

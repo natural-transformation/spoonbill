@@ -60,7 +60,6 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   private var pendingReports       = Vector.empty[String]
   private var suppression          = Map.empty[Owner, (Issues, Long)]
   private var enabled              = false
-  private var exhausted            = false
   private var deferredWakes        = Map.empty[Identity, Event.Wake]
   private var retiringReservations = Set.empty[Identity]
 
@@ -125,21 +124,11 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   }
 
   private def stepLocked(event: Event): Vector[Command] = {
-    if (exhausted && event.isInstanceOf[Event.Accept]) { descriptions = Map.empty; return Vector.empty }
-    val (next, commands) =
-      try TimerMachine.step(state, event, clock())
-      catch {
-        case _: ArithmeticException =>
-          exhausted = true
-          pendingReports :+= "Render timer token space exhausted; timers remain stopped until remount."
-          val cancel = state.slots.toVector.flatMap { case (id, slot) => slot.arm.map(Command.Cancel(id, _)) }
-          val failed = state.copy(slots = state.slots.map { case (id, slot) =>
-            id -> slot.copy(phase = Phase.Failed, arm = None)
-          })
-          (failed, cancel)
-      }
+    val (next, commands) = TimerMachine.step(state, event, clock())
     state = next
     commands.foreach {
+      case Command.Exhausted =>
+        pendingReports :+= "Render timer token space exhausted; timers remain stopped until remount."
       case Command.Dispatch(id, generation, execution) =>
         descriptions.get(id).foreach { description =>
           records.put(execution, new Record(id, generation, execution, description.target))
@@ -148,7 +137,7 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
     }
     // Completed/failed markers retain identity/configuration, never application closures.
     val changed =
-      if (exhausted) descriptions.keysIterator.toVector
+      if (state.exhausted) descriptions.keysIterator.toVector
       else
         event match {
           case Event.Accept(_)        => descriptions.keysIterator.toVector
@@ -159,7 +148,9 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
         }
     changed.foreach { id =>
       if (
-        !state.slots
+        // A queued execution can Start after exhaustion. Its execution marker
+        // must never let a later accepted render reinstall application reducers.
+        state.exhausted || !state.slots
           .get(id)
           .exists(slot => slot.config.nonEmpty && slot.phase != Phase.Completed && slot.phase != Phase.Failed)
       ) descriptions -= id
@@ -194,6 +185,7 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   }
 
   private def execute(commands: Vector[Command]): Unit = commands.foreach {
+    case Command.Exhausted => () // Queued for flush together with render diagnostics.
     case Command.Cancel(id, token) =>
       val cancel = lock.synchronized(handles.remove(id -> token))
       cancel.foreach { run =>
