@@ -276,7 +276,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
             existing
           case None =>
             reporter.debug(s"Create long-polling topic for $qsid")
-            entry.queue.cancelSignal.runAsync(_ => longPollingTopics.remove(qsid))
+            entry.queue.cancelSignal.runAsync(_ => longPollingTopics.remove(qsid, entry))
             entry
         }
     }
@@ -310,7 +310,7 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
                      val elapsed = orphanTiming.nowMillis() - entry.lastActivityMillis.get()
                      if (elapsed >= orphanTopicTimeout.toMillis) {
                        reporter.debug(s"Remove orphan long-polling topic for $qsid")
-                       longPollingTopics.remove(qsid)
+                       longPollingTopics.remove(qsid, entry)
                        ()
                      }
                    }

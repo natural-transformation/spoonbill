@@ -162,6 +162,31 @@ class MessagingServiceSpec extends AnyFlatSpec with Matchers {
     service.topicExists(qsid) shouldBe false
   }
 
+  it should "keep a replacement topic when a canceled old deadline completes late" in {
+    implicit val effect: Effect[Future] = Effect.futureEffect
+    val timing = new ManualOrphanTiming
+    val service = new MessagingService[Future](
+      reporter = new CountingReporter,
+      commonService = null.asInstanceOf[CommonService[Future]],
+      sessionsService = null.asInstanceOf[SessionsService[Future, Unit, Unit]],
+      compressionSupport = None,
+      orphanTopicTimeout = 150.millis,
+      orphanCleanupTiming = Some(timing)
+    )
+    val qsid = Qsid("device", "replaced-orphan")
+    effect.run(service.longPollingPublish(qsid, Stream.empty[Future, Bytes])).isRight shouldBe true
+    timing.advanceTo(80)
+    effect.run(service.longPollingPublish(qsid, Stream.empty[Future, Bytes])).isRight shouldBe true
+    timing.advanceTo(230)
+    service.topicExists(qsid) shouldBe false
+    service.createTopic(qsid) // A different entry now belongs to a subscribed connection.
+    service.topicExists(qsid) shouldBe true
+    // The first deadline was dispatched before cancellation but its body resumes
+    // after the second deadline expired the old entry and a successor attached.
+    timing.fireCanceled(0)
+    service.topicExists(qsid) shouldBe true
+  }
+
   it should "cancel orphan cleanup after subscribe" in {
     implicit val effect: Effect[Future] = Effect.futureEffect
     val timing = new ManualOrphanTiming

@@ -1,0 +1,59 @@
+# Runtime and session lifecycle rollout
+
+This records the phase-3/4 audit and individual validated units. It is not a
+claim that the full ten-phase plan is complete. The shared protocol candidate
+comparison and phase-2 evidence are in `pure-state-machines-shared-progress.md`.
+
+## Initial phase-3 dispositions
+
+| Item | Current evidence | Disposition |
+| --- | --- | --- |
+| `ViewSnapshotSession` | Initialization is one Empty/Starting/Ready(revision) enum in one atomic reference. Tests cover failed restore retry, concurrent/repeated initialization, revision progression, identity reset and incompatible schema preservation. | Retain the explicit state model, subject to rerunning those tests; do not relocate projection/store effect order merely to add a Machine filename. |
+| `SerialLane` ownership and per-call settlement | Each protocol is already one atomic integer with named states and a complete local transition loop. Original/source-backed specs cover order, failure, refused execution, stack safety, drain and racing writers/close. It is also on the accepted extension performance path. | Retain these explicit atomic protocols, subject to rerunning their suites; no identified defect warrants replacing their synchronization. |
+| `DelayInstance` | Finished status and installed cancellation handle are separate publications. Existing tests intentionally distinguish cancellation from completion. Component creation/start and removal/cancel share `miscLock`. | Extract installation/completion/cancel decisions; preserve cancellation not marking a delay finished. Characterize inline scheduling and schedule-construction failure first. |
+| `MessagingService` orphan topic | Subscription, activity and timer ownership are separate atomics. Existing timing seam supports deterministic expiry races. Removal currently uses the session key without entry identity. | Investigate stale-entry removal before extracting the lifecycle; any confirmed fix is a separate commit. |
+| `ComponentOwnership` | Owner readiness, predecessor settlement, admitted leases, retirement, cleanup and baselines use multiple flags under one lock. Strong handoff/baseline/drain specs exist. | Extract ownership decisions while retaining resource tables, admission lock and effect ordering. |
+| `TimerRuntime` render/start/outbox | Timer slots already have a pure machine, but render staging, deferred wakes, startup enablement and report suppression remain separate state. | Extract metadata decisions without moving reducer/target/cancel handles into model state. |
+| `BoundedPresentationStore` | Entry phases exist, but entries/history/monotonic observed time/closure are separate mutable fields. | Extract bounded ownership and expiry decisions with explicit clock/identity inputs; preserve manager/snapshot fences. |
+| `BrowserCoordinatorGate` | Keyed FIFO read/write dispatch plus close-result joining; not equivalent to a simple count gate. | Own scheduling machine with callback IDs and explicit time input; keep current effect ownership/cancellation boundaries. |
+
+## Phase-4 prerequisites
+
+`SessionsService.required` arbitrates an operation outcome against a scheduled
+expiry; it does not compare operation completion against an absolute clock. It
+therefore must not be silently replaced with the assembly `DeadlineMachine`,
+whose Complete event performs a timely/late comparison. Add a deterministic
+scheduler seam to its existing implementation before extracting that race.
+
+Guarded teardown must keep extension stop, component admission retirement,
+connection closure, admitted-write drain, application/guard/extension destruction,
+storage retirement and attachment-fence removal in their current order. A
+nonterminating admitted-write drain must continue preventing unsafe local
+replacement. A repeated cleanup call currently joins or returns according to its
+specific interpreter contract; a generic completion abstraction must not change
+that behavior without a separate bug investigation.
+
+## Confirmed topic-removal defect, fixed before extraction
+
+The deterministic timing seam reproduced a stale owner deleting its successor:
+an orphan topic receives two publishes; its current deadline expires and removes
+it; a replacement topic subscribes under the same Qsid; then an already-dispatched
+canceled deadline from the old topic resumes. Both entries have the same key,
+but only the old one satisfied that deadline. The original key-only removal
+removed the replacement. The regression failed with expected true/actual false.
+
+Both timer and queue-cancellation retirement now use
+`longPollingTopics.remove(qsid, entry)`, fencing removal to the entry that owns the
+callback. No timer or subscription lifecycle refactor is included in this fix.
+
+Validation through the repository flake:
+
+```
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'spoonbill/testOnly *MessagingServiceSpec'
+```
+
+Result: all 8 tests passed after the ownership fix. The new regression was run
+first on original production code and failed at the final replacement-preservation
+assertion. `git diff --check` passed.
