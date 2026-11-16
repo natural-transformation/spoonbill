@@ -110,4 +110,26 @@ class AsyncTableLifecycleSpec extends AnyFlatSpec with Matchers {
     await(filling.failed) shouldBe RemovedBeforePutException("key")
     await(table.get("key")) shouldBe 8
   }
+
+  it should "preserve the factory error when the factory already published that failure" in {
+    val table   = AsyncTable.unsafeCreateEmpty[Future, String, Int]
+    val failure = new IllegalStateException("already published")
+    val filling = table.getFill("key") {
+      await(table.fail("key", failure))
+      Future.failed(failure)
+    }
+    await(filling.failed) should be theSameInstanceAs failure
+    await(table.get("key").failed) should be theSameInstanceAs failure
+  }
+
+  it should "preserve an external value while returning the original failed factory outcome" in {
+    val table   = AsyncTable.unsafeCreateEmpty[Future, String, Int]
+    val factory = Promise[Int]()
+    val failure = new IllegalStateException("factory failed after put")
+    val filling = table.getFill("key")(factory.future)
+    await(table.put("key", 7))
+    factory.failure(failure)
+    await(filling.failed) should be theSameInstanceAs failure
+    await(table.get("key")) shouldBe 7
+  }
 }

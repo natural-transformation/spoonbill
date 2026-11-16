@@ -42,6 +42,14 @@ callbacks still run only after the winning CAS, and removal still starts a fresh
 key lifecycle. This follows the inventory's per-key-enum proposal rather than
 introducing per-element event objects or a second callback registry. All 50 effect
 and 50 recovery-testkit tests pass unchanged after this refactor.
+Full runtime integration subsequently exposed an important existing factory
+pattern: `SessionsService` can publish its own error before failing. Two new cases
+(self-published failure and an external value racing factory failure) passed on
+the original table but failed the initial caching fix with `AlreadyContainsKey`.
+Failed factory outcomes now publish silently if a value/error already won, then
+preserve the original factory error for their initiating caller. Successful
+publication remains strict. All 72 effect and 819 runtime tests pass after this
+follow-up; the previously failing `InvalidDevRenderContextSpec` is unchanged.
 
 `Scheduler.JobHandler` lost earlier result waiters, failed to replay results when
 a waiter was already registered, and stranded results when the job factory threw

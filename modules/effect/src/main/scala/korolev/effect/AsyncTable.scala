@@ -81,7 +81,13 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
               .delayAsync(f)
               .map[Result](Right(_))
               .recover { case error => Left(error) }
-              .flatMap(result => putEither(key, result))
+              .flatMap {
+                case Right(value) => put(key, value)
+                case Left(error)  =>
+                  // A factory may already publish its failure (or race an
+                  // explicit value). Preserve that entry and the factory error.
+                  putEither(key, Left(error), silent = true).flatMap(_ => Effect[F].fail[Unit](error))
+              }
           } else {
             aux()
           }
