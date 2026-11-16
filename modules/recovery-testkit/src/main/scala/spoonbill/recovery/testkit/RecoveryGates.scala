@@ -29,7 +29,8 @@ final class RecoveryGates[F[_]](using F: Effect[F]) extends RecoveryProbe[F] {
     def resume(value: FaultDecision): F[Unit] = F.delay {
       val waiters = monitor.synchronized {
         decision = Some(value)
-        armed -= point
+        // A resumed older gate must not disarm a replacement at this point.
+        if (armed.get(point).contains(this)) armed -= point
         val result = waiting; waiting = Nil; result
       }
       waiters.foreach(_(Right(value)))
