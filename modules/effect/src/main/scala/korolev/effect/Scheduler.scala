@@ -101,20 +101,24 @@ final class Scheduler[F[_]: Effect] {
   def unsafeScheduleOnce[T](delay: FiniteDuration)(job: => F[T]): JobHandler[F, T] =
     new JobHandler[F, T] {
 
-      private val monitor   = new Object
-      private var completed = Option.empty[Either[Throwable, T]]
-      private var waiters   = List.empty[Promise[T]]
+      private case class Completion(
+        state: CompletionLatchMachine.State,
+        result: Option[Either[Throwable, T]] = None,
+        waiters: List[Promise[T]] = Nil
+      )
+      private val monitor    = new Object
+      private var completion = Completion(CompletionLatchMachine.State.Pending)
 
       private val task = after(delay) {
         Effect[F].delayAsync(job).runAsync { errorOrResult =>
           val callbacks = monitor.synchronized {
-            if (completed.nonEmpty) Nil
-            else {
-              completed = Some(errorOrResult)
-              val callbacks = waiters
-              waiters = Nil
+            val current         = completion
+            val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Complete)
+            if (command == CompletionLatchMachine.Command.Publish) {
+              completion = Completion(next, Some(errorOrResult))
+              val callbacks = current.waiters
               callbacks
-            }
+            } else Nil
           }
           callbacks.foreach(_(errorOrResult))
         }
@@ -122,10 +126,12 @@ final class Scheduler[F[_]: Effect] {
 
       def result: F[T] = Effect[F].promise { cb =>
         val ready = monitor.synchronized {
-          completed match {
-            case None  => waiters ::= cb; None
-            case value => value
-          }
+          val current         = completion
+          val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Observe)
+          if (command == CompletionLatchMachine.Command.Register) {
+            completion = current.copy(state = next, waiters = cb :: current.waiters)
+            None
+          } else current.result
         }
         ready.foreach(cb)
       }

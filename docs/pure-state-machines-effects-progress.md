@@ -50,6 +50,11 @@ implementation; cancellation of an unstarted job correctly left results pending.
 The separate fix publishes one cached result plus all registered callbacks under
 one monitor, invoking callbacks outside it, and captures job construction in the
 effect. All 54 effect tests pass. Cancellation semantics are unchanged.
+After that fix, the job result adopts the shared `CompletionLatchMachine`:
+registration, replay, first publication and duplicate completion match its table.
+One immutable interpreter value pairs the pure state with result and waiter
+handles; callback order stays LIFO and callbacks remain outside the monitor.
+All 61 effect tests, including the shared model's two tests, pass after adoption.
 
 `Scheduler.schedule` had three separately characterized cancellation failures:
 cancel before the first pull did not close admission, cancel after a completed
