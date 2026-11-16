@@ -3,7 +3,7 @@ package spoonbill.akka.util
 import org.reactivestreams.{Subscriber, Subscription}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 import spoonbill.effect.{Effect, Stream}
 
 class SpoonbillStreamPublisherSpec extends AnyFlatSpec with Matchers {
@@ -98,5 +98,66 @@ class SpoonbillStreamPublisherSpec extends AnyFlatSpec with Matchers {
     publisher.subscribe(first)
     first.subscription should not be empty
     nested.subscription shouldBe empty
+  }
+
+  it should "make demand and repeated cancellation inert after cancellation" in {
+    var pulls = 0
+    var canceled = 0
+    val stream = new Stream[Future, Int] {
+      def pull(): Future[Option[Int]] = { pulls += 1; Future.successful(Some(1)) }
+      def cancel(): Future[Unit] = { canceled += 1; Future.unit }
+    }
+    val publisher = new SpoonbillStreamPublisher(stream, fanout = false)
+    val subscriber = new Probe
+    publisher.subscribe(subscriber)
+    val subscription = subscriber.subscription.get
+    subscription.cancel()
+    subscription.request(1)
+    subscription.cancel()
+    pulls shouldBe 0
+    canceled shouldBe 1
+    subscriber.values shouldBe empty
+    subscriber.errors shouldBe empty
+    subscriber.completed shouldBe 0
+  }
+
+  it should "treat terminal completion as cancellation" in {
+    var canceled = 0
+    val stream = new Stream[Future, Int] {
+      def pull(): Future[Option[Int]] = Future.successful(None)
+      def cancel(): Future[Unit] = { canceled += 1; Future.unit }
+    }
+    val publisher = new SpoonbillStreamPublisher(stream, fanout = false)
+    val subscriber = new Probe
+    publisher.subscribe(subscriber)
+    val subscription = subscriber.subscription.get
+    subscription.request(1)
+    subscription.cancel()
+    subscription.request(1)
+    subscriber.completed shouldBe 1
+    canceled shouldBe 0
+  }
+
+  for (failure <- List(false, true)) {
+    it should s"ignore a pending pull settling after cancellation (failure=$failure)" in {
+      val pending = Promise[Option[Int]]()
+      var pulls = 0
+      val stream = new Stream[Future, Int] {
+        def pull(): Future[Option[Int]] = { pulls += 1; pending.future }
+        def cancel(): Future[Unit] = Future.unit
+      }
+      val publisher = new SpoonbillStreamPublisher(stream, fanout = false)
+      val subscriber = new Probe
+      publisher.subscribe(subscriber)
+      subscriber.subscription.get.request(1)
+      subscriber.subscription.get.cancel()
+      if (failure) pending.failure(new IllegalStateException("late pull"))
+      else pending.success(Some(7))
+      subscriber.subscription.get.request(1)
+      pulls shouldBe 1
+      subscriber.values shouldBe empty
+      subscriber.errors shouldBe empty
+      subscriber.completed shouldBe 0
+    }
   }
 }

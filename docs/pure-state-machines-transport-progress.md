@@ -35,6 +35,20 @@ Validation after this isolated fix: `sbt 'pekko/test' 'akka/test'` passed 46 and
 38 tests respectively, including the subscriber laws below. Publisher lifecycle extraction remains a separate audit
 decision; this commit does not treat that work as complete.
 
+Two additional publisher probes exposed demand continuing after cancellation and
+cleanup being repeated after cancellation or terminal completion. Those probes
+failed before the separate cancellation fix. Subscription cancellation now wins
+once, releases a loop waiting for demand, and suppresses subsequent pulls and
+late pull outcomes. Terminal success/failure also closes the subscription.
+This follows the cancellation lifecycle in the
+[Reactive Streams subscription rules](https://github.com/reactive-streams/reactive-streams-jvm#3-subscription-code).
+It is not a claim of full Reactive Streams conformance: synchronous rejection of
+a second subscriber remains an explicitly documented adapter API.
+
+Validation: the complete adapter suites passed 48 Pekko and 40 Akka tests after
+the cancellation fix. The publisher suites then passed nine cases each,
+including added late-success and late-failure checks after cancellation.
+
 ## Subscriber: retain the existing explicit state
 
 The candidates are

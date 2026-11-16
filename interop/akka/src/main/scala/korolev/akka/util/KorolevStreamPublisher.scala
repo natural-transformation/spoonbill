@@ -39,33 +39,36 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
   private final class StreamSubscription(stream: Stream[F, T], subscriber: Subscriber[_ >: T]) extends Subscription {
 
     private val countdown = new Countdown[F]()
+    private val stopped = new AtomicBoolean(false)
 
     private def loop(): F[Unit] =
       for {
         _         <- countdown.decOrLock()
-        maybeItem <- stream.pull()
-        _ <- maybeItem match {
+        maybeItem <- if (stopped.get()) Effect[F].none[T] else stream.pull()
+        _ <- if (stopped.get()) Effect[F].unit else maybeItem match {
                case Some(item) =>
                  subscriber.onNext(item)
                  loop()
                case None =>
-                 subscriber.onComplete()
+                 if (stopped.compareAndSet(false, true)) subscriber.onComplete()
                  Effect[F].unit
              }
       } yield ()
 
     loop().runAsync {
-      case Left(error) => subscriber.onError(error)
+      case Left(error) => if (stopped.compareAndSet(false, true)) subscriber.onError(error)
       case Right(_)    => ()
     }
 
     def request(n: Long): Unit =
-      countdown.unsafeAdd(n)
+      if (!stopped.get()) countdown.unsafeAdd(n)
 
     def cancel(): Unit =
-      stream
-        .cancel()
-        .runAsyncForget
+      if (stopped.compareAndSet(false, true)) {
+        // Release a loop waiting for demand; it observes stopped before pulling.
+        countdown.unsafeAdd(1)
+        stream.cancel().runAsyncForget
+      }
   }
 
   def subscribe(subscriber: Subscriber[_ >: T]): Unit = {
