@@ -179,6 +179,38 @@ class BrowserRpcLifecycleSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
+  it should "reject duplicate descriptors before capacity and ignore an old expiry after descriptor reuse" in {
+    val expirations = new AtomicReference(Vector.empty[() => Unit])
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
+        expirations.updateAndGet(_ :+ expire)
+        () => ()
+      }
+    }
+    val requests = new OwnedBrowserRequests[Future, String](deadlines, 1, () => new SessionAccessDenied)
+    val first = requests.request("reused", 1.second, () => new IllegalStateException("old expiry"))(_ => Future.unit)
+    val duplicate = requests.request("reused", 1.second, () => new IllegalStateException("duplicate expiry"))(_ => Future.unit)
+    for {
+      error <- duplicate.failed
+      _ = error.getMessage shouldBe "Duplicate browser request descriptor"
+      _ = requests.pendingCount shouldBe 1
+      _ <- requests.complete("reused", Right("first"))
+      firstValue <- first
+      second = requests.request("reused", 1.second, () => new IllegalStateException("new expiry"))(_ => Future.unit)
+      _ = expirations.get().head.apply()
+      _ = requests.pendingCount shouldBe 1
+      _ = second.isCompleted shouldBe false
+      _ <- requests.complete("reused", Right("second"))
+      secondValue <- second
+      _ <- requests.close()
+      _ <- requests.close()
+    } yield {
+      firstValue shouldBe "first"
+      secondValue shouldBe "second"
+      requests.pendingCount shouldBe 0
+    }
+  }
+
   it should "drop a request which expires while still queued for browser emission" in {
     val clock = new ManualDeadlines
     val incoming = Queue[Future, String]()
