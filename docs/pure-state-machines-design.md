@@ -906,6 +906,39 @@ characterization, candidate comparison and validation. No merge is authorized;
 the owner will perform the final review. Retain/defer decisions still require
 the evidence described below; they are not substitutes for unfinished work.
 
+### Rollout progress
+
+The rollout is in progress. The per-area records below identify completed units,
+retained protocols and outstanding work; a completed unit is not a claim that its
+whole phase is complete.
+
+| Phase | Current state |
+| --- | --- |
+| 0–1 | Foundation and selected ownership-split pilot complete; agreed pilot benchmark gate passed |
+| 2 | Shared deadline, setup ownership, drain admission, completion latch and pending-membership units integrated; late-handle ownership and remaining candidate prerequisites continue |
+| 3–4 | Lifecycle and session work underway; unchanged strong protocols are evaluated against the explicit retain criteria |
+| 5–6 | Connection/rendering and remaining authentication work follow their characterization and ownership prerequisites |
+| 7 | Transport work underway; upgrade-input and close-reservation states modeled, publisher defects isolated, subscriber/raw-socket retention backed by laws; decoder/assembly/connection work continues |
+| 8 | AsyncTable and scheduler units integrated; queue/operator/pool work continues with separate defect fixes and hot-path measurements |
+| 9 | Browser behavioral coverage and lifecycle extraction remain outstanding |
+| 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
+
+Detailed records: [shared protocols](pure-state-machines-shared-progress.md),
+[runtime and sessions](pure-state-machines-runtime-progress.md),
+[transport and adapters](pure-state-machines-transport-progress.md), and
+[effects, browser and testkits](pure-state-machines-effects-progress.md).
+
+The first combined integration check exposed an AsyncTable interaction: a factory
+that had already published its failure was re-published and masked by a duplicate-key
+error. The correction preserves the original factory error while retaining strict
+successful publication conflicts. It was fixed before publishing the batch.
+The corrected combined Nix run passed `effect/test` (70), `spoonbill/test` (830),
+`recoveryTestkit/test` (50, with four existing basis-specific cancellations),
+`http/test` (163), `standalone/test` (44), `pekko/test` (52), `akka/test` (44), and
+`zioHttp/testOnly *WebSocketSetupSpec` (4). The log is
+`/tmp/spoonbill-rollout-integration-2.log`; scoped validation remains recorded with
+each unit. Full-plan completion and final review are still pending.
+
 A phase starts when the decisions that it needs are made. A decision that only
 a later phase needs does not block it. The table under
 [decisions](#decisions-to-confirm) says which phase needs which.
