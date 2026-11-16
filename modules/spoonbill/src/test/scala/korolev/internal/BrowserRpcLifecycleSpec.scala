@@ -211,6 +211,49 @@ class BrowserRpcLifecycleSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
+  it should "cancel before notifying an admitted request even if cancellation throws" in {
+    val events = new AtomicReference(Vector.empty[String])
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = () => {
+        events.updateAndGet(_ :+ "cancel")
+        throw new IllegalStateException("synthetic cancellation failure")
+      }
+    }
+    val requests = new OwnedBrowserRequests[Future, String](deadlines, 1, () => new SessionAccessDenied)
+    val waiting = requests.request("request", 1.second, () => new IllegalStateException("timeout"))(_ => Future.unit)
+    waiting.onComplete(_ => { events.updateAndGet(_ :+ "notify"); () })(ExecutionContext.parasitic)
+    for {
+      completed <- requests.complete("request", Right("answer"))
+      value <- waiting
+      repeated <- requests.complete("request", Right("late"))
+    } yield {
+      completed shouldBe true
+      repeated shouldBe false
+      value shouldBe "answer"
+      events.get() shouldBe Vector("cancel", "notify")
+    }
+  }
+
+  it should "cancel a handle returned after synchronous expiry without emitting the retired request" in {
+    val cancellations = new AtomicInteger(0)
+    val sent = new AtomicBoolean(false)
+    val failure = new IllegalStateException("immediate timeout")
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
+        expire()
+        () => { cancellations.incrementAndGet(); () }
+      }
+    }
+    val requests = new OwnedBrowserRequests[Future, String](deadlines, 1, () => new SessionAccessDenied)
+    val waiting = requests.request("request", 1.second, () => failure) { _ => sent.set(true); Future.unit }
+    waiting.failed.map { error =>
+      error should be theSameInstanceAs failure
+      cancellations.get() shouldBe 1
+      sent.get() shouldBe false
+      requests.pendingCount shouldBe 0
+    }
+  }
+
   it should "drop a request which expires while still queued for browser emission" in {
     val clock = new ManualDeadlines
     val incoming = Queue[Future, String]()

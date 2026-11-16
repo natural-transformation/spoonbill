@@ -131,6 +131,24 @@ class SensitiveDisclosureScopeSpec extends AsyncFlatSpec with Matchers {
     succeed
   }
 
+  it should "preserve a late cancellation failure after close has already discarded the holder" in {
+    val scopeRef = new AtomicReference(Option.empty[SensitiveDisclosureScope])
+    val cancellations = new AtomicInteger(0)
+    val failure = new IllegalStateException("late cancellation failed")
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
+        scopeRef.get().foreach(_.close())
+        () => { cancellations.incrementAndGet(); throw failure }
+      }
+    }
+    val scope = new SensitiveDisclosureScope(deadlines)
+    scopeRef.set(Some(scope))
+    intercept[IllegalStateException](scope.create(payload, owner)) should be theSameInstanceAs failure
+    scope.pendingCount shouldBe 0
+    cancellations.get() shouldBe 1
+    succeed
+  }
+
   it should "clean up registration when the scheduler fails" in {
     val deadlines = new Frontend.RpcDeadlineScheduler {
       def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = throw new IllegalStateException("Synthetic scheduler failure")
