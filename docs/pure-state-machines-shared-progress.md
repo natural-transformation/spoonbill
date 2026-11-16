@@ -88,3 +88,34 @@ Keep that security lifecycle out of a generic registry replacement. Frontend
 user actions and downloads have different bounds, expiration and transfer rules;
 they stay with the Frontend lifecycle audit rather than being treated as equivalent
 pending-request registries.
+
+## Completed drain admission unit
+
+`effect.DrainGateMachine` now supplies compact admission/count/close decisions to
+`SocketCloseDispatcher`, `GuardedStateManager.writes`, and memory-provider
+admission. It names Open, Closing and Drained explicitly. Capacity is optional:
+the guarded writer has no configured limit; the other two retain their existing
+limits. Refusal distinguishes closure from capacity exhaustion. Repeated close
+is inert in the model, while each interpreter retains its existing repeated
+completion/shutdown behavior. Invalid extra finish events leave zero unchanged.
+
+The socket monitor and the provider's wait/notify monitor remain in place. The
+writer retains its original CAS plus waiter list and completion guard. No user
+effects moved into an atomic section or changed order. The reservation's two-bit
+protocol and JDBC admission are not part of this unit.
+
+Additional old-code characterizations cover dispatching an already reserved
+socket notification after repeated admission stop, simultaneous write drains
+when the admitted write fails, and permanent memory-provider closure. They
+passed before extraction (4 HTTP tests, 51 runtime/provider tests). Afterward:
+
+```
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'effect/testOnly *DrainGateMachineSpec' \
+  'http/testOnly *SocketCloseDispatcherSpec' \
+  'spoonbill/testOnly *GuardsSpec *InMemoryBrowserPersistenceSpec *ViewSnapshotSessionSpec'
+```
+
+Result: 2 pure model tests, 4 socket tests and 61 guarded-write/provider/snapshot
+tests passed. No performance claim is made for this admission-only extraction.

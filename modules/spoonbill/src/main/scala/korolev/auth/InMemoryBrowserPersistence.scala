@@ -7,7 +7,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.util.control.NonFatal
 import spoonbill.Qsid
-import spoonbill.effect.Effect
+import spoonbill.effect.{DrainGateMachine, Effect}
 import spoonbill.security.Identifiers.{ConnectionId, ViewOwnerId}
 import spoonbill.security.Versions.ViewOwnershipEpoch
 import spoonbill.security.ViewFence
@@ -131,8 +131,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private final class Refused(val failure: BrowserFailure) extends RuntimeException("Browser operation refused")
   private val monitor           = new Object
   private val admission         = new Object
-  private var pendingOperations = 0
-  private var accepting         = true
+  private var operationGate = DrainGateMachine.initial
+  private val operationBudget = Some(limits.pendingJobs)
   private val issuer            = new BrowserCapabilityScope[P]
   private val issuancePrefix = BrowserIssuance.newPrefix()
   private val issuanceKey = BrowserIssuance.newKey()
@@ -248,9 +248,13 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private def owned[A](refuse: BrowserFailure => A)(body: => A): A = {
     if (inTransaction.get()) throw new OperationProtocolException(OperationError.TransactionRequired)
     val admitted = admission.synchronized {
-      if (!accepting) Left(BrowserFailure.Closed)
-      else if (pendingOperations >= limits.pendingJobs) Left(BrowserFailure.Capacity)
-      else { pendingOperations += 1; Right(()) }
+      DrainGateMachine.admission(operationGate, operationBudget) match {
+        case DrainGateMachine.Admission.Closed => Left(BrowserFailure.Closed)
+        case DrainGateMachine.Admission.AtCapacity => Left(BrowserFailure.Capacity)
+        case DrainGateMachine.Admission.Accepted =>
+          operationGate = DrainGateMachine.entered(operationGate)
+          Right(())
+      }
     }
     admitted.fold(
       refuse,
@@ -258,8 +262,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
         try body
         finally {
           admission.synchronized {
-            pendingOperations -= 1
-            if (pendingOperations == 0) admission.notifyAll()
+            operationGate = DrainGateMachine.finished(operationGate)
+            if (DrainGateMachine.count(operationGate) == 0) admission.notifyAll()
           }
         }
     )
@@ -1141,8 +1145,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   def close(): F[Unit] = F.delay {
     if (inTransaction.get()) throw new OperationProtocolException(OperationError.TransactionRequired)
     admission.synchronized {
-      accepting = false
-      while (pendingOperations > 0) admission.wait()
+      operationGate = DrainGateMachine.close(operationGate)
+      while (!DrainGateMachine.drained(operationGate)) admission.wait()
     }
     monitor.synchronized {
       issuer.close()

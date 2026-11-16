@@ -4,7 +4,7 @@ import java.util.concurrent.{ArrayBlockingQueue, ThreadFactory, ThreadPoolExecut
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import scala.concurrent.{ExecutionContext, Promise}
 import scala.util.control.NonFatal
-import spoonbill.effect.Effect
+import spoonbill.effect.{DrainGateMachine, Effect}
 
 /** Per-server admission reserves notification capacity before user work starts.
   * A slow finalizer can exhaust admission, but cannot block physical deadlines
@@ -12,8 +12,8 @@ import spoonbill.effect.Effect
   */
 private[spoonbill] final class SocketCloseDispatcher(capacity: Int, workers: Int) {
   require(capacity > 0 && workers > 0, "Socket notification capacity and workers must be positive")
-  private var accepting = true
-  private var admitted = 0
+  private var admission = DrainGateMachine.initial
+  private val budget = Some(capacity)
   private val names = new AtomicInteger()
   private val executor = new ThreadPoolExecutor(workers, workers, 0L, TimeUnit.MILLISECONDS,
     new ArrayBlockingQueue[Runnable](capacity), new ThreadFactory {
@@ -25,24 +25,24 @@ private[spoonbill] final class SocketCloseDispatcher(capacity: Int, workers: Int
     }, new ThreadPoolExecutor.AbortPolicy)
 
   def reserve(): Option[SocketCloseDispatcher.Reservation] = synchronized {
-    if (!accepting || admitted >= capacity) None
+    if (DrainGateMachine.admission(admission, budget) != DrainGateMachine.Admission.Accepted) None
     else {
-      admitted += 1
+      admission = DrainGateMachine.entered(admission)
       Some(new SocketCloseDispatcher.Reservation(task => executor.execute(task), () => returned()))
     }
   }
 
   private def returned(): Unit = synchronized {
-    admitted -= 1
-    if (!accepting && admitted == 0) executor.shutdown()
+    admission = DrainGateMachine.finished(admission)
+    if (DrainGateMachine.drained(admission)) executor.shutdown()
   }
 
   def stopAdmission(): Unit = synchronized {
-    accepting = false
-    if (admitted == 0) executor.shutdown()
+    admission = DrainGateMachine.close(admission)
+    if (DrainGateMachine.drained(admission)) executor.shutdown()
   }
 
-  private[io] def inUse: Int = synchronized(admitted)
+  private[io] def inUse: Int = synchronized(DrainGateMachine.count(admission))
   private[io] def queued: Int = executor.getQueue.size()
 }
 
