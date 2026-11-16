@@ -64,6 +64,13 @@ pending tick under one monitor, detaches completion ownership once, and cancels 
 handle installed after its tick was already consumed/canceled. Concurrent pulls
 remain supported rather than being rejected; cancellation settles all of them.
 All 64 effect tests pass. Timer execution and callbacks remain outside the monitor.
+The subsequent `ScheduledStreamMachine` extraction makes open/closed admission
+and pending ticket ownership explicit. Opaque empty ticket identities are supplied
+by the interpreter; the machine never stores callbacks or timer handles. One
+immutable held value pairs its state with the handle registry under the existing
+monitor. Race-order tests prove that firing/cancellation partition pending tickets
+and stale completion cannot consume another ticket. All 66 effect tests and the
+purity guard pass. Both scheduler inventory protocols are now modeled.
 
 `Queue.dequeueAll` cleared the buffer without notifying capacity waiters, so a
 producer already blocked by a full buffer could remain stranded indefinitely.

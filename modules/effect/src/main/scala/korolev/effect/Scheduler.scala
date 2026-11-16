@@ -46,41 +46,47 @@ final class Scheduler[F[_]: Effect] {
       private final class Tick(val callback: Promise[Option[Unit]]) {
         var task = Option.empty[ScheduledFuture[?]]
       }
-      private val monitor  = new Object
-      private var canceled = false
-      private var pending  = Set.empty[Tick]
+      private case class Held(state: ScheduledStreamMachine.State, ticks: Map[ScheduledStreamMachine.Ticket, Tick])
+      private val monitor = new Object
+      private var held    = Held(ScheduledStreamMachine.initial, Map.empty)
 
-      private def take(tick: Tick): Boolean = monitor.synchronized {
-        val owned = pending.contains(tick)
-        pending -= tick
-        owned
+      private def take(ticket: ScheduledStreamMachine.Ticket): Option[Tick] = monitor.synchronized {
+        val current       = held
+        val (next, owned) = ScheduledStreamMachine.settle(current.state, ticket)
+        if (owned) {
+          held = Held(next, current.ticks - ticket)
+          current.ticks.get(ticket)
+        } else None
       }
 
       def pull(): F[Option[Unit]] = Effect[F].promise { cb =>
-        val tick = new Tick(cb)
+        val ticket = new ScheduledStreamMachine.Ticket
+        val tick   = new Tick(cb)
         val admitted = monitor.synchronized {
-          if (canceled) false
-          else { pending += tick; true }
+          val current          = held
+          val (next, admitted) = ScheduledStreamMachine.register(current.state, ticket)
+          if (admitted) held = Held(next, current.ticks.updated(ticket, tick))
+          admitted
         }
         if (!admitted) cb(Right(None))
         else
           try {
-            val task = after(delay)(if (take(tick)) cb(Right(Some(()))))
+            val task = after(delay)(take(ticket).foreach(_.callback(Right(Some(())))))
             val installed = monitor.synchronized {
-              if (pending.contains(tick)) { tick.task = Some(task); true }
+              if (held.ticks.contains(ticket)) { tick.task = Some(task); true }
               else false
             }
             // A zero-delay tick or cancellation can win before handle installation.
             if (!installed) task.cancel(false)
-          } catch { case NonFatal(error) => if (take(tick)) cb(Left(error)) }
+          } catch { case NonFatal(error) => take(ticket).foreach(_.callback(Left(error))) }
       }
 
       def cancel(): F[Unit] = Effect[F].delay {
         val ticks = monitor.synchronized {
-          canceled = true
-          val ticks = pending
-          pending = Set.empty
-          ticks
+          val current          = held
+          val (next, canceled) = ScheduledStreamMachine.close(current.state)
+          held = Held(next, Map.empty)
+          canceled.toVector.map(current.ticks)
         }
         ticks.foreach { tick =>
           tick.task.foreach(_.cancel(false))
