@@ -43,6 +43,14 @@ key lifecycle. This follows the inventory's per-key-enum proposal rather than
 introducing per-element event objects or a second callback registry. All 50 effect
 and 50 recovery-testkit tests pass unchanged after this refactor.
 
+`Scheduler.JobHandler` lost earlier result waiters, failed to replay results when
+a waiter was already registered, and stranded results when the job factory threw
+synchronously. Three permanent controlled-promise regressions failed on the old
+implementation; cancellation of an unstarted job correctly left results pending.
+The separate fix publishes one cached result plus all registered callbacks under
+one monitor, invoking callbacks outside it, and captures job construction in the
+effect. All 54 effect tests pass. Cancellation semantics are unchanged.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; queue cancellation does not currently replay to late listeners;
 `handleConsumed` signals EOF only; pool disposal claims precede physical cleanup.

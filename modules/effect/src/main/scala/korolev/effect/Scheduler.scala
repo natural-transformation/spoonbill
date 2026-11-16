@@ -18,11 +18,11 @@ package spoonbill.effect
 
 import java.util.concurrent.{ScheduledFuture, ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
-import spoonbill.effect.Effect.Promise
-import spoonbill.effect.syntax._
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
+import spoonbill.effect.Effect.Promise
+import spoonbill.effect.syntax._
 
 final class Scheduler[F[_]: Effect] {
 
@@ -74,19 +74,33 @@ final class Scheduler[F[_]: Effect] {
   def unsafeScheduleOnce[T](delay: FiniteDuration)(job: => F[T]): JobHandler[F, T] =
     new JobHandler[F, T] {
 
-      @volatile private var completed: Either[Throwable, T] = _
-      @volatile private var promise: Promise[T]             = _
+      private val monitor   = new Object
+      private var completed = Option.empty[Either[Throwable, T]]
+      private var waiters   = List.empty[Promise[T]]
 
       private val task = after(delay) {
-        job.runAsync { errorOrResult =>
-          if (promise != null) promise(errorOrResult)
-          else completed = errorOrResult
+        Effect[F].delayAsync(job).runAsync { errorOrResult =>
+          val callbacks = monitor.synchronized {
+            if (completed.nonEmpty) Nil
+            else {
+              completed = Some(errorOrResult)
+              val callbacks = waiters
+              waiters = Nil
+              callbacks
+            }
+          }
+          callbacks.foreach(_(errorOrResult))
         }
       }
 
       def result: F[T] = Effect[F].promise { cb =>
-        if (completed != null) cb(completed)
-        else promise = cb
+        val ready = monitor.synchronized {
+          completed match {
+            case None  => waiters ::= cb; None
+            case value => value
+          }
+        }
+        ready.foreach(cb)
       }
 
       def cancel(): F[Unit] = Effect[F].delay(unsafeCancel())
@@ -104,7 +118,7 @@ object Scheduler {
 
   // Non-daemon, as the java.util.Timer thread it replaces.
   private val timerThreads: ThreadFactory = new ThreadFactory {
-    private val count = new AtomicInteger(0)
+    private val count                     = new AtomicInteger(0)
     def newThread(task: Runnable): Thread = new Thread(task, s"spoonbill-scheduler-${count.incrementAndGet()}")
   }
 
