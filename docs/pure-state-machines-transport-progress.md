@@ -99,5 +99,34 @@ The machine's table and generated histories check once-only submission/release
 and terminal release. `sbt 'http/test'` passed all 159 HTTP tests after extraction,
 including real socket shutdown, server framing, client pooling and TLS cases.
 
+## Raw socket: retain explicit atomic state
+
+`modules/http/src/main/scala/korolev/effect/io/RawDataSocket.scala` already keeps
+read admission, closure, close observers, asynchronous finalizers and the reserved
+notification owner in one immutable `State` behind one atomic reference. Native
+channel/buffer state belongs to NIO and stays outside that value. Review found no
+confirmed defect in the socket ownership transitions.
+
+| State/move | Pinned behavior |
+| --- | --- |
+| Open and idle → reading | A second concurrent read is rejected |
+| Reading → open and idle | Completion permits a subsequent read |
+| Reading → closed | EOF closes transport and notifies observers once |
+| Closed with native read pending | Ordinary cancellation prevents new reads; the already admitted read may settle without reopening |
+| Physical shutdown | Channel closure precedes close callbacks; pending native read fails; future reads return EOF |
+| Observer removal/late registration | Detach drops retained state; closure notifies once; late asynchronous cleanup stays in the caller's effect |
+
+Disposition: retain under rule 7. The state is already one value, direct laws and
+the HTTP integration suites reject wrong transitions, and no confirmed defect was
+found. Extracting callback/handle tables into an additional model is not needed
+to name this lifecycle and would alter a measured hot-path representation. No
+socket production code or native-effect order changed.
+
+Four new read-ownership characterizations join the three existing close-observer
+laws and four dispatcher cases. On unchanged socket code,
+`sbt 'http/testOnly *RawDataSocket*Spec *SocketCloseDispatcherSpec'` passed all 11.
+The preceding complete HTTP run passed 159 tests, including deadline, framing,
+pooling and physical-cleanup integration.
+
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.
