@@ -1282,6 +1282,54 @@ latency under concurrent writers and sustained backlogs, with realistic
 extension counts and a comparison against main. The click-latency trial below
 is evidence for the pilot only; phase 2 has not started.
 
+### Contention and GC follow-up
+
+The next review collected 24 runtime trials: four workloads, three independent
+JVM trials each for main (`3d8c6853`) and the pilot (`2a8a6b97`). Each trial used
+five seconds of warmup, five seconds of writing and a complete drain, with G1,
+a fixed 256 MiB heap and `ActiveProcessorCount=8`. Every trial verified callback
+counts and each writer's order before producing a result. The workload and
+measurement definitions, commands and limitations are in
+[`misc/extension-contention/README.md`](../misc/extension-contention/README.md).
+
+The table gives the median of three trials as main → pilot. These are synthetic
+runtime workloads on a shared developer machine, not application or browser
+latency predictions; no statistical confidence interval is claimed.
+
+| Workload | Notifications/second | Bytes/notification | Delivery p99 (ms) | GC pause time (ms/second) |
+| --- | ---: | ---: | ---: | ---: |
+| 16 independent views, 3 extensions | 1,163,362 → 1,092,755 | 1,064 → 6,173 | 2.879 → 3.264 | 3.519 → 14.838 |
+| 4 writers, one view, 3 extensions | 2,476,634 → 880,696 | 1,058 → 28,558 | 0.671 → 1.636 | 9.435 → 48.485 |
+| 8 writers, one view, 8 extensions | 107,934 → 90,043 | 2,369 → 13,607 | 22.0 → 28.6 | 2.609 → 4.112 |
+| 4 writers, 8,192-notification window | 143,413 → 125,509 | 1,079 → 7,146 | 64.1 → 68.4 | 2.844 → 4.246 |
+
+The same-view, four-writer case reaches only 36% of main's throughput and
+allocates about 27 times as much per notification. Even the independent-view
+case is about 6% slower in this fixture. The broader CAS rollout gate therefore
+remains closed: the earlier click-latency result is not evidence that sustained
+contention or GC costs are acceptable. Optimizing the pilot or changing its
+implementation requires another performance comparison and review.
+
+A separate diagnostic counts retries around the actual `StateCell.modify` and
+`ExtensionMachine.step`, without handlers or effect scheduling. Its median
+retries per successful cell update were 0.303 with one writer, 1.069 with four,
+and 1.188 with eight, with one consumer and a 1,024-notification window. These
+are instrumented machine/cell observations, not retry counts from the runtime
+trials. Counting attempts can itself affect contention.
+
+All 24 runtime rows, nine retry rows, ranges, JVM settings and source/JFR hashes
+are retained in [`misc/extension-contention/evidence/2026-11-16/`](../misc/extension-contention/evidence/2026-11-16/).
+The packaged rows reproduce the original summary exactly through the analyzer.
+Raw JFR recordings remain in `/private/tmp/spoonbill-phase2-performance/comparison`.
+The one-second smoke trials were a fixture check and are excluded from the
+five-second comparison. No unsuccessful or unfavorable measured trial was
+replaced.
+
+The next authorized review unit is narrowed to the first shared deadline
+machine and its two existing wrappers. They keep their scheduling/cancellation
+monitors and do not adopt the CAS interpreter. This does not approve the wider
+phase-2 rollout, further hot-path migrations, or removal of those locks.
+
 ### Click-latency gate
 
 The existing harness ran with `local plain-extensions 16 200 50`: three
