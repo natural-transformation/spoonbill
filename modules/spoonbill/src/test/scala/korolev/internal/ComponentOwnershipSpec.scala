@@ -95,6 +95,25 @@ class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
     result(storage.read[Int](Id.TopLevel)) shouldBe Some(42)
   }
 
+  it should "join concurrent whole-view drains without releasing an admitted turn early" in {
+    val worker = new Worker
+    val owners = new ComponentOwnership(StateManager.cached[Future](), new Reports, worker)
+    val owner = owners.bind(Id.TopLevel, false)
+    val turn = owner.admit().get
+    val first = owners.closeAndDrain()
+    val second = owners.closeAndDrain()
+    worker.drain()
+    first.isCompleted shouldBe false
+    second.isCompleted shouldBe false
+    owner.admit() shouldBe None
+    turn.release()
+    worker.drain()
+    result(first)
+    result(second)
+    result(owners.closeAndDrain())
+    owner.isActive shouldBe false
+  }
+
   it should "drain retired children that have already left the current component tree" in {
     val worker  = new Worker
     val owners  = new ComponentOwnership(StateManager.cached[Future](), new Reports, worker)
