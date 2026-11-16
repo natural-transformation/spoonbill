@@ -82,5 +82,22 @@ Validation: `pekko/testOnly *SpoonbillStreamSubscriberSpec` and its Akka counter
 each passed all 12 tests on unchanged subscriber code. Both complete adapter
 suites then passed, 46 Pekko and 38 Akka tests, after the isolated publisher fix.
 
+## Socket-close reservation
+
+The reservation's claim flag and two completion bits are now six explicit states
+in `SocketCloseReservationMachine`: reserved, reserved after connection completion,
+dispatched, waiting for connection completion, waiting for notification completion,
+and released. A pure transition emits at most one submission or permit release.
+The interpreter commits it with `StateCell`; worker submission, user cleanup,
+permit return and release-promise completion retain their original order outside
+the transition. The separately extracted dispatcher admission gate is unchanged.
+
+Three new characterizations passed before extraction: cancel before installation,
+both completion orders including connection completion before dispatch, and
+concurrent repeated completion. The existing four dispatcher cases also passed.
+The machine's table and generated histories check once-only submission/release
+and terminal release. `sbt 'http/test'` passed all 159 HTTP tests after extraction,
+including real socket shutdown, server framing, client pooling and TLS cases.
+
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.

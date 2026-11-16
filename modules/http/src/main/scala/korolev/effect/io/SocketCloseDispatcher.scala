@@ -1,10 +1,10 @@
 package spoonbill.effect.io
 
 import java.util.concurrent.{ArrayBlockingQueue, ThreadFactory, ThreadPoolExecutor, TimeUnit}
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{ExecutionContext, Promise}
 import scala.util.control.NonFatal
-import spoonbill.effect.{DrainGateMachine, Effect}
+import spoonbill.effect.{DrainGateMachine, Effect, StateCell}
 
 /** Per-server admission reserves notification capacity before user work starts.
   * A slow finalizer can exhaust admission, but cannot block physical deadlines
@@ -48,22 +48,23 @@ private[spoonbill] final class SocketCloseDispatcher(capacity: Int, workers: Int
 
 private[spoonbill] object SocketCloseDispatcher {
   final class Reservation private[io](submit: Runnable => Unit, giveBack: () => Unit) {
-    private val claimed = new AtomicBoolean()
-    private val completed = new AtomicInteger()
+    import SocketCloseReservationMachine.{Command, Event}
+    private val state = new StateCell(SocketCloseReservationMachine.initial)
     private val released = Promise[Unit]()
 
-    private def finish(bit: Int): Unit = {
-      val previous = completed.getAndUpdate(_ | bit)
-      if (previous != 3 && (previous | bit) == 3) {
+    private def advance(event: Event): Command = {
+      val command = state.modify(SocketCloseReservationMachine.step(_, event))
+      if (command == Command.Release) {
         giveBack()
         released.trySuccess(())
       }
+      command
     }
 
     /** Cancel only before installation on a socket. */
-    def cancel(): Unit = if (claimed.compareAndSet(false, true)) finish(3)
+    def cancel(): Unit = { advance(Event.Cancel); () }
 
-    def connectionFinished(): Unit = finish(1)
+    def connectionFinished(): Unit = { advance(Event.ConnectionFinished); () }
 
     private[io] def afterReleased(callback: () => Unit): Unit =
       released.future.onComplete(_ => callback())(ExecutionContext.parasitic)
@@ -74,12 +75,12 @@ private[spoonbill] object SocketCloseDispatcher {
 
     /** One reserved task; async cleanup keeps the permit without holding a worker. */
     private[io] def dispatch(start: (() => Unit) => Unit): Unit = {
-      if (claimed.compareAndSet(false, true)) {
+      if (advance(Event.Dispatch) == Command.Submit) {
         submit(new Runnable {
           def run(): Unit = {
-            try start(() => finish(2))
+            try start(() => { advance(Event.NotificationFinished); () })
             catch { case NonFatal(error) =>
-              finish(2)
+              advance(Event.NotificationFinished)
               val thread = Thread.currentThread()
               thread.getUncaughtExceptionHandler.uncaughtException(thread, error)
             }
