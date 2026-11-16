@@ -39,7 +39,8 @@ import spoonbill.web.Request.Head
 
 private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer: StateDeserializer, M](
   config: SpoonbillServiceConfig[F, S, M],
-  pageService: PageService[F, S, M]
+  pageService: PageService[F, S, M],
+  requiredTiming: Option[SessionsService.RequiredTiming[F]] = None
 ) {
 
   import config.executionContext
@@ -156,15 +157,19 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
    * Mandatory checks have a bounded wait. A late successful open is released;
    * timeout cannot cancel an already-running external database operation.
    */
-  private def required[A](
+  private def scheduleRequired(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] = requiredTiming match {
+    case Some(timing) => timing.scheduleOnce(10.seconds)(job)
+    case None        => scheduler.scheduleOnce(10.seconds)(job)
+  }
+
+  private[services] def required[A](
     operation: => F[A],
     late: Option[A => F[Unit]] = None,
     expired: () => Throwable = () => new SessionAccessDenied
   ): F[A] =
     Effect[F].promiseF[A] { callback =>
       val completed = new AtomicBoolean(false)
-      scheduler
-        .scheduleOnce(10.seconds) {
+      scheduleRequired {
           Effect[F].delay {
             // The deadline must not depend on the execution context of the
             // application: a bound has to end a wait when every worker of the
@@ -839,4 +844,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     else config.stateStorage
 
   private val scheduler = new Scheduler[F]()
+}
+
+private[spoonbill] object SessionsService {
+  /** Internal timing seam: expiry still executes the same effect on the scheduler's thread/runtime. */
+  trait RequiredTiming[F[_]] {
+    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
+  }
 }

@@ -87,3 +87,29 @@ per protocol, strong tests rejecting wrong transitions, and no confirmed defect
 in the reviewed protocols. Their implementation and effect/scheduling boundaries
 remain unchanged. SerialLane's completion waiter table is already one atomic
 optional value and is not expanded merely to adopt the shared latch helper.
+
+## Deterministic mandatory-bound characterization
+
+`SessionsService` now accepts an optional internal `RequiredTiming` scheduler;
+without it, the existing ten-second `Scheduler.scheduleOnce` path is unchanged.
+The existing `required` CAS arbitration and effect sequence were not refactored
+in this seam unit. Its package-private visibility permits direct lifecycle tests.
+
+Five deterministic cases pin success/failure cancellation and stale timeout,
+expiry before operation completion, cleanup of late success, ignoring late
+failure, inline expiry before handle publication, and scheduling failure without
+constructing the operation. (Success/failure share one parameterized case.)
+No test waits ten real seconds.
+
+The seam plus unchanged session initialization/lifecycle suites passed 18 tests:
+
+```
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'spoonbill/testOnly *SessionsRequiredSpec *SessionsServiceSpec *SessionInitializationContractSpec'
+```
+
+The test fixture uses the repository's standard execution context. The first test
+compilation identified that missing implicit import; after adding it, the full
+selection passed. This is evidence for a subsequent first-winner race extraction,
+not permission to change timeout into an absolute elapsed-time check.
