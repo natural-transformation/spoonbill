@@ -32,7 +32,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   private val state = new AtomicReference(Queue.State[T]())
 
   /** Distinguishes a rejected offer after close from temporary backpressure. */
-  def isClosed: Boolean = state.get().closed
+  def isClosed: Boolean = QueueMachine.isClosed(state.get().lifecycle)
 
   private final class QueueStream extends Stream[F, T] {
 
@@ -40,10 +40,10 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
       @tailrec
       def aux(): Unit = {
         val ref = state.get()
-        ref.error match {
-          case Some(error)        => cb(Left(error))
-          case None if ref.closed => cb(noneToken)
-          case None if ref.queue.nonEmpty =>
+        QueueMachine.pull(ref.lifecycle, ref.queue.nonEmpty) match {
+          case QueueMachine.Pull.Failed(error) => cb(Left(error))
+          case QueueMachine.Pull.End           => cb(noneToken)
+          case QueueMachine.Pull.Buffered =>
             val (value, updatedQueue) = ref.queue.dequeue
             val canOfferCallback      = ref.canOfferCallbacks.headOption
             val newValue = ref.copy(
@@ -56,8 +56,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
             } else {
               aux()
             }
-          case None if ref.stopped => cb(noneToken)
-          case None =>
+          case QueueMachine.Pull.Wait =>
             val updatedPc = cb :: ref.pullCallbacks
             val newValue  = ref.copy(pullCallbacks = updatedPc)
             if (!state.compareAndSet(ref, newValue)) {
@@ -90,7 +89,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     @tailrec
     def aux(): Boolean = {
       val ref = state.get()
-      if (!ref.stopped && !ref.closed) {
+      if (QueueMachine.mayOffer(ref.lifecycle)) {
         // Pull callbacks can be nonempty
         // if queue was empty when pull was ran.
         if (ref.pullCallbacks.nonEmpty) {
@@ -126,10 +125,11 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 
   def unsafeStop(): Unit = {
     @tailrec def aux(): Unit = {
-      val ref = state.get
+      val ref       = state.get
+      val lifecycle = QueueMachine.stop(ref.lifecycle)
       val next =
-        if (ref.queue.isEmpty) ref.copy(stopped = true, canOfferCallbacks = Nil, pullCallbacks = Nil)
-        else ref.copy(stopped = true)
+        if (ref.queue.isEmpty) ref.copy(lifecycle = lifecycle, canOfferCallbacks = Nil, pullCallbacks = Nil)
+        else ref.copy(lifecycle = lifecycle)
       if (state.compareAndSet(ref, next)) {
         if (ref.queue.isEmpty) {
           ref.canOfferCallbacks.foreach(cb => cb(unitToken))
@@ -146,8 +146,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     @tailrec
     def aux(): Unit = {
       val ref = state.get
-      if (!ref.closed) {
-        val newValue = ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, closed = true)
+      if (!QueueMachine.isClosed(ref.lifecycle)) {
+        val newValue =
+          ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, lifecycle = QueueMachine.close(ref.lifecycle))
         if (state.compareAndSet(ref, newValue)) {
           ref.canOfferCallbacks.foreach(cb => cb(unitToken))
           ref.pullCallbacks.foreach(cb => cb(noneToken))
@@ -184,7 +185,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     @tailrec
     def aux(): Unit = {
       val ref = state.get
-      if (ref.closed || ref.stopped || ref.queue.size < maxSize) {
+      if (!QueueMachine.mayOffer(ref.lifecycle) || ref.queue.size < maxSize) {
         cb(unitToken)
       } else {
         val newValue = ref.copy(canOfferCallbacks = cb :: ref.canOfferCallbacks)
@@ -199,8 +200,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   def failUnsafe(e: Throwable): Unit = {
     @tailrec
     def aux(): Unit = {
-      val ref      = state.get
-      val newValue = ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, error = Some(e))
+      val ref = state.get
+      val newValue =
+        ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, lifecycle = QueueMachine.fail(ref.lifecycle, e))
       if (state.compareAndSet(ref, newValue)) {
         ref.canOfferCallbacks.foreach(cb => cb(unitToken))
         ref.pullCallbacks.foreach(cb => cb(Left(e)))
@@ -226,9 +228,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     def aux(): F[Unit] = {
       val ref = state.get
       offer(item).flatMap {
-        case true                               => Effect[F].unit
-        case false if ref.stopped || ref.closed => Effect[F].unit
-        case false                              => canOffer *> aux()
+        case true                                           => Effect[F].unit
+        case false if !QueueMachine.mayOffer(ref.lifecycle) => Effect[F].unit
+        case false                                          => canOffer *> aux()
       }
     }
     aux()
@@ -283,9 +285,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 object Queue {
 
   private case class State[T](
-    stopped: Boolean = false,
-    closed: Boolean = false,
-    error: Option[Throwable] = None,
+    lifecycle: QueueMachine.State = QueueMachine.initial,
     pullCallbacks: List[Promise[Option[T]]] = Nil,
     canOfferCallbacks: List[Promise[Unit]] = Nil,
     cancelCallbacks: List[Promise[Unit]] = Nil,

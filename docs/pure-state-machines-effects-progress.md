@@ -93,6 +93,27 @@ failed with `Promise already completed` while stop/drain order and failure-over-
 characterizations passed. Empty-buffer stop now detaches its notified waiters in
 the same CAS. All 59 effect tests pass; normal draining and failure precedence stay.
 
+The following Queue refactor separates `Open`/`Stopped`/`Closed` admission from
+pull failure in `QueueMachine`. Compact operations return singleton decisions;
+buffer data and callbacks remain in the existing atomic interpreter value. No
+per-element event or transition-result allocation was introduced. Four runtime
+characterizations passed before extraction: direct-handoff broadcast, stop versus
+close, error precedence, and explicit cancellation versus close. The late-listener
+replay question is investigated separately rather than declared intentional.
+
+The [retained Queue comparison](../misc/queue-state-benchmark/evidence/2026-11-17/)
+contains all 18 fresh-JVM rows: three trials per version/workload, three seconds
+warmup and measurement, fixed 256 MiB G1 heap and eight active processors, with
+other builds paused. Candidate/baseline median throughput ratios were 1.032
+(roundtrip), 1.259 (batch), and 1.065 (four producers); allocation ratios were
+0.944, 0.934, and 0.913. All count/order checks passed. The ranges are retained;
+shared-machine observations do not establish an application-level speedup.
+The baseline is `57d7a8b4`, after the separate waiter fixes. The exact measured
+machine source is retained; subsequent alignment-only formatting is recorded in
+provenance. The packaged analyzer reproduces the original summary byte-for-byte.
+Full validation after the AsyncTable integration follow-up passed 72 effect and
+819 runtime tests; purity, shell syntax, targeted formatting and diff checks pass.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; queue cancellation does not currently replay to late listeners;
 `handleConsumed` signals EOF only; pool disposal claims precede physical cleanup.
