@@ -63,8 +63,11 @@ preparation. Output directories must be new so failed or unfavorable trials are
 preserved. The analyzer requires every trial and reports median/range without a
 statistical-significance claim. Do not run other builds during collection.
 
-`StateCellRetryBenchmark` is a separate diagnostic available on the pilot
-classpath. It runs the real `StateCell.modify` and `ExtensionMachine.step` with
+`StateCellRetryBenchmark` is a historical diagnostic for the CAS implementation
+through commit `18548af3`, not for the subsequent ownership-split designs. Prepare
+that pinned checkout with the explicit `--with-cas-retries` mode to include it;
+the default preparation includes only the runtime fixture and contract tests.
+The diagnostic runs `StateCell.modify` and `ExtensionMachine.step` with
 one consumer and bounded producers. Each thread counts executions of its change
 function; attempts minus successful calls is the number of CAS retries. This
 intentional measurement side effect does not affect transition results. It
@@ -73,9 +76,11 @@ must not be claimed as counts from the runtime comparison above. Timing from
 this instrumented diagnostic is not a latency result.
 
 ```sh
+nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh \
+  /path/to/checkout-at-18548af3 /tmp/extension-evidence/cas-classpath.txt --with-cas-retries
 nix develop --no-write-lock-file --command bash -c '
   java -Xms256m -Xmx256m -XX:+UseG1GC -XX:ActiveProcessorCount=8 \
-    -cp "$(cat /tmp/extension-evidence/pilot-classpath.txt)" \
+    -cp "$(cat /tmp/extension-evidence/cas-classpath.txt)" \
     spoonbill.internal.StateCellRetryBenchmark 4 3 1024 25000
 '
 ```
@@ -91,11 +96,10 @@ preserves all observations and variant identities. The lock candidate reduced
 allocation but did not recover main's contention throughput, and some tail
 latencies were worse. Neither candidate has been selected or its cost accepted.
 
-The performance gate applies to the implementation in PR #34 itself. A draft
-status is deliberate: neither correctness nor a favorable click-latency sample
-accepts its measured allocation/contention cost. A merge requires an agreed
-workload/performance budget met by the selected implementation, or explicit
-acceptance of the measured cost for the intended workloads.
+The performance gate applies to the pilot itself. The original CAS and lock
+variants above did not meet it. The later [ownership design experiments](#ownership-design-experiments)
+record the selected implementation against the owner's explicit budget; the
+historical comparison does not describe that implementation.
 
 `variants/lock-preserving.patch` is a reviewable candidate, not an active runtime
 change. It applies to pilot commit `15672bc07dd7e1c5cb1fe3a99d88729aea1ab117`, moves
@@ -164,3 +168,39 @@ nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh
 nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
   /tmp/acceptance/optimized-comparison 3 baseline,cas,optimized
 ```
+
+## Ownership design experiments
+
+[The retained experiment evidence](evidence/2026-11-16-ownership-designs/) includes
+Round 1 screening, Round 2 screening, its pre-correction comparison, and the final
+corrected 24-trial comparison. The selected Round 2 design separates admission,
+delivery and received-state ownership and uses compact pure notification decisions.
+It meets the owner-confirmed gate on each workload's three-trial medians:
+
+- Throughput at least 95% of main.
+- Delivery p99 and bytes per notification at most 110% of main.
+- Correctness checks pass separately.
+
+The contended throughput result is 95.2%, close to the boundary. These are synthetic
+shared-machine observations, not a confidence interval or production-wide guarantee.
+Screening and pre-correction trials are excluded from the final gate and retained
+without replacement. The failed/provisional source patches apply to `18548af3`
+with `git apply --unidiff-zero`;
+the final source is the implementation alongside this evidence.
+
+Prepare main and the selected checkout with the default `prepare.sh` mode, run the
+two-way comparison, then regenerate and check the result:
+
+```sh
+nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
+  /tmp/acceptance/main.txt /tmp/acceptance/selected.txt /tmp/acceptance/final-comparison 3 5
+nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
+  /tmp/acceptance/final-comparison 3
+nix develop --no-write-lock-file --command node misc/extension-contention/check-gate.mjs \
+  /tmp/acceptance/final-comparison/summary.json
+```
+
+The gate checker rejects missing workloads, invalid metrics, fewer than three
+trials per workload/version, or a ratio outside the budget. It does not replace
+the runtime and adapter correctness suites. The final candidate passed 819 runtime,
+13 cats-effect and nine ZIO tests, including the new startup/teardown race cases.

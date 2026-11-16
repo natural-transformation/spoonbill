@@ -5,48 +5,56 @@ import org.scalacheck.Gen
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
-import scala.annotation.tailrec
 
 class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckPropertyChecks {
   private type Machine = State[Int, String]
   private type Input   = Event[Int, String]
   private type Item    = Step[Int, String]
+
   private def registered(guarded: Boolean = false): Machine =
     List[Input](Event.Admit(7), Event.Register("a"), Event.Register("b"))
       .foldLeft(initial[Int, String](guarded))((s, e) => step(s, e)._1)
 
-  @tailrec private def drain(state: Machine, items: Vector[Item] = Vector.empty): (Machine, Vector[Item]) = {
-    val (next, commands) = step(state, Event.Next)
-    commands match {
-      case Vector(Command.Hand(item)) => drain(next, items :+ item)
-      case _                          => (state, items)
-    }
-  }
+  private def emitted(result: (Machine, Vector[Command[Int, String]])): (Machine, Vector[Item]) =
+    (
+      result._1,
+      result._2.flatMap {
+        // Tests supply identity envelopes, just as the interpreter does. The
+        // machine's emitted commands contain only substitutable notification data.
+        case Command.Deliver(notification, targets) =>
+          val check = Step.Check(notification)
+          check +: Vector.tabulate[Item](targets)(index => Step.Call(check, index, result._1.slots.get(index)))
+        case _ => Vector.empty
+      }
+    )
+
   private def delivering(guarded: Boolean = false): (Machine, Vector[Item]) =
-    drain(step(registered(guarded), Event.Begin)._1)
+    emitted(step(registered(guarded), Event.Begin))
 
   "Extension decisions" should "fold early states, keep every message and freeze delivery targets at Begin" in {
-    val inputs        = List[Input](Event.Written(1), Event.Published("early"), Event.Written(2), Event.Published("second"))
-    val recordedState = inputs.foldLeft(registered())((s, e) => step(s, e)._1)
-    recorded(recordedState) shouldBe 3
-    val (begun, commands) = step(recordedState, Event.Begin)
-    commands shouldBe Vector(Command.Wake)
-    waiting(begun) shouldBe 9
-    val (active, offered) = drain(begun)
-    waiting(active) shouldBe 0
-    offered.collect { case Step.Check(_, n) => n } shouldBe
+    val inputs    = List[Input](Event.Written(1), Event.Published("early"), Event.Written(2), Event.Published("second"))
+    val recording = inputs.foldLeft(registered())((s, e) => step(s, e)._1)
+    recorded(recording) shouldBe 3
+    val (active, offered) = emitted(step(recording, Event.Begin))
+    offered.collect { case check: Step.Check[Int, String] => check.notification } shouldBe
       Vector(Notification.State(2), Notification.Message("early"), Notification.Message("second"))
-    offered.grouped(3).zipWithIndex.foreach { case (items, index) =>
-      items.map(_.delivery) shouldBe Vector.fill(3)(index + 1L)
-      items.collect { case Step.Call(_, slot, name, _) => (slot, name) } shouldBe Vector(0 -> "a", 1 -> "b")
+    offered.grouped(3).foreach { items =>
+      val check = items.head.asInstanceOf[Step.Check[Int, String]]
+      items.tail.foreach {
+        case Step.Call(identity, _, _) => (identity eq check) shouldBe true
+        case _                         => fail("A delivery must begin with exactly one check")
+      }
+      items.collect { case Step.Call(_, slot, name) => (slot, name) } shouldBe Vector(0 -> "a", 1 -> "b")
     }
     recorded(active) shouldBe 0
     step(active, Event.Begin)._2 shouldBe empty
     val late = step(active, Event.Register("late"))._1
-    drain(step(late, Event.Written(3))._1)._2.size shouldBe 3
-    delivering()._2.head shouldBe Step.Check(1L, Notification.State(7))
+    emitted(step(late, Event.Written(3)))._2.size shouldBe 3
+    delivering()._2.head.asInstanceOf[Step.Check[Int, String]].notification shouldBe Notification.State(7)
     step(initial[Int, String](false), Event.Begin)._2 shouldBe empty
-    step(active, Event.Next) shouldBe (active, Vector.empty)
+    // Ordinary delivery does not rewrite lifecycle state shared with producers.
+    step(active, Event.Written(3))._1 should be theSameInstanceAs active
+    step(active, Event.Published("next"))._1 should be theSameInstanceAs active
   }
 
   it should "preserve buffered delivery order and frozen targets for empty, single and large extension lists" in {
@@ -55,62 +63,78 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
       val configured = (0 until targets).foldLeft(admitted) { (state, index) =>
         step(state, Event.Register(s"observer-$index"))._1
       }
-      val begun    = step(configured, Event.Begin)._1
-      val late     = step(begun, Event.Register("late"))._1
-      val written  = step(late, Event.Written(8))._1
-      val buffered = step(written, Event.Published("buffered"))._1
-      def expected(delivery: Long, notification: Notification[Int, String]): Vector[Item] =
-        Vector(Step.Check(delivery, notification)) ++ Vector.tabulate(targets) { index =>
-          Step.Call(delivery, index, s"observer-$index", notification)
-        }
-      val attach = expected(1L, Notification.State(7))
+      val begun    = step(configured, Event.Begin)
+      val late     = step(begun._1, Event.Register("late"))._1
+      val written  = step(late, Event.Written(8))
+      val buffered = step(written._1, Event.Published("buffered"))
       withClue(s"targets=$targets: ") {
-        drain(buffered)._2 shouldBe
-          (attach ++ expected(2L, Notification.State(8)) ++ expected(3L, Notification.Message("buffered")))
-        // Appending later notifications must preserve the earlier persistent queue.
-        drain(begun)._2 shouldBe attach
+        (begun._2 ++ written._2 ++ buffered._2) shouldBe Vector(
+          Command.Deliver(Notification.State(7), targets),
+          Command.Deliver(Notification.State(8), targets),
+          Command.Deliver(Notification.Message("buffered"), targets)
+        )
+        // Commands carry no freshly allocated identity: repeating a transition
+        // produces a substitutable result, unaffected by subsequent admission.
+        step(configured, Event.Begin) shouldBe begun
+        val items = emitted(buffered)._2
+        items.collect { case Step.Call(_, index, name) => (index, name) } shouldBe
+          Vector.tabulate(targets)(index => (index, s"observer-$index"))
       }
     }
   }
 
-  it should "admit each call only after its check and remember only states whose calls started" in {
-    val (active, Vector(check, first, second)) = delivering(true): @unchecked
-    step(active, Event.Start(first))._2 shouldBe empty
-    step(active, Event.Start(check))._2 shouldBe Vector(Command.RunCheck(Notification.State(7)))
-    val passed        = step(active, Event.Passed(check.delivery))._1
-    val (called, run) = step(passed, Event.Start(first))
-    run shouldBe Vector(Command.RunCall(0, Notification.State(7)))
-    called.slots.get.map(_.received) shouldBe Vector(Some(7), None)
-    step(called, Event.Start(Step.Call(99L, 0, "a", Notification.State(9))))._2 shouldBe empty
-    step(called, Event.Start(Step.Call(1L, -1, "bad", Notification.State(9))))._2 shouldBe empty
-    val failed = step(called, Event.Failed(second, Failure.Other))
-    failed._1 shouldBe called
+  it should "admit calls only after their own check and retain only entered states" in {
+    val (active, items) = delivering(true)
+    val check           = items.head.asInstanceOf[Step.Check[Int, String]]
+    val first           = items(1).asInstanceOf[Step.Call[Int, String]]
+    val second          = items(2).asInstanceOf[Step.Call[Int, String]]
+    checkAction(active) shouldBe CheckAction.Run
+    checkAction(delivering()._1) shouldBe CheckAction.Pass
+    mayCall(active, None, first) shouldBe false
+    val admitted = passed(active, check)
+    mayCall(active, admitted, first) shouldBe true
+    mayCall(active, admitted, second) shouldBe true
+    endsDelivery(active, first) shouldBe false
+    endsDelivery(active, second) shouldBe true
+    // Equal payloads are distinct deliveries; user state equality is not admission.
+    val other = Step.Check[Int, String](Notification.State(7))
+    mayCall(active, passed(active, other), first) shouldBe false
+    mayCall(active, admitted, Step.Call(check, -1, "bad")) shouldBe false
+    mayCall(active, admitted, Step.Call(check, 2, "bad")) shouldBe false
+    received(Some(3), check.notification) shouldBe Some(7)
+    received(Some(3), Notification.Message("message")) shouldBe Some(3)
+    val failed = step(active, Event.Failed(second, Failure.Other))
+    failed._1 shouldBe active
     failed._2 shouldBe Vector(Command.Report("Extension b: onState failed"))
-    val taken = step(called, Event.Take)
+    val taken = step(active, Event.Take)
     taken._2 shouldBe Vector(Command.Close, Command.Destroy(1, "b", Some(7)), Command.Destroy(0, "a", Some(7)))
     step(taken._1, Event.Take)._2 shouldBe empty
     step(taken._1, Event.Register("late"))._2 shouldBe Vector(Command.Reject(Some(7)))
+    endsDelivery(taken._1, second) shouldBe false
+    val noTargets = step(initial[Int, String](false), Event.Begin)._1
+    passed(noTargets, check) shouldBe empty
   }
 
-  it should "keep failures identifiable after halt and take, suppress expected reports and report a refused lane once" in {
+  it should "keep failures identifiable after halt and take and suppress only expected reports" in {
     val (active, offered) = delivering()
-    val call              = offered(1)
+    val check             = offered.head.asInstanceOf[Step.Check[Int, String]]
+    val call              = offered(1).asInstanceOf[Step.Call[Int, String]]
     val halted            = step(active, Event.Halt)._1
     val taken             = step(halted, Event.Take)._1
     for (state <- Vector(registered(), active, halted, taken)) {
       step(state, Event.Failed(call, Failure.Other))._2 shouldBe Vector(Command.Report("Extension a: onState failed"))
       step(state, Event.Failed(call, Failure.Aborted))._2 shouldBe empty
-      val (closed, failed) = step(state, Event.Failed(offered.head, Failure.Other))
+      val (closed, failed) = step(state, Event.Failed(check, Failure.Other))
       stopped(closed) shouldBe true
       failed shouldBe Vector(Command.Close, Command.Report("Extension delivery was stopped: its check failed"))
-      step(state, Event.Failed(offered.head, Failure.Denied))._2 shouldBe Vector(Command.Close)
+      step(state, Event.Failed(check, Failure.Denied))._2 shouldBe Vector(Command.Close)
     }
     for (state <- Vector(halted, taken)) {
-      step(state, Event.Passed(1L)) shouldBe (state, Vector.empty)
-      offered.foreach(item => step(state, Event.Start(item))._2 shouldBe empty)
+      passed(state, check) shouldBe empty
+      checkAction(state) shouldBe CheckAction.Skip
+      mayCall(state, Some(check), call) shouldBe false
       step(state, Event.Written(9))._2 shouldBe empty
       step(state, Event.Published("late"))._2 shouldBe empty
-      step(state, Event.Next)._2 shouldBe empty
       step(state, Event.Failed(call, Failure.Denied))._2 shouldBe empty
     }
     val (reported, reports) = step(active, Event.Unscheduled)
@@ -123,21 +147,18 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
     }
   }
 
-  it should "hand out waiting steps in order and drop them atomically on any stop" in {
-    val queued                                    = step(registered(), Event.Begin)._1
-    val (afterCheck, Vector(Command.Hand(check))) = step(queued, Event.Next): @unchecked
-    waiting(afterCheck) shouldBe 2
+  it should "fence callbacks and emit no new delivery on any stop" in {
+    val (active, offered) = delivering()
+    val check             = offered.head.asInstanceOf[Step.Check[Int, String]]
     for (event <- Vector[Input](Event.Halt, Event.Take, Event.Failed(check, Failure.Other))) {
-      val stoppedState = step(afterCheck, event)._1
-      waiting(stoppedState) shouldBe 0
-      step(stoppedState, Event.Next)._2 shouldBe empty
-      step(stoppedState, Event.Start(check))._2 shouldBe empty
+      val (closed, commands) = step(active, event)
+      commands should contain(Command.Close)
+      checkAction(closed) shouldBe CheckAction.Skip
+      offered.tail.foreach { item =>
+        mayCall(closed, Some(check), item.asInstanceOf[Step.Call[Int, String]]) shouldBe false
+      }
+      step(closed, Event.Written(8))._2 shouldBe empty
     }
-    val wrapped: Machine = queued.copy(phase = Phase.Delivering(2, Long.MaxValue, None, Vector.empty))
-    val (next, offered)  = drain(step(wrapped, Event.Written(8))._1)
-    offered.map(_.delivery).distinct shouldBe Vector(Long.MinValue)
-    val passed = step(next, Event.Start(offered.head))._1
-    step(passed, Event.Start(offered(1)))._2 shouldBe Vector(Command.RunCall(0, Notification.State(8)))
   }
 
   it should "preserve notification order for generated before/after-start histories" in {
@@ -148,41 +169,58 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
         case Notification.State(value)   => Event.Written(value)
         case Notification.Message(value) => Event.Published(value)
       }
-      val recording = before.foldLeft(registered())((s, n) => step(s, event(n))._1)
-      val begun     = step(recording, Event.Begin)._1
-      val queued    = after.foldLeft(begun)((s, n) => step(s, event(n))._1)
+      def compact(state: Machine, n: Notification[Int, String]): (Machine, Vector[Command[Int, String]]) = {
+        val interpreted: (Machine, Vector[Command[Int, String]]) = notificationAction(state) match {
+          case NotificationAction.Record  => (record(state, n), Vector.empty)
+          case NotificationAction.Deliver => (state, Vector(Command.Deliver(n, targets(state))))
+          case NotificationAction.Ignore  => (state, Vector.empty)
+        }
+        interpreted shouldBe step(state, event(n))
+        interpreted
+      }
+      val recording = before.foldLeft(registered())((s, n) => compact(s, n)._1)
+      val begun     = step(recording, Event.Begin)
+      val queued = after.foldLeft(begun) { case ((state, commands), notification) =>
+        val (next, emitted) = compact(state, notification)
+        (next, commands ++ emitted)
+      }
       val expected = before.collect { case n @ Notification.State(_) => n }.lastOption.toVector match {
         case values if values.nonEmpty => values
         case _                         => Vector(Notification.State(7))
       }
-      val offered = drain(queued)._2
-      offered.collect { case Step.Check(_, n) => n } shouldBe
+      val offered = emitted(queued)._2
+      offered.collect { case check: Step.Check[Int, String] => check.notification } shouldBe
         (expected ++ before.collect { case n @ Notification.Message(_) => n } ++ after).toVector
-      offered.grouped(3).zipWithIndex.foreach { case (items, index) =>
-        items.map(_.delivery) shouldBe Vector.fill(3)(index + 1L)
-        items.collect { case Step.Call(_, slot, _, _) => slot } shouldBe Vector(0, 1)
+      offered.grouped(3).foreach { items =>
+        items.collect { case Step.Call(_, slot, _) => slot } shouldBe Vector(0, 1)
       }
+      val halted = step(queued._1, Event.Halt)._1
+      (before ++ after).foreach(n => compact(halted, n) shouldBe (halted, Vector.empty))
     }
   }
 
-  it should "retain the last entered state and make teardown terminal for generated lane histories" in {
+  it should "track the last entered state independently for generated lane histories" in {
     forAll(Gen.listOf(Gen.zip(Gen.choose(0, 1000), Gen.oneOf(true, false), Gen.oneOf(true, false)))) { history =>
-      val (state, last) = history.foldLeft((delivering()._1, Vector.fill(2)(7))) {
-        case ((before, received), (value, firstStarts, secondStarts)) =>
-          val (queued, Vector(check, a, b)) = drain(step(before, Event.Written(value))._1): @unchecked
-          val passed                        = step(queued, Event.Start(check))._1
-          val calledA =
-            if (firstStarts) step(passed, Event.Start(a))._1 else step(passed, Event.Failed(a, Failure.Other))._1
-          val calledB =
-            if (secondStarts) step(calledA, Event.Start(b))._1 else step(calledA, Event.Failed(b, Failure.Other))._1
-          (calledB, Vector(if (firstStarts) value else received(0), if (secondStarts) value else received(1)))
-      }
-      val (taken, commands) = step(state, Event.Take)
-      commands.collect { case Command.Destroy(_, _, value) => value } shouldBe last.reverse.map(Some(_))
+      val (active, _) = delivering()
+      val (actual, expected) =
+        history.foldLeft((Vector.fill(2)(Option.empty[Int]), Vector.fill(2)(Option.empty[Int]))) {
+          case ((previous, expected), (value, firstStarts, secondStarts)) =>
+            val (_, items) = emitted(step(active, Event.Written(value)))
+            val check      = items.head.asInstanceOf[Step.Check[Int, String]]
+            val admitted   = passed(active, check)
+            val starts     = Vector(firstStarts, secondStarts)
+            val next = previous.indices.map { index =>
+              val call = items(index + 1).asInstanceOf[Step.Call[Int, String]]
+              if (starts(index) && mayCall(active, admitted, call)) received(previous(index), check.notification)
+              else previous(index)
+            }.toVector
+            (next, expected.indices.map(i => if (starts(i)) Some(value) else expected(i)).toVector)
+        }
+      actual shouldBe expected
+      val (taken, _) = step(active, Event.Take)
       step(taken, Event.Take)._2 shouldBe empty
       step(taken, Event.Written(42))._2 shouldBe empty
-      step(taken, Event.Next)._2 shouldBe empty
-      step(taken, Event.Start(Step.Call(1, 0, "a", Notification.State(42))))._2 shouldBe empty
+      actual.map(_.orElse(taken.admitted)) shouldBe expected.map(_.orElse(Some(7)))
     }
   }
 }

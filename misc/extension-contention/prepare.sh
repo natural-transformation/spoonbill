@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Run inside the repository's Nix shell. Compile the same fixture against a given checkout.
 # Optional --runtime-only compiles just the measurement fixture, after separate contract validation.
+# --with-cas-retries additionally compiles the historical CAS diagnostic on a compatible checkout.
 set -euo pipefail
 [[ -n "${IN_NIX_SHELL:-}" ]] || { echo 'Run through nix develop.' >&2; exit 1; }
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 checkout="$1"
 output="$2"
 mode="${3:-contracts}"
-[[ "$mode" == contracts || "$mode" == --runtime-only ]] || { echo 'Unknown preparation mode' >&2; exit 1; }
+[[ "$mode" == contracts || "$mode" == --runtime-only || "$mode" == --with-cas-retries ]] || { echo 'Unknown preparation mode' >&2; exit 1; }
 mkdir -p "$(dirname -- "$output")"
 sources="file(\"$here/ExtensionRuntimeBenchmark.scala\")"
 assignment='++='
 if [[ "$mode" == --runtime-only ]]; then
   assignment=':='
-elif [[ -f "$checkout/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala" ]]; then
+elif [[ "$mode" == --with-cas-retries ]]; then
   sources+=", file(\"$here/StateCellRetryBenchmark.scala\")"
 fi
 (cd "$checkout" && sbt --batch --supershell=false -Dsbt.server.autostart=false \

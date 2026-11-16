@@ -3,17 +3,20 @@
 Status: draft 5, with phases 0 and 1 implemented for review on
 2026-11-16. The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
-and validation. Phase 2 has not started. Nine of the ten decisions are made;
+and validation. The latest extension candidate separates ownership and uses
+compact pure admission decisions; [the two design experiments](#ownership-design-experiments)
+supersede the earlier whole-runtime CAS proposal. Broader phase-2 rollout is not
+approved. Nine of the ten decisions are made;
 see [decisions](#decisions-to-confirm). Decision 6 is open, and nothing before
 phase 8 needs it.
 
-**Pilot merge status: performance not accepted.** The gate applies to the CAS
-extension runtime already implemented in this PR, which is enabled for every
-extension-bearing view. It also blocks broader adoption. The PR remains a draft
-until a compared implementation meets an agreed performance budget for the
-intended workloads, or the owner explicitly accepts the measured cost for those
-workloads. Passing correctness tests and the click-latency trial does not clear
-this gate. The dependent deadline PR does not bypass it.
+**Pilot benchmark gate: passed by design Round 2.** The owner confirmed at least
+95% of main's throughput and at most 110% of main's delivery p99 and allocation
+in every measured workload, with correctness checks passing. The final corrected
+candidate meets that gate on the three-trial medians. Contended throughput is
+95.2%, close to the boundary; this is not a confidence interval or a production-wide
+performance guarantee. Review and broader rollout remain separate decisions.
+Earlier CAS and lock comparisons below are retained as historical evidence.
 
 Draft 2 followed a review: the plan no longer promises an unchanged spec where
 a machine itself changes. Draft 3 followed another and changed the pilot. In
@@ -1093,7 +1096,7 @@ decisions 3, 5 and 10.
 | 1. Scope | Phase 2 | Decided: the boundary, with a way to retain or defer an item |
 | 2. Order | Phase 2 | Decided: small and shared first, from copies that behave the same |
 | 3. Where machines live | Phase 0 | Decided |
-| 4. The lock of the pilot | Phase 1 | Decided: without a lock, in two steps |
+| 4. The lock of the pilot | Phase 1 | Revised after experiments: short admission monitor, independently owned delivery progress |
 | 5. Suspected defects | Phase 0 | Decided, in new words: investigate first, fix what is confirmed |
 | 6. `Hub`, `Stream.sort` and `Stream.buffer` | Phase 8 | Open. A contract for each operator comes first |
 | 7. The browser client | Phase 9 | Decided: in scope. Its details are confirmed with the second part |
@@ -1115,12 +1118,14 @@ decisions 3, 5 and 10.
    setup ownership in the runtime module. Domain decisions go to
    `modules/core`: the invocation decisions. The other choice, every machine
    in `modules/core`, is under [alternatives](#alternatives-considered).
-4. **The pilot ends without a lock, in two steps.** Step 1 moves the rules
-   into the machine and keeps the lock and the lane. It is a stable place to
-   stop. Step 2 moves the waiting steps into the machine, and the lock
-   becomes the shared cell. Step 2 stays subject to its gates: the
-   characterization cases, the spec of the lane with a source, and the two
-   performance gates. The other choices are under alternatives.
+4. **The pilot keeps pure decisions and separates their ownership.** The
+   original two-step CAS proposal was implemented and measured. The subsequent
+   [design experiments](#ownership-design-experiments) supersede its requirement
+   to put the whole runtime and queue in one cell. A short monitor orders
+   admission, registration and teardown ownership; the lane owns delivery
+   progress, and each extension publishes its received state. Callbacks do not
+   take the admission monitor. This decision applies to the extension pilot,
+   not to other machines or automatic lock removal.
 5. **A suspected defect is investigated before the refactor of its area.** A
    confirmed defect is fixed first, in a change of its own. Intended
    behaviour and open questions are recorded as such. A suspicion is not an
@@ -1197,6 +1202,10 @@ blocks a phase.
 Phases 0 and 1 are implemented on `claude/extension-pure-machine`, on top of
 `93288bbdafa466b797ead3de9a82bdf245a365d4`. This checkpoint is ready for review.
 No rollout beyond the pilot has started.
+
+This checkpoint retains the original implementation and measurements below.
+The current selected design and its final validation are recorded under
+[ownership design experiments](#ownership-design-experiments).
 
 ### What changed
 
@@ -1472,6 +1481,76 @@ Validation through the repository-local flake:
   pass, all 36 trials. `node misc/extension-contention/analyze.mjs <output> 3 baseline,cas,optimized`
   reproduces the packaged summary exactly.
 - `bash -n misc/extension-contention/run.sh` and `git diff --check`: pass.
+
+### Ownership design experiments
+
+The owner requested up to five new designs and confirmed this acceptance gate
+against main in all four workloads: median throughput at least 95%, median
+per-run delivery p99 at most 110%, and median allocation per notification at
+most 110%, with all correctness checks passing. Work stopped after two designs
+because the final Round 2 candidate met that gate.
+
+**Round 1: separate ownership.** Lifecycle state and handler ownership remain one
+immutable value published under a short admission monitor. The lane owns delivery
+progress and its queue; each extension publishes its immutable last-entered state
+for bounded teardown. Pure functions decide recording, admission, checks,
+reporting and teardown. Callbacks no longer contend with producers for a global
+CAS cell or monitor. Screening improved throughput to roughly 91–102% of main,
+but allocation remained 14–22% higher, so this design was rejected at screening.
+
+**Round 2: compact admission decisions.** The ownership split stays. Ordinary
+notifications use pure singleton admission actions plus pure recording and target
+functions shared with the event model. The interpreter avoids allocating an event,
+transition tuple and command vector for each delivered notification. Cold lifecycle
+transitions still emit explicit commands. Opaque delivery identities are created
+by the interpreter and supplied to pure delivery decisions.
+
+The lane retains each callback's identity before effect startup. A refused or
+delayed start cannot advance its received state. Final callbacks, including refused
+startup, and zero-target deliveries release progress; a late check cannot restore
+it after close. Teardown
+still observes each extension's entered state and releases handlers once, in reverse
+order. An additional characterization caught multiple scheduling attempts for
+buffered startup: it passed the unchanged parent, failed the candidate, and now
+passes after coalescing startup wakeups. The pre-correction measurements are kept
+separately and are not used for acceptance.
+
+The final corrected code ran 24 fresh JVM trials, with three paired trials per
+workload, alternating order, five-second warmup and measurement, complete drain,
+G1, a fixed 256 MiB heap and `ActiveProcessorCount=8`. All delivery assertions passed.
+
+| Workload | Throughput / main (minimum 95%) | Delivery p99 / main (maximum 110%) | Allocation / main (maximum 110%) |
+| --- | ---: | ---: | ---: |
+| Independent views | 99.3% | 104.3% | 106.8% |
+| Four writers, one view | 95.2% | 101.5% | 106.8% |
+| Eight writers, eight extensions | 99.7% | 103.9% | 106.4% |
+| Sustained backlog | 99.7% | 102.8% | 106.7% |
+
+For the contended workload, the medians are 2,198,008 versus 2,308,701 notifications
+per second, 0.948 versus 0.934 ms delivery p99, and 1,130 versus 1,058 bytes per
+notification. This is close to the throughput boundary. The shared-machine,
+three-trial results establish the agreed benchmark gate, not identical performance
+or a confidence interval. Wider workload and rollout decisions remain separate.
+
+[All screening and comparison rows, source patches, hashes and the gate report](../misc/extension-contention/evidence/2026-11-16-ownership-designs/)
+are retained, including the failed first design and the second design before its
+startup correction. No trial was discarded. The historical `StateCell` utility and
+source-backed `SerialLane` remain available; this interpreter does not require them.
+
+Final validation through the repository-local Nix flake:
+
+- `sbt 'spoonbill/test' 'ce3/testOnly *Extension*Spec' 'zio2/testOnly *Extension*Spec'`:
+  pass, 819 runtime tests, 13 cats-effect tests and nine ZIO tests.
+- Three new delayed-start/late-completion cases passed on unchanged `18548af3`;
+  the additional buffered-startup case also passed there and detected the
+  candidate's extra retry before correction.
+- `node scripts/check-core-purity.mjs` and `node --test misc/core-purity-tests.mjs`:
+  pass, including all four guard tests. Changed Scala files were formatted.
+- Default `prepare.sh` contract preparation and `run.sh <main-cp> <candidate-cp> <output> 3 5`:
+  pass; all 24 final trials completed with correct counts and ordering.
+- `node misc/extension-contention/analyze.mjs <output> 3` and
+  `node misc/extension-contention/check-gate.mjs <output>/summary.json`: pass.
+  Packaged summaries reproduce the original results exactly.
 
 ### Click-latency gate
 

@@ -1,8 +1,8 @@
 package spoonbill.internal
 
 /**
- * Extension lifecycle decisions. Handler values and effect scheduling belong to
- * the interpreter.
+ * Pure admission, delivery and teardown decisions; their owners live in the
+ * interpreter.
  */
 private[spoonbill] object ExtensionMachine {
   enum Notification[+S, +M] {
@@ -18,25 +18,28 @@ private[spoonbill] object ExtensionMachine {
   enum Failure { case Denied, Aborted, Other }
 
   /**
-   * The lane retains this identity even if the effect cannot start or teardown
-   * takes the slots.
+   * The interpreter supplies each immutable check as an opaque delivery
+   * identity. Decisions only propagate or compare that input; they never
+   * allocate an identity. The lane retains it when startup is refused.
    */
-  enum Step[+S, +M] {
-    def delivery: Long
-    case Check(delivery: Long, notification: Notification[S, M])
-    case Call(delivery: Long, slot: Int, name: String, notification: Notification[S, M])
+  sealed trait Step[+S, +M]
+  object Step {
+    final class Check[+S, +M](val notification: Notification[S, M]) extends Step[S, M]
+    object Check {
+      def apply[S, M](notification: Notification[S, M]): Check[S, M] = new Check(notification)
+    }
+    final case class Call[+S, +M](check: Check[S, M], slot: Int, name: String) extends Step[S, M]
   }
-  final case class Slot[S](name: String, received: Option[S])
   enum Phase[S, M] {
     case Recording(newest: Option[S], messages: Vector[M])
-    case Delivering(targets: Int, deliveries: Long, passed: Option[Long], waiting: Vector[Step[S, M]])
+    case Delivering(targets: Int)
     case Stopped()
   }
   final case class State[S, M](
     guarded: Boolean,
     phase: Phase[S, M],
     admitted: Option[S],
-    slots: Option[Vector[Slot[S]]],
+    slots: Option[Vector[String]],
     unscheduledReported: Boolean
   )
   enum Event[+S, +M] {
@@ -45,24 +48,23 @@ private[spoonbill] object ExtensionMachine {
     case Published(message: M)
     case Register(name: String)
     case Begin
-    case Next
-    case Start(step: Step[S, M])
-    case Passed(delivery: Long)
     case Failed(step: Step[S, M], failure: Failure)
     case Halt
     case Take
     case Unscheduled
   }
   enum Command[+S, +M] {
-    case Wake
-    case Hand(step: Step[S, M])
-    case RunCheck(notification: Notification[S, M])
-    case RunCall(slot: Int, notification: Notification[S, M])
+    case Deliver(notification: Notification[S, M], targets: Int)
     case Reject(last: Option[S])
-    case Destroy(slot: Int, name: String, last: Option[S])
+    case Destroy(slot: Int, name: String, admitted: Option[S])
     case Report(text: String)
     case Close
   }
+  enum CheckAction        { case Skip, Run, Pass         }
+  enum NotificationAction { case Record, Deliver, Ignore }
+
+  /** The lane owns progress; unrelated producer writes never change it. */
+  type Progress[S, M] = Option[Step.Check[S, M]]
 
   def initial[S, M](guarded: Boolean): State[S, M] =
     State(guarded, Phase.Recording(None, Vector.empty), None, Some(Vector.empty), false)
@@ -77,9 +79,58 @@ private[spoonbill] object ExtensionMachine {
     case _                                 => 0
   }
 
-  def waiting[S, M](state: State[S, M]): Int = state.phase match {
-    case Phase.Delivering(_, _, _, steps) => steps.size
-    case _                                => 0
+  /** Admission needs no new result object for a delivering or stopped view. */
+  def notificationAction[S, M](state: State[S, M]): NotificationAction = state.phase match {
+    case Phase.Recording(_, _) => NotificationAction.Record
+    case Phase.Delivering(_)   => NotificationAction.Deliver
+    case Phase.Stopped()       => NotificationAction.Ignore
+  }
+
+  def targets[S, M](state: State[S, M]): Int = state.phase match {
+    case Phase.Delivering(count) => math.max(0, math.min(count, state.slots.fold(0)(_.size)))
+    case _                       => 0
+  }
+
+  def record[S, M](state: State[S, M], notification: Notification[S, M]): State[S, M] = state.phase match {
+    case Phase.Recording(newest, messages) =>
+      notification match {
+        case Notification.State(value)   => state.copy(phase = Phase.Recording(Some(value), messages))
+        case Notification.Message(value) => state.copy(phase = Phase.Recording(newest, messages :+ value))
+      }
+    case _ => state
+  }
+
+  def checkAction[S, M](state: State[S, M]): CheckAction = state.phase match {
+    case Phase.Delivering(_) => if (state.guarded) CheckAction.Run else CheckAction.Pass
+    case _                   => CheckAction.Skip
+  }
+
+  def passed[S, M](state: State[S, M], check: Step.Check[S, M]): Progress[S, M] = state.phase match {
+    case Phase.Delivering(targets) if targets > 0 => Some(check)
+    case _                                        => None
+  }
+
+  def mayCall[S, M](state: State[S, M], progress: Progress[S, M], call: Step.Call[S, M]): Boolean =
+    state.phase match {
+      case Phase.Delivering(targets) =>
+        call.slot >= 0 && call.slot < targets && state.slots.exists(_.size > call.slot) &&
+          progress.exists(_ eq call.check)
+      case _ => false
+    }
+
+  /** The last call consumes admission even when its effect cannot start. */
+  def endsDelivery[S, M](state: State[S, M], call: Step.Call[S, M]): Boolean = state.phase match {
+    case Phase.Delivering(targets) => targets > 0 && call.slot == targets - 1
+    case _                         => false
+  }
+
+  /**
+   * Only an entered call updates this independently published per-extension
+   * state.
+   */
+  def received[S, M](before: Option[S], notification: Notification[S, M]): Option[S] = notification match {
+    case Notification.State(value) => Some(value)
+    case _                         => before
   }
 
   def reportOf(name: String, callback: Callback, failure: Failure, stopped: Boolean): Option[String] =
@@ -89,45 +140,30 @@ private[spoonbill] object ExtensionMachine {
     ) None
     else Some(s"Extension $name: ${callback.label} failed")
 
-  private def enqueue[S, M](
+  private def enqueue[S, M](state: State[S, M], notification: Notification[S, M]): Vector[Command[S, M]] =
+    notificationAction(state) match {
+      case NotificationAction.Deliver => Vector(Command.Deliver(notification, targets(state)))
+      case _                          => Vector.empty
+    }
+
+  private def notified[S, M](
     state: State[S, M],
     notification: Notification[S, M]
   ): (State[S, M], Vector[Command[S, M]]) =
-    state.phase match {
-      case Phase.Delivering(targets, deliveries, passed, waiting) =>
-        val delivery = deliveries + 1L // Only adjacent deliveries must differ; signed wrap is safe.
-        val slots    = state.slots.getOrElse(Vector.empty)
-        val count    = math.max(0, math.min(targets, slots.size))
-        val steps = Vector.tabulate[Step[S, M]](count + 1) { position =>
-          if (position == 0) Step.Check(delivery, notification)
-          else {
-            val index = position - 1
-            Step.Call(delivery, index, slots(index).name, notification)
-          }
-        }
-        (state.copy(phase = Phase.Delivering(targets, delivery, passed, waiting ++ steps)), Vector(Command.Wake))
-      case _ => (state, Vector.empty)
+    notificationAction(state) match {
+      case NotificationAction.Record => (record(state, notification), Vector.empty)
+      case _                         => (state, enqueue(state, notification))
     }
 
   def step[S, M](state: State[S, M], event: Event[S, M]): (State[S, M], Vector[Command[S, M]]) = {
     val unchanged = (state, Vector.empty[Command[S, M]])
     event match {
-      case Event.Admit(value) => (state.copy(admitted = Some(value)), Vector.empty)
-      case Event.Written(value) =>
-        state.phase match {
-          case Phase.Recording(_, messages) =>
-            (state.copy(phase = Phase.Recording(Some(value), messages)), Vector.empty)
-          case _ => enqueue(state, Notification.State(value))
-        }
-      case Event.Published(value) =>
-        state.phase match {
-          case Phase.Recording(newest, messages) =>
-            (state.copy(phase = Phase.Recording(newest, messages :+ value)), Vector.empty)
-          case _ => enqueue(state, Notification.Message(value))
-        }
+      case Event.Admit(value)     => (state.copy(admitted = Some(value)), Vector.empty)
+      case Event.Written(value)   => notified(state, Notification.State(value))
+      case Event.Published(value) => notified(state, Notification.Message(value))
       case Event.Register(name) =>
         state.slots match {
-          case Some(slots) => (state.copy(slots = Some(slots :+ Slot(name, None))), Vector.empty)
+          case Some(slots) => (state.copy(slots = Some(slots :+ name)), Vector.empty)
           case None        => (state, Vector(Command.Reject(state.admitted)))
         }
       case Event.Begin =>
@@ -135,45 +171,8 @@ private[spoonbill] object ExtensionMachine {
           case Phase.Recording(newest, messages) =>
             val notifications: Vector[Notification[S, M]] =
               newest.orElse(state.admitted).toVector.map(Notification.State(_)) ++ messages.map(Notification.Message(_))
-            val delivering: State[S, M] =
-              state.copy(phase = Phase.Delivering(state.slots.fold(0)(_.size), 0L, None, Vector.empty))
-            val next = notifications.foldLeft(delivering)((before, notification) => enqueue(before, notification)._1)
-            (next, Option.when(waiting(next) > 0)(Command.Wake).toVector)
-          case _ => unchanged
-        }
-      case Event.Next =>
-        state.phase match {
-          case Phase.Delivering(targets, deliveries, passed, waiting) if waiting.nonEmpty =>
-            (
-              state.copy(phase = Phase.Delivering(targets, deliveries, passed, waiting.tail)),
-              Vector(Command.Hand(waiting.head))
-            )
-          case _ => unchanged
-        }
-      case Event.Start(Step.Check(delivery, notification)) =>
-        state.phase match {
-          case Phase.Delivering(targets, deliveries, _, waiting) =>
-            if (state.guarded) (state, Vector(Command.RunCheck(notification)))
-            else (state.copy(phase = Phase.Delivering(targets, deliveries, Some(delivery), waiting)), Vector.empty)
-          case _ => unchanged
-        }
-      case Event.Passed(delivery) =>
-        state.phase match {
-          case Phase.Delivering(targets, deliveries, _, waiting) =>
-            (state.copy(phase = Phase.Delivering(targets, deliveries, Some(delivery), waiting)), Vector.empty)
-          case _ => unchanged
-        }
-      case Event.Start(Step.Call(delivery, index, _, notification)) =>
-        state.phase match {
-          case Phase.Delivering(targets, _, Some(passed), _) if passed == delivery && index >= 0 && index < targets =>
-            state.slots.flatMap(_.lift(index)).fold(unchanged) { slot =>
-              val next = notification match {
-                case Notification.State(value) =>
-                  state.copy(slots = state.slots.map(_.updated(index, slot.copy(received = Some(value)))))
-                case _ => state
-              }
-              (next, Vector(Command.RunCall(index, notification)))
-            }
+            val next: State[S, M] = state.copy(phase = Phase.Delivering(state.slots.fold(0)(_.size)))
+            (next, notifications.flatMap(enqueue(next, _)))
           case _ => unchanged
         }
       case Event.Failed(_: Step.Check[?, ?], failure) =>
@@ -181,8 +180,8 @@ private[spoonbill] object ExtensionMachine {
           .when(failure != Failure.Denied)(Command.Report("Extension delivery was stopped: its check failed"))
           .toVector
         (state.copy(phase = Phase.Stopped()), Vector(Command.Close) ++ reports)
-      case Event.Failed(Step.Call(_, _, name, notification), failure) =>
-        val callback = notification match {
+      case Event.Failed(Step.Call(check, _, name), failure) =>
+        val callback = check.notification match {
           case Notification.State(_)   => Callback.OnState
           case Notification.Message(_) => Callback.OnMessage
         }
@@ -193,8 +192,8 @@ private[spoonbill] object ExtensionMachine {
           case None => unchanged
           case Some(slots) =>
             val close = Option.when(!stopped(state))(Command.Close).toVector
-            val destroy = slots.zipWithIndex.reverse.map { case (slot, index) =>
-              Command.Destroy(index, slot.name, slot.received.orElse(state.admitted))
+            val destroy = slots.zipWithIndex.reverse.map { case (name, index) =>
+              Command.Destroy(index, name, state.admitted)
             }
             (state.copy(phase = Phase.Stopped(), slots = None), close ++ destroy)
         }

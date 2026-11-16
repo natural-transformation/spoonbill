@@ -3,7 +3,7 @@ package spoonbill.internal
 import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
 import spoonbill.{Context, Extension}
-import spoonbill.effect.{Effect, Reporter, StateCell}
+import spoonbill.effect.{Effect, Reporter}
 import spoonbill.effect.syntax.*
 import spoonbill.server.SessionAccessDenied
 import spoonbill.snapshot.ViewSnapshotException
@@ -50,46 +50,110 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
 )(implicit ec: ExecutionContext)
     extends ApplicationInstance.Observer[S, M] {
 
-  import ExtensionMachine.{Callback, Command, Event, Failure, Notification, State, Step}
+  import ExtensionMachine.{
+    Callback,
+    CheckAction,
+    Command,
+    Event,
+    Failure,
+    Notification,
+    NotificationAction,
+    Progress,
+    State,
+    Step
+  }
   import ExtensionRuntime.*
 
   private type Handlers = Extension.Handlers[F, S, M]
-  private final case class Held(machine: State[S, M], handlers: Vector[Handlers])
-  private val cell = new StateCell(Held(ExtensionMachine.initial[S, M](checks.nonEmpty), Vector.empty))
-  private val steps = new SerialLane.Source[Step[S, M]] {
-    def poll(): Option[Step[S, M]] = advance(Event.Next)._1.collectFirst { case Command.Hand(step) => step }
-    def isEmpty: Boolean           = ExtensionMachine.waiting(cell.get.machine) == 0
+  private final class Active(val handlers: Handlers) {
+    // Written only by the lane, read by teardown after its bounded wait.
+    @volatile var received = Option.empty[S]
   }
-  private val lane = new SerialLane[F, Step[S, M]](handle, failed, unscheduled, Some(steps))
+  private final case class Held(machine: State[S, M], handlers: Vector[Active])
+  private val lock           = new Object
+  @volatile private var held = Held(ExtensionMachine.initial[S, M](checks.nonEmpty), Vector.empty)
+  // A check and its continuation settle before the lane starts another step.
+  @volatile private var progress: Progress[S, M] = None
+  private val lane                               = new SerialLane[F, Step[S, M]](handle, failed, unscheduled)
 
-  private def stopped: Boolean = ExtensionMachine.stopped(cell.get.machine)
+  private def stopped: Boolean = ExtensionMachine.stopped(held.machine)
 
-  private def advance(event: Event[S, M], added: Option[Handlers] = None): (Vector[Command[S, M]], Vector[Handlers]) =
-    cell.modify { case Held(machine, before) =>
-      val (next, commands) = ExtensionMachine.step(machine, event)
+  /**
+   * Called under the admission monitor, for startup and subsequent
+   * notifications alike.
+   */
+  private def enqueue(notification: Notification[S, M], targets: Int, names: Vector[String]): Unit = {
+    val check = Step.Check(notification)
+    lane.enqueue(check)
+    var index = 0
+    while (index < targets) {
+      lane.enqueue(Step.Call(check, index, names(index)))
+      index += 1
+    }
+  }
+
+  private def advance(event: Event[S, M], added: Option[Active] = None): (Vector[Command[S, M]], Vector[Active]) =
+    lock.synchronized {
+      val Held(machine, before) = held
+      val (next, commands)      = ExtensionMachine.step(machine, event)
       val handlers = next.slots match {
         case None                                    => Vector.empty
         case Some(slots) if slots.size > before.size => before ++ added
         case _                                       => before
       }
-      (Held(next, handlers), (commands, before))
+      if ((next ne machine) || (handlers ne before)) held = Held(next, handlers)
+      // Admission and enqueue share one order, but delivery never takes this lock.
+      commands.foreach {
+        case Command.Deliver(notification, targets) =>
+          enqueue(notification, targets, next.slots.getOrElse(Vector.empty))
+        case _ => ()
+      }
+      (commands, before)
     }
 
-  private def run(commands: Vector[Command[S, M]], error: Option[Throwable] = None): Unit =
+  private def run(commands: Vector[Command[S, M]], error: Option[Throwable] = None): Unit = {
+    // Begin can enqueue several buffered notifications. It gets one scheduling
+    // attempt, just like one observed notification; refusal waits for the next wake.
+    var woken = false
     commands.foreach {
-      case Command.Wake         => lane.wake()
-      case Command.Close        => lane.close()
+      case Command.Deliver(_, _) =>
+        if (!woken) {
+          woken = true
+          lane.wake()
+        }
+      case Command.Close        => progress = None; lane.close()
       case Command.Report(text) => error.foreach(reportError(text, _))
       case _                    => () // register, handle and destroyAll interpret the effect commands.
     }
+  }
 
   private def feed(event: Event[S, M], error: Option[Throwable] = None): Unit = run(advance(event)._1, error)
 
   // --- Observer: called by the application instance on the writing thread ---
 
-  def state(value: S): Unit = feed(Event.Written(value))
+  private def notify(notification: Notification[S, M]): Unit = {
+    val queued = lock.synchronized {
+      val current = held
+      ExtensionMachine.notificationAction(current.machine) match {
+        case NotificationAction.Record =>
+          held = Held(ExtensionMachine.record(current.machine, notification), current.handlers)
+          false
+        case NotificationAction.Deliver =>
+          enqueue(
+            notification,
+            ExtensionMachine.targets(current.machine),
+            current.machine.slots.getOrElse(Vector.empty)
+          )
+          true
+        case NotificationAction.Ignore => false
+      }
+    }
+    if (queued) lane.wake()
+  }
 
-  def message(value: M): Unit = feed(Event.Published(value))
+  def state(value: S): Unit = notify(Notification.State(value))
+
+  def message(value: M): Unit = notify(Notification.Message(value))
 
   // --- Setup ---
 
@@ -140,7 +204,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    * is closed by then.
    */
   private def register(name: String, handlers: Handlers): F[Boolean] =
-    advance(Event.Register(name), Some(handlers))._1.collectFirst { case Command.Reject(last) =>
+    advance(Event.Register(name), Some(new Active(handlers)))._1.collectFirst { case Command.Reject(last) =>
       destroyOne(name, handlers, last).map(_ => false)
     }.getOrElse(Effect[F].pure(true))
 
@@ -153,31 +217,71 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    */
   def start(): F[Unit] = Effect[F].delay(feed(Event.Begin))
 
-  /** One step of the lane. A step that fails goes to [[failed]]. */
-  private def handle(step: Step[S, M]): F[Unit] = {
-    val (commands, handlers) = advance(Event.Start(step))
-    commands.collectFirst {
-      case Command.RunCheck(notification) =>
-        val guarded = checks.get
-        val check = notification match {
-          case Notification.State(value)   => guarded.state(value)
-          case Notification.Message(value) => guarded.message(value)
-        }
-        check.map(_ => feed(Event.Passed(step.delivery)))
-      case Command.RunCall(slot, notification) =>
-        notification match {
-          case Notification.State(value)   => handlers(slot).onState(value)
-          case Notification.Message(value) => handlers(slot).onMessage(value)
-        }
-    }.getOrElse(Effect[F].unit)
+  private def passed(check: Step.Check[S, M]): Unit = {
+    progress = ExtensionMachine.passed(held.machine, check)
+    // Close can race the publication above. Neither order retains a delivery
+    // after close, including a guarded check completing after the teardown bound.
+    if (stopped) progress = None
   }
+
+  /**
+   * Return only this entry, so a synchronously blocked callback keeps no
+   * handler table on its stack.
+   */
+  private def enterCall(call: Step.Call[S, M]): Active = {
+    val current = held
+    if (!ExtensionMachine.mayCall(current.machine, progress, call)) null
+    else {
+      if (ExtensionMachine.endsDelivery(current.machine, call)) progress = None
+      val entry = current.handlers(call.slot)
+      call.check.notification match {
+        case Notification.State(_) =>
+          entry.received = ExtensionMachine.received(entry.received, call.check.notification)
+        case _ => ()
+      }
+      entry
+    }
+  }
+
+  /** One step of the lane. A step that fails goes to [[failed]]. */
+  private def handle(step: Step[S, M]): F[Unit] =
+    step match {
+      case check: Step.Check[S, M] =>
+        ExtensionMachine.checkAction(held.machine) match {
+          case CheckAction.Skip => Effect[F].unit
+          case CheckAction.Pass =>
+            passed(check)
+            Effect[F].unit
+          case CheckAction.Run =>
+            val guarded = checks.get
+            val result = check.notification match {
+              case Notification.State(value)   => guarded.state(value)
+              case Notification.Message(value) => guarded.message(value)
+            }
+            result.map(_ => passed(check))
+        }
+      case call: Step.Call[S, M] =>
+        val entry = enterCall(call)
+        if (entry == null) Effect[F].unit
+        else {
+          call.check.notification match {
+            case Notification.State(value)   => entry.handlers.onState(value)
+            case Notification.Message(value) => entry.handlers.onMessage(value)
+          }
+        }
+    }
 
   /**
    * A step that did not succeed. A failed effect, a thrown exception and an
    * interrupted or cancelled effect are treated the same.
    */
-  private def failed(step: Step[S, M], error: Throwable): Unit =
+  private def failed(step: Step[S, M], error: Throwable): Unit = {
+    step match {
+      case call: Step.Call[S, M] if ExtensionMachine.endsDelivery(held.machine, call) => progress = None
+      case _                                                                          => ()
+    }
     feed(Event.Failed(step, classify(error)), Some(error))
+  }
 
   /** The execution context refused the lane. The notifications stay queued. */
   private def unscheduled(error: Throwable): Unit =
@@ -223,9 +327,10 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
     }
 
   private def destroyAll(): F[Unit] = {
-    def next(remaining: List[Command[S, M]], handlers: Vector[Handlers]): F[Unit] = remaining match {
-      case Command.Destroy(slot, name, last) :: rest =>
-        destroyOne(name, handlers(slot), last).flatMap(_ => next(rest, handlers))
+    def next(remaining: List[Command[S, M]], handlers: Vector[Active]): F[Unit] = remaining match {
+      case Command.Destroy(slot, name, admitted) :: rest =>
+        val entry = handlers(slot)
+        destroyOne(name, entry.handlers, entry.received.orElse(admitted)).flatMap(_ => next(rest, handlers))
       case _ :: rest => next(rest, handlers)
       case Nil       => Effect[F].unit
     }
@@ -252,7 +357,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    * The bound reports only that the time ran out. The call reports its own
    * failure, so that one is not lost when it arrives after the bound gave up.
    */
-  private def destroyOne(name: String, handlers: Handlers, last: Option[S]): F[Unit] = {
+  private def destroyOne(name: String, handlers: Handlers, last: => Option[S]): F[Unit] = {
     // Not a value: the bound starts its time first, and submits the task then.
     def call: F[Unit] =
       inTask(handlers.onDestroy(last.getOrElse(throw new IllegalStateException("No admitted state"))))(error =>
@@ -287,13 +392,18 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
   }
 
   /** Steps that wait in the lane. For tests and diagnostics. */
-  private[spoonbill] def pending: Int = ExtensionMachine.waiting(cell.get.machine)
+  private[spoonbill] def pending: Int = lane.size
+
+  /**
+   * Whether admission still needs a delivery identity; idle lanes retain none.
+   */
+  private[spoonbill] def retainedDelivery: Boolean = progress.nonEmpty
 
   /**
    * What is kept before delivery starts: at most one state, and every message.
    * For tests and diagnostics.
    */
-  private[spoonbill] def recorded: Int = ExtensionMachine.recorded(cell.get.machine)
+  private[spoonbill] def recorded: Int = ExtensionMachine.recorded(held.machine)
 }
 
 private[spoonbill] object ExtensionRuntime {
