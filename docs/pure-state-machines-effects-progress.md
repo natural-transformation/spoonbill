@@ -28,6 +28,15 @@ After extraction the unchanged law suites and characterizations again passed all
 
 ## Effect contracts under investigation
 
+`AsyncTable.getFill` had two confirmed factory-failure defects: an asynchronous
+failure stranded joined readers and settlement observers, and a synchronous
+factory throw escaped the effect. Both new regressions failed before the fix;
+six other lifecycle characterizations passed. Factory outcomes are now captured
+before `putEither`, so failures are cached exactly like explicit `fail(key)`.
+Publication conflicts are not recaught as factory failures; explicit puts and
+the existing put-on-absent behavior after removal remain characterized. All
+effect tests and all 50 recovery-testkit tests pass after the isolated fix.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; queue cancellation does not currently replay to late listeners;
 `handleConsumed` signals EOF only; pool disposal claims precede physical cleanup.

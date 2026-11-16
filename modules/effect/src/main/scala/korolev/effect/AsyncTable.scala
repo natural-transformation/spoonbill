@@ -17,10 +17,10 @@
 package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import spoonbill.effect.AsyncTable.{AlreadyContainsKeyException, RemovedBeforePutException}
 import spoonbill.effect.Effect.Promise
 import spoonbill.effect.syntax._
-import scala.annotation.tailrec
 
 final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
 
@@ -69,7 +69,13 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
         case None =>
           val newValue = ref.updated(key, Left(cb :: Nil))
           if (state.compareAndSet(ref, newValue)) {
-            f.flatMap(v => put(key, v))
+            // Capture only the factory outcome. Publication conflicts must not
+            // be mistaken for another factory failure and published again.
+            Effect[F]
+              .delayAsync(f)
+              .map[Result](Right(_))
+              .recover { case error => Left(error) }
+              .flatMap(result => putEither(key, result))
           } else {
             aux()
           }
