@@ -18,6 +18,7 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
   require(maxPending > 0, "Pending browser request limit must be positive")
 
   private final class Entry(initialCallback: Effect.Promise[A]) {
+    val token = new PendingRegistryMachine.Token
     private val finished = new AtomicBoolean(false)
     private val callback = new AtomicReference(Option(initialCallback))
     private val cancellation = new AtomicReference(Option.empty[() => Unit])
@@ -38,25 +39,29 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     }
   }
 
-  private case class State(closed: Boolean, entries: Map[String, Entry])
-  private val state = new AtomicReference(State(false, Map.empty))
+  private case class State(registry: PendingRegistryMachine.State[String], entries: Map[String, Entry])
+  private val state = new AtomicReference(State(PendingRegistryMachine.initial[String], Map.empty))
 
   @tailrec private def register(key: String, entry: Entry): Either[Throwable, Unit] = {
     val before = state.get()
-    if (before.closed) Left(closedError())
-    else if (before.entries.contains(key)) Left(new IllegalStateException("Duplicate browser request descriptor"))
-    else if (before.entries.size >= maxPending) Left(Frontend.ClientSideException("Too many pending browser requests"))
-    else if (state.compareAndSet(before, before.copy(entries = before.entries.updated(key, entry)))) Right(())
-    else register(key, entry)
+    val (next, admission) = PendingRegistryMachine.register(before.registry, key, entry.token, maxPending)
+    admission match {
+      case PendingRegistryMachine.Admission.Closed => Left(closedError())
+      case PendingRegistryMachine.Admission.Duplicate => Left(new IllegalStateException("Duplicate browser request descriptor"))
+      case PendingRegistryMachine.Admission.AtCapacity => Left(Frontend.ClientSideException("Too many pending browser requests"))
+      case PendingRegistryMachine.Admission.Accepted =>
+        if (state.compareAndSet(before, State(next, before.entries.updated(key, entry)))) Right(())
+        else register(key, entry)
+    }
   }
 
   @tailrec private def take(key: String, expected: Option[Entry]): Option[Entry] = {
     val before = state.get()
-    before.entries.get(key) match {
+    val (next, taken) = PendingRegistryMachine.take(before.registry, key, expected.map(_.token))
+    taken match {
       case None => None
-      case Some(entry) if expected.exists(_ ne entry) => None
-      case Some(entry) =>
-        if (state.compareAndSet(before, before.copy(entries = before.entries - key))) Some(entry)
+      case Some(_) =>
+        if (state.compareAndSet(before, State(next, before.entries - key))) before.entries.get(key)
         else take(key, expected)
     }
   }
@@ -78,7 +83,7 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     register(key, entry) match {
       case Left(error) => entry.finish(Left(error))
       case Right(_) =>
-        def pending(): Boolean = state.get().entries.get(key).exists(_ eq entry)
+        def pending(): Boolean = PendingRegistryMachine.contains(state.get().registry, key, entry.token)
         try {
           val cancel = deadlines.schedule(timeout)(() => { finish(key, Some(entry), Left(timeoutError())); () })
           entry.install(cancel)
@@ -96,7 +101,7 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     Effect[F].delay(finish(key, None, result))
 
   def close(): F[Unit] = Effect[F].delay {
-    val before = state.getAndSet(State(true, Map.empty))
+    val before = state.getAndSet(State(PendingRegistryMachine.closed[String], Map.empty))
     before.entries.values.foreach { entry =>
       // Isolate completion callbacks so one faulty effect implementation cannot
       // prevent other requests from being detached and failed during teardown.
@@ -104,5 +109,5 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     }
   }
 
-  private[internal] def pendingCount: Int = state.get().entries.size
+  private[internal] def pendingCount: Int = PendingRegistryMachine.size(state.get().registry)
 }

@@ -167,3 +167,40 @@ The script creates, runs and removes its own loopback-only test database; it doe
 not use a production database. The test characterization selects
 `-- -z "independent lane budgets"` in the same suite. No DB effect moved across an
 admission or cleanup boundary.
+
+## Completed pending registry metadata unit
+
+`internal.PendingRegistryMachine` now owns bounded key-to-token membership and
+permanent admission closure for `OwnedBrowserRequests` and
+`SensitiveDisclosureScope`. Tokens are empty identities supplied by interpreters;
+no callbacks, cancellation thunks or sensitive payloads enter model state.
+
+RPC registration rejects duplicates before capacity and atomic close detaches
+all entries. Sensitive disclosure registration retains its previous Map.put
+replacement policy (UUID generation normally supplies unique keys), and close
+seals admission without clearing membership: each discard callback retires its
+entry in the original order. The model makes those distinctions explicit rather
+than normalizing them. Late timer installation still consults current ownership;
+stale request callbacks cannot take a replacement owner of the same descriptor.
+
+The interpreter's callback/cancellation handle handoff stays in place, including
+cancellation-before-callback ordering and all existing exception isolation. This
+unit does not move sensitive presentation, plaintext retirement or Frontend
+request-family routing into a generic registry.
+
+A new old-code characterization verifies duplicate-error priority at capacity,
+same-key reuse and replay of an earlier expiry callback. Together with existing
+RPC and disclosure-scope cases, 22 tests passed before extraction. Afterward:
+
+```
+env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
+  sbt --batch --supershell=false -Dsbt.server.autostart=false \
+  'spoonbill/testOnly *PendingRegistryMachineSpec *BrowserRpcLifecycleSpec *SensitiveDisclosureScopeSpec *SensitiveRuntime*Spec'
+```
+
+Result: 39 tests across five suites passed, including pure bounded-membership
+histories and sensitive-runtime concurrency checks. The source-purity guard
+passes with seven machine files. The first test compilation required qualifying
+`PendingRegistryMachine.size` to avoid ScalaTest's unrelated `size` matcher;
+production sources compiled on that attempt, and the corrected full selection
+passed. Scoped new-file formatting and `git diff --check` also passed.
