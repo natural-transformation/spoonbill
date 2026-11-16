@@ -1,0 +1,178 @@
+diff --git a/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala b/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala
+index 770a827c..bdb839c1 100644
+--- a/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala
++++ b/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala
+@@ -32 +32 @@ private[spoonbill] object ExtensionMachine {
+-    case Delivering(targets: Int, deliveries: Long, passed: Option[Long], waiting: Vector[Step[S, M]])
++    case Delivering(targets: Int, deliveries: Long, passed: Option[Long])
+@@ -48 +47,0 @@ private[spoonbill] object ExtensionMachine {
+-    case Next
+@@ -57,2 +56 @@ private[spoonbill] object ExtensionMachine {
+-    case Wake
+-    case Hand(step: Step[S, M])
++    case Enqueue(steps: Vector[Step[S, M]])
+@@ -80,5 +77,0 @@ private[spoonbill] object ExtensionMachine {
+-  def waiting[S, M](state: State[S, M]): Int = state.phase match {
+-    case Phase.Delivering(_, _, _, steps) => steps.size
+-    case _                                => 0
+-  }
+-
+@@ -97 +90 @@ private[spoonbill] object ExtensionMachine {
+-      case Phase.Delivering(targets, deliveries, passed, waiting) =>
++      case Phase.Delivering(targets, deliveries, passed) =>
+@@ -102,2 +95,4 @@ private[spoonbill] object ExtensionMachine {
+-        val steps = Step.Check(delivery, notification) +: calls
+-        (state.copy(phase = Phase.Delivering(targets, delivery, passed, waiting ++ steps)), Vector(Command.Wake))
++        (
++          state.copy(phase = Phase.Delivering(targets, delivery, passed)),
++          Vector(Command.Enqueue(Step.Check(delivery, notification) +: calls))
++        )
+@@ -133,13 +128,6 @@ private[spoonbill] object ExtensionMachine {
+-            val delivering: State[S, M] =
+-              state.copy(phase = Phase.Delivering(state.slots.fold(0)(_.size), 0L, None, Vector.empty))
+-            val next = notifications.foldLeft(delivering)((before, notification) => enqueue(before, notification)._1)
+-            (next, Option.when(waiting(next) > 0)(Command.Wake).toVector)
+-          case _ => unchanged
+-        }
+-      case Event.Next =>
+-        state.phase match {
+-          case Phase.Delivering(targets, deliveries, passed, waiting) if waiting.nonEmpty =>
+-            (
+-              state.copy(phase = Phase.Delivering(targets, deliveries, passed, waiting.tail)),
+-              Vector(Command.Hand(waiting.head))
+-            )
++            val delivering: State[S, M] = state.copy(phase = Phase.Delivering(state.slots.fold(0)(_.size), 0L, None))
++            notifications.foldLeft((delivering, Vector.empty[Command[S, M]])) {
++              case ((before, commands), notification) =>
++                val (next, offered) = enqueue(before, notification)
++                (next, commands ++ offered)
++            }
+@@ -150 +138 @@ private[spoonbill] object ExtensionMachine {
+-          case Phase.Delivering(targets, deliveries, _, waiting) =>
++          case Phase.Delivering(targets, deliveries, _) =>
+@@ -152 +140 @@ private[spoonbill] object ExtensionMachine {
+-            else (state.copy(phase = Phase.Delivering(targets, deliveries, Some(delivery), waiting)), Vector.empty)
++            else (state.copy(phase = Phase.Delivering(targets, deliveries, Some(delivery))), Vector.empty)
+@@ -157,2 +145,2 @@ private[spoonbill] object ExtensionMachine {
+-          case Phase.Delivering(targets, deliveries, _, waiting) =>
+-            (state.copy(phase = Phase.Delivering(targets, deliveries, Some(delivery), waiting)), Vector.empty)
++          case Phase.Delivering(targets, deliveries, _) =>
++            (state.copy(phase = Phase.Delivering(targets, deliveries, Some(delivery))), Vector.empty)
+@@ -163 +151 @@ private[spoonbill] object ExtensionMachine {
+-          case Phase.Delivering(targets, _, Some(passed), _) if passed == delivery && index >= 0 && index < targets =>
++          case Phase.Delivering(targets, _, Some(passed)) if passed == delivery && index >= 0 && index < targets =>
+diff --git a/modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala b/modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala
+index b964552a..4d6211c6 100644
+--- a/modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala
++++ b/modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala
+@@ -6 +6 @@ import spoonbill.{Context, Extension}
+-import spoonbill.effect.{Effect, Reporter, StateCell}
++import spoonbill.effect.{Effect, Reporter}
+@@ -58,6 +58,4 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-  private val cell = new StateCell(Held(ExtensionMachine.initial[S, M](checks.nonEmpty), Vector.empty))
+-  private val steps = new SerialLane.Source[Step[S, M]] {
+-    def poll(): Option[Step[S, M]] = advance(Event.Next)._1.collectFirst { case Command.Hand(step) => step }
+-    def isEmpty: Boolean           = ExtensionMachine.waiting(cell.get.machine) == 0
+-  }
+-  private val lane = new SerialLane[F, Step[S, M]](handle, failed, unscheduled, Some(steps))
++  // Enqueue must share the transition's ordering. No application code runs here.
++  private val lock = new Object
++  private var held = Held(ExtensionMachine.initial(checks.nonEmpty), Vector.empty)
++  private val lane = new SerialLane[F, Step[S, M]](handle, failed, unscheduled)
+@@ -65 +63 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-  private def stopped: Boolean = ExtensionMachine.stopped(cell.get.machine)
++  private def stopped: Boolean = lock.synchronized(ExtensionMachine.stopped(held.machine))
+@@ -68,2 +66,3 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-    cell.modify { case Held(machine, before) =>
+-      val (next, commands) = ExtensionMachine.step(machine, event)
++    lock.synchronized {
++      val Held(machine, before) = held
++      val (next, commands)      = ExtensionMachine.step(machine, event)
+@@ -75 +74,6 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-      (Held(next, handlers), (commands, before))
++      held = Held(next, handlers)
++      commands.foreach {
++        case Command.Enqueue(steps) => steps.foreach(lane.enqueue)
++        case _                      => ()
++      }
++      (commands, before)
+@@ -80 +84 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-      case Command.Wake         => lane.wake()
++      case Command.Enqueue(_)   => lane.wake()
+@@ -290 +294 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-  private[spoonbill] def pending: Int = ExtensionMachine.waiting(cell.get.machine)
++  private[spoonbill] def pending: Int = lane.size
+@@ -296 +300 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
+-  private[spoonbill] def recorded: Int = ExtensionMachine.recorded(cell.get.machine)
++  private[spoonbill] def recorded: Int = lock.synchronized(ExtensionMachine.recorded(held.machine))
+diff --git a/modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala b/modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala
+index bc607add..2437943b 100644
+--- a/modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala
++++ b/modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala
+@@ -8 +7,0 @@ import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
+-import scala.annotation.tailrec
+@@ -18,7 +17,2 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-  @tailrec private def drain(state: Machine, items: Vector[Item] = Vector.empty): (Machine, Vector[Item]) = {
+-    val (next, commands) = step(state, Event.Next)
+-    commands match {
+-      case Vector(Command.Hand(item)) => drain(next, items :+ item)
+-      case _                          => (state, items)
+-    }
+-  }
++  private def emitted(result: (Machine, Vector[Command[Int, String]])): (Machine, Vector[Item]) =
++    (result._1, result._2.flatMap { case Command.Enqueue(items) => items; case _ => Vector.empty })
+@@ -26 +20 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-    drain(step(registered(guarded), Event.Begin)._1)
++    emitted(step(registered(guarded), Event.Begin))
+@@ -32,5 +26,2 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-    val (begun, commands) = step(recordedState, Event.Begin)
+-    commands shouldBe Vector(Command.Wake)
+-    waiting(begun) shouldBe 9
+-    val (active, offered) = drain(begun)
+-    waiting(active) shouldBe 0
++    val (active, offered) = emitted(step(recordedState, Event.Begin))
++    offered.size shouldBe 9
+@@ -46 +37 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-    drain(step(late, Event.Written(3))._1)._2.size shouldBe 3
++    emitted(step(late, Event.Written(3)))._2.size shouldBe 3
+@@ -49 +39,0 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-    step(active, Event.Next) shouldBe (active, Vector.empty)
+@@ -89 +78,0 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-      step(state, Event.Next)._2 shouldBe empty
+@@ -102,4 +91,3 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-  it should "hand out waiting steps in order and drop them atomically on any stop" in {
+-    val queued                                    = step(registered(), Event.Begin)._1
+-    val (afterCheck, Vector(Command.Hand(check))) = step(queued, Event.Next): @unchecked
+-    waiting(afterCheck) shouldBe 2
++  it should "fence callbacks on any stop and preserve adjacent delivery identity across ticket wrap" in {
++    val (queued, offeredAtAttach) = delivering()
++    val check                     = offeredAtAttach.head
+@@ -107,4 +95,3 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-      val stoppedState = step(afterCheck, event)._1
+-      waiting(stoppedState) shouldBe 0
+-      step(stoppedState, Event.Next)._2 shouldBe empty
+-      step(stoppedState, Event.Start(check))._2 shouldBe empty
++      val stoppedState = step(queued, event)._1
++      offeredAtAttach.foreach(item => step(stoppedState, Event.Start(item))._2 shouldBe empty)
++      step(stoppedState, Event.Written(8))._2 shouldBe empty
+@@ -112,2 +99,2 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-    val wrapped: Machine = queued.copy(phase = Phase.Delivering(2, Long.MaxValue, None, Vector.empty))
+-    val (next, offered)  = drain(step(wrapped, Event.Written(8))._1)
++    val wrapped: Machine = queued.copy(phase = Phase.Delivering(2, Long.MaxValue, None))
++    val (next, offered)  = emitted(step(wrapped, Event.Written(8)))
+@@ -128,2 +115,5 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-      val begun     = step(recording, Event.Begin)._1
+-      val queued    = after.foldLeft(begun)((s, n) => step(s, event(n))._1)
++      val begun     = step(recording, Event.Begin)
++      val queued = after.foldLeft(begun) { case ((s, commands), notification) =>
++        val (next, emitted) = step(s, event(notification))
++        (next, commands ++ emitted)
++      }
+@@ -134 +124 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-      val offered = drain(queued)._2
++      val offered = emitted(queued)._2
+@@ -148 +138 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-          val (queued, Vector(check, a, b)) = drain(step(before, Event.Written(value))._1): @unchecked
++          val (queued, Vector(check, a, b)) = emitted(step(before, Event.Written(value))): @unchecked
+@@ -160 +149,0 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
+-      step(taken, Event.Next)._2 shouldBe empty

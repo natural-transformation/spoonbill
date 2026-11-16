@@ -8,6 +8,14 @@ rest of phase 2 has not started. Nine of the ten decisions are made;
 see [decisions](#decisions-to-confirm). Decision 6 is open, and nothing before
 phase 8 needs it.
 
+**Pilot merge status: performance not accepted.** The gate applies to the CAS
+extension runtime already implemented in this PR, which is enabled for every
+extension-bearing view. It also blocks broader adoption. The PR remains a draft
+until a compared implementation meets an agreed performance budget for the
+intended workloads, or the owner explicitly accepts the measured cost for those
+workloads. Passing correctness tests and the click-latency trial does not clear
+this gate. The dependent deadline PR does not bypass it.
+
 Draft 2 followed a review: the plan no longer promises an unchanged spec where
 a machine itself changes. Draft 3 followed another and changed the pilot. In
 drafts 1 and 2 the lane held bare tokens, and the machine decided what each
@@ -1306,8 +1314,8 @@ latency predictions; no statistical confidence interval is claimed.
 
 The same-view, four-writer case reaches only 36% of main's throughput and
 allocates about 27 times as much per notification. Even the independent-view
-case is about 6% slower in this fixture. The broader CAS rollout gate therefore
-remains closed: the earlier click-latency result is not evidence that sustained
+case is about 6% slower in this fixture. The pilot's own merge gate and the
+broader CAS rollout gate therefore remain closed: the earlier click-latency result is not evidence that sustained
 contention or GC costs are acceptable. Optimizing the pilot or changing its
 implementation requires another performance comparison and review.
 
@@ -1326,10 +1334,88 @@ The one-second smoke trials were a fixture check and are excluded from the
 five-second comparison. No unsuccessful or unfavorable measured trial was
 replaced.
 
-The next authorized review unit is narrowed to the first shared deadline
+The separate review unit is narrowed to the first shared deadline
 machine and its two existing wrappers. They keep their scheduling/cancellation
-monitors and do not adopt the CAS interpreter. This does not approve the wider
-phase-2 rollout, further hot-path migrations, or removal of those locks.
+monitors and do not adopt the CAS interpreter. Its dependency on the pilot
+remains blocked until the pilot's own acceptance decision is resolved. This does
+not approve merging the current CAS pilot, wider phase-2 rollout, further hot-path
+migrations, or removal of those locks.
+
+### Pilot acceptance comparison: main, CAS and lock
+
+The follow-up review applies the gate to the pilot already in PR #34. Restricting
+only later rollout was insufficient: the CAS runtime is the unconditional
+implementation for extension-bearing views. PR #34 is therefore a draft, and
+dependent draft #35 cannot bypass the unresolved acceptance decision.
+
+A lock-preserving candidate was restored in an isolated worktree on the same
+pilot base, `15672bc0`. Machine state and handler ownership move under one monitor;
+waiting steps return to the lane's own queue. The current `SerialLane` is retained
+in queue-owned mode. The candidate's pure-machine spec follows emitted enqueue
+commands instead of the machine-owned queue. All interpreter, session, lane and
+adapter specs are unchanged. Before measurement, 161 selected main-module tests,
+12 cats-effect tests and 9 ZIO tests passed.
+
+The same runtime fixture then ran all three implementations in 36 fresh JVM
+trials: four workloads, three rounds, five-second warmup and measurement plus
+complete drain. Run order rotated main/CAS/lock, CAS/lock/main, lock/main/CAS.
+Heap, GC, processor hint, callback work, windows and delivery checks were unchanged.
+Every trial passed the count and ordering assertions. Ratios below use the new,
+concurrently collected main median, rather than the earlier experiment's baseline.
+
+| Workload | CAS throughput / main | Lock throughput / main | CAS allocation / main | Lock allocation / main | CAS p99 / main | Lock p99 / main |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Independent views | 90.8% | 92.2% | 5.68× | 3.62× | 1.08× | 1.18× |
+| Four writers, one view | 42.4% | 41.0% | 23.82× | 3.73× | 2.22× | 2.35× |
+| Eight writers, eight extensions | 82.4% | 86.1% | 5.90× | 3.34× | 1.29× | 1.59× |
+| Sustained backlog | 89.1% | 93.2% | 6.38× | 3.58× | 1.28× | 1.74× |
+
+For the four-writer workload, the absolute medians are:
+
+| Implementation | Notifications/second | Bytes/notification | Delivery p99 (ms) | GC pause time (ms/second) |
+| --- | ---: | ---: | ---: | ---: |
+| Main | 1,945,658 | 1,058 | 0.840 | 7.749 |
+| Current CAS pilot | 824,280 | 25,207 | 1.862 | 43.718 |
+| Lock-preserving candidate | 797,934 | 3,943 | 1.972 | 12.725 |
+
+The lock reduces allocation substantially but does not recover contention
+throughput. Its tail latency is also worse in several cells; for the backlog
+case, median per-run p99 is 115.1 ms, versus 84.5 ms for CAS and 66.2 ms for main.
+These are synthetic runtime observations on a shared machine, with three trials
+and no confidence interval. They do not establish a production workload budget.
+
+**Decision: the pilot's merge gate remains not passed.** Switching to this lock
+candidate alone is not an adequate performance resolution. No implementation
+alternative or measured cost has been accepted. Further optimization and a fresh
+comparison, deferral of the extension pilot, or explicit owner acceptance of the
+cost for stated workloads is required before merge. The live PR implementation
+has not been changed to the experimental candidate.
+
+The [candidate patch](../misc/extension-contention/variants/lock-preserving.patch)
+and [all 36 rows, summaries and identities](../misc/extension-contention/evidence/2026-11-16-pilot-acceptance/)
+are retained for review and reproduction. The extended runner keeps the original
+two-way mode; the analyzer checks matching workload/JVM settings and reproduces
+the previous summary byte-for-byte. The original runtime benchmark source is
+unchanged. `--runtime-only` preparation compiles the same fixture for each variant
+after its separate contract validation; it does not replace that validation.
+
+Verification, through the repository flake:
+
+- `sbt 'spoonbill/testOnly *Extension*Spec *SerialLane*Spec' 'ce3/testOnly *Extension*Spec' 'zio2/testOnly *Extension*Spec'`
+  on the lock candidate: pass, 161 + 12 + 9 tests.
+- `bash misc/extension-contention/run.sh <main-cp> <cas-cp> <new-output> 3 5 <lock-cp>`:
+  pass, all 36 complete trials and delivery checks.
+- `node misc/extension-contention/analyze.mjs <output> 3 baseline,cas,locked`:
+  pass; packaged rows reproduce the original three-way summary exactly.
+- The previous two-way evidence still reproduces exactly; a deliberately
+  mismatched writer count is rejected by the analyzer.
+- `git apply --check --unidiff-zero misc/extension-contention/variants/lock-preserving.patch`,
+  shell/Node syntax checks, and `git diff --check`: pass.
+
+Raw recordings and compilation/measurement logs remain under
+`/private/tmp/spoonbill-pilot-acceptance-evidence/`; contract validation is in
+`/private/tmp/spoonbill-pilot-lock-validation.log`. The provenance file records
+source, patch and recording hashes. No unfavorable trial was dropped or replaced.
 
 ### Click-latency gate
 
