@@ -376,3 +376,29 @@ errors or warnings. Direct application of the existing forbidden-API checker to
 the new JS model reports no violations; permanent JS-machine discovery and CI
 wiring are owned by the coordinator. The fixture-only changes in this unit copy
 the new imported module, without changing behavioral assertions.
+
+`bridge-machine.js` now owns the view gate, durable revision decisions,
+application-in-progress phase, navigation/heartbeat counters, and Sensitive's
+barrier/replay decisions. Waiting, ready and recovering are explicit; recovery
+cannot be reopened by later readiness. Navigation and departure barriers retain
+their independent counters and permanent fencing. Sensitive lifecycle state
+contains only metadata and consumed presentation IDs, never payloads or DOM.
+The concrete active-region map, weak DOM roots, timer/observer handles and DOM
+mutation/acknowledgement effects remain in the interpreter. Capacity and replay
+admission are pure decisions over supplied metadata.
+
+Listener registration order is preserved: Bridge constructs Spoonbill's history
+handler before Sensitive's guard. Public/native tests pin the resulting admitted
+history and suppressed-history behavior; no unproved listener reordering is
+introduced. The same staged DOM, clock sampling, timer, clear and acknowledgement
+order remains around the model. Ordinary callback admission is a predicate and
+does not allocate a transition; view patches and control lifecycle edges do.
+
+Validation passes 90 Node tests (77 behavior, six Connection laws and seven
+Bridge/Sensitive laws), all three native fixtures in Chromium and WebKit, and
+production Closure resource generation with zero errors/warnings. The emitted
+optimized bundle also passes all eight real-service sensitive-acknowledgement
+modes across Chromium/WebKit via `scripts/test-sensitive-acknowledgement.sh`.
+Direct forbidden-API checks pass both JS models; central JS discovery/CI remains
+the coordinator's owned integration step. These complete the browser extraction
+units, subject to independent review and separately identified follow-up defects.
