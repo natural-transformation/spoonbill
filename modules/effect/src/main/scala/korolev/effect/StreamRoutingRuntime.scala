@@ -78,22 +78,27 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
     claimed
   }
   private inline def change[B](inline body: B): B = {
-    var run    = false
-    val result = monitor.synchronized { val value = body; run = claimDrainer(); value }
-    if (run) drainCommands()
+    var first: () => Unit = null
+    val result = monitor.synchronized {
+      val value = body
+      if (claimDrainer()) first = takeCommand()
+      value
+    }
+    if (first != null) drainCommands(first)
     result
   }
-  private def drainCommands(): Unit = {
-    var continue = true
-    while (continue) {
-      val action: () => Unit = monitor.synchronized {
-        if (dispatchPaused(dispatch) || commands.isEmpty) { dispatch = releaseDispatch(dispatch); null }
-        else commands.removeHead()
-      }
-      if (action == null) continue = false
-      else
-        try action()
-        catch { case NonFatal(error) => report(error) }
+
+  /** Called only while owning monitor. Reservation invokes no effect. */
+  private def takeCommand(): () => Unit =
+    if (dispatchPaused(dispatch) || commands.isEmpty) { dispatch = releaseDispatch(dispatch); null }
+    else commands.removeHead()
+
+  private def drainCommands(first: () => Unit): Unit = {
+    var action = first
+    while (action != null) {
+      try action()
+      catch { case NonFatal(error) => report(error) }
+      action = monitor.synchronized(takeCommand())
     }
   }
   private def discardValues(data: LaneData): Unit = {
@@ -250,16 +255,19 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
     storage.refreshSingle()
     lane
   }
-  def stream(lane: Lane): Stream[F, A] = new Stream[F, A] {
-    def pull(): F[Option[A]] = StreamRoutingRuntime.protect {
-      F.promise[Option[A]] { callback =>
-        change {
-          storage.lanes.get(lane) match {
-            case None => enqueue(callback, endToken)
-            case Some(data) if data.values.nonEmpty =>
+  def stream(lane: Lane): Stream[F, A] = {
+    // Partition/buffer lanes are never removed. Hub membership remains dynamic.
+    val stable = if (mode == Mode.Fanout) null else monitor.synchronized(storage.lanes.getOrElse(lane, null))
+    new Stream[F, A] {
+      def pull(): F[Option[A]] = StreamRoutingRuntime.protect {
+        F.promise[Option[A]] { callback =>
+          change {
+            val data = if (stable != null) stable else storage.lanes.getOrElse(lane, null)
+            if (data == null) enqueue(callback, endToken)
+            else if (data.values.nonEmpty) {
               if (data.values.size == capacity) storage.full -= 1
               enqueue(callback, Right(Some(data.values.removeHead())))
-            case Some(data) =>
+            } else {
               control.phase match {
                 case Phase.Open =>
                   if (data.pulls.isEmpty) storage.demanding += 1
@@ -267,12 +275,13 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
                 case Phase.Failed(error) => enqueue(callback, Left(error))
                 case _                   => enqueue(callback, endToken)
               }
+            }
+            wakeReader()
           }
-          wakeReader()
         }
-      }
-    }(cancel())
-    def cancel(): F[Unit] = cancelLane(Some(lane))
+      }(cancel())
+      def cancel(): F[Unit] = cancelLane(Some(lane))
+    }
   }
   private def cancelLane(lane: Option[Lane]): F[Unit] = F.uncancelable {
     F.delay(change {
@@ -298,7 +307,7 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
   }
   def cancel(): F[Unit] = cancelLane(None)
   def drainDeferred(lane: Lane): (Vector[A], () => Unit) = {
-    var run = false
+    var first: () => Unit = null
     val values = monitor.synchronized {
       val values = storage.lanes.get(lane).fold(Vector.empty[A]) { data =>
         val values = data.values.toVector
@@ -306,10 +315,10 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
         values
       }
       wakeReader()
-      run = claimDrainer()
+      if (claimDrainer()) first = takeCommand()
       values
     }
-    (values, () => if (run) drainCommands())
+    (values, () => if (first != null) drainCommands(first))
   }
 }
 
