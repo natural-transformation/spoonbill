@@ -108,6 +108,11 @@ other builds paused. Candidate/baseline median throughput ratios were 1.032
 (roundtrip), 1.259 (batch), and 1.065 (four producers); allocation ratios were
 0.944, 0.934, and 0.913. All count/order checks passed. The ranges are retained;
 shared-machine observations do not establish an application-level speedup.
+Subsequent counter audit invalidated reliance on the contended allocation ratio:
+the old fixture sampled after thread termination, where the JDK global counter
+can undercount. Those rows remain provisional; roundtrip/batch main-thread rows
+are unaffected. A live-worker/self-counter/control fixture and fresh contended
+comparison are in progress; no old contended allocation claim is used as proof.
 The baseline is `57d7a8b4`, after the separate waiter fixes. The exact measured
 machine source is retained; subsequent alignment-only formatting is recorded in
 provenance. The packaged analyzer reproduces the original summary byte-for-byte.

@@ -1,5 +1,6 @@
 {
   "recordedOn": "2026-11-17",
+  "allocationAudit": "Contended allocation is provisional: the original global counter snapshot followed worker termination and may undercount. Roundtrip/batch main-thread snapshots are unaffected. Original rows are retained; live-thread counter-checked replacement is pending.",
   "baselineRevision": "57d7a8b4d436786b1e228f0738d786f571a86a59",
   "candidateBaseRevision": "57d7a8b4d436786b1e228f0738d786f571a86a59",
   "baselineQueueSha256": "a0aa447e9d93e1502770a78693b143a404f96af9029531a08d7c5153bfc49b3b",

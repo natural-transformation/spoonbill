@@ -1,5 +1,14 @@
 # Queue lifecycle comparison
 
+**Allocation audit:** the original fixture sampled the JVM-wide allocation total
+after worker termination. JDK 21 can undercount terminated threads, so its
+contended allocation rows are provisional and are not allocation proof.
+Roundtrip and batch use the still-live main thread and are unaffected by that
+boundary. The replacement fixture is being prepared to hold warmup and measured
+workers alive, check worker/main self-allocation lower bounds and escaping
+allocation controls, and reject inconsistent totals. Fresh contended evidence
+will replace the old allocation claim; every original row remains retained.
+
 Compile the same fixture against baseline and candidate checkouts through the
 repository-local Nix flake using `prepare.sh <checkout> <classpath-file>`, then
 run `run.sh <baseline-classpath> <candidate-classpath> <new-output-directory>`.
@@ -19,6 +28,7 @@ every row, source identity, fixture hash and environment with any comparison.
 
 [The 2026-11-17 comparison](evidence/2026-11-17/) retains all 18 rows against
 baseline `57d7a8b4`. Candidate/baseline median throughput was 1.032× for roundtrip,
-1.259× for batch and 1.065× for contention; allocation per value was 0.944×,
-0.934× and 0.913×. Every correctness assertion passed. See provenance for exact
+1.259× for batch and 1.065× for contention; main-thread allocation per value was
+0.944× and 0.934×. The old contended 0.913× allocation ratio is provisional under
+the audit above. Every correctness assertion passed. See provenance for exact
 source identities, the formatting-only distinction, and validation logs.
