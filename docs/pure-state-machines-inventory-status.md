@@ -1,15 +1,16 @@
 # Rollout inventory status
 
 Independent read-only audit of aggregate `730ef03ca2eea35f27dae1755079b179bcef7cc7`,
-its source and per-area progress records, updated for the accepted parser at
-`52665119`. The audit itself ran no builds or tests. “Complete” means the
+its source and per-area progress records, updated through the integrated stream
+and caller sources at `349116bc`. The audit itself ran no builds or tests. “Complete” means the
 inventory implementation/disposition and local evidence exist; it does not replace
 final aggregate CI, independent review, or the final four-workload pilot gate.
 “Missing” means not yet accepted/integrated, including actively implemented work.
 
-54 of the 56 by-area rows have completed implementation/retention dispositions.
-The two remaining rows cover Hub/sort and buffer, including finite fanout-publisher
-adoption. Their contracts are approved and their implementations are under test.
+All 56 by-area rows now have implementation or retention dispositions. The new
+stream contracts and finite fanout publishers are integrated with focused tests;
+their common-semantics cost evaluation and the final aggregate acceptance gates
+remain open. This is implementation coverage, not final performance acceptance.
 The [design progress](pure-state-machines-design.md#rollout-progress) links the
 per-area commands, behavioral evidence and measured acceptance records.
 
@@ -72,11 +73,11 @@ per-area commands, behavioral evidence and measured acceptance records.
 | Effects | AsyncTable | Complete — Waiting/Settled per-key enum after failure-publication fixes; resettable semantics retained. |
 | Effects | Resource pool | Retained — one immutable PoolData with allocation IDs and explicit disposal claim; extensive separate fixes and ownership tests; raw outer-caller adoption limits documented. |
 | Effects | Scheduler | Complete — shared result latch and ScheduledStreamMachine after separate lost-waiter/replay/cancellation fixes. |
-| Effects | Hub and Stream.sort | Missing — approved replacements are in the operator worktree, not aggregate; reentrant cleanup/notification fixes and native proofs remain in progress. Publisher Hub(stream,128) adoption is part of this remaining unit. |
-| Effects | Stream.buffer | Missing — approved owned-reader/nonjoining-cleanup replacement is in progress; accepted-prefix fixes are integrated, new batching/cleanup ordering still under review. |
+| Effects | Hub and Stream.sort | Implemented — lossless configured fanout, bounded FIFO racks and explicit overflow; independent read ownership and nonjoining cleanup pass Future, IO and ZIO checks. Finite publisher adoption and overflow-only legacy Frontend closure are integrated. Cost evaluation remains pending. |
+| Effects | Stream.buffer | Implemented — eager bounded reader, accepted-prefix drain, atomic batch selection, owned timers and nonjoining cancellation; model/native/ordering checks pass. Cost evaluation remains pending. |
 | Adapters | Setup ownership | Complete — shared adapter model; standalone differs and has a documented retain disposition. |
 | Adapters | Stream subscriber | Retained — equivalent single immutable state/monitor in both adapters, 12 behavioral cases each. |
-| Adapters | Stream publisher | Complete lifecycle model/fixes — but the newly approved finite fanout-Hub capacity adoption remains with the missing stream-operator unit. |
+| Adapters | Stream publisher | Complete — lifecycle model/fixes plus explicit 128-item lossless fanout; tests pin both demand resumption and slow-subscriber cancellation in Akka/Pekko. |
 | Adapters | Zio frame deadline | Complete — pure scan/timer with event-loop scalar storage, preserved buffer ownership and accepted four-cell gate. |
 | Browser | Connection | Complete — connection-machine.js, transport epochs, timer generations, behavior/native/optimized-bundle evidence. |
 | Browser | View gate and heartbeat | Complete — bridge-machine.js; public/native behavior tests and CI wiring. |
@@ -97,10 +98,10 @@ per-area commands, behavioral evidence and measured acceptance records.
 - Shared idle comparison is now closed by the six unchanged-policy cases and the
   separately reproduced/fixed exact-handle cancellation race. No idle row remains
   unaddressed.
-- No additional by-area inventory row was found missing beyond the three approved
-  stream-operator replacements/caller adoption. Final
-  aggregate correctness/CI, fresh original pilot workloads and final review remain
-  global gates rather than new inventory machines.
+- No additional by-area inventory row was found missing; the final stream
+  replacements and caller adoption have since been integrated. Common-semantics
+  stream cost evaluation, final aggregate correctness/CI, fresh original pilot
+  workloads and final review remain global gates rather than new inventory machines.
 - This audit does not require merging unrelated one-shot capability guards,
   security-check chains, ordinary data builders, or existing named-state protocols
   merely to add another Machine file.

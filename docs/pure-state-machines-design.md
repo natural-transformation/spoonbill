@@ -930,7 +930,7 @@ whole phase is complete.
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
 | 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
-| 8 | Table, scheduler, queue and pool dispositions complete. Approved Hub, sort and buffer contracts are under implementation and independent cancellation/cleanup review |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved Hub, sort and buffer implementations, native ownership proofs, finite publisher buffers and legacy overflow closure are integrated. Common-semantics stream cost evaluation and final aggregate validation remain pending |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
@@ -959,8 +959,8 @@ guard/snapshot cases. Its five-cell comparison passed with snapshot throughput
 99.7% of baseline and equal allocation; all failed designs and 100 trial rows are
 retained. These are local incremental checks, not the final aggregate gate.
 
-Remaining completion work is the three stream operators, their combined
-correctness/CI validation, final inventory reconciliation and a
+Remaining completion work is the stream cost evaluation, final combined
+correctness/CI validation, evidence reconciliation and a
 fresh original four-workload pilot gate against the final aggregate sources.
 The PR remains draft for the owner's final review. The following integration
 paragraphs are historical checkpoints; their then-pending items do not supersede
@@ -975,6 +975,17 @@ snapshots byte-for-byte. All 192 parser trial rows remain available, including
 the rejected designs and earlier sampling protocol.
 The integrated `http/test` and `standalone/test` commands passed all 182 and 59
 tests through Nix (`/tmp/spoonbill-rollout-chunk-integration-15.log`).
+
+The integrated stream models passed 125 effect tests, four new ZIO native
+cancellation/context cases and nine selected IO cases. The subsequent complete
+runtime/effect-adapter check passed runtime 948, CE3 60 and ZIO2 58 native plus
+17 ScalaTest cases (`/tmp/spoonbill-stream-runtime-integration-16.log`). All 56
+inventory entries now have code/retention dispositions. Finite fanout and legacy
+overflow-retirement caller checks are recorded separately; the implementation
+count does not replace the remaining performance and final aggregate gates.
+After caller integration, 43 selected Frontend/session/client tests, all 56 Akka
+tests and all 64 Pekko tests passed (`/tmp/spoonbill-stream-callers-integration-17.log`).
+The integrated purity guard found 45 machine files and zero violations.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
