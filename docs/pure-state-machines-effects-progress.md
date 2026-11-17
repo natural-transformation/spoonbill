@@ -190,6 +190,25 @@ HttpClient acquisition separately. Successful response headers transfer a loan
 to the streaming body, so that caller requires a distinct adoption protocol;
 managed `use` cannot replace it by returning the loan at header completion.
 
+The internal `borrowAndTransfer` helper now reuses that acquisition scope with
+an explicit, bounded contract: abort cancel/error before the supplied task
+succeeds; transfer the loan to the task's successful result owner. It preserves
+caller context and cancelable capacity waiting and adds no public caller API or
+Effect capability. Abort must use the loan's guarded discard/give, not mutate a
+possibly already-returned resource unconditionally. Tests cover strict task
+construction failure, already-returned loans, cancellation inside the task and
+before native publication, caller IOLocal state, and retention until the result
+owner returns the loan. Validation passes 85 effect, eight pool-IO and 54
+HTTP-client tests; real HTTP integration is owned by the transport workstream.
+
+This does **not** claim sealed caller delivery. A controlled CE3 probe observed
+success remain success when cancellation arrived during its success finalizer;
+the coordinator's CE2, Monix and ZIO2 controls instead demonstrated late
+cancellation after a success-finalizer observation. Those counterexamples rule
+out a universal map-marker/default-outcome primitive. Returned-resource callers
+must still bracket/adopt ownership beyond the supplied task-success boundary.
+No new `guaranteeOutcome` capability or uncancelable capacity-wait policy was added.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate

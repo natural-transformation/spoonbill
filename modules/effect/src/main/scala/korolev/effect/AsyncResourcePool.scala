@@ -76,11 +76,11 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
   private enum UseState {
     case Waiting(callback: Option[Promise])
     case Acquired(value: Borrow[F, T])
-    case Released
+    case Transferred, Released
   }
 
   /** Own the loan before publishing it to the possibly canceled caller. */
-  private final class UseRequest {
+  private final class UseRequest(cleanup: Borrow[F, T] => F[Unit]) {
     private val ownership = new AtomicReference[UseState](UseState.Waiting(None))
     val deliver: Promise  = outcome => complete(outcome)
 
@@ -95,6 +95,23 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
 
     def released: Boolean = ownership.get() == UseState.Released
 
+    @tailrec def transfer(): Unit = {
+      val before = ownership.get()
+      before match {
+        case UseState.Acquired(_) =>
+          if (!ownership.compareAndSet(before, UseState.Transferred)) transfer()
+        case _ => ()
+      }
+    }
+
+    @tailrec private def relinquish(): UseState = {
+      val before = ownership.get()
+      before match {
+        case UseState.Transferred | UseState.Released => before
+        case _                                        => if (ownership.compareAndSet(before, UseState.Released)) before else relinquish()
+      }
+    }
+
     @tailrec private def complete(outcome: Either[Throwable, Borrow[F, T]]): Unit = {
       val before = ownership.get()
       before match {
@@ -103,16 +120,16 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
           if (ownership.compareAndSet(before, next)) callback(outcome) else complete(outcome)
         case UseState.Released =>
           // Factory completion can arrive after cancellation already returned.
-          outcome.foreach(value => Effect[F].uncancelable(value.give()).runAsyncForget)
+          outcome.foreach(value => Effect[F].uncancelable(cleanup(value)).runAsyncForget)
         case _ => ()
       }
     }
 
     def release(): F[Unit] = Effect[F].delayAsync {
-      ownership.getAndSet(UseState.Released) match {
-        case UseState.Acquired(value) => value.give()
-        case UseState.Waiting(_)      => forgetWaiter(deliver); Effect[F].unit
-        case UseState.Released        => Effect[F].unit
+      relinquish() match {
+        case UseState.Acquired(value)                 => cleanup(value)
+        case UseState.Waiting(_)                      => forgetWaiter(deliver); Effect[F].unit
+        case UseState.Transferred | UseState.Released => Effect[F].unit
       }
     }
   }
@@ -125,8 +142,26 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
     }
   }
 
-  def use[R](f: T => F[R]): F[R] = Effect[F].delayAsync {
-    val request = new UseRequest
+  def use[R](f: T => F[R]): F[R] = scopedBorrow(value => f(value.value), _.give(), transferOnSuccess = false)
+
+  /**
+   * Internal acquisition ownership until the supplied task succeeds. On success
+   * its returned resource owns the loan; callers must bracket/adopt that
+   * result. This is a task-success boundary, not irrevocable delivery to an
+   * outer caller: some runtimes can honor late cancellation after a success
+   * finalizer. Abort must respect the loan's ownership claim, e.g. discard
+   * rather than an unconditional mutation of a possibly returned/reused
+   * resource.
+   */
+  private[spoonbill] def borrowAndTransfer[R](f: Borrow[F, T] => F[R])(abort: Borrow[F, T] => F[Unit]): F[R] =
+    scopedBorrow(f, abort, transferOnSuccess = true)
+
+  private def scopedBorrow[R](
+    f: Borrow[F, T] => F[R],
+    cleanup: Borrow[F, T] => F[Unit],
+    transferOnSuccess: Boolean
+  ): F[R] = Effect[F].delayAsync {
+    val request = new UseRequest(cleanup)
     val acquire = Effect[F].promise[Borrow[F, T]] { callback =>
       if (request.register(callback)) {
         borrowUnsafe(request.deliver)
@@ -135,7 +170,12 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
       }
     }
     // User work stays in the caller's effect, including its fiber-local context.
-    Effect[F].guarantee(acquire.flatMap(value => Effect[F].delayAsync(f(value.value))))(request.release())
+    val task = acquire.flatMap(value => Effect[F].delayAsync(f(value)))
+    val result = if (transferOnSuccess) task.map { value =>
+      request.transfer(); value
+    }
+    else task
+    Effect[F].guarantee(result)(request.release())
   }
 
   /**

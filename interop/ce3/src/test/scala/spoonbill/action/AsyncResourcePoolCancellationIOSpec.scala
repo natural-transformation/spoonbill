@@ -1,6 +1,6 @@
 package spoonbill.action
 
-import _root_.cats.effect.{IO, IOLocal}
+import _root_.cats.effect.{Deferred, IO, IOLocal}
 import _root_.cats.effect.unsafe.{implicits, IORuntime}
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
@@ -176,5 +176,70 @@ class AsyncResourcePoolCancellationIOSpec extends AnyFlatSpec with Matchers {
       f.worker.drain()
       probe.flatMap(_.value).collect { case Success(borrowed) => f.run(borrowed.discard()) }
     }
+  }
+
+  it should "abort a transfer task canceled before that task succeeds" in {
+    val f       = new Fixture
+    val pool    = f.pool(IO(new Resource))
+    val entered = f.run(Deferred[IO, Unit])
+    var aborted = 0
+    val transfer = pool.borrowAndTransfer[Unit] { _ =>
+      entered.complete(()).flatMap(_ => IO.never)
+    }(value => IO(aborted += 1).flatMap(_ => value.discard()))
+    val fiber = f.run(transfer.start)
+    f.run(entered.get)
+    f.run(fiber.cancel)
+    aborted shouldBe 1
+    pool.unsafeGetState.total shouldBe 0
+  }
+
+  it should "abort a transfer whose assigned loan has not reached the native continuation" in {
+    val f     = new Fixture
+    val pool  = f.pool(IO(new Resource))
+    val first = f.run(pool.borrow())
+    f.run(first.give())
+    f.holdNextPublication.set(true)
+    var entered = false
+    var aborted = 0
+    val fiber = f.run(
+      pool
+        .borrowAndTransfer(_ => IO { entered = true }) { value =>
+          IO(aborted += 1).flatMap(_ => value.discard())
+        }
+        .start
+    )
+    try {
+      f.publication.get() should not be empty
+      f.run(fiber.cancel)
+      f.publication.getAndSet(None).get.apply()
+      f.worker.drain()
+      entered shouldBe false
+      aborted shouldBe 1
+      pool.unsafeGetState.total shouldBe 0
+    } finally {
+      f.run(fiber.cancel)
+      f.publication.getAndSet(None).foreach(_.apply())
+      f.worker.drain()
+      f.close(first.value)
+    }
+  }
+
+  it should "retain a successful transfer for its result owner and preserve caller context" in {
+    val f     = new Fixture
+    val pool  = f.pool(IO(new Resource))
+    val local = f.run(IOLocal("default"))
+    val operation = local.set("caller").flatMap { _ =>
+      pool.borrowAndTransfer(value => local.get.map(context => (context, value)))(_.discard())
+    }
+    val (context, transferred) = f.run(operation)
+    try {
+      context shouldBe "caller"
+      val waiting = pool.borrow().unsafeToFuture()(f.runtime)
+      f.worker.drain()
+      waiting.isCompleted shouldBe false
+      f.run(transferred.give())
+      f.worker.drain()
+      f.run(Await.result(waiting, 3.seconds).discard())
+    } finally f.close(transferred.value)
   }
 }
