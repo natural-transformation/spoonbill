@@ -17,8 +17,8 @@
 package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicBoolean
-import spoonbill.effect.syntax._
 import scala.collection.concurrent.TrieMap
+import spoonbill.effect.syntax._
 
 /**
  * A function which returns new streams which contains same elements as the
@@ -32,10 +32,21 @@ final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
   private val queues     = TrieMap.empty[Queue[F, T], Unit]
   private val inProgress = new AtomicBoolean(false)
 
+  private def terminate(error: Option[Throwable]): Unit = {
+    val subscribers = synchronized {
+      closed = true
+      queues.keysIterator.toList
+    }
+    subscribers.foreach { queue =>
+      error.foreach(queue.failUnsafe)
+      queue.unsafeClose()
+    }
+  }
+
   private final class StreamOnePullAtTime(thisQueue: Queue[F, T]) extends Stream[F, T] {
 
     private def begin(): F[Boolean] =
-      Effect[F].delay(inProgress.compareAndSet(false, true))
+      Effect[F].delay(!closed && inProgress.compareAndSet(false, true))
 
     private def end(): F[Unit] =
       Effect[F].delay {
@@ -43,8 +54,11 @@ final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
         if (end == false) throw new IllegalStateException("Can't be false")
       }
 
-    private def pullUpstream(): F[Option[T]] = upstream
-      .pull()
+    private def pullUpstream(): F[Option[T]] = Effect[F]
+      .delayAsync(upstream.pull())
+      .recoverF { case error =>
+        Effect[F].delay(terminate(Some(error))).flatMap(_ => Effect[F].fail(error))
+      }
       .map { maybeItem =>
         maybeItem match {
           case Some(item) =>
@@ -53,8 +67,7 @@ final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
                 queue.offerUnsafe(item)
             }
           case None =>
-            closed = true
-            queues.keysIterator.foreach(_.unsafeClose())
+            terminate(None)
         }
         maybeItem
       }
@@ -66,7 +79,9 @@ final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
                     for {
                       size <- thisQueue.size()
                       result <- if (size > 0) end() *> thisQueue.stream.pull()
-                                else pullUpstream().flatMap(v => end().as(v))
+                                else
+                                  pullUpstream().recoverF { case error => end().flatMap(_ => Effect[F].fail(error)) }
+                                    .flatMap(value => end().as(value))
                     } yield result
                   else thisQueue.stream.pull()
       } yield result
@@ -81,7 +96,7 @@ final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
     }
   }
 
-  def newStreamUnsafe(): Stream[F, T] = {
+  def newStreamUnsafe(): Stream[F, T] = synchronized {
     if (closed)
       throw new IllegalStateException("Hub is closed")
     val queue  = new QueueRemoveFromHubOnClose()

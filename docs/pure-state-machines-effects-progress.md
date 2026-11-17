@@ -237,6 +237,26 @@ with EOF reproduced the exception. Termination now detaches each registered
 callback and skips absent callbacks. Both permanent regressions pass; rack
 routing, buffering and upstream cancellation policy are unchanged.
 
+Hub's upstream read failure (including cancel-induced failure) stranded every
+non-driving subscriber, and EOF allowed later pulls to read upstream again.
+The three regressions failed before the fix. Terminal publication now closes
+admission and settles the registered queues with EOF or the same failure;
+registration and terminal snapshots share one monitor. Synchronous upstream
+construction failures are covered too. Subscriber cancellation still closes
+only that subscriber, and overflow/EOF buffering policy is unchanged. All four
+Hub regressions and the full 96 effect tests pass. Native cancellation of a
+driving pull, distinct from an upstream failure, remains in the operator
+ownership contract audit; this unit does not claim to settle that policy.
+
+The native cancellation review is now pinned by a controlled-worker CE3 case:
+a canceled driving read can leave its actual upstream callback alive. Releasing
+the Hub pull owner in a cancellation finalizer then allowed a second concurrent
+upstream read. The characterization passes the original pre-terminal-fix source,
+fails that finalizer variant with two reads, and passes success/error-only owner
+release. All four terminal cases plus the native Hub and consumption cases pass.
+This preserves the original native-cancellation ownership boundary; it does not
+claim that canceled-driver sibling progress is solved without an operator contract.
+
 ## Browser prerequisite
 
 Connection transport selection, long polling and backoff need behavior coverage
