@@ -47,41 +47,32 @@ final class BoundedPresentationStore[F[_], S](
   clock: () => Instant
 )(using F: Effect[F]) {
   import BoundedPresentationStore.*
-  private enum Phase { case Bootstrap, Pending, Active, Disconnected }
-  private case class Entry(
-    token: AnyRef,
-    leaseToken: Option[AnyRef],
-    fence: Option[ViewFence],
-    phase: Phase,
-    deadline: Instant,
-    nodes: Map[Id, Any],
-    resetBrowser: Boolean
-  )
+  import PresentationMachine.Phase
+  private type Entry = PresentationMachine.Entry
   private val monitor  = new Object
   private var entries  = Map.empty[Qsid, Entry]
-  private var history  = Map.empty[Qsid, ViewFence]
+  private var registry = PresentationMachine.initial
   private var observed = Instant.MIN
-  private var closed   = false
 
   private def reject(error: Error): Nothing = throw new Rejected(error)
-  private def at[A](body: Instant => A): A = {
+  private inline def at[A](inline body: Instant => A): A = {
     val sample = clock()
     monitor.synchronized {
-      if (closed) reject(Error.Closed)
-      if (sample.isAfter(observed)) observed = sample
+      if (PresentationMachine.closed(registry)) reject(Error.Closed)
+      if (PresentationMachine.advances(observed, sample)) observed = sample
       body(observed)
     }
   }
-  private def effect[A](body: Instant => A): F[A] = F.delay(at(body))
+  private inline def effect[A](inline body: Instant => A): F[A] = F.delay(at(body))
   private def expired(entry: Entry, time: Instant): Boolean =
-    entry.phase != Phase.Active && !time.isBefore(entry.deadline)
+    PresentationMachine.expired(entry, time)
   private def sweep(time: Instant): Unit =
-    entries = entries.filterNot { case (_, entry) => expired(entry, time) }
+    entries = PresentationMachine.sweep(entries, time)
   private def count(phase: Phase): Int = entries.valuesIterator.count(_.phase == phase)
   private def checked(qsid: Qsid, token: AnyRef, time: Instant): Entry = {
     val entry = entries.getOrElse(qsid, reject(Error.StaleOwner))
-    if (!(entry.token eq token) || entry.phase == Phase.Disconnected) reject(Error.StaleOwner)
-    if (expired(entry, time)) {
+    if (!PresentationMachine.currentOwner(entry, token)) reject(Error.StaleOwner)
+    if (PresentationMachine.expired(entry, time)) {
       entries -= qsid
       reject(Error.StaleOwner)
     }
@@ -93,7 +84,7 @@ final class BoundedPresentationStore[F[_], S](
     }
     def write[T: StateSerializer](nodeId: Id, value: T): F[Unit] = effect { time =>
       val entry = checked(qsid, token, time)
-      if (!entry.nodes.contains(nodeId) && entry.nodes.size >= limits.nodesPerView) reject(Error.Capacity)
+      if (!PresentationMachine.canWrite(entry.nodes.contains(nodeId), entry.nodes.size, limits.nodesPerView)) reject(Error.Capacity)
       entries += qsid -> entry.copy(nodes = entry.nodes.updated(nodeId, value))
     }
     def delete(nodeId: Id): F[Unit] = effect { time =>
@@ -119,18 +110,10 @@ final class BoundedPresentationStore[F[_], S](
   // there is no browser acknowledgement that makes it safe to clear the flag.
   private[spoonbill] def bootstrap(qsid: Qsid, topLevel: S, resetBrowser: Boolean): F[StateManager[F]] = effect { time =>
     sweep(time)
-    if (entries.contains(qsid)) reject(Error.AlreadyExists)
-    if (count(Phase.Bootstrap) >= limits.bootstrap) reject(Error.Capacity)
+    PresentationMachine.bootstrapError(entries.contains(qsid), count(Phase.Bootstrap), limits.bootstrap).foreach(reject)
     val token = new Object
-    entries += qsid -> Entry(
-      token,
-      None,
-      None,
-      Phase.Bootstrap,
-      time.plusSeconds(limits.bootstrapSeconds),
-      Map(Id.TopLevel -> topLevel),
-      resetBrowser
-    )
+    entries += qsid -> PresentationMachine.bootstrap(token, time.plusSeconds(limits.bootstrapSeconds),
+      Map[Id, Any](Id.TopLevel -> topLevel), resetBrowser)
     manager(qsid, token)
   }
 
@@ -144,28 +127,11 @@ final class BoundedPresentationStore[F[_], S](
   def claim(qsid: Qsid, fence: ViewFence): F[Lease] = effect { time =>
     sweep(time)
     val previous = entries.getOrElse(qsid, reject(Error.Missing))
-    history.get(qsid) match {
-      case Some(prior) if prior.viewId != fence.viewId             => reject(Error.WrongView)
-      case Some(prior) if fence.epoch.toLong <= prior.epoch.toLong => reject(Error.StaleOwner)
-      case None if history.size >= limits.history                  => reject(Error.Capacity)
-      case _                                                       => ()
-    }
-    if (fence.epoch.toLong <= 0) reject(Error.StaleOwner)
-    val pendingAdded = if (previous.phase == Phase.Pending) 0 else 1
-    val activeAdded  = if (previous.phase == Phase.Pending || previous.phase == Phase.Active) 0 else 1
-    if (
-      count(Phase.Pending) + pendingAdded > limits.pending ||
-      count(Phase.Active) + count(Phase.Pending) + activeAdded > limits.active
-    ) reject(Error.Capacity)
+    PresentationMachine.claimFenceError(registry, qsid, fence, limits.history).foreach(reject)
+    PresentationMachine.claimCapacityError(previous.phase, count(Phase.Pending), count(Phase.Active), limits).foreach(reject)
     val token = new Object
-    history += qsid -> fence
-    entries += qsid -> previous.copy(
-      token = token,
-      leaseToken = Some(token),
-      fence = Some(fence),
-      phase = Phase.Pending,
-      deadline = time.plusSeconds(limits.pendingSeconds)
-    )
+    registry = PresentationMachine.remember(registry, qsid, fence)
+    entries += qsid -> PresentationMachine.claim(previous, token, fence, time.plusSeconds(limits.pendingSeconds))
     new Lease(qsid, fence, token, previous.resetBrowser)
   }
 
@@ -178,21 +144,17 @@ final class BoundedPresentationStore[F[_], S](
     val manager: StateManager[F] = BoundedPresentationStore.this.manager(qsid, token)
     def publish(): F[Unit] = effect { time =>
       val entry = checked(qsid, token, time)
-      entries += qsid -> entry.copy(phase = Phase.Active, deadline = Instant.MAX)
+      entries += qsid -> PresentationMachine.publish(entry)
     }
     def release(): F[Unit] = F.delay {
       val sample = clock()
       monitor.synchronized {
-        if (sample.isAfter(observed)) observed = sample
+        if (PresentationMachine.advances(observed, sample)) observed = sample
         entries.get(qsid).filter(_.token eq token).foreach { entry =>
           entries -= qsid
           sweep(observed)
-          if (!closed && entry.phase == Phase.Active && count(Phase.Disconnected) < limits.disconnected) {
-            entries += qsid -> entry.copy(
-              token = new Object,
-              phase = Phase.Disconnected,
-              deadline = observed.plusSeconds(limits.reconnectSeconds)
-            )
+          if (PresentationMachine.retainOnRelease(registry, entry.phase, count(Phase.Disconnected), limits.disconnected)) {
+            entries += qsid -> PresentationMachine.disconnect(entry, new Object, observed.plusSeconds(limits.reconnectSeconds))
           }
         }
       }
@@ -238,14 +200,14 @@ final class BoundedPresentationStore[F[_], S](
   def resources: F[Resources] = F.delay {
     val sample = clock()
     monitor.synchronized {
-      if (sample.isAfter(observed)) observed = sample
+      if (PresentationMachine.advances(observed, sample)) observed = sample
       sweep(observed)
       Resources(
         count(Phase.Active),
         count(Phase.Pending),
         count(Phase.Bootstrap),
         count(Phase.Disconnected),
-        history.size,
+        PresentationMachine.history(registry).size,
         entries.valuesIterator.map(_.nodes.size).sum
       )
     }
@@ -258,14 +220,13 @@ final class BoundedPresentationStore[F[_], S](
    */
   private[spoonbill] def reclaimAbsentHistory(): F[Set[Qsid]] = effect { time =>
     sweep(time)
-    history = history.filter { case (qsid, _) => entries.contains(qsid) }
+    registry = PresentationMachine.reclaim(registry, entries.keySet)
     entries.keySet
   }
   def close(): F[Unit] = F.delay {
     monitor.synchronized {
-      closed = true
+      registry = PresentationMachine.close(registry)
       entries = Map.empty
-      history = Map.empty
     }
   }
 }

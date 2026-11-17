@@ -1,0 +1,62 @@
+Compiled from "BoundedPresentationStore.scala"
+public final class spoonbill.state.BoundedPresentationStore$$anon$3$$anon$4 implements spoonbill.state.StateManager$Snapshot {
+  private final scala.collection.immutable.Map nodes$9;
+
+  private final spoonbill.state.BoundedPresentationStore$$anon$3 $outer;
+
+  public spoonbill.state.BoundedPresentationStore$$anon$3$$anon$4(scala.collection.immutable.Map, spoonbill.state.BoundedPresentationStore$$anon$3);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: putfield      #34                 // Field nodes$9:Lscala/collection/immutable/Map;
+       5: aload_2
+       6: ifnonnull     17
+       9: new           #36                 // class java/lang/NullPointerException
+      12: dup
+      13: invokespecial #39                 // Method java/lang/NullPointerException."<init>":()V
+      16: athrow
+      17: aload_0
+      18: aload_2
+      19: putfield      #41                 // Field $outer:Lspoonbill/state/BoundedPresentationStore$$anon$3;
+      22: aload_0
+      23: invokespecial #42                 // Method java/lang/Object."<init>":()V
+      26: return
+
+  public scala.Option apply(avocet.Id, spoonbill.state.StateDeserializer);
+    Code:
+       0: aload_0
+       1: getfield      #41                 // Field $outer:Lspoonbill/state/BoundedPresentationStore$$anon$3;
+       4: invokevirtual #52                 // Method spoonbill/state/BoundedPresentationStore$$anon$3.spoonbill$state$BoundedPresentationStore$_$$anon$$$outer:()Lspoonbill/state/BoundedPresentationStore;
+       7: aload_0
+       8: aload_1
+       9: invokedynamic #73,  0             // InvokeDynamic #0:apply:(Lspoonbill/state/BoundedPresentationStore$$anon$3$$anon$4;Lavocet/Id;)Lscala/Function1;
+      14: invokevirtual #77                 // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$at:(Lscala/Function1;)Ljava/lang/Object;
+      17: checkcast     #79                 // class scala/Option
+      20: areturn
+
+  private final scala.Option apply$$anonfun$1(avocet.Id, java.time.Instant);
+    Code:
+       0: aload_0
+       1: getfield      #41                 // Field $outer:Lspoonbill/state/BoundedPresentationStore$$anon$3;
+       4: invokevirtual #52                 // Method spoonbill/state/BoundedPresentationStore$$anon$3.spoonbill$state$BoundedPresentationStore$_$$anon$$$outer:()Lspoonbill/state/BoundedPresentationStore;
+       7: aload_0
+       8: getfield      #41                 // Field $outer:Lspoonbill/state/BoundedPresentationStore$$anon$3;
+      11: getfield      #87                 // Field spoonbill/state/BoundedPresentationStore$$anon$3.spoonbill$state$BoundedPresentationStore$$anon$3$$qsid$1:Lspoonbill/Qsid;
+      14: aload_0
+      15: getfield      #41                 // Field $outer:Lspoonbill/state/BoundedPresentationStore$$anon$3;
+      18: getfield      #91                 // Field spoonbill/state/BoundedPresentationStore$$anon$3.spoonbill$state$BoundedPresentationStore$$anon$3$$token$9:Ljava/lang/Object;
+      21: aload_2
+      22: invokevirtual #95                 // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$checked:(Lspoonbill/Qsid;Ljava/lang/Object;Ljava/time/Instant;)Lspoonbill/state/BoundedPresentationStore$Entry;
+      25: pop
+      26: aload_0
+      27: getfield      #34                 // Field nodes$9:Lscala/collection/immutable/Map;
+      30: aload_1
+      31: invokeinterface #101,  2          // InterfaceMethod scala/collection/immutable/Map.get:(Ljava/lang/Object;)Lscala/Option;
+      36: areturn
+
+  private static java.lang.Object $deserializeLambda$(java.lang.invoke.SerializedLambda);
+    Code:
+       0: aload_0
+       1: invokedynamic #114,  0            // InvokeDynamic #1:lambdaDeserialize:(Ljava/lang/invoke/SerializedLambda;)Ljava/lang/Object;
+       6: areturn
+}

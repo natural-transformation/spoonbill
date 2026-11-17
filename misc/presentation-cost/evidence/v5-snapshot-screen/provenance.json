@@ -1,0 +1,38 @@
+{
+  "recordedOn": "2026-11-17",
+  "baselineRevision": "a07387f86932b40d5c181d48718ad702ff517314",
+  "variant": 5,
+  "sourceDirectory": "/tmp/spoonbill-presentation-snapshot-screen-v5",
+  "runOrder": [
+    "snapshot-baseline-1",
+    "snapshot-candidate-1",
+    "snapshot-candidate-2",
+    "snapshot-baseline-2",
+    "snapshot-baseline-3",
+    "snapshot-candidate-3"
+  ],
+  "isolatedFromCoordinatedBuilds": true,
+  "protocol": "presentation-current-thread-v1",
+  "allocation": "current measuring thread remains alive; escaping controls excluded from measured deltas",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "javaVersion": "openjdk version \"21.0.8\" 2025-07-15 LTS\nOpenJDK Runtime Environment Zulu21.44+17-CA (build 21.0.8+9-LTS)\nOpenJDK 64-Bit Server VM Zulu21.44+17-CA (build 21.0.8+9-LTS, mixed mode, sharing)",
+  "fixtureSha256": "c592cd2180a975c3a68b9fdee7e0bf5cfca1340b7d85cc2d43529e8e29f3a9b7",
+  "trialsSha256": "cd276f41d5227d2b9f395bcd34d1553df4e465c1d2a19a660b6b6ca1e8ef30e1",
+  "sourceHashes": {
+    "BoundedPresentationStore.scala": "75026ba2e740f015bc9f400037e6abc0aeb7e149ad48dd8a5c703b363c6dc78f",
+    "PresentationMachine.scala": "3c73693bea9b4ca5bd6741f052d192d9c190e27ab5a3a21bf297eaef2802c405",
+    "PresentationMachineSpec.scala": "8da23b9d58ce8d1aa6f799eaf98288df36127249b04387c0b20765ad6c0a2075"
+  },
+  "limits": [
+    "synthetic public operations",
+    "shared developer machine without CPU affinity",
+    "three-trial medians/ranges for comparisons; no confidence interval",
+    "sampled p99 includes clock overhead",
+    "baseline JIT compilation modes varied; all observations retained"
+  ]
+}

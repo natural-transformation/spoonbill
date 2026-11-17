@@ -1,0 +1,86 @@
+{
+  "baseline": {
+    "ownSamples": 1819,
+    "steadySamples": 784,
+    "classes": [
+      {
+        "name": "spoonbill/state/BoundedPresentationStore$$anon$3$$anon$4",
+        "samples": 472,
+        "weight": 7894720568,
+        "stack": [
+          "spoonbill/state/BoundedPresentationStore$$anon$3.snapshot$$anonfun$1:105",
+          "spoonbill.state.BoundedPresentationStore$$anon$3$$Lambda+0x000000900112adf8/2083999882.apply:-1",
+          "spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$at:72",
+          "spoonbill/state/BoundedPresentationStore.effect$$anonfun$1:75",
+          "spoonbill.state.BoundedPresentationStore$$Lambda+0x0000009001115b40/1908043086.apply:-1"
+        ]
+      },
+      {
+        "name": "scala/util/Success",
+        "samples": 312,
+        "weight": 5345881600,
+        "stack": [
+          "scala/concurrent/Promise$.successful:140",
+          "scala/concurrent/Future$.successful:663",
+          "spoonbill/effect/Effect$FutureEffect.delay:104",
+          "spoonbill/effect/Effect$FutureEffect.delay:102",
+          "spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$effect:75"
+        ]
+      }
+    ]
+  },
+  "v3": {
+    "ownSamples": 1780,
+    "steadySamples": 756,
+    "classes": [
+      {
+        "name": "scala/concurrent/impl/Promise$DefaultPromise",
+        "samples": 204,
+        "weight": 3156304816,
+        "stack": [
+          "scala/concurrent/Promise$.successful:147",
+          "scala/concurrent/Future$.successful:663",
+          "spoonbill/effect/Effect$FutureEffect.delay:104",
+          "spoonbill/effect/Effect$FutureEffect.delay:102",
+          "spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$effect:66"
+        ]
+      },
+      {
+        "name": "spoonbill.state.BoundedPresentationStore$$anon$2$$Lambda+0x000000700112e8b0/899543194",
+        "samples": 139,
+        "weight": 2352979512,
+        "stack": [
+          "java/lang/invoke/DirectMethodHandle.allocateInstance:501",
+          "java/lang/invoke/DirectMethodHandle$Holder.newInvokeSpecial:-1",
+          "java/lang/invoke/Invokers$Holder.linkToTargetMethod:-1",
+          "spoonbill/state/BoundedPresentationStore$$anon$2.snapshot:94",
+          "spoonbill/state/PresentationBenchmark$.$anonfun$4:54"
+        ]
+      },
+      {
+        "name": "spoonbill/state/BoundedPresentationStore$$anon$2$$anon$3",
+        "samples": 237,
+        "weight": 2296300976,
+        "stack": [
+          "spoonbill/state/BoundedPresentationStore$$anon$2.snapshot$$anonfun$1:96",
+          "spoonbill.state.BoundedPresentationStore$$anon$2$$Lambda+0x000000700112e8b0/899543194.apply:-1",
+          "spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$at:63",
+          "spoonbill/state/BoundedPresentationStore.effect$$anonfun$1:66",
+          "spoonbill.state.BoundedPresentationStore$$Lambda+0x0000007001114cb8/1813666644.apply:-1"
+        ]
+      },
+      {
+        "name": "scala/util/Success",
+        "samples": 176,
+        "weight": 1369186648,
+        "stack": [
+          "scala/concurrent/Promise$.successful:140",
+          "scala/concurrent/Future$.successful:663",
+          "spoonbill/effect/Effect$FutureEffect.delay:104",
+          "spoonbill/effect/Effect$FutureEffect.delay:102",
+          "spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$effect:66"
+        ]
+      }
+    ]
+  }
+}

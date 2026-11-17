@@ -1,0 +1,220 @@
+{
+  "trials": 30,
+  "repetitions": 3,
+  "scope": "five public-operation workloads",
+  "allocationProtocol": "current live measuring thread; escaping allocation controls excluded from measured deltas",
+  "statistics": "median/range of independent JVM trials; sampled p99; no confidence interval",
+  "passed": true,
+  "results": [
+    {
+      "scenario": "read",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 113986401.9075899,
+          "min": 110978721.4184399,
+          "max": 114802363.80894111
+        },
+        "bytesPerOperation": {
+          "median": 48.000028705170806,
+          "min": 48.00002850114897,
+          "max": 48.0000294831269
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 113465508.35042003,
+          "min": 111801679.10970652,
+          "max": 113643806.05220419
+        },
+        "bytesPerOperation": {
+          "median": 48.00002883695552,
+          "min": 48.00002879171114,
+          "max": 48.00002926610623
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 0.9954302131793565,
+      "p99Ratio": 1,
+      "allocationRatio": 1.0000000027455134,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    },
+    {
+      "scenario": "read-clock",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 71518260.55413058,
+          "min": 71045853.44803327,
+          "max": 72112452.50735895
+        },
+        "bytesPerOperation": {
+          "median": 120.00004575053245,
+          "min": 120.00004537351388,
+          "max": 120.0000460547414
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 87520844.84381138,
+          "min": 87135043.18019933,
+          "max": 87666516.13522428
+        },
+        "bytesPerOperation": {
+          "median": 72.00003738537589,
+          "min": 72.00003732325749,
+          "max": 72.00003755090029
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 1.2237552223123322,
+      "p99Ratio": 1,
+      "allocationRatio": 0.6000000827921053,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    },
+    {
+      "scenario": "write",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 59794617.11027406,
+          "min": 58210846.53940697,
+          "max": 65985391.503652126
+        },
+        "bytesPerOperation": {
+          "median": 176.00005472061892,
+          "min": 176.00005071828406,
+          "max": 176.00005620944398
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 67196276.52886654,
+          "min": 67086513.934016146,
+          "max": 71189385.04154713
+        },
+        "bytesPerOperation": {
+          "median": 120.00004869313499,
+          "min": 120.00004596188677,
+          "max": 120.0000487728171
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 1.123784711338518,
+      "p99Ratio": 1,
+      "allocationRatio": 0.6818182464978326,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    },
+    {
+      "scenario": "snapshot",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 80799225.26673123,
+          "min": 80595302.23636839,
+          "max": 80804147.66493848
+        },
+        "bytesPerOperation": {
+          "median": 56.00004049543441,
+          "min": 56.00004049295403,
+          "max": 56.000040597886766
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 80584381.8295553,
+          "min": 80535437.5933737,
+          "max": 81065021.68936868
+        },
+        "bytesPerOperation": {
+          "median": 56.000040603389536,
+          "min": 56.00004036264936,
+          "max": 56.000040628062834
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 0.9973410210745624,
+      "p99Ratio": 1,
+      "allocationRatio": 1.0000000019277686,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    },
+    {
+      "scenario": "lease",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 12119905.86587405,
+          "min": 11999833.332537059,
+          "max": 12352300.673676949
+        },
+        "bytesPerOperation": {
+          "median": 911.930887485022,
+          "min": 911.8175516738743,
+          "max": 911.9347494904264
+        },
+        "p99Nanos": {
+          "median": 250,
+          "min": 209,
+          "max": 250
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 14358281.963286448,
+          "min": 14299565.218286375,
+          "max": 14524474.501787437
+        },
+        "bytesPerOperation": {
+          "median": 799.9991252455255,
+          "min": 799.9934470918731,
+          "max": 800.0244007000217
+        },
+        "p99Nanos": {
+          "median": 208,
+          "min": 167,
+          "max": 209
+        }
+      },
+      "throughputRatio": 1.1846859309126303,
+      "p99Ratio": 0.832,
+      "allocationRatio": 0.8772585030558745,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    }
+  ]
+}

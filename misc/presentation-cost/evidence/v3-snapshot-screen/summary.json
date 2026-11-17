@@ -1,0 +1,52 @@
+{
+  "trials": 6,
+  "repetitions": 3,
+  "scope": "targeted screen; not full acceptance",
+  "allocationProtocol": "current live measuring thread; escaping allocation controls excluded from measured deltas",
+  "statistics": "median/range of independent JVM trials; sampled p99; no confidence interval",
+  "passed": false,
+  "results": [
+    {
+      "scenario": "snapshot",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 87227905.49509527,
+          "min": 86969880.54794155,
+          "max": 87658212.00781097
+        },
+        "bytesPerOperation": {
+          "median": 56.000037510913934,
+          "min": 56.00003732678183,
+          "max": 56.000037622212396
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 59530404.058791816,
+          "min": 52417649.445366,
+          "max": 59793558.73548042
+        },
+        "bytesPerOperation": {
+          "median": 135.91812883624655,
+          "min": 72.35890929184991,
+          "max": 135.9195767822025
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 0.6824697179291912,
+      "p99Ratio": 1,
+      "allocationRatio": 2.427107817735966,
+      "allocationWithinGuide": false,
+      "withinGuide": false
+    }
+  ]
+}

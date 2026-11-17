@@ -1,0 +1,464 @@
+Compiled from "BoundedPresentationStore.scala"
+public final class spoonbill.state.BoundedPresentationStore$$anon$2 extends spoonbill.state.StateManager<F> {
+  public final spoonbill.Qsid spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1;
+
+  public final java.lang.Object spoonbill$state$BoundedPresentationStore$$anon$2$$token$5;
+
+  private final spoonbill.state.BoundedPresentationStore $outer;
+
+  public spoonbill.state.BoundedPresentationStore$$anon$2(spoonbill.Qsid, java.lang.Object, spoonbill.state.BoundedPresentationStore);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: putfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+       5: aload_0
+       6: aload_2
+       7: putfield      #60                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$token$5:Ljava/lang/Object;
+      10: aload_3
+      11: ifnonnull     22
+      14: new           #62                 // class java/lang/NullPointerException
+      17: dup
+      18: invokespecial #65                 // Method java/lang/NullPointerException."<init>":()V
+      21: athrow
+      22: aload_0
+      23: aload_3
+      24: putfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      27: aload_0
+      28: aload_3
+      29: getfield      #71                 // Field spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$F:Lspoonbill/effect/Effect;
+      32: invokespecial #74                 // Method spoonbill/state/StateManager."<init>":(Lspoonbill/effect/Effect;)V
+      35: return
+
+  public java.lang.Object read(avocet.Id, spoonbill.state.StateDeserializer);
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: invokevirtual #84                 // Method spoonbill/state/BoundedPresentationStore.inline$F:()Lspoonbill/effect/Effect;
+       7: aload_0
+       8: aload_1
+       9: invokedynamic #106,  0            // InvokeDynamic #0:apply:(Lspoonbill/state/BoundedPresentationStore$$anon$2;Lavocet/Id;)Lscala/Function0;
+      14: invokeinterface #112,  2          // InterfaceMethod spoonbill/effect/Effect.delay:(Lscala/Function0;)Ljava/lang/Object;
+      19: areturn
+
+  public java.lang.Object write(avocet.Id, java.lang.Object, spoonbill.state.StateSerializer);
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: invokevirtual #84                 // Method spoonbill/state/BoundedPresentationStore.inline$F:()Lspoonbill/effect/Effect;
+       7: aload_0
+       8: aload_1
+       9: aload_2
+      10: invokedynamic #125,  0            // InvokeDynamic #1:apply:(Lspoonbill/state/BoundedPresentationStore$$anon$2;Lavocet/Id;Ljava/lang/Object;)Lscala/Function0;
+      15: invokeinterface #112,  2          // InterfaceMethod spoonbill/effect/Effect.delay:(Lscala/Function0;)Ljava/lang/Object;
+      20: areturn
+
+  public java.lang.Object delete(avocet.Id);
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: invokevirtual #84                 // Method spoonbill/state/BoundedPresentationStore.inline$F:()Lspoonbill/effect/Effect;
+       7: aload_0
+       8: aload_1
+       9: invokedynamic #133,  0            // InvokeDynamic #2:apply:(Lspoonbill/state/BoundedPresentationStore$$anon$2;Lavocet/Id;)Lscala/Function0;
+      14: invokeinterface #112,  2          // InterfaceMethod spoonbill/effect/Effect.delay:(Lscala/Function0;)Ljava/lang/Object;
+      19: areturn
+
+  public java.lang.Object snapshot();
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: invokevirtual #84                 // Method spoonbill/state/BoundedPresentationStore.inline$F:()Lspoonbill/effect/Effect;
+       7: aload_0
+       8: invokedynamic #143,  0            // InvokeDynamic #3:apply:(Lspoonbill/state/BoundedPresentationStore$$anon$2;)Lscala/Function0;
+      13: invokeinterface #112,  2          // InterfaceMethod spoonbill/effect/Effect.delay:(Lscala/Function0;)Ljava/lang/Object;
+      18: areturn
+
+  public final spoonbill.state.BoundedPresentationStore spoonbill$state$BoundedPresentationStore$_$$anon$$$outer();
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: areturn
+
+  private final scala.Option read$$anonfun$1(avocet.Id);
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: astore_2
+       5: aload_2
+       6: invokevirtual #150                // Method spoonbill/state/BoundedPresentationStore.inline$clock:()Lscala/Function0;
+       9: invokeinterface #154,  1          // InterfaceMethod scala/Function0.apply:()Ljava/lang/Object;
+      14: checkcast     #156                // class java/time/Instant
+      17: astore_3
+      18: aload_2
+      19: invokevirtual #159                // Method spoonbill/state/BoundedPresentationStore.inline$monitor:()Ljava/lang/Object;
+      22: dup
+      23: astore        4
+      25: monitorenter
+      26: aload_2
+      27: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      30: aload_2
+      31: invokevirtual #167                // Method spoonbill/state/BoundedPresentationStore.inline$registry:()Lspoonbill/state/PresentationMachine$Registry;
+      34: invokevirtual #173                // Method spoonbill/state/PresentationMachine$.closed:(Lspoonbill/state/PresentationMachine$Registry;)Z
+      37: ifeq          48
+      40: aload_2
+      41: getstatic     #177                // Field spoonbill/state/BoundedPresentationStore$Error$.Closed:Lspoonbill/state/BoundedPresentationStore$Error;
+      44: invokevirtual #181                // Method spoonbill/state/BoundedPresentationStore.inline$reject:(Lspoonbill/state/BoundedPresentationStore$Error;)Lscala/runtime/Nothing$;
+      47: athrow
+      48: aload_2
+      49: aload_2
+      50: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      53: aload_2
+      54: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      57: aload_3
+      58: invokevirtual #189                // Method spoonbill/state/PresentationMachine$.observe:(Ljava/time/Instant;Ljava/time/Instant;)Ljava/time/Instant;
+      61: invokevirtual #193                // Method spoonbill/state/BoundedPresentationStore.inline$observed_$eq:(Ljava/time/Instant;)V
+      64: aload_2
+      65: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      68: astore        6
+      70: aload_0
+      71: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      74: aload_0
+      75: getfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+      78: aload_0
+      79: getfield      #60                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$token$5:Ljava/lang/Object;
+      82: aload         6
+      84: invokevirtual #197                // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$checked:(Lspoonbill/Qsid;Ljava/lang/Object;Ljava/time/Instant;)Lspoonbill/state/PresentationMachine$Entry;
+      87: invokevirtual #201                // Method spoonbill/state/PresentationMachine$Entry.nodes:()Lscala/collection/immutable/Map;
+      90: aload_1
+      91: invokeinterface #207,  2          // InterfaceMethod scala/collection/immutable/Map.get:(Ljava/lang/Object;)Lscala/Option;
+      96: astore        5
+      98: aload         4
+     100: monitorexit
+     101: aload         5
+     103: goto          110
+     106: aload         4
+     108: monitorexit
+     109: athrow
+     110: areturn
+    Exception table:
+       from    to  target type
+          26    98   106   any
+
+  private final void write$$anonfun$1(avocet.Id, java.lang.Object);
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: astore_3
+       5: aload_3
+       6: invokevirtual #150                // Method spoonbill/state/BoundedPresentationStore.inline$clock:()Lscala/Function0;
+       9: invokeinterface #154,  1          // InterfaceMethod scala/Function0.apply:()Ljava/lang/Object;
+      14: checkcast     #156                // class java/time/Instant
+      17: astore        4
+      19: aload_3
+      20: invokevirtual #159                // Method spoonbill/state/BoundedPresentationStore.inline$monitor:()Ljava/lang/Object;
+      23: dup
+      24: astore        5
+      26: monitorenter
+      27: aload_3
+      28: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      31: aload_3
+      32: invokevirtual #167                // Method spoonbill/state/BoundedPresentationStore.inline$registry:()Lspoonbill/state/PresentationMachine$Registry;
+      35: invokevirtual #173                // Method spoonbill/state/PresentationMachine$.closed:(Lspoonbill/state/PresentationMachine$Registry;)Z
+      38: ifeq          49
+      41: aload_3
+      42: getstatic     #177                // Field spoonbill/state/BoundedPresentationStore$Error$.Closed:Lspoonbill/state/BoundedPresentationStore$Error;
+      45: invokevirtual #181                // Method spoonbill/state/BoundedPresentationStore.inline$reject:(Lspoonbill/state/BoundedPresentationStore$Error;)Lscala/runtime/Nothing$;
+      48: athrow
+      49: aload_3
+      50: aload_3
+      51: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      54: aload_3
+      55: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      58: aload         4
+      60: invokevirtual #189                // Method spoonbill/state/PresentationMachine$.observe:(Ljava/time/Instant;Ljava/time/Instant;)Ljava/time/Instant;
+      63: invokevirtual #193                // Method spoonbill/state/BoundedPresentationStore.inline$observed_$eq:(Ljava/time/Instant;)V
+      66: aload_3
+      67: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      70: astore        6
+      72: aload_0
+      73: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      76: aload_0
+      77: getfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+      80: aload_0
+      81: getfield      #60                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$token$5:Ljava/lang/Object;
+      84: aload         6
+      86: invokevirtual #197                // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$checked:(Lspoonbill/Qsid;Ljava/lang/Object;Ljava/time/Instant;)Lspoonbill/state/PresentationMachine$Entry;
+      89: astore        7
+      91: getstatic     #226                // Field spoonbill/state/PresentationMachine$.MODULE$:Lspoonbill/state/PresentationMachine$;
+      94: aload         7
+      96: invokevirtual #201                // Method spoonbill/state/PresentationMachine$Entry.nodes:()Lscala/collection/immutable/Map;
+      99: aload_1
+     100: invokeinterface #230,  2          // InterfaceMethod scala/collection/immutable/Map.contains:(Ljava/lang/Object;)Z
+     105: aload         7
+     107: invokevirtual #201                // Method spoonbill/state/PresentationMachine$Entry.nodes:()Lscala/collection/immutable/Map;
+     110: invokeinterface #234,  1          // InterfaceMethod scala/collection/immutable/Map.size:()I
+     115: aload_0
+     116: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+     119: getfield      #238                // Field spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$limits:Lspoonbill/state/BoundedPresentationStore$Limits;
+     122: invokevirtual #241                // Method spoonbill/state/BoundedPresentationStore$Limits.nodesPerView:()I
+     125: invokevirtual #245                // Method spoonbill/state/PresentationMachine$.canWrite:(ZII)Z
+     128: ifne          142
+     131: aload_0
+     132: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+     135: getstatic     #248                // Field spoonbill/state/BoundedPresentationStore$Error$.Capacity:Lspoonbill/state/BoundedPresentationStore$Error;
+     138: invokevirtual #251                // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$reject:(Lspoonbill/state/BoundedPresentationStore$Error;)Lscala/runtime/Nothing$;
+     141: athrow
+     142: aload_0
+     143: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+     146: aload_0
+     147: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+     150: getfield      #255                // Field spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$entries:Lscala/collection/immutable/Map;
+     153: getstatic     #260                // Field scala/Predef$.MODULE$:Lscala/Predef$;
+     156: aload_0
+     157: getfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+     160: invokevirtual #264                // Method scala/Predef$.ArrowAssoc:(Ljava/lang/Object;)Ljava/lang/Object;
+     163: checkcast     #266                // class spoonbill/Qsid
+     166: astore        8
+     168: getstatic     #269                // Field scala/Predef$ArrowAssoc$.MODULE$:Lscala/Predef$ArrowAssoc$;
+     171: aload         8
+     173: aload         7
+     175: invokevirtual #201                // Method spoonbill/state/PresentationMachine$Entry.nodes:()Lscala/collection/immutable/Map;
+     178: aload_1
+     179: aload_2
+     180: invokeinterface #273,  3          // InterfaceMethod scala/collection/immutable/Map.updated:(Ljava/lang/Object;Ljava/lang/Object;)Lscala/collection/immutable/MapOps;
+     185: checkcast     #203                // class scala/collection/immutable/Map
+     188: astore        9
+     190: aload         7
+     192: invokevirtual #276                // Method spoonbill/state/PresentationMachine$Entry.copy$default$1:()Ljava/lang/Object;
+     195: astore        10
+     197: aload         7
+     199: invokevirtual #279                // Method spoonbill/state/PresentationMachine$Entry.copy$default$2:()Lscala/Option;
+     202: astore        11
+     204: aload         7
+     206: invokevirtual #282                // Method spoonbill/state/PresentationMachine$Entry.copy$default$3:()Lscala/Option;
+     209: astore        12
+     211: aload         7
+     213: invokevirtual #286                // Method spoonbill/state/PresentationMachine$Entry.copy$default$4:()Lspoonbill/state/PresentationMachine$Phase;
+     216: astore        13
+     218: aload         7
+     220: invokevirtual #289                // Method spoonbill/state/PresentationMachine$Entry.copy$default$5:()Ljava/time/Instant;
+     223: astore        14
+     225: aload         7
+     227: invokevirtual #293                // Method spoonbill/state/PresentationMachine$Entry.copy$default$7:()Z
+     230: istore        15
+     232: aload         7
+     234: aload         10
+     236: aload         11
+     238: aload         12
+     240: aload         13
+     242: aload         14
+     244: aload         9
+     246: iload         15
+     248: invokevirtual #297                // Method spoonbill/state/PresentationMachine$Entry.copy:(Ljava/lang/Object;Lscala/Option;Lscala/Option;Lspoonbill/state/PresentationMachine$Phase;Ljava/time/Instant;Lscala/collection/immutable/Map;Z)Lspoonbill/state/PresentationMachine$Entry;
+     251: invokevirtual #301                // Method scala/Predef$ArrowAssoc$.$minus$greater$extension:(Ljava/lang/Object;Ljava/lang/Object;)Lscala/Tuple2;
+     254: invokeinterface #305,  2          // InterfaceMethod scala/collection/immutable/Map.$plus:(Lscala/Tuple2;)Lscala/collection/immutable/MapOps;
+     259: checkcast     #203                // class scala/collection/immutable/Map
+     262: putfield      #255                // Field spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$entries:Lscala/collection/immutable/Map;
+     265: getstatic     #311                // Field scala/runtime/BoxedUnit.UNIT:Lscala/runtime/BoxedUnit;
+     268: pop
+     269: aload         5
+     271: monitorexit
+     272: goto          279
+     275: aload         5
+     277: monitorexit
+     278: athrow
+     279: return
+    Exception table:
+       from    to  target type
+          27   269   275   any
+
+  private java.lang.Object write$$anonfun$adapted$1(avocet.Id, java.lang.Object);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: aload_2
+       3: invokespecial #317                // Method write$$anonfun$1:(Lavocet/Id;Ljava/lang/Object;)V
+       6: getstatic     #311                // Field scala/runtime/BoxedUnit.UNIT:Lscala/runtime/BoxedUnit;
+       9: areturn
+
+  private final void delete$$anonfun$1(avocet.Id);
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: astore_2
+       5: aload_2
+       6: invokevirtual #150                // Method spoonbill/state/BoundedPresentationStore.inline$clock:()Lscala/Function0;
+       9: invokeinterface #154,  1          // InterfaceMethod scala/Function0.apply:()Ljava/lang/Object;
+      14: checkcast     #156                // class java/time/Instant
+      17: astore_3
+      18: aload_2
+      19: invokevirtual #159                // Method spoonbill/state/BoundedPresentationStore.inline$monitor:()Ljava/lang/Object;
+      22: dup
+      23: astore        4
+      25: monitorenter
+      26: aload_2
+      27: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      30: aload_2
+      31: invokevirtual #167                // Method spoonbill/state/BoundedPresentationStore.inline$registry:()Lspoonbill/state/PresentationMachine$Registry;
+      34: invokevirtual #173                // Method spoonbill/state/PresentationMachine$.closed:(Lspoonbill/state/PresentationMachine$Registry;)Z
+      37: ifeq          48
+      40: aload_2
+      41: getstatic     #177                // Field spoonbill/state/BoundedPresentationStore$Error$.Closed:Lspoonbill/state/BoundedPresentationStore$Error;
+      44: invokevirtual #181                // Method spoonbill/state/BoundedPresentationStore.inline$reject:(Lspoonbill/state/BoundedPresentationStore$Error;)Lscala/runtime/Nothing$;
+      47: athrow
+      48: aload_2
+      49: aload_2
+      50: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      53: aload_2
+      54: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      57: aload_3
+      58: invokevirtual #189                // Method spoonbill/state/PresentationMachine$.observe:(Ljava/time/Instant;Ljava/time/Instant;)Ljava/time/Instant;
+      61: invokevirtual #193                // Method spoonbill/state/BoundedPresentationStore.inline$observed_$eq:(Ljava/time/Instant;)V
+      64: aload_2
+      65: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      68: astore        5
+      70: aload_0
+      71: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      74: aload_0
+      75: getfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+      78: aload_0
+      79: getfield      #60                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$token$5:Ljava/lang/Object;
+      82: aload         5
+      84: invokevirtual #197                // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$checked:(Lspoonbill/Qsid;Ljava/lang/Object;Ljava/time/Instant;)Lspoonbill/state/PresentationMachine$Entry;
+      87: astore        6
+      89: aload_0
+      90: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      93: aload_0
+      94: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      97: getfield      #255                // Field spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$entries:Lscala/collection/immutable/Map;
+     100: getstatic     #260                // Field scala/Predef$.MODULE$:Lscala/Predef$;
+     103: aload_0
+     104: getfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+     107: invokevirtual #264                // Method scala/Predef$.ArrowAssoc:(Ljava/lang/Object;)Ljava/lang/Object;
+     110: checkcast     #266                // class spoonbill/Qsid
+     113: astore        7
+     115: getstatic     #269                // Field scala/Predef$ArrowAssoc$.MODULE$:Lscala/Predef$ArrowAssoc$;
+     118: aload         7
+     120: aload         6
+     122: invokevirtual #201                // Method spoonbill/state/PresentationMachine$Entry.nodes:()Lscala/collection/immutable/Map;
+     125: aload_1
+     126: invokeinterface #324,  2          // InterfaceMethod scala/collection/immutable/Map.$minus:(Ljava/lang/Object;)Lscala/collection/immutable/MapOps;
+     131: checkcast     #203                // class scala/collection/immutable/Map
+     134: astore        8
+     136: aload         6
+     138: invokevirtual #276                // Method spoonbill/state/PresentationMachine$Entry.copy$default$1:()Ljava/lang/Object;
+     141: astore        9
+     143: aload         6
+     145: invokevirtual #279                // Method spoonbill/state/PresentationMachine$Entry.copy$default$2:()Lscala/Option;
+     148: astore        10
+     150: aload         6
+     152: invokevirtual #282                // Method spoonbill/state/PresentationMachine$Entry.copy$default$3:()Lscala/Option;
+     155: astore        11
+     157: aload         6
+     159: invokevirtual #286                // Method spoonbill/state/PresentationMachine$Entry.copy$default$4:()Lspoonbill/state/PresentationMachine$Phase;
+     162: astore        12
+     164: aload         6
+     166: invokevirtual #289                // Method spoonbill/state/PresentationMachine$Entry.copy$default$5:()Ljava/time/Instant;
+     169: astore        13
+     171: aload         6
+     173: invokevirtual #293                // Method spoonbill/state/PresentationMachine$Entry.copy$default$7:()Z
+     176: istore        14
+     178: aload         6
+     180: aload         9
+     182: aload         10
+     184: aload         11
+     186: aload         12
+     188: aload         13
+     190: aload         8
+     192: iload         14
+     194: invokevirtual #297                // Method spoonbill/state/PresentationMachine$Entry.copy:(Ljava/lang/Object;Lscala/Option;Lscala/Option;Lspoonbill/state/PresentationMachine$Phase;Ljava/time/Instant;Lscala/collection/immutable/Map;Z)Lspoonbill/state/PresentationMachine$Entry;
+     197: invokevirtual #301                // Method scala/Predef$ArrowAssoc$.$minus$greater$extension:(Ljava/lang/Object;Ljava/lang/Object;)Lscala/Tuple2;
+     200: invokeinterface #305,  2          // InterfaceMethod scala/collection/immutable/Map.$plus:(Lscala/Tuple2;)Lscala/collection/immutable/MapOps;
+     205: checkcast     #203                // class scala/collection/immutable/Map
+     208: putfield      #255                // Field spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$entries:Lscala/collection/immutable/Map;
+     211: getstatic     #311                // Field scala/runtime/BoxedUnit.UNIT:Lscala/runtime/BoxedUnit;
+     214: pop
+     215: aload         4
+     217: monitorexit
+     218: goto          225
+     221: aload         4
+     223: monitorexit
+     224: athrow
+     225: return
+    Exception table:
+       from    to  target type
+          26   215   221   any
+
+  private java.lang.Object delete$$anonfun$adapted$1(avocet.Id);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: invokespecial #327                // Method delete$$anonfun$1:(Lavocet/Id;)V
+       5: getstatic     #311                // Field scala/runtime/BoxedUnit.UNIT:Lscala/runtime/BoxedUnit;
+       8: areturn
+
+  private final spoonbill.state.StateManager$Snapshot snapshot$$anonfun$1();
+    Code:
+       0: aload_0
+       1: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+       4: astore_1
+       5: aload_1
+       6: invokevirtual #150                // Method spoonbill/state/BoundedPresentationStore.inline$clock:()Lscala/Function0;
+       9: invokeinterface #154,  1          // InterfaceMethod scala/Function0.apply:()Ljava/lang/Object;
+      14: checkcast     #156                // class java/time/Instant
+      17: astore_2
+      18: aload_1
+      19: invokevirtual #159                // Method spoonbill/state/BoundedPresentationStore.inline$monitor:()Ljava/lang/Object;
+      22: dup
+      23: astore_3
+      24: monitorenter
+      25: aload_1
+      26: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      29: aload_1
+      30: invokevirtual #167                // Method spoonbill/state/BoundedPresentationStore.inline$registry:()Lspoonbill/state/PresentationMachine$Registry;
+      33: invokevirtual #173                // Method spoonbill/state/PresentationMachine$.closed:(Lspoonbill/state/PresentationMachine$Registry;)Z
+      36: ifeq          47
+      39: aload_1
+      40: getstatic     #177                // Field spoonbill/state/BoundedPresentationStore$Error$.Closed:Lspoonbill/state/BoundedPresentationStore$Error;
+      43: invokevirtual #181                // Method spoonbill/state/BoundedPresentationStore.inline$reject:(Lspoonbill/state/BoundedPresentationStore$Error;)Lscala/runtime/Nothing$;
+      46: athrow
+      47: aload_1
+      48: aload_1
+      49: invokevirtual #163                // Method spoonbill/state/BoundedPresentationStore.inline$PresentationMachine:()Lspoonbill/state/PresentationMachine$;
+      52: aload_1
+      53: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      56: aload_2
+      57: invokevirtual #189                // Method spoonbill/state/PresentationMachine$.observe:(Ljava/time/Instant;Ljava/time/Instant;)Ljava/time/Instant;
+      60: invokevirtual #193                // Method spoonbill/state/BoundedPresentationStore.inline$observed_$eq:(Ljava/time/Instant;)V
+      63: aload_1
+      64: invokevirtual #185                // Method spoonbill/state/BoundedPresentationStore.inline$observed:()Ljava/time/Instant;
+      67: astore        5
+      69: aload_0
+      70: getfield      #67                 // Field $outer:Lspoonbill/state/BoundedPresentationStore;
+      73: aload_0
+      74: getfield      #58                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$qsid$1:Lspoonbill/Qsid;
+      77: aload_0
+      78: getfield      #60                 // Field spoonbill$state$BoundedPresentationStore$$anon$2$$token$5:Ljava/lang/Object;
+      81: aload         5
+      83: invokevirtual #197                // Method spoonbill/state/BoundedPresentationStore.spoonbill$state$BoundedPresentationStore$$checked:(Lspoonbill/Qsid;Ljava/lang/Object;Ljava/time/Instant;)Lspoonbill/state/PresentationMachine$Entry;
+      86: invokevirtual #201                // Method spoonbill/state/PresentationMachine$Entry.nodes:()Lscala/collection/immutable/Map;
+      89: astore        6
+      91: new           #23                 // class spoonbill/state/BoundedPresentationStore$$anon$2$$anon$3
+      94: dup
+      95: aload         6
+      97: aload_0
+      98: invokespecial #330                // Method spoonbill/state/BoundedPresentationStore$$anon$2$$anon$3."<init>":(Lscala/collection/immutable/Map;Lspoonbill/state/BoundedPresentationStore$$anon$2;)V
+     101: astore        4
+     103: aload_3
+     104: monitorexit
+     105: aload         4
+     107: goto          113
+     110: aload_3
+     111: monitorexit
+     112: athrow
+     113: areturn
+    Exception table:
+       from    to  target type
+          25   103   110   any
+
+  private static java.lang.Object $deserializeLambda$(java.lang.invoke.SerializedLambda);
+    Code:
+       0: aload_0
+       1: invokedynamic #342,  0            // InvokeDynamic #4:lambdaDeserialize:(Ljava/lang/invoke/SerializedLambda;)Ljava/lang/Object;
+       6: areturn
+}
