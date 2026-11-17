@@ -228,3 +228,17 @@ fragmented cell (92.66% throughput / 109.89% allocation / 116.62% p99) still rej
 the candidate. All 24 rows and source snapshots are retained. Inspection then
 identified allocating `BytesLikeOps` implicit wrappers on this path; the next
 experiment uses direct typeclass reads/slices without changing the byte library.
+
+The [fifth chunk comparison](evidence/chunked-v5/) rejects the wrapper hypothesis:
+direct byte access leaves fragmented allocation at 72,976 bytes/operation and
+misses throughput/p99 (92.94% / 112.92%). A focused
+[empty-tail attribution](diagnostics/empty-tail/) instead measures 104 extra bytes
+each time the driver returns an empty `Fork` remainder to the checked path.
+
+The [sixth comparison](evidence/chunked-v6/) removes that cost: the probe returns
+to zero bytes per empty input, and fragmented throughput/allocation/p99 meet the
+guide at 98.04% / 101.71% / 102.00%. The complete candidate is still rejected:
+large sampled p99 is 127.15% and trailer throughput is 94.67%. All 24 rows are
+retained, including the large cell's bimodal 917/1166/1167 ns samples. A separate
+whole-trace sampling diagnostic is being used to investigate those tails; no
+favorable row or stride offset substitutes for acceptance.

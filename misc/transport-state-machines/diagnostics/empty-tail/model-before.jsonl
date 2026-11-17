@@ -1,0 +1,1 @@
+{"label":"model-before-empty-fastpath","operation":"empty input while awaiting payload","iterations":1000000,"allocatedBytes":104000000,"bytesPerEmpty":104.0,"correct":true,"acceptance":false}

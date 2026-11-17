@@ -1,0 +1,17 @@
+{
+  "baselineCommit": "1f06cd3a",
+  "description": "Exact source snapshots and copied class directories",
+  "variants": {
+    "baseline": {
+      "modules/http/src/main/scala/korolev/http/protocol/ChunkedBodyDecoder.scala": "db876979dfdccbb431a0f49eeeedf4c15c989d8888e98fc6805d286477f54535",
+      "modules/http/src/main/scala/korolev/http/protocol/Http11.scala": "49ac5b30c1aa46731b140af17d5727f14e1e761a4a0bfe27272c9f34f09f388f"
+    },
+    "model": {
+      "modules/http/src/main/scala/korolev/http/protocol/ChunkedBodyDecoder.scala": "961acb26d81ef9845a68fd941fb4cdec5dd403e1dfab0af29edd0ae087e76727",
+      "modules/http/src/main/scala/korolev/http/protocol/Http11.scala": "828776e0e8547d68f1b1dd5d46b87efc79322c6f8395879beccc7c4d21e6e3a8"
+    }
+  },
+  "ChunkedBodyBenchmark.scala": "8f4eede37e070aea23fe2abe2288f4338a8323fdc56a33e5c315c2421b3eeed6",
+  "run-chunked.sh": "189a6186b56e155bbf4f5b8997bf55016e499345905e8131cbcc9c505d89459e",
+  "analyze-cost.mjs": "b266a24f377b5ee6360964c9fddf439604fa4a46b9e3a1acad2c6bdbdef13b4b"
+}
