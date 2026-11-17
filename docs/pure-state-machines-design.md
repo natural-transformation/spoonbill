@@ -925,9 +925,9 @@ whole phase is complete.
 | Phase | Current state |
 | --- | --- |
 | 0–1 | Foundation and selected ownership-split pilot complete; agreed pilot benchmark gate passed |
-| 2 | Shared deadline, setup ownership, drain admission, completion latch and pending-membership units integrated; late-handle ownership and remaining candidate prerequisites continue |
+| 2 | Shared deadline, setup ownership, drain admission, completion latch, pending membership and late-handle ownership integrated; remaining candidate dispositions continue with their owning phases |
 | 3–4 | Lifecycle and session work underway; unchanged strong protocols are evaluated against the explicit retain criteria |
-| 5–6 | Connection/rendering and remaining authentication work follow their characterization and ownership prerequisites |
+| 5–6 | JDBC clock rules, immutable managed construction and canonical one-use leases integrated; connection/rendering and remaining authentication work continue |
 | 7 | Transport work underway; upgrade-input and close-reservation states modeled, publisher defects isolated, subscriber/raw-socket retention backed by laws; decoder/assembly/connection work continues |
 | 8 | AsyncTable and scheduler units integrated; queue/operator/pool work continues with separate defect fixes and hot-path measurements |
 | 9 | Browser behavioral coverage and lifecycle extraction remain outstanding |
@@ -937,6 +937,8 @@ Detailed records: [shared protocols](pure-state-machines-shared-progress.md),
 [runtime and sessions](pure-state-machines-runtime-progress.md),
 [transport and adapters](pure-state-machines-transport-progress.md), and
 [effects, browser and testkits](pure-state-machines-effects-progress.md).
+Phase-6 details are also recorded for [JDBC clock/construction](pure-state-machines-jdbc-clock-progress.md)
+and [one-use authority/invocation decisions](pure-state-machines-operation-progress.md).
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
@@ -957,12 +959,21 @@ connection lifecycle tests now join the CI Node command; the local protocol,
 lifecycle and purity selection passed 11 tests.
 
 Performance acceptance remains per hot path. The compact queue representation
-passed its matched comparison. Initial heap-allocated component-owner/drain
+passed its original matched comparison; its contended allocation observation is
+provisional under the exiting-thread counter audit and is being rechecked.
+Initial heap-allocated component-owner/drain
 states showed a material admission-loop cost; a compact representation is being
 evaluated, so correctness completion does not yet accept that representation's
 performance. Text scanning similarly retained its failed designs and their rows
 before selecting a measured candidate. No failed performance trial is discarded,
 and the PR remains a draft while the remaining units and gates are completed.
+
+The corrected allocation-evidence commit `51eda530` passed both full CI jobs
+(Scala build/tests and native browser, run 132). Later local integration checks
+passed the managed pool cancellation cases, 146 real-PostgreSQL JDBC cases and
+56 HTTP-client cases. The canonical one-use lease then passed 38 runtime and
+29 real-PostgreSQL operation-outcome cases. These are incremental checkpoints;
+pending effect handoffs and the remaining inventory are not marked complete.
 
 A phase starts when the decisions that it needs are made. A decision that only
 a later phase needs does not block it. The table under
