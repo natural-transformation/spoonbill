@@ -939,6 +939,21 @@ The corrected combined Nix run passed `effect/test` (70), `spoonbill/test` (830)
 `/tmp/spoonbill-rollout-integration-2.log`; scoped validation remains recorded with
 each unit. Full-plan completion and final review are still pending.
 
+Later integration checkpoints passed the cancellation/pool/client cases and the
+new browser behavior prerequisite: `/tmp/spoonbill-rollout-integration-5.log`
+records 220 passing selected tests; `/tmp/spoonbill-rollout-integration-6.log`
+records 86 effect, 847 runtime, 56 HTTP-client and one IO pool test. The public
+connection lifecycle tests now join the CI Node command; the local protocol,
+lifecycle and purity selection passed 11 tests.
+
+Performance acceptance remains per hot path. The compact queue representation
+passed its matched comparison. Initial heap-allocated component-owner/drain
+states showed a material admission-loop cost; a compact representation is being
+evaluated, so correctness completion does not yet accept that representation's
+performance. Text scanning similarly retained its failed designs and their rows
+before selecting a measured candidate. No failed performance trial is discarded,
+and the PR remains a draft while the remaining units and gates are completed.
+
 A phase starts when the decisions that it needs are made. A decision that only
 a later phase needs does not block it. The table under
 [decisions](#decisions-to-confirm) says which phase needs which.

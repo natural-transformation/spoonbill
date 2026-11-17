@@ -57,7 +57,7 @@ jobs:
       run: |
         nix develop --no-write-lock-file --command node --test \
           misc/redesign-client-tests.mjs misc/sensitive-client-tests.mjs \
-          misc/browser-protocol-tests.mjs \
+          misc/browser-protocol-tests.mjs misc/connection-lifecycle-tests.mjs \
           misc/browser-auth-schema-tests.mjs \
           misc/release-ref-tests.mjs \
           misc/recovery-kit-release-tests.mjs \
