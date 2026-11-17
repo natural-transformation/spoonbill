@@ -1,10 +1,10 @@
 package spoonbill.internal
 
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import java.util.concurrent.atomic.AtomicReference
 import scala.annotation.tailrec
 import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
-import spoonbill.effect.Effect
+import spoonbill.effect.{Effect, LateHandleMachine}
 
 /** Connection-owned pending requests. Register precedes emission; reply, expiry,
   * send failure and close compete to remove the same entry. Unknown replies can
@@ -19,22 +19,34 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
 
   private final class Entry(initialCallback: Effect.Promise[A]) {
     val token = new PendingRegistryMachine.Token
-    private val finished = new AtomicBoolean(false)
-    private val callback = new AtomicReference(Option(initialCallback))
-    private val cancellation = new AtomicReference(Option.empty[() => Unit])
+    private final case class Held(state: LateHandleMachine.State, callback: Option[Effect.Promise[A]],
+      cancellation: Option[() => Unit])
+    private val held = new AtomicReference(Held(LateHandleMachine.State.Waiting, Some(initialCallback), None))
 
-    def install(cancel: () => Unit): Unit = {
-      cancellation.set(Some(cancel))
-      if (finished.get()) cancellation.getAndSet(None).foreach(_.apply())
+    @tailrec def install(cancel: () => Unit): Unit = {
+      val before = held.get()
+      val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Install)
+      command match {
+        case LateHandleMachine.Command.CancelIncoming => cancel()
+        case LateHandleMachine.Command.StoreHandle =>
+          if (!held.compareAndSet(before, before.copy(state = next, cancellation = Some(cancel)))) install(cancel)
+        case _ => ()
+      }
     }
 
     def finish(result: Either[Throwable, A]): Unit = {
-      if (finished.compareAndSet(false, true)) {
-        val notify = callback.getAndSet(None)
-        cancellation.getAndSet(None).foreach { cancel =>
+      @tailrec def claim(): Option[Held] = {
+        val before = held.get()
+        val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Finish)
+        if (command == LateHandleMachine.Command.Ignore) None
+        else if (held.compareAndSet(before, Held(next, None, None))) Some(before)
+        else claim()
+      }
+      claim().foreach { before =>
+        before.cancellation.foreach { cancel =>
           try cancel() catch { case NonFatal(_) => () }
         }
-        notify.foreach(_(result))
+        before.callback.foreach(_(result))
       }
     }
   }

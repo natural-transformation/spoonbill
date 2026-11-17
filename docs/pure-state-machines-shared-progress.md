@@ -67,8 +67,11 @@ context. Retain this clear implementation rather than forcing it into a latch
 that lacks execution ownership.
 
 The effect-module and testkit audit owns the other candidates. `AsyncTable` allows
-removal/recreation and has duplicate-put policies. `Queue.cancelSignal` does not
-currently replay a prior cancellation to a new waiter. `Scheduler.JobHandler`
+removal/recreation and has duplicate-put policies. `Queue.cancelSignal` initially
+did not replay a prior cancellation to a new waiter; the effect-unit audit
+confirmed this as a defect through a late-listener test and a real FS2 consumer.
+The separate fix `d60a8352` adopts `CompletionLatchMachine` for explicit cancellation
+while retaining ordinary queue close as a different event. `Scheduler.JobHandler`
 and `Stream.handleConsumed` have a single waiter; the latter signals EOF rather
 than arbitrary termination. Pool disposal distinguishes claiming disposal from
 settling cleanup. Those contracts are not interchangeable; suspected defects
@@ -204,3 +207,33 @@ passes with seven machine files. The first test compilation required qualifying
 `PendingRegistryMachine.size` to avoid ScalaTest's unrelated `size` matcher;
 production sources compiled on that attempt, and the corrected full selection
 passed. Scoped new-file formatting and `git diff --check` also passed.
+
+## Completed late-handle ownership unit
+
+The metadata registry alone did not resolve `OwnedBrowserRequests.Entry`'s three
+independent atomics. That remaining protocol now uses `effect.LateHandleMachine`:
+Waiting/Installed/Finished with Install and Finish transitions. The RPC entry
+pairs model state, callback and cancellation handle in one atomic Held value.
+The first finish detaches both handles, cancels an installed timer and then
+notifies; subsequent finish does nothing. A handle arriving after finish is
+canceled outside the atomic section and never retained.
+
+Sensitive disclosure entries use the same decisions with their cancellation
+handle under the existing registry monitor. Lost key ownership means finished;
+merely sealing registry admission does not, since close still discards individual
+holders in its original order. Cancellation remains before request notification;
+cancellation exceptions remain isolated during finish/release, while late-install
+cancellation retains each interpreter's original exception handling.
+
+Three additional characterizations pinned cancellation-before-notification even
+when cancellation throws, synchronous expiry before the schedule call returns,
+and a sensitive holder's late cancellation failure after close. The original
+implementations passed 25 RPC/scope tests before extraction.
+
+After extraction, `effect/testOnly *LateHandleMachineSpec` passed 2 exhaustive and
+generated cases, and the RPC/scope/sensitive/pending selection passed 42 tests in
+five suites through the repository Nix flake. The purity guard reports eleven
+machines with no violations; scoped new-model formatting and diff whitespace
+checks pass. This completes the audited metadata plus late-handle portions of
+the two shared pending owners; it does not replace the separate sensitive
+presentation lifecycle or Frontend user-action/download protocols.

@@ -4,6 +4,7 @@ import java.util.UUID
 import scala.collection.mutable
 import scala.concurrent.duration.*
 import scala.util.control.NonFatal
+import spoonbill.effect.LateHandleMachine
 import spoonbill.sensitive.{SensitiveDisclosure, SensitivePayload}
 import spoonbill.server.SessionAccessDenied
 
@@ -12,9 +13,10 @@ import spoonbill.server.SessionAccessDenied
   * Transfer removes the holder here; the delivery runtime then owns its lifetime.
   */
 private[spoonbill] final class SensitiveDisclosureScope(deadlines: Frontend.RpcDeadlineScheduler) {
+  private final case class Cancellation(state: LateHandleMachine.State, handle: Option[() => Unit])
   private final class Entry(val disclosure: SensitiveDisclosure) {
     val token = new PendingRegistryMachine.Token
-    var cancel: Option[() => Unit] = None // ALLOW-VAR: protected by entries monitor.
+    var cancellation = Cancellation(LateHandleMachine.State.Waiting, None) // ALLOW-VAR: protected by entries monitor.
   }
   private val entries = mutable.Map.empty[UUID, Entry]
   private var registry = PendingRegistryMachine.initial[UUID] // ALLOW-VAR: protected by entries monitor.
@@ -35,8 +37,12 @@ private[spoonbill] final class SensitiveDisclosureScope(deadlines: Frontend.RpcD
       }
       val cancel = deadlines.schedule(10.seconds)(() => expire(id))
       val installed = entries.synchronized {
-        if (PendingRegistryMachine.contains(registry, id, entry.token)) { entry.cancel = Some(cancel); true }
-        else false
+        val state = if (PendingRegistryMachine.contains(registry, id, entry.token)) entry.cancellation.state
+        else LateHandleMachine.State.Finished
+        val (next, command) = LateHandleMachine.step(state, LateHandleMachine.Event.Install)
+        if (command == LateHandleMachine.Command.StoreHandle) {
+          entry.cancellation = Cancellation(next, Some(cancel)); true
+        } else false
       }
       if (!installed) cancel()
       disclosure
@@ -49,7 +55,12 @@ private[spoonbill] final class SensitiveDisclosureScope(deadlines: Frontend.RpcD
     val cancellation = entries.synchronized {
       val (next, taken) = PendingRegistryMachine.take(registry, id, None)
       registry = next
-      taken.flatMap(_ => entries.remove(id).flatMap(_.cancel))
+      taken.flatMap(_ => entries.remove(id)).flatMap { entry =>
+        val before = entry.cancellation
+        val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Finish)
+        entry.cancellation = Cancellation(next, None)
+        if (command == LateHandleMachine.Command.CancelAndFinish) before.handle else None
+      }
     }
     // Cleanup of other holders must not be interrupted by a scheduler adapter.
     cancellation.foreach(cancel => try cancel() catch { case NonFatal(_) => () })
