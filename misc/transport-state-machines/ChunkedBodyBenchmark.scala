@@ -48,13 +48,21 @@ object ChunkedBodyBenchmark {
     val samples = new Array[Long](1 << 20)
     var sampled = 0
     var count = 0L
+    val sampleSeed = 0x6d2b79f5
+    var sampleState = sampleSeed
     val allocatedBefore = allocation.getThreadAllocatedBytes(thread)
     val begun = System.nanoTime()
     val until = begun + seconds.toLong * 1000000000L
     while (System.nanoTime() < until) {
+      // One predeclared, reproducible offset in each batch. HIGH xorshift bits
+      // avoid a fixed stride lining up with allocator/TLAB periodicity.
+      sampleState ^= sampleState << 13
+      sampleState ^= sampleState >>> 17
+      sampleState ^= sampleState << 5
+      val sampleAt = sampleState >>> 26
       var batch = 0
       while (batch < 64) {
-        if (batch == 0) {
+        if (batch == sampleAt) {
           val before = System.nanoTime()
           sink = decodeBody()
           require(sampled < samples.length)
@@ -71,6 +79,6 @@ object ChunkedBodyBenchmark {
     Arrays.sort(samples, 0, sampled)
     val p99 = samples(math.ceil(sampled * .99).toInt - 1)
     val wall = elapsed / 1e9
-    println(s"""{"label":"$label","scenario":"$scenario","seconds":$seconds,"chunks":${chunks.size},"payloadBytes":${payload.length},"messages":$count,"elapsedSeconds":$wall,"messagesPerSecond":${count / wall},"bytesPerMessage":${allocated.toDouble / count},"p99Nanos":$p99,"samples":$sampled,"sampleStride":64,"sampleCapacity":${samples.length},"correct":true}""")
+    println(s"""{"label":"$label","scenario":"$scenario","seconds":$seconds,"chunks":${chunks.size},"payloadBytes":${payload.length},"messages":$count,"elapsedSeconds":$wall,"messagesPerSecond":${count / wall},"bytesPerMessage":${allocated.toDouble / count},"p99Nanos":$p99,"samples":$sampled,"sampler":"xorshift32-highbits-stratified-v2","sampleSeed":$sampleSeed,"sampleStride":64,"sampleCapacity":${samples.length},"correct":true}""")
   }
 }

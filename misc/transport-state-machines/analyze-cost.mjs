@@ -12,7 +12,8 @@ const metrics = ['messagesPerSecond', 'bytesPerMessage', 'p99Nanos'];
 const results = scenarios.map(scenario => {
   const selected = rows.filter(row => row.scenario === scenario);
   assert.equal(selected.length, 6);
-  const settings = selected.map(row => [row.seconds, row.chunks, row.payloadBytes, row.sampleStride, row.sampleCapacity]);
+  const settings = selected.map(row => [row.seconds, row.chunks, row.payloadBytes, row.sampleStride, row.sampleCapacity,
+    row.sampler ?? 'fixed-offset-v1', row.sampleSeed ?? null]);
   settings.forEach(value => assert.deepEqual(value, settings[0]));
   selected.forEach(row => {
     assert.equal(row.correct, true);

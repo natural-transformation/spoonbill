@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration version="2.0" label="Parser allocation and CPU" description="Whitelisted diagnostic events only" provider="Spoonbill">
+  <event name="jdk.ExecutionSample">
+    <setting name="enabled">true</setting>
+    <setting name="period">10 ms</setting>
+  </event>
+  <event name="jdk.ObjectAllocationSample">
+    <setting name="enabled">true</setting>
+    <setting name="stackTrace">true</setting>
+    <setting name="throttle">200/s</setting>
+  </event>
+  <event name="jdk.InitialEnvironmentVariable"><setting name="enabled">false</setting></event>
+  <event name="jdk.InitialSystemProperty"><setting name="enabled">false</setting></event>
+  <event name="jdk.SystemProcess"><setting name="enabled">false</setting></event>
+</configuration>

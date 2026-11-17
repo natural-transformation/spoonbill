@@ -242,3 +242,14 @@ large sampled p99 is 127.15% and trailer throughput is 94.67%. All 24 rows are
 retained, including the large cell's bimodal 917/1166/1167 ns samples. A separate
 whole-trace sampling diagnostic is being used to investigate those tails; no
 favorable row or stride offset substitutes for acceptance.
+
+The retained [whole-trace diagnostic](diagnostics/latency-stride-v6/) reports all
+64 offsets from every baseline/candidate trace. It supports a fixed-offset
+representativeness problem, while explicitly noting that timing every operation
+changes overhead and is not acceptance evidence. The next paired protocol is
+predeclared stratified sampling: xorshift32 seed `0x6d2b79f5`, shifts 13/17/5,
+high six bits selecting one operation per 64-operation batch, identical on both
+sides. The analyzer verifies sampler identity and seed alongside workload settings.
+The independent [trailer profile](diagnostics/trailers-v6/) identifies rebuilt
+framing snapshots and builder work. All original fixed-offset rows and both
+diagnostics remain unchanged; new source/measurement results are separate.

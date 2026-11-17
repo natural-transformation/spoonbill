@@ -1,0 +1,851 @@
+{
+  "acceptance": false,
+  "scope": "Sampled allocation/CPU attribution, main thread only; weights are estimates, not exact object totals.",
+  "allocations": [
+    {
+      "site": "scala.concurrent.impl.Promise$Transformation @ spoonbill.effect.Effect$FutureEffect.flatMap:112",
+      "samples": 166,
+      "sampledWeightBytes": 3101901968,
+      "stack": [
+        "scala.concurrent.impl.Promise$DefaultPromise.flatMap:176",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112",
+        "spoonbill.effect.syntax$EffectOps$.flatMap$extension:36",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1:70"
+      ]
+    },
+    {
+      "site": "scala.util.Success @ spoonbill.effect.Effect$FutureEffect.pure:101",
+      "samples": 23,
+      "sampledWeightBytes": 1841858296,
+      "stack": [
+        "scala.concurrent.Promise$.successful:140",
+        "scala.concurrent.Future$.successful:663",
+        "spoonbill.effect.Effect$FutureEffect.pure:101",
+        "spoonbill.effect.Effect$FutureEffect.pure:101",
+        "spoonbill.effect.Decoder.pull$$anonfun$1:15"
+      ]
+    },
+    {
+      "site": "scala.concurrent.impl.Promise$DefaultPromise @ spoonbill.effect.Effect$FutureEffect.delay:104",
+      "samples": 57,
+      "sampledWeightBytes": 1375115144,
+      "stack": [
+        "scala.concurrent.Promise$.successful:147",
+        "scala.concurrent.Future$.successful:663",
+        "spoonbill.effect.Effect$FutureEffect.delay:104",
+        "spoonbill.effect.Effect$FutureEffect.delay:102",
+        "spoonbill.effect.Effect.delayAsync:49"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$State @ spoonbill.http.protocol.ChunkedBodyDecoder$State$.apply:12",
+      "samples": 55,
+      "sampledWeightBytes": 831975728,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$State$.apply:12",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:240",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    },
+    {
+      "site": "java.lang.StringBuilder @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:200",
+      "samples": 37,
+      "sampledWeightBytes": 780259472,
+      "stack": [
+        "scala.collection.mutable.StringBuilder.<init>:73",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:200",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Stream$$anon$14$$anon$15 @ spoonbill.effect.Stream$$anon$14.mat$$anonfun$1:412",
+      "samples": 22,
+      "sampledWeightBytes": 779126600,
+      "stack": [
+        "spoonbill.effect.Stream$$anon$14.mat$$anonfun$1:412",
+        "spoonbill.effect.Stream$$anon$14$$Lambda+0x00000070010fb568.1432569632.apply:-1",
+        "spoonbill.effect.Effect$FutureEffect.delay:104",
+        "spoonbill.effect.Effect$FutureEffect.delay:102",
+        "spoonbill.effect.Stream$$anon$14.mat:428"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.Http11$$anon$3$$Lambda+0x0000007001114450.364597300 @ spoonbill.http.protocol.Http11$$anon$3.pull:171",
+      "samples": 15,
+      "sampledWeightBytes": 766061912,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.http.protocol.Http11$$anon$3.pull:171",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.decodeBody$1:37"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$Action$TakeBackFinish @ spoonbill.effect.Decoder$Action$TakeBackFinish$.apply:91",
+      "samples": 12,
+      "sampledWeightBytes": 714766512,
+      "stack": [
+        "spoonbill.effect.Decoder$Action$TakeBackFinish$.apply:91",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:188",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1"
+      ]
+    },
+    {
+      "site": "[B @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:200",
+      "samples": 22,
+      "sampledWeightBytes": 697499264,
+      "stack": [
+        "java.lang.AbstractStringBuilder.<init>:124",
+        "java.lang.StringBuilder.<init>:131",
+        "scala.collection.mutable.StringBuilder.<init>:73",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:200",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$$anon$1$$Lambda+0x0000007001104478.778731861 @ spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2:35",
+      "samples": 33,
+      "sampledWeightBytes": 662964272,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2:35",
+        "spoonbill.effect.Decoder$$anon$1$$Lambda+0x00000070011034e0.1583353301.apply:-1"
+      ]
+    },
+    {
+      "site": "scala.util.Success @ spoonbill.effect.Effect$FutureEffect.delay:104",
+      "samples": 54,
+      "sampledWeightBytes": 500755560,
+      "stack": [
+        "scala.concurrent.Promise$.successful:140",
+        "scala.concurrent.Future$.successful:663",
+        "spoonbill.effect.Effect$FutureEffect.delay:104",
+        "spoonbill.effect.Effect$FutureEffect.delay:102",
+        "spoonbill.effect.Stream$$anon$14$$anon$15.pull:423"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$$anon$1$$Lambda+0x00000070011034e0.1583353301 @ spoonbill.effect.Decoder$$anon$1.pull:74",
+      "samples": 6,
+      "sampledWeightBytes": 476162192,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.effect.Decoder$$anon$1.pull:74",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1$$anonfun$1:62"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$$anon$1$$Lambda+0x0000007001107578.1409160703 @ spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1:37",
+      "samples": 18,
+      "sampledWeightBytes": 294069496,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1:37",
+        "spoonbill.effect.Decoder$$anon$1$$Lambda+0x0000007001104478.778731861.apply:-1"
+      ]
+    },
+    {
+      "site": "java.lang.String @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:148",
+      "samples": 50,
+      "sampledWeightBytes": 231801928,
+      "stack": [
+        "java.lang.StringBuilder.toString:475",
+        "scala.collection.mutable.StringBuilder.result:108",
+        "scala.collection.mutable.StringBuilder.toString:110",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:148",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$$Lambda+0x0000007001103218.319558327 @ spoonbill.effect.Decoder.pull:17",
+      "samples": 35,
+      "sampledWeightBytes": 178953448,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.effect.Decoder.pull:17",
+        "spoonbill.http.protocol.Http11$$anon$3.pull:171"
+      ]
+    },
+    {
+      "site": "spoonbill.data.Bytes$$anon$1 @ spoonbill.data.Bytes$.wrap:39",
+      "samples": 36,
+      "sampledWeightBytes": 172674312,
+      "stack": [
+        "spoonbill.data.Bytes$.wrap:39",
+        "spoonbill.data.Bytes$$anon$1.slice:53",
+        "spoonbill.data.Bytes$BytesBytesLikeInstance$.slice:129",
+        "spoonbill.data.Bytes$BytesBytesLikeInstance$.slice:128",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:166"
+      ]
+    },
+    {
+      "site": "[B @ java.util.Arrays.copyOfRangeByte:3863",
+      "samples": 34,
+      "sampledWeightBytes": 147801464,
+      "stack": [
+        "java.util.Arrays.copyOfRangeByte:3863",
+        "java.util.Arrays.copyOfRange:3854",
+        "java.lang.String.<init>:540",
+        "java.lang.String.<init>:522",
+        "java.util.jar.Manifest.parseName:365"
+      ]
+    },
+    {
+      "site": "scala.Tuple2 @ spoonbill.http.protocol.Http11.$anonfun$7:168",
+      "samples": 32,
+      "sampledWeightBytes": 127674472,
+      "stack": [
+        "scala.Tuple2$.apply:24",
+        "spoonbill.http.protocol.Http11.$anonfun$7:168",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26",
+        "spoonbill.effect.Decoder$$Lambda+0x0000007001102a50.1397381784.apply:-1"
+      ]
+    },
+    {
+      "site": "java.lang.String @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:192",
+      "samples": 16,
+      "sampledWeightBytes": 58604768,
+      "stack": [
+        "java.lang.StringLatin1.newString:752",
+        "java.lang.String.substring:2839",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:192",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166"
+      ]
+    },
+    {
+      "site": "scala.Some @ spoonbill.effect.Stream$$anon$14$$anon$15.pull$$anonfun$11:421",
+      "samples": 13,
+      "sampledWeightBytes": 58604608,
+      "stack": [
+        "scala.Some$.apply:618",
+        "spoonbill.effect.Stream$$anon$14$$anon$15.pull$$anonfun$11:421",
+        "spoonbill.effect.Stream$$anon$14$$anon$15$$Lambda+0x00000070011037a8.1466785259.apply:-1",
+        "spoonbill.effect.Effect$FutureEffect.delay:104",
+        "spoonbill.effect.Effect$FutureEffect.delay:102"
+      ]
+    },
+    {
+      "site": "scala.collection.mutable.StringBuilder @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:200",
+      "samples": 8,
+      "sampledWeightBytes": 46046488,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:200",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350 @ spoonbill.http.protocol.Http11.decodeChunkedBody:165",
+      "samples": 9,
+      "sampledWeightBytes": 38197600,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.http.protocol.Http11.decodeChunkedBody:165",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.decodeBody$1:30"
+      ]
+    },
+    {
+      "site": "scala.Tuple2 @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:205",
+      "samples": 9,
+      "sampledWeightBytes": 36104416,
+      "stack": [
+        "scala.Tuple2$.apply:24",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:205",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1"
+      ]
+    },
+    {
+      "site": "scala.Some @ spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1$$anonfun$1:48",
+      "samples": 9,
+      "sampledWeightBytes": 29825552,
+      "stack": [
+        "scala.Some$.apply:618",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1$$anonfun$1:48",
+        "spoonbill.effect.Decoder$$anon$1$$Lambda+0x0000007001107578.1409160703.apply:-1",
+        "scala.concurrent.impl.Promise$Transformation.run:503",
+        "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94"
+      ]
+    },
+    {
+      "site": "[B @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:192",
+      "samples": 8,
+      "sampledWeightBytes": 29302320,
+      "stack": [
+        "java.util.Arrays.copyOfRangeByte:3863",
+        "java.util.Arrays.copyOfRange:3854",
+        "java.lang.StringLatin1.newString:752",
+        "java.lang.String.substring:2839",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:192"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$Cell @ spoonbill.http.protocol.Http11.decodeChunkedBody:164",
+      "samples": 7,
+      "sampledWeightBytes": 26686040,
+      "stack": [
+        "spoonbill.http.protocol.Http11.decodeChunkedBody:164",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.decodeBody$1:30",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.main:47",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark.main:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder @ spoonbill.effect.Decoder$.apply:97",
+      "samples": 6,
+      "sampledWeightBytes": 23023288,
+      "stack": [
+        "spoonbill.effect.Decoder$.apply:97",
+        "spoonbill.effect.Decoder.decodeAsync:78",
+        "spoonbill.effect.Decoder.decode:26",
+        "spoonbill.http.protocol.Http11.decodeChunkedBody:165",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.decodeBody$1:30"
+      ]
+    },
+    {
+      "site": "[B @ java.lang.Class.forName0:-1",
+      "samples": 1,
+      "sampledWeightBytes": 21234520,
+      "stack": [
+        "java.lang.Class.forName0:-1",
+        "java.lang.Class.forName:534",
+        "java.lang.Class.forName:513",
+        "sun.launcher.LauncherHelper.loadMainClass:811",
+        "sun.launcher.LauncherHelper.checkAndLoadMain:706"
+      ]
+    },
+    {
+      "site": "[B @ java.util.Arrays.copyOfRange:3856",
+      "samples": 6,
+      "sampledWeightBytes": 9418536,
+      "stack": [
+        "java.util.Arrays.copyOfRange:3856",
+        "java.lang.String.<init>:4788",
+        "java.lang.String.<init>:1507",
+        "java.lang.StringBuilder.toString:475",
+        "scala.collection.mutable.StringBuilder.result:108"
+      ]
+    },
+    {
+      "site": "[B @ java.util.Arrays.copyOf:3541",
+      "samples": 20,
+      "sampledWeightBytes": 7122752,
+      "stack": [
+        "java.util.Arrays.copyOf:3541",
+        "jdk.internal.loader.Resource.getBytes:120",
+        "jdk.internal.loader.URLClassPath$JarLoader$2.getBytes:877",
+        "jdk.internal.loader.BuiltinClassLoader.defineClass:859",
+        "jdk.internal.loader.BuiltinClassLoader.findClassOnClassPathOrNull:760"
+      ]
+    },
+    {
+      "site": "[B @ java.util.zip.InflaterInputStream.<init>:89",
+      "samples": 7,
+      "sampledWeightBytes": 2459928,
+      "stack": [
+        "java.util.zip.InflaterInputStream.<init>:89",
+        "java.util.zip.ZipFile$ZipFileInflaterInputStream.<init>:440",
+        "java.util.zip.ZipFile$ZipFileInflaterInputStream.<init>:434",
+        "java.util.zip.ZipFile.getInputStream:401",
+        "java.util.jar.JarFile.getInputStream:856"
+      ]
+    },
+    {
+      "site": "[B @ spoonbill.data.BytesLike$ArrayBytesLikeInstance$.slice:145",
+      "samples": 1,
+      "sampledWeightBytes": 523264,
+      "stack": [
+        "scala.reflect.ManifestFactory$ByteManifest.newArray:177",
+        "scala.reflect.ManifestFactory$ByteManifest.newArray:175",
+        "scala.collection.ArrayOps$.slice$extension:342",
+        "spoonbill.data.BytesLike$ArrayBytesLikeInstance$.slice:145",
+        "spoonbill.data.BytesLike$ArrayBytesLikeInstance$.slice:144"
+      ]
+    },
+    {
+      "site": "[B @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:195",
+      "samples": 1,
+      "sampledWeightBytes": 523264,
+      "stack": [
+        "java.lang.StringLatin1.toLowerCase:436",
+        "java.lang.String.toLowerCase:3639",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:195",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166"
+      ]
+    },
+    {
+      "site": "scala.util.Success @ spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+      "samples": 1,
+      "sampledWeightBytes": 523256,
+      "stack": [
+        "scala.concurrent.impl.Promise$Transformation.run:500",
+        "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+        "scala.concurrent.impl.Promise$Transformation.submitWithValue:462",
+        "scala.concurrent.impl.Promise$DefaultPromise.submitWithValue:371",
+        "scala.concurrent.impl.Promise$DefaultPromise.dispatchOrAddCallbacks:322"
+      ]
+    },
+    {
+      "site": "scala.concurrent.impl.Promise$Transformation @ spoonbill.effect.Effect$FutureEffect.map:113",
+      "samples": 1,
+      "sampledWeightBytes": 523248,
+      "stack": [
+        "scala.concurrent.impl.Promise$DefaultPromise.map:182",
+        "spoonbill.effect.Effect$FutureEffect.map:113",
+        "spoonbill.effect.Effect$FutureEffect.map:113",
+        "spoonbill.effect.syntax$EffectOps$.map$extension:29",
+        "spoonbill.http.protocol.Http11$$anon$3.pull:174"
+      ]
+    },
+    {
+      "site": "java.lang.String @ spoonbill.http.protocol.ChunkedBodyDecoder$.decode:195",
+      "samples": 1,
+      "sampledWeightBytes": 523248,
+      "stack": [
+        "java.lang.StringLatin1.toLowerCase:447",
+        "java.lang.String.toLowerCase:3639",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:195",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$Action$Fork @ spoonbill.effect.Decoder$Action$Fork$.apply:88",
+      "samples": 1,
+      "sampledWeightBytes": 523248,
+      "stack": [
+        "spoonbill.effect.Decoder$Action$Fork$.apply:88",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:166",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1"
+      ]
+    },
+    {
+      "site": "java.util.concurrent.ConcurrentHashMap$ForwardingNode @ java.util.concurrent.ConcurrentHashMap.transfer:2441",
+      "samples": 1,
+      "sampledWeightBytes": 481384,
+      "stack": [
+        "java.util.concurrent.ConcurrentHashMap.transfer:2441",
+        "java.util.concurrent.ConcurrentHashMap.addCount:2354",
+        "java.util.concurrent.ConcurrentHashMap.putVal:1075",
+        "java.util.concurrent.ConcurrentHashMap.putIfAbsent:1541",
+        "java.lang.ClassLoader.getClassLoadingLock:681"
+      ]
+    },
+    {
+      "site": "java.util.zip.ZipFile$ZipFileInflaterInputStream @ java.util.zip.ZipFile.getInputStream:401",
+      "samples": 1,
+      "sampledWeightBytes": 407288,
+      "stack": [
+        "java.util.zip.ZipFile.getInputStream:401",
+        "java.util.jar.JarFile.getInputStream:856",
+        "jdk.internal.loader.URLClassPath$JarLoader$2.getInputStream:863",
+        "jdk.internal.loader.Resource.cachedInputStream:77",
+        "jdk.internal.loader.Resource.getByteBuffer:163"
+      ]
+    },
+    {
+      "site": "java.util.LinkedHashMap @ java.util.HashSet.<init>:171",
+      "samples": 1,
+      "sampledWeightBytes": 404072,
+      "stack": [
+        "java.util.HashSet.<init>:171",
+        "java.util.LinkedHashSet.<init>:159",
+        "java.util.LinkedHashSet.newLinkedHashSet:225",
+        "java.lang.invoke.InnerClassLambdaMetafactory.generateInnerClass:305",
+        "java.lang.invoke.InnerClassLambdaMetafactory.spinInnerClass:286"
+      ]
+    },
+    {
+      "site": "java.util.ImmutableCollections$Set12 @ java.util.Set.of:487",
+      "samples": 1,
+      "sampledWeightBytes": 403232,
+      "stack": [
+        "java.util.Set.of:487",
+        "java.lang.invoke.InnerClassLambdaMetafactory.generateInnerClass:360",
+        "java.lang.invoke.InnerClassLambdaMetafactory.spinInnerClass:286",
+        "java.lang.invoke.InnerClassLambdaMetafactory.buildCallSite:221",
+        "java.lang.invoke.LambdaMetafactory.altMetafactory:536"
+      ]
+    },
+    {
+      "site": "[B @ jdk.internal.misc.Unsafe.allocateUninitializedArray0:1387",
+      "samples": 1,
+      "sampledWeightBytes": 400304,
+      "stack": [
+        "jdk.internal.misc.Unsafe.allocateUninitializedArray0:1387",
+        "jdk.internal.misc.Unsafe.allocateUninitializedArray:1380",
+        "java.lang.StringConcatHelper.newArray:511",
+        "java.lang.StringConcatHelper.simpleConcat:435",
+        "java.lang.String.concat:2899"
+      ]
+    },
+    {
+      "site": "[Ljava.util.concurrent.ConcurrentHashMap$Node; @ java.util.concurrent.ConcurrentHashMap.transfer:2431",
+      "samples": 1,
+      "sampledWeightBytes": 371664,
+      "stack": [
+        "java.util.concurrent.ConcurrentHashMap.transfer:2431",
+        "java.util.concurrent.ConcurrentHashMap.addCount:2354",
+        "java.util.concurrent.ConcurrentHashMap.putVal:1075",
+        "java.util.concurrent.ConcurrentHashMap.putIfAbsent:1541",
+        "java.lang.ClassLoader.definePackage:2238"
+      ]
+    }
+  ],
+  "cpu": [
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:201",
+      "samples": 67,
+      "stack": [
+        "java.lang.AbstractStringBuilder.ensureCapacityInternal:243",
+        "java.lang.AbstractStringBuilder.append:806",
+        "java.lang.StringBuilder.append:246",
+        "scala.collection.mutable.StringBuilder.append:240",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:201"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+      "samples": 45,
+      "stack": [
+        "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+        "scala.concurrent.impl.Promise$Transformation.submitWithValue:462",
+        "scala.concurrent.impl.Promise$DefaultPromise.submitWithValue:371",
+        "scala.concurrent.impl.Promise$DefaultPromise.dispatchOrAddCallbacks:322",
+        "scala.concurrent.impl.Promise$DefaultPromise.flatMap:176"
+      ]
+    },
+    {
+      "site": "spoonbill.data.BytesLike$ArrayBytesLikeInstance$.slice:145",
+      "samples": 11,
+      "stack": [
+        "scala.reflect.ClassTag$.apply:157",
+        "scala.collection.ArrayOps$.slice$extension:202",
+        "spoonbill.data.BytesLike$ArrayBytesLikeInstance$.slice:145",
+        "spoonbill.data.BytesLike$ArrayBytesLikeInstance$.slice:144",
+        "spoonbill.data.Bytes$$anon$1.slice:53"
+      ]
+    },
+    {
+      "site": "java.lang.AbstractStringBuilder.ensureCapacityInternal:243",
+      "samples": 10,
+      "stack": [
+        "java.lang.AbstractStringBuilder.ensureCapacityInternal:243",
+        "java.lang.AbstractStringBuilder.append:587",
+        "java.lang.StringBuilder.append:179",
+        "java.lang.StringBuilder.append:91",
+        "java.lang.AbstractStringBuilder.<init>:125"
+      ]
+    },
+    {
+      "site": "spoonbill.data.BytesLike$.apply:68",
+      "samples": 9,
+      "stack": [
+        "spoonbill.data.BytesLike$.apply:68",
+        "spoonbill.data.Bytes$$anon$1.length:58",
+        "spoonbill.data.Bytes$BytesBytesLikeInstance$.length:123",
+        "spoonbill.data.Bytes$BytesBytesLikeInstance$.length:122",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:223"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1$$anonfun$1:38",
+      "samples": 8,
+      "stack": [
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1$$anonfun$1:38",
+        "spoonbill.effect.Decoder$$anon$1$$Lambda+0x0000007001107578.1409160703.apply:-1",
+        "scala.concurrent.impl.Promise$Transformation.run:503",
+        "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+        "scala.concurrent.impl.Promise$Transformation.submitWithValue:462"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Effect$FutureEffect.delay:104",
+      "samples": 8,
+      "stack": [
+        "spoonbill.effect.Effect$FutureEffect.delay:104",
+        "spoonbill.effect.Effect$FutureEffect.delay:102",
+        "spoonbill.effect.Effect.delayAsync:49",
+        "spoonbill.effect.Effect.delayAsync$:30",
+        "spoonbill.effect.Effect$FutureEffect.delayAsync:90"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Effect$FutureEffect.flatMap:112",
+      "samples": 8,
+      "stack": [
+        "scala.concurrent.impl.Promise$Transformation.<init>:451",
+        "scala.concurrent.impl.Promise$DefaultPromise.flatMap:176",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112",
+        "spoonbill.effect.Effect.delayAsync:49"
+      ]
+    },
+    {
+      "site": "spoonbill.web.Headers$.validate:60",
+      "samples": 7,
+      "stack": [
+        "spoonbill.web.Headers$.validate:60",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:193",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:197",
+      "samples": 7,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:197",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    },
+    {
+      "site": "spoonbill.web.Headers$.isTokenCharacter:68",
+      "samples": 5,
+      "stack": [
+        "spoonbill.web.Headers$.isTokenCharacter:68",
+        "spoonbill.web.Headers$.validate$$anonfun$1:60",
+        "spoonbill.web.Headers$.validate$$anonfun$adapted$1:60",
+        "spoonbill.web.Headers$$$Lambda+0x0000007001114e60.389993238.apply:-1",
+        "scala.collection.StringOps$.forall$extension:1053"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.size:117",
+      "samples": 4,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.size:117",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:185",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:181",
+      "samples": 4,
+      "stack": [
+        "java.lang.AbstractStringBuilder.ensureCapacityInternal:243",
+        "java.lang.AbstractStringBuilder.setLength:327",
+        "java.lang.StringBuilder.setLength:91",
+        "scala.collection.mutable.StringBuilder.clear:100",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:181"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:233",
+      "samples": 4,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:233",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26",
+        "spoonbill.effect.Decoder$$Lambda+0x0000007001102a50.1397381784.apply:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.simple:55",
+      "samples": 4,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.simple:55",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:233",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+      "samples": 3,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26",
+        "spoonbill.effect.Decoder$$Lambda+0x0000007001102a50.1397381784.apply:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:170",
+      "samples": 3,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:170",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.Http11$$anon$3$$Lambda+0x0000007001114450.364597300.apply:-1",
+      "samples": 2,
+      "stack": [
+        "spoonbill.http.protocol.Http11$$anon$3$$Lambda+0x0000007001114450.364597300.apply:-1",
+        "scala.concurrent.impl.Promise$Transformation.run:500",
+        "scala.concurrent.impl.Promise$DefaultPromise.flatMap:176",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:195",
+      "samples": 2,
+      "stack": [
+        "java.lang.StringLatin1.hashCode:190",
+        "java.lang.String.hashCode:2369",
+        "scala.runtime.Statics.anyHash:127",
+        "scala.collection.immutable.HashSet.contains:75",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:195"
+      ]
+    },
+    {
+      "site": "spoonbill.web.Headers$.validateValue$$anonfun$1:65",
+      "samples": 2,
+      "stack": [
+        "spoonbill.web.Headers$.validateValue$$anonfun$1:65",
+        "spoonbill.web.Headers$.validateValue$$anonfun$adapted$1:65",
+        "spoonbill.web.Headers$$$Lambda+0x00000070011154f0.1961501712.apply:-1",
+        "scala.collection.StringOps$.exists$extension:1319",
+        "spoonbill.web.Headers$.validateValue:65"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Effect$FutureEffect$$anon$2.prepare:92",
+      "samples": 2,
+      "stack": [
+        "scala.concurrent.ExecutionContext.prepare$:104",
+        "spoonbill.effect.Effect$FutureEffect$$anon$2.prepare:92",
+        "scala.concurrent.impl.Promise$Transformation.<init>:451",
+        "scala.concurrent.impl.Promise$DefaultPromise.flatMap:176",
+        "spoonbill.effect.Effect$FutureEffect.flatMap:112"
+      ]
+    },
+    {
+      "site": "spoonbill.web.Headers$.isTokenCharacter:69",
+      "samples": 2,
+      "stack": [
+        "spoonbill.web.Headers$.isTokenCharacter:69",
+        "spoonbill.web.Headers$.validate$$anonfun$1:60",
+        "spoonbill.web.Headers$.validate$$anonfun$adapted$1:60",
+        "spoonbill.web.Headers$$$Lambda+0x0000007001114e60.389993238.apply:-1",
+        "scala.collection.StringOps$.forall$extension:1053"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.Http11.$anonfun$7:166",
+      "samples": 2,
+      "stack": [
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26",
+        "spoonbill.effect.Decoder$$Lambda+0x0000007001102a50.1397381784.apply:-1",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2$$anonfun$1:37"
+      ]
+    },
+    {
+      "site": "java.lang.String.concat:2896",
+      "samples": 1,
+      "stack": [
+        "java.lang.String.concat:2896",
+        "jdk.internal.loader.BuiltinClassLoader.isSealed:992",
+        "jdk.internal.loader.BuiltinClassLoader.getAndVerifyPackage:911",
+        "jdk.internal.loader.BuiltinClassLoader.defineOrCheckPackage:877",
+        "jdk.internal.loader.ClassLoaders$AppClassLoader.defineOrCheckPackage:211"
+      ]
+    },
+    {
+      "site": "spoonbill.web.Headers$.validateValue:65",
+      "samples": 1,
+      "stack": [
+        "scala.collection.StringOps$.exists$extension:1318",
+        "spoonbill.web.Headers$.validateValue:65",
+        "spoonbill.web.Headers$.validate:61",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.decode:193",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:241"
+      ]
+    },
+    {
+      "site": "spoonbill.effect.Decoder.pull:17",
+      "samples": 1,
+      "stack": [
+        "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+        "java.lang.invoke.DirectMethodHandle$Holder.newInvokeSpecial:-1",
+        "java.lang.invoke.Invokers$Holder.linkToTargetMethod:-1",
+        "spoonbill.effect.Decoder.pull:17",
+        "spoonbill.effect.Decoder$$anon$1.pull$$anonfun$2:35"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.Http11$$anon$3.pull$$anonfun$3:172",
+      "samples": 1,
+      "stack": [
+        "spoonbill.http.protocol.Http11$$anon$3.pull$$anonfun$3:172",
+        "spoonbill.http.protocol.Http11$$anon$3$$Lambda+0x0000007001114450.364597300.apply:-1",
+        "scala.concurrent.impl.Promise$Transformation.run:500",
+        "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+        "scala.concurrent.impl.Promise$Transformation.submitWithValue:462"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyBenchmark$.decodeBody$1:32",
+      "samples": 1,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.decodeBody$1:32",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark$.main:63",
+        "spoonbill.http.protocol.ChunkedBodyBenchmark.main:-1"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.simple:53",
+      "samples": 1,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.simple:53",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:233",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    },
+    {
+      "site": "spoonbill.http.protocol.ChunkedBodyDecoder$.simple:62",
+      "samples": 1,
+      "stack": [
+        "spoonbill.http.protocol.ChunkedBodyDecoder$.simple:62",
+        "spoonbill.http.protocol.ChunkedBodyDecoder$Cell.decode:233",
+        "spoonbill.http.protocol.Http11.$anonfun$7:166",
+        "spoonbill.http.protocol.Http11$$Lambda+0x0000007001102498.1514476350.apply:-1",
+        "spoonbill.effect.Decoder.decode$$anonfun$1:26"
+      ]
+    }
+  ]
+}
