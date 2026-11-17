@@ -349,3 +349,12 @@ DOM/event-cache checks remain. The unchanged production client passes all 75
 Node cases and the three native fixtures in both Chromium and WebKit through the
 repository's pinned browser shell. No private lifecycle field rewrite is part
 of this prerequisite commit.
+
+The transport-epoch audit then reproduced two stale-event defects: a superseded
+long-poll response could publish and renew its subscription, and the websocket
+left behind by long-poll fallback could still publish late frames. Each physical
+transport now owns an opaque epoch, checked by websocket callbacks/decoders and
+long-poll subscribe/publish responses. Suspended close handling also checks that
+epoch before reconnecting. Both permanent public regressions failed the old
+client; all 77 Node cases and all three native fixtures in Chromium and WebKit
+pass after this separate bug fix. Pure connection-model extraction follows it.

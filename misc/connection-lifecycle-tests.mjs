@@ -216,3 +216,34 @@ test('legacy FileReader decoding keeps frames ordered until reading completes', 
   await env.flush();
   assert.deepEqual(messages, ['first', 'second']);
 }));
+
+test('a superseded long-poll response cannot publish or renew its old subscription', () => environment(async env => {
+  const connection = env.create({ws: false});
+  const received = [];
+  connection.dispatcher.addEventListener('message', event => received.push(event.data));
+  connection.connect(); env.nextTimer();
+  const old = env.requests[0];
+  connection.connect(); env.nextTimer();
+  const current = env.requests[1];
+  old.respond(200, 'stale');
+  assert.deepEqual(received, []);
+  assert.equal(env.requests.length, 2);
+  current.respond(200, 'current');
+  assert.deepEqual(received, ['current']);
+  assert.equal(env.requests.length, 3);
+}));
+
+test('a websocket superseded by long polling cannot publish late frames', () => environment(async env => {
+  const connection = env.create();
+  const received = [];
+  connection.dispatcher.addEventListener('message', event => received.push(event.data));
+  connection.connect(); env.nextTimer();
+  const old = env.sockets[0];
+  old.close(); await env.flush();
+  env.nextTimer();
+  assert.equal(env.requests.length, 1);
+  old.message('stale'); await env.flush();
+  assert.deepEqual(received, []);
+  env.requests[0].respond(200, 'current');
+  assert.deepEqual(received, ['current']);
+}));

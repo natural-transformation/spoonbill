@@ -34,6 +34,7 @@ export class Connection {
     this._reconnectTimer = null;
     /** @type {?WebSocket} */
     this._webSocket = null;
+    this._transportEpoch = null;
     /** @type {?TextEncoder} */
     this._textEncoder = null;
     const wsEnabled = !(options && options['ws'] === false);
@@ -185,6 +186,9 @@ export class Connection {
     // Cache typed reference; protocol is negotiated once per connection.
     const webSocketWithProtocol = /** @type {{protocol: string}} */ (this._webSocket);
     const sendingSocket = this._webSocket;
+    const epoch = {};
+    this._transportEpoch = epoch;
+    const isCurrent = () => this._transportEpoch === epoch && sendingSocket === this._webSocket;
     // Compression must preserve callback order: an older user action cannot
     // cross a departure/revalidation request. Each physical socket owns a
     // bounded, releasable queue; a replacement never waits for its compressor.
@@ -197,7 +201,7 @@ export class Connection {
     };
     this._clearPendingSends = clearPendingSends;
     const canSend = () => !sendsClosed && !this._committingAuthentication &&
-      sendingSocket === this._webSocket && sendingSocket.readyState === WebSocket.OPEN;
+      isCurrent() && sendingSocket.readyState === WebSocket.OPEN;
     const drainSends = async () => {
       if (sending) return;
       sending = true;
@@ -236,19 +240,19 @@ export class Connection {
     this._connectionType = ConnectionType.WEB_SOCKET;
 
     this._webSocket.addEventListener('open', (event) => {
-      if (sendingSocket === this._webSocket) this._onOpen();
+      if (isCurrent()) this._onOpen();
     });
     this._webSocket.addEventListener('close', (event) => {
       clearPendingSends();
-      if (sendingSocket === this._webSocket) this._onClose();
+      if (isCurrent()) this._onClose();
     });
     this._webSocket.addEventListener('error', (event) => {
       clearPendingSends();
-      if (sendingSocket === this._webSocket) this._onError();
+      if (isCurrent()) this._onError();
     });
 
     let processMessage = async (data) => {
-      if (sendingSocket !== this._webSocket) return;
+      if (!isCurrent()) return;
       if (data instanceof Blob) {
         if (webSocketWithProtocol.protocol == 'json-deflate') {
           let stream = /** @type {{stream: function(): *}} */ (data)
@@ -260,7 +264,7 @@ export class Connection {
         // Check is Blob.text supported
         if(data.text) {
           data = await data.text();
-          if (sendingSocket === this._webSocket) this._onMessage(data);
+          if (isCurrent()) this._onMessage(data);
         } else {
           const text = await new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -269,7 +273,7 @@ export class Connection {
             reader.onabort = () => reject(new Error('Websocket frame decoding aborted'));
             reader.readAsText(data);
           });
-          if (sendingSocket === this._webSocket) this._onMessage(text);
+          if (isCurrent()) this._onMessage(text);
         }
       } else if (data instanceof ArrayBuffer) {
         const decoder = typeof TextDecoder === 'undefined' ? null : new TextDecoder();
@@ -293,7 +297,7 @@ export class Connection {
       })();
       processing = this._processing = drain.catch(() => {
         messages.length = 0;
-        if (sendingSocket === this._webSocket) {
+        if (isCurrent()) {
           this._onError();
           sendingSocket.close();
         }
@@ -304,7 +308,7 @@ export class Connection {
     }
 
     this._webSocket.addEventListener('message', (event) => {
-      if (sendingSocket !== this._webSocket) return;
+      if (!isCurrent()) return;
       messages.push(event.data);
       tryProcessMessage();
     });
@@ -316,22 +320,31 @@ export class Connection {
   /** @private */
   _connectUsingLongPolling() {
 
+    this._clearPendingSends();
+    const epoch = {};
+    this._transportEpoch = epoch;
+    this._processing = null;
+    const isCurrent = () => this._transportEpoch === epoch;
+
     let url = (this._useSSL ? "https://" : "http://") + this._hostPort;
     let path = this._serverRootPath + `bridge/long-polling/${this._sessionId}/`;
     let uriPrefix = url + path;
 
     /** @type {function(boolean)} */
     let subscribe = (firstTime) => {
+      if (!isCurrent()) return;
 
       let onReadyStateChange = (event) => {
         let request = event.target;
-        if (request.readyState !== 4)
+        if (!isCurrent() || request.readyState !== 4)
           return;
         switch (request.status) {
           case 200:
             if (firstTime)
               this._onOpen();
+            if (!isCurrent()) return;
             this._onReady();
+            if (!isCurrent()) return;
             this._onMessage(request.responseText);
           case 503:
             // Poll again
@@ -339,7 +352,7 @@ export class Connection {
             break;
           default:
             this._onError();
-            this._onClose();
+            if (isCurrent()) this._onClose();
             break;
         }
       };
@@ -352,10 +365,11 @@ export class Connection {
 
     /** @type {function(string)} */
     let publish = (data) => {
+      if (!isCurrent()) return;
 
       let onReadyStateChange = (event) => {
         let request = event.target;
-        if (request.readyState !== 4)
+        if (!isCurrent() || request.readyState !== 4)
           return;
         switch (request.status) {
           case 0:
@@ -426,12 +440,13 @@ export class Connection {
   /** @private */
   async _onClose() {
     const disconnectedSocket = this._webSocket;
+    const disconnectedEpoch = this._transportEpoch;
     console.log('Connection closed');
     if (this._processing) {
       console.log('Await processing last message')
       await this._processing;
     }
-    if (this._webSocket !== disconnectedSocket) return;
+    if (this._webSocket !== disconnectedSocket || this._transportEpoch !== disconnectedEpoch) return;
 
     // Allow reconnect to re-emit open and reinitialize the bridge.
     this._wasConnected = false;
@@ -451,6 +466,7 @@ export class Connection {
         await this._recoverReplacement();
       }
       if (this._reconnect && !this._replacementDeparted && this._webSocket === disconnectedSocket &&
+          this._transportEpoch === disconnectedEpoch &&
           (!this._replacementEnabled || this._reconnectTimer === null)) this.connect();
     }
   }
