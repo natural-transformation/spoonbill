@@ -76,12 +76,8 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
   }
 
   def use[R](f: T => F[R]): F[R] =
-    for {
-      borrow <- borrow()
-      result <- f(borrow.value)
-      _      <- borrow.give()
-    } yield {
-      result
+    borrow().flatMap { borrowed =>
+      Effect[F].guarantee(Effect[F].delayAsync(f(borrowed.value)))(borrowed.give())
     }
 
   /**

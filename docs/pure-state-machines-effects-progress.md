@@ -127,6 +127,12 @@ purity guard. The first manual-executor FS2 harness stalled during construction;
 its captured thread dump identified the startup acknowledgment dependency, and
 the permanent test uses bounded startup/registration gates instead.
 
+`AsyncResourcePool.use` stranded its loan when the entered callback failed or
+threw, exhausting a single-resource pool permanently. Both new regressions failed
+before the fix; `use` now applies the existing effect guarantee to callback
+evaluation and return. All 75 effect tests pass. This does not change the separate
+acquisition/disposal protocols or make repeated `Borrow.discard` join cleanup.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate
