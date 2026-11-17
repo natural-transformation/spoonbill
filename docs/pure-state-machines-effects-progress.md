@@ -231,6 +231,12 @@ one stored item per rack. `Stream.buffer` already pumps eagerly with enqueue
 backpressure. Their terminal/error and ownership defects require characterization
 and separate fixes; a different loss or cancellation policy is not a refactor.
 
+The sorted-stream EOF path invoked null callbacks for racks that had never
+pulled. Both an empty parent and cancellation completing a parent's pending read
+with EOF reproduced the exception. Termination now detaches each registered
+callback and skips absent callbacks. Both permanent regressions pass; rack
+routing, buffering and upstream cancellation policy are unchanged.
+
 ## Browser prerequisite
 
 Connection transport selection, long polling and backoff need behavior coverage

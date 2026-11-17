@@ -302,7 +302,11 @@ abstract class Stream[F[_]: Effect, A] { self =>
                     for (j <- 0 until numRacks)
                       values(j) = None
                     inProgress.compareAndSet(true, false)
-                    promises.foreach(_(Right(None)))
+                    for (j <- 0 until numRacks) {
+                      val callback = promises(j)
+                      promises(j) = null
+                      if (callback != null) callback(Right(None))
+                    }
                 }
               } else {
                 Effect[F].unit
