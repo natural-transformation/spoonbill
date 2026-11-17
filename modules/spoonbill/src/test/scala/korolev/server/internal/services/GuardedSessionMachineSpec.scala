@@ -6,6 +6,21 @@ import org.scalatest.matchers.should.Matchers
 class GuardedSessionMachineSpec extends AnyFlatSpec with Matchers {
   import GuardedSessionMachine.*
 
+  "Guarded attachment mode" should "restore only presentation onto fresh authority when snapshots are present" in {
+    attachMode(hasSnapshots = false, reconstructed = false) shouldBe AttachMode.ReuseLocal
+    attachMode(hasSnapshots = false, reconstructed = true) shouldBe AttachMode.ReconstructLocal
+    for (reconstructed <- List(false, true)) {
+      val mode = attachMode(hasSnapshots = true, reconstructed = reconstructed)
+      mode shouldBe AttachMode.RestoreSnapshot
+      initializeBeforeRender(mode) shouldBe true
+      usesLocalStorage(mode) shouldBe false
+    }
+    initializeBeforeRender(AttachMode.ReuseLocal) shouldBe false
+    initializeBeforeRender(AttachMode.ReconstructLocal) shouldBe true
+    usesLocalStorage(AttachMode.ReuseLocal) shouldBe true
+    usesLocalStorage(AttachMode.ReconstructLocal) shouldBe true
+  }
+
   "Guarded lifetime decisions" should "keep acquisition rollback separate from successful attachment and terminal signalling" in {
     val initial = State()
     needsRollback(initial) shouldBe false

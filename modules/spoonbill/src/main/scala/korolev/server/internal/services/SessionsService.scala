@@ -385,12 +385,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                )
       snapshots      = guard.viewSnapshots
       initialization = guard.applicationStateInitialization
-      initializeApplication = initialization match {
-                                case ApplicationStateInitialization.Retained()       => snapshots.nonEmpty
-                                case ApplicationStateInitialization.Reconstructed(_) => true
-                              }
+      attachMode = GuardedSessionMachine.attachMode(snapshots.nonEmpty, initialization match {
+                     case ApplicationStateInitialization.Retained() => false
+                     case ApplicationStateInitialization.Reconstructed(_) => true
+                   })
       _ <- if (snapshots.nonEmpty && localExists) Effect[F].delay { transition(GuardedSessionMachine.Event.AcquireStorage); () } else Effect[F].unit
-      restoredManager <- if (initializeApplication) {
+      restoredManager <- if (GuardedSessionMachine.initializeBeforeRender(attachMode)) {
                            // Restore only presentation onto fresh authority. A prior process's
                            // arbitrary state/DOM cache is never the durable bootstrap baseline.
                            for {
@@ -428,7 +428,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       rawManager <- Effect[F].delay {
                       // get may promote a soft-closed snapshot before restoration is allowed.
                       // Track that acquisition even when authorization prevents wrapper creation.
-                      if (snapshots.isEmpty) transition(GuardedSessionMachine.Event.AcquireStorage)
+                      if (GuardedSessionMachine.usesLocalStorage(attachMode)) transition(GuardedSessionMachine.Event.AcquireStorage)
                       restoredManager
                     }
       initial <- rawManager.read[S](avocet.Id.TopLevel).flatMap {
@@ -559,9 +559,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
       state     <- rawManager.read[S](avocet.Id.TopLevel).map(_.getOrElse(initial))
-      connected <- if (initializeApplication) Effect[F].pure(state) else required(guard.connected(state))
+      connected <- if (GuardedSessionMachine.initializeBeforeRender(attachMode)) Effect[F].pure(state) else required(guard.connected(state))
       _         <- authorize(guard, connected)
-      _ <- if (initializeApplication) Effect[F].unit
+      _ <- if (GuardedSessionMachine.initializeBeforeRender(attachMode)) Effect[F].unit
            else required(app.topLevelComponentInstance.browserAccess.transitionForce(_ => connected))
       // The connected state is the admitted state: it passed its check above.
       // Setup stops once the connection is gone.

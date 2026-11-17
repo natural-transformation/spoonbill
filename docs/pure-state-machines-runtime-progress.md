@@ -381,3 +381,14 @@ takeover fencing, failed-removal retention, FIFO bounds/refresh, read-once expir
 and clock wrap. The new model was formatted and the purity check passed with
 16 models and zero violations. This completes the owned phase-four extraction and
 retention decisions; coordinator compact-performance acceptance is still pending.
+
+The guarded attach-mode subitem is explicit too: ReuseLocal, ReconstructLocal and
+RestoreSnapshot. Snapshot presentation always initializes against freshly loaded
+authority even when the guard describes application state as retained. The pure
+mode decides pre-render initialization and local-storage use; snapshot and
+acknowledgement capabilities stay in the interpreter at their original effect
+positions. Table laws plus guarded restore/session/snapshot tests passed 29 cases,
+and the three native late-guard acquisition cases passed through the repository
+Nix environment (`spoonbill/testOnly *GuardedSessionMachineSpec
+*GuardedRestoreCleanupSpec *SessionsServiceSpec *ViewSnapshotSessionSpec`, then
+`ce3/testOnly *GuardedOpenCancellationSpec`).

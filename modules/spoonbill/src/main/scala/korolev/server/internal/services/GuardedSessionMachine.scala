@@ -7,6 +7,14 @@ package spoonbill.server.internal.services
  * to resource release or free the local attachment.
  */
 private[spoonbill] object GuardedSessionMachine {
+  enum AttachMode { case ReuseLocal, ReconstructLocal, RestoreSnapshot }
+  def attachMode(hasSnapshots: Boolean, reconstructed: Boolean): AttachMode =
+    if (hasSnapshots) AttachMode.RestoreSnapshot
+    else if (reconstructed) AttachMode.ReconstructLocal
+    else AttachMode.ReuseLocal
+  def initializeBeforeRender(mode: AttachMode): Boolean = mode != AttachMode.ReuseLocal
+  def usesLocalStorage(mode: AttachMode): Boolean = mode != AttachMode.RestoreSnapshot
+
   enum Attachment { case Unclaimed, Acquiring, Attached }
   enum Admission  { case Open, Denied                   }
   enum Terminal   { case Pending, Signalled             }
