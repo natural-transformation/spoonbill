@@ -1,0 +1,339 @@
+{
+  "protocol": "lifecycle-cost-v1",
+  "scope": "full eight-cell comparison",
+  "repeats": 3,
+  "trials": 48,
+  "allocationStatus": "verified while all producers were alive; self-counter cross-check passed",
+  "statistics": "median/range of independent JVM trials; no confidence interval",
+  "nearZeroAllocation": "Ratios omitted when baseline allocation is below 0.001 bytes/operation; use the absolute delta.",
+  "results": [
+    {
+      "scenario": "write",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 10626133.258490391,
+          "min": 10319385.578992315,
+          "max": 10884558.672398295
+        },
+        "bytesPerOperation": {
+          "median": 568.166462729116,
+          "min": 568.160969391755,
+          "max": 568.1743188348872
+        },
+        "producerBytesPerOperation": {
+          "median": 568.1664511854812,
+          "min": 568.1609591021163,
+          "max": 568.1743069480909
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 11291472.048712507,
+          "min": 11201261.683774205,
+          "max": 11420634.71594288
+        },
+        "bytesPerOperation": {
+          "median": 600.1943626274801,
+          "min": 600.1909302569181,
+          "max": 600.195876731571
+        },
+        "producerBytesPerOperation": {
+          "median": 600.1943505832253,
+          "min": 600.1909181156798,
+          "max": 600.195864823518
+        }
+      },
+      "throughputRatio": 1.0626134431064567,
+      "allocationRatio": 1.0563706272709623,
+      "allocationDeltaBytes": 32.027899898364126
+    },
+    {
+      "scenario": "write",
+      "writers": 4,
+      "before": {
+        "operationsPerSecond": {
+          "median": 2933306.3865425712,
+          "min": 2845383.118092897,
+          "max": 2963127.5673343255
+        },
+        "bytesPerOperation": {
+          "median": 597.5860547693158,
+          "min": 583.4755174586033,
+          "max": 639.8220327705387
+        },
+        "producerBytesPerOperation": {
+          "median": 597.5859893166744,
+          "min": 583.4754526637869,
+          "max": 639.8219652951673
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 2215590.34435478,
+          "min": 2030514.7558344968,
+          "max": 2397772.454190654
+        },
+        "bytesPerOperation": {
+          "median": 689.2619189181382,
+          "min": 626.3596052046263,
+          "max": 789.3865040342915
+        },
+        "producerBytesPerOperation": {
+          "median": 689.2618262435249,
+          "min": 626.3595195729538,
+          "max": 789.3864029143554
+        }
+      },
+      "throughputRatio": 0.7553218288138838,
+      "allocationRatio": 1.1534103137400216,
+      "allocationDeltaBytes": 91.67586414882248
+    },
+    {
+      "scenario": "read",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 11402746.145946,
+          "min": 11220121.710458092,
+          "max": 11806208.494941989
+        },
+        "bytesPerOperation": {
+          "median": 632.1714784364863,
+          "min": 632.1666503290413,
+          "max": 632.1836645739535
+        },
+        "producerBytesPerOperation": {
+          "median": 632.1714665097641,
+          "min": 632.1666379064229,
+          "max": 632.1836534037327
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 12168936.375747913,
+          "min": 12017802.800769456,
+          "max": 12489145.555385623
+        },
+        "bytesPerOperation": {
+          "median": 712.2440183878792,
+          "min": 712.2284441123363,
+          "max": 712.2661940885353
+        },
+        "producerBytesPerOperation": {
+          "median": 712.244006644575,
+          "min": 712.2284320600249,
+          "max": 712.2661827722217
+        }
+      },
+      "throughputRatio": 1.0671934830430576,
+      "allocationRatio": 1.126662689923044,
+      "allocationDeltaBytes": 80.07253995139297
+    },
+    {
+      "scenario": "read",
+      "writers": 4,
+      "before": {
+        "operationsPerSecond": {
+          "median": 3423422.4323312943,
+          "min": 3400689.21752895,
+          "max": 3572028.6779502914
+        },
+        "bytesPerOperation": {
+          "median": 675.506579566412,
+          "min": 650.1205709072884,
+          "max": 691.5897634225679
+        },
+        "producerBytesPerOperation": {
+          "median": 675.5065191890299,
+          "min": 650.120513425384,
+          "max": 691.5897034447519
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 3025886.5672855675,
+          "min": 2967261.106417693,
+          "max": 3039628.424805936
+        },
+        "bytesPerOperation": {
+          "median": 754.6345842749463,
+          "min": 737.5309045500691,
+          "max": 762.9629926524509
+        },
+        "producerBytesPerOperation": {
+          "median": 754.6345167244501,
+          "min": 737.5308366938326,
+          "max": 762.9629234546422
+        }
+      },
+      "throughputRatio": 0.883877647908321,
+      "allocationRatio": 1.1171387623778946,
+      "allocationDeltaBytes": 79.12800470853426
+    },
+    {
+      "scenario": "render0",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 9182545.6936654,
+          "min": 9174450.085584128,
+          "max": 9245011.938001152
+        },
+        "bytesPerOperation": {
+          "median": 2496.0000180206575,
+          "min": 2496.000015681191,
+          "max": 2496.0000190369387
+        },
+        "producerBytesPerOperation": {
+          "median": 2496,
+          "min": 2496,
+          "max": 2496
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 9803560.816805787,
+          "min": 9796412.535421547,
+          "max": 9811060.478543933
+        },
+        "bytesPerOperation": {
+          "median": 2384.000012521395,
+          "min": 2384.00001251224,
+          "max": 2384.0000135898517
+        },
+        "producerBytesPerOperation": {
+          "median": 2384,
+          "min": 2384,
+          "max": 2384
+        }
+      },
+      "throughputRatio": 1.0676299518518917,
+      "allocationRatio": 0.955128203248941,
+      "allocationDeltaBytes": -112.00000549926244
+    },
+    {
+      "scenario": "render1",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 5092971.7254716335,
+          "min": 5089929.094166431,
+          "max": 5110500.54799324
+        },
+        "bytesPerOperation": {
+          "median": 1440.052268220905,
+          "min": 1440.0498904656988,
+          "max": 1440.0545336049222
+        },
+        "producerBytesPerOperation": {
+          "median": 1440.052246305727,
+          "min": 1440.0498684750646,
+          "max": 1440.0545116012004
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 5307717.305189289,
+          "min": 5178166.301187491,
+          "max": 5383211.113273742
+        },
+        "bytesPerOperation": {
+          "median": 1328.0645448276955,
+          "min": 1328.056788677031,
+          "max": 1328.143481288005
+        },
+        "producerBytesPerOperation": {
+          "median": 1328.0645240227625,
+          "min": 1328.056767576084,
+          "max": 1328.1434555394426
+        }
+      },
+      "throughputRatio": 1.0421650838239769,
+      "allocationRatio": 0.9222335703609124,
+      "allocationDeltaBytes": -111.98772339320954
+    },
+    {
+      "scenario": "render1024",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 1325.246164855289,
+          "min": 1311.6334066922714,
+          "max": 1338.4927610775717
+        },
+        "bytesPerOperation": {
+          "median": 1349137.677419355,
+          "min": 1316583.171875,
+          "max": 1349351.171875
+        },
+        "producerBytesPerOperation": {
+          "median": 1349137.5927419355,
+          "min": 1316583.08984375,
+          "max": 1349351.08984375
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 1321.364553513788,
+          "min": 1312.0523091236626,
+          "max": 1324.9017303146081
+        },
+        "bytesPerOperation": {
+          "median": 1349213.6290322582,
+          "min": 1349121.26953125,
+          "max": 1349240.8447580645
+        },
+        "producerBytesPerOperation": {
+          "median": 1349213.5443548388,
+          "min": 1349121.1875,
+          "max": 1349240.760080645
+        }
+      },
+      "throughputRatio": 0.997071026165222,
+      "allocationRatio": 1.0000562964137572,
+      "allocationDeltaBytes": 75.95161290327087
+    },
+    {
+      "scenario": "abort1",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 9048268.542673904,
+          "min": 8921687.60314649,
+          "max": 9082305.901282616
+        },
+        "bytesPerOperation": {
+          "median": 672.0000601208075,
+          "min": 672.0000597782943,
+          "max": 672.0001285990106
+        },
+        "producerBytesPerOperation": {
+          "median": 672.0000472248524,
+          "min": 672.0000465641548,
+          "max": 672.0001150931785
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 9443302.810741805,
+          "min": 9422793.433377229,
+          "max": 9450966.011774989
+        },
+        "bytesPerOperation": {
+          "median": 656.0216612788087,
+          "min": 656.020820354294,
+          "max": 656.0244307813865
+        },
+        "producerBytesPerOperation": {
+          "median": 656.0216468773015,
+          "min": 656.0208070931014,
+          "max": 656.0244174805638
+        }
+      },
+      "throughputRatio": 1.0436585481746943,
+      "allocationRatio": 0.9762226228980897,
+      "allocationDeltaBytes": -15.978398841998796
+    }
+  ]
+}
