@@ -35,7 +35,7 @@ import spoonbill.security.transaction.{
  * this baseline suite rather than silently counting skipped evidence as a pass.
  */
 class JdbcReferenceHostSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future]                       = new Effect.FutureEffect
+  private given Effect[Future]                       = Effect.futureEffect
   private val initial                                = Instant.parse("2026-10-10T12:00:00Z")
   private def accepted[E, A](value: Either[E, A]): A = value.fold(error => fail(error.toString), identity)
   private def result[A](value: Future[A]): A         = Await.result(value, 20.seconds)

@@ -107,7 +107,7 @@ final class AsyncResourcePoolFailureSpec extends AnyFlatSpec with Matchers {
   it should "keep failed reservations released when an effect callback reports a defect" in {
     val reported = new AtomicInteger()
     val inject = new AtomicBoolean(true)
-    given Effect[Future] = new Effect.FutureEffect {
+    given Effect[Future] = new ReaderFiberFutureEffect {
       override def runAsync[A](value: Future[A])(callback: Either[Throwable, A] => Unit): Unit = {
         val callbackContext = new ExecutionContext {
           def execute(task: Runnable): Unit = task.run()

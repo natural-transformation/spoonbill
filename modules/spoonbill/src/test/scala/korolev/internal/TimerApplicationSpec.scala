@@ -18,7 +18,7 @@ import spoonbill.timer.*
 class TimerApplicationSpec extends AnyFlatSpec with Matchers {
   import avocet.dsl.*
   import avocet.dsl.html.*
-  private given Effect[Future]               = new Effect.FutureEffect
+  private given Effect[Future]               = Effect.futureEffect
   private val ctx                            = Context[Future, Int, Unit]
   private val tickDelay                      = DelayDuration.from(1.millis).toOption.get
   private def result[A](value: Future[A]): A = Await.result(value, 3.seconds)

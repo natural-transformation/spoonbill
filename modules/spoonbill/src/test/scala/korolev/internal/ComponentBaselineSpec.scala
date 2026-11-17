@@ -14,7 +14,7 @@ import spoonbill.state.javaSerialization.*
 class ComponentBaselineSpec extends AnyFlatSpec with Matchers {
   import avocet.dsl.*
   import avocet.dsl.html.*
-  private given Effect[Future]               = new Effect.FutureEffect
+  private given Effect[Future]               = Effect.futureEffect
   private val ctx                            = Context[Future, Int, Unit]
   private def result[A](value: Future[A]): A = Await.result(value, 3.seconds)
 
@@ -141,10 +141,15 @@ class ComponentBaselineSpec extends AnyFlatSpec with Matchers {
     import ctx.*
     val refused    = new IllegalStateException("loader effect startup refused")
     val rejectNext = new java.util.concurrent.atomic.AtomicBoolean(false)
-    val effect = new Effect.FutureEffect {
+    val effect = new Effect[Future] {
+      export Effect.futureEffect.{
+        pure, delay, uncancelable, fail, unit, never, fromTry,
+        promise, promiseF, flatMap, map, recover, recoverF, start,
+        blocking, fork, sequence, run, toFuture
+      }
       override def runAsync[A](operation: Future[A])(callback: Either[Throwable, A] => Unit): Unit =
         if (rejectNext.compareAndSet(true, false)) throw refused
-        else super.runAsync(operation)(callback)
+        else Effect.futureEffect.runAsync(operation)(callback)
     }
     val pending = Promise[Int]()
     var starts  = 0

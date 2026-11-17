@@ -16,7 +16,7 @@ import spoonbill.security.transaction.*
 
 class BrowserReplacementPreparationSpec extends AnyFlatSpec with Matchers {
   private given ExecutionContext            = ExecutionContext.parasitic
-  private given Effect[Future]              = new Effect.FutureEffect
+  private given Effect[Future]              = Effect.futureEffect
   private val now                           = Instant.parse("2026-10-16T12:00:00Z")
   private def id(value: Long): UUID         = new UUID(0L, value)
   private def await[A](value: Future[A]): A = Await.result(value, 5.seconds)

@@ -9,7 +9,7 @@ import spoonbill.Context
 import spoonbill.effect.{Effect, Scheduler}
 
 class LegacyDelaySpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
 
   "Legacy delay" should "defer authorization and eager callback construction to the borrowed worker" in {
     val worker        = new Worker

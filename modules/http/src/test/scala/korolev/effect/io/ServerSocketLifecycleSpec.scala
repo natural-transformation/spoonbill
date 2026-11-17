@@ -132,10 +132,15 @@ final class ServerSocketLifecycleSpec extends AnyFlatSpec with Matchers {
     "Connection startup" should s"close and settle a failed launch when handler construction throws=$constructionFailure" in {
       val expected = new IllegalStateException("Synthetic startup failure")
       val refuse = new AtomicBoolean(!constructionFailure)
-      given Effect[Future] = new Effect.FutureEffect {
+      given Effect[Future] = new Effect[Future] {
+        export Effect.futureEffect.{
+          pure, delay, uncancelable, fail, unit, never, fromTry,
+          promise, promiseF, flatMap, map, recover, recoverF, start,
+          blocking, fork, sequence, run, toFuture
+        }
         override def runAsync[A](value: Future[A])(callback: Either[Throwable, A] => Unit): Unit =
           if (refuse.compareAndSet(true, false)) throw expected
-          else super.runAsync(value)(callback)
+          else Effect.futureEffect.runAsync(value)(callback)
       }
       val server = await(ServerSocket.accept[Future, Bytes](new InetSocketAddress("127.0.0.1", 0), gracefulShutdown = true) { _ =>
         if (constructionFailure) throw expected else Future.unit
@@ -155,10 +160,15 @@ final class ServerSocketLifecycleSpec extends AnyFlatSpec with Matchers {
   it should "release an installed reservation only after a failed launch and asynchronous close observers settle" in {
     val expected = new IllegalStateException("Runtime refused handler ownership")
     val unstarted: Future[Unit] = Future.never
-    given Effect[Future] = new Effect.FutureEffect {
+    given Effect[Future] = new Effect[Future] {
+      export Effect.futureEffect.{
+        pure, delay, uncancelable, fail, unit, never, fromTry,
+        promise, promiseF, flatMap, map, recover, recoverF, start,
+        blocking, fork, sequence, run, toFuture
+      }
       override def runAsync[A](value: Future[A])(callback: Either[Throwable, A] => Unit): Unit =
         if (value.asInstanceOf[AnyRef] eq unstarted.asInstanceOf[AnyRef]) throw expected
-        else super.runAsync(value)(callback)
+        else Effect.futureEffect.runAsync(value)(callback)
     }
     val dispatcher = new SocketCloseDispatcher(1, 1)
     val installed = Promise[SocketCloseDispatcher.Reservation]()

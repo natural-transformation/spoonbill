@@ -375,9 +375,9 @@ private[effect] object StreamRoutingRuntime {
   import StreamRoutingMachine.*
 
   /**
-   * Every FutureEffect is served by the callback pump, which calls neither
-   * `promise` nor `runAsync` for a pull or a read. Every other effect is served
-   * by a reader fiber.
+   * Every built-in Future instance is served by the callback pump, which calls
+   * neither `promise` nor `runAsync` for a pull or a read. Every other effect
+   * is served by a reader fiber.
    */
   def apply[F[_], A](
     upstream: Stream[F, A],
@@ -386,8 +386,8 @@ private[effect] object StreamRoutingRuntime {
     fixed: Vector[Lane] = Vector.empty,
     route: Option[A => Int] = None
   )(using F: Effect[F]): StreamRoutingRuntime[F, A] = F match {
-    case future: Effect.FutureEffect => new CallbackPump(upstream, mode, capacity, fixed, route)(using future)
-    case _                           => new ReaderFiber(upstream, mode, capacity, fixed, route)
+    case future: Effect.BuiltinFutureEffect => new CallbackPump(upstream, mode, capacity, fixed, route)(using future)
+    case _                                  => new ReaderFiber(upstream, mode, capacity, fixed, route)
   }
 
   /**
@@ -401,7 +401,7 @@ private[effect] object StreamRoutingRuntime {
     capacity: Int,
     fixed: Vector[Lane],
     route: Option[A => Int]
-  )(using F: Effect.FutureEffect)
+  )(using F: Effect.BuiltinFutureEffect)
       extends StreamRoutingRuntime[Future, A](upstream, mode, capacity, fixed, route) {
     protected type Pull    = Promise[Option[A]]
     protected type Outcome = Try[Option[A]]
@@ -425,7 +425,7 @@ private[effect] object StreamRoutingRuntime {
         val result =
           try upstream.pull()
           catch { case error: Throwable => F.fail[Option[A]](error) }
-        try result.onComplete(receiver)(Effect.FutureEffect.immediate)
+        try result.onComplete(receiver)(Effect.BuiltinFutureEffect.immediate)
         catch { case NonFatal(error) => received(Failure(error)) }
       } else { settleLate(); () }
     private def complete(result: Try[Option[A]]): Boolean = result match {
@@ -441,7 +441,7 @@ private[effect] object StreamRoutingRuntime {
             // Normalize failed Future construction once, including interruption,
             // without successful per-item map/recover wrappers.
             if (result.isFailure) throw error
-            F.fail[Option[A]](error).onComplete(receiver)(Effect.FutureEffect.immediate)
+            F.fail[Option[A]](error).onComplete(receiver)(Effect.BuiltinFutureEffect.immediate)
             false
         }
       if (needsCleanup) {
@@ -541,7 +541,7 @@ private[effect] object StreamRoutingRuntime {
    * pull's success/error boundary, not a promise of irrevocable outer delivery.
    */
   def protect[F[_], A](task: => F[A])(canceled: => F[Unit])(using F: Effect[F]): F[A] =
-    if (F.isInstanceOf[Effect.FutureEffect]) {
+    if (F.isInstanceOf[Effect.BuiltinFutureEffect]) {
       try task
       catch { case error: Throwable => F.fail(error) }
     } else

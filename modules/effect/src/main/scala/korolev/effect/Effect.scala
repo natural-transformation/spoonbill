@@ -16,11 +16,11 @@
 
 package spoonbill.effect
 
-import spoonbill.effect.Effect.Fiber
 import scala.annotation.implicitNotFound
 import scala.concurrent.{blocking => futureBlocking, Await, ExecutionContext, Future}
 import scala.concurrent.duration.Duration
 import scala.util.{Failure, Success, Try}
+import spoonbill.effect.Effect.Fiber
 
 /**
  * Spoonbill's internal presentation of effect (such as Future, cats.effect.IO,
@@ -32,16 +32,21 @@ trait Effect[F[_]] {
   def none[A]: F[Option[A]]         = noneVal.asInstanceOf[F[Option[A]]]
   def pure[A](value: A): F[A]
   def delay[A](value: => A): F[A]
-  /** Run resource cleanup to completion before honoring external cancellation.
-    * Preserve the calling effect's environment and local context.
-    */
+
+  /**
+   * Run resource cleanup to completion before honoring external cancellation.
+   * Preserve the calling effect's environment and local context.
+   */
   def uncancelable[A](task: => F[A]): F[A]
-  /** Run finalizer once task settles, whether it succeeds, fails or is cancelled.
-    * This default covers success and failure, which is all a Future can do;
-    * instances of cancelable effects override it with their native guarantee
-    * so cancellation runs the finalizer too. The finalizer is taken by name
-    * because a strict effect evaluates it when constructed; it should not fail.
-    */
+
+  /**
+   * Run finalizer once task settles, whether it succeeds, fails or is
+   * cancelled. This default covers success and failure, which is all a Future
+   * can do; instances of cancelable effects override it with their native
+   * guarantee so cancellation runs the finalizer too. The finalizer is taken by
+   * name because a strict effect evaluates it when constructed; it should not
+   * fail.
+   */
   def guarantee[A](task: F[A])(finalizer: => F[Unit]): F[A] =
     flatMap(recover(map(task)(value => Right(value): Either[Throwable, A])) { case error => Left(error) }) { result =>
       flatMap(finalizer)(_ => result.fold(fail, pure))
@@ -87,14 +92,41 @@ object Effect {
 
   def apply[F[_]: Effect]: Effect[F] = implicitly[Effect[F]]
 
-  class FutureEffect extends Effect[Future] {
+  /**
+   * Optional instrumentation for the fixed built-in Future implementation.
+   * Startup hooks run synchronously on the caller of `start`: `beforeStart`
+   * runs before dispatch, and `afterStart` receives the child's completion
+   * without joining it. A hook may block or throw; an `afterStart` failure does
+   * not stop the already-dispatched child. Continuation hooks run before
+   * delayed bodies and map/flatMap callbacks, on their executing thread, and
+   * participate in those operations' normal failure handling.
+   */
+  final case class FutureInstrumentation(
+    beforeStart: () => Unit = () => (),
+    afterStart: Future[Unit] => Unit = _ => (),
+    continuation: Option[() => Unit] = None
+  )
+
+  /**
+   * Create a built-in Future instance with explicit instrumentation. Custom
+   * effect semantics should implement or delegate `Effect[Future]`; such
+   * instances use the generic stream interpreter.
+   */
+  def future(instrumentation: FutureInstrumentation): Effect[Future] =
+    instrumentation.continuation match {
+      case None          => new PlainFutureEffect(instrumentation)
+      case Some(observe) => new CheckedFutureEffect(instrumentation, observe)
+    }
+
+  private[effect] sealed abstract class BuiltinFutureEffect(instrumentation: FutureInstrumentation)
+      extends Effect[Future] {
     def uncancelable[A](task: => Future[A]): Future[A] = task
-    private implicit val immediateEc: ExecutionContext = FutureEffect.immediate
-    val unit: Future[Unit]                   = Future.unit
-    def never[T]: Future[T]                  = Future.never
-    def toFuture[A](m: Future[A]): Future[A] = m
-    def fail[A](e: Throwable): Future[A]     = Future.failed(e)
-    def pure[A](value: A): Future[A]         = Future.successful(value)
+    private implicit val immediateEc: ExecutionContext = BuiltinFutureEffect.immediate
+    val unit: Future[Unit]                             = Future.unit
+    def never[T]: Future[T]                            = Future.never
+    def toFuture[A](m: Future[A]): Future[A]           = m
+    final def fail[A](e: Throwable): Future[A]         = Future.failed(e)
+    def pure[A](value: A): Future[A]                   = Future.successful(value)
     def delay[A](value: => A): Future[A] =
       try {
         Future.successful(value)
@@ -107,7 +139,7 @@ object Effect {
     def fromTry[A](value: => Try[A]): Future[A]                   = Future.fromTry(value)
     def flatMap[A, B](m: Future[A])(f: A => Future[B]): Future[B] = m.flatMap(f)
     def map[A, B](m: Future[A])(f: A => B): Future[B]             = m.map(f)
-    def runAsync[A](m: Future[A])(f: Either[Throwable, A] => Unit): Unit =
+    final def runAsync[A](m: Future[A])(f: Either[Throwable, A] => Unit): Unit =
       m.onComplete(x => f(x.toEither))
     def run[A](m: Future[A]): Either[Throwable, A] =
       Try(Await.result(m, Duration.Inf)).toEither
@@ -136,14 +168,16 @@ object Effect {
     def sequence[A](in: List[Future[A]]): Future[List[A]] =
       Future.sequence(in)
     def start[A](create: => Future[A])(implicit ec: ExecutionContext): Future[Fiber[Future, A]] = {
+      instrumentation.beforeStart()
       val f = Future(create)(ec).flatten
+      instrumentation.afterStart(f.map(_ => ())(ExecutionContext.parasitic))
       Future.successful {
         new Fiber[Future, A] {
           override def join(): Future[A] = f
         }
       }
     }
-    def promise[A](cb: (Either[Throwable, A] => Unit) => Unit): Future[A] = {
+    final def promise[A](cb: (Either[Throwable, A] => Unit) => Unit): Future[A] = {
       val promise = scala.concurrent.Promise[A]()
       try {
         cb(or => promise.complete(or.toTry))
@@ -164,9 +198,38 @@ object Effect {
       Future(futureBlocking(f))(ec)
   }
 
-  object FutureEffect {
+  private final class DefaultFutureEffect extends BuiltinFutureEffect(FutureInstrumentation()) {
+    override def start[A](create: => Future[A])(implicit ec: ExecutionContext): Future[Fiber[Future, A]] = {
+      val f = Future(create)(ec).flatten
+      Future.successful {
+        new Fiber[Future, A] {
+          override def join(): Future[A] = f
+        }
+      }
+    }
+  }
 
-    /** Every FutureEffect runs its continuations on the completing thread. */
+  private final class PlainFutureEffect(instrumentation: FutureInstrumentation)
+      extends BuiltinFutureEffect(instrumentation)
+
+  private final class CheckedFutureEffect(instrumentation: FutureInstrumentation, observe: () => Unit)
+      extends BuiltinFutureEffect(instrumentation) {
+    override def delay[A](value: => A): Future[A] = super.delay { observe(); value }
+    override def map[A, B](m: Future[A])(f: A => B): Future[B] = super.map(m) { value =>
+      observe(); f(value)
+    }
+    override def flatMap[A, B](m: Future[A])(f: A => Future[B]): Future[B] =
+      super.flatMap(m) { value =>
+        observe(); f(value)
+      }
+  }
+
+  private[effect] object BuiltinFutureEffect {
+
+    /**
+     * Built-in Future instances run their continuations on the completing
+     * thread.
+     */
     private[effect] val immediate: ExecutionContext = new ExecutionContext {
       // Run on the same thread
       def execute(runnable: Runnable): Unit     = runnable.run()
@@ -175,5 +238,5 @@ object Effect {
   }
 
   implicit val futureEffect: Effect[Future] =
-    new FutureEffect()
+    new DefaultFutureEffect
 }

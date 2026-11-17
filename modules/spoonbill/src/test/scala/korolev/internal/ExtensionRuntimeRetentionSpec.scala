@@ -49,7 +49,12 @@ class ExtensionRuntimeRetentionSpec extends AnyFlatSpec with Matchers {
 
   it should "release admission when the final callback effect cannot start" in {
     val rejected = new RejectedExecutionException("synthetic refused effect startup")
-    final class RefusingEffect extends Effect.FutureEffect {
+    final class RefusingEffect extends Effect[Future] {
+      export Effect.futureEffect.{
+        pure, delay, uncancelable, fail, unit, never, fromTry,
+        promise, promiseF, flatMap, map, recover, recoverF, start,
+        blocking, fork, sequence, runAsync, run, toFuture
+      }
       var untilRefusal = 0
       override def delayAsync[A](operation: => Future[A]): Future[A] = {
         if (untilRefusal > 0) {

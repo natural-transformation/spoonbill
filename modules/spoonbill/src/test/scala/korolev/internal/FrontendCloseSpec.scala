@@ -14,9 +14,14 @@ final class FrontendCloseSpec extends AsyncFlatSpec with Matchers {
   "Frontend close" should "finish later cleanup when a user-action callback throws" in {
     val expected = new IllegalStateException("Completion callback failed")
     val failCallback = new AtomicBoolean(true)
-    given Effect[Future] = new Effect.FutureEffect {
+    given Effect[Future] = new Effect[Future] {
+      export Effect.futureEffect.{
+        pure, delay, uncancelable, fail, unit, never, fromTry,
+        promiseF, flatMap, map, recover, recoverF, start, blocking,
+        fork, sequence, runAsync, run, toFuture
+      }
       override def promise[A](register: (Either[Throwable, A] => Unit) => Unit): Future[A] =
-        super.promise { complete =>
+        Effect.futureEffect.promise { complete =>
           register { result =>
             complete(result)
             if (result.left.exists(_.isInstanceOf[SessionAccessDenied]) && failCallback.compareAndSet(true, false))

@@ -13,7 +13,7 @@ import spoonbill.sensitive.*
 import spoonbill.server.SessionAccessDenied
 
 class SensitiveInvocationOwnershipSpec extends AsyncFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private def accepted[A](result: Either[SensitiveError, A]): A = result.fold(error => fail(error.toString), identity)
 
   "An invocation-owned disclosure" should "reject cached-result reuse on another connection or a later invocation" in {

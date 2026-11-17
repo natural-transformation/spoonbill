@@ -22,7 +22,7 @@ import spoonbill.server.BrowserSessionToken
  * It is bounded to one browser, view and ceremony per fixture.
  */
 object BrowserPreparationSpec extends ZIOSpecDefault {
-  private given Effect[Future]   = new Effect.FutureEffect
+  private given Effect[Future]   = Effect.futureEffect
   private given ExecutionContext = ExecutionContext.parasitic
   private val time               = Instant.parse("2026-10-11T00:00:00Z")
   private val binding            = "b" * 43

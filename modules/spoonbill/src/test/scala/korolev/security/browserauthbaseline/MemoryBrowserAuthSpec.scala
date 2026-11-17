@@ -15,7 +15,7 @@ import spoonbill.security.transaction.{OperationError, OperationProtocolExceptio
 
 class MemoryBrowserAuthSpec extends AnyFlatSpec with Matchers {
   private given ExecutionContext                     = ExecutionContext.global
-  private given Effect[Future]                       = new Effect.FutureEffect
+  private given Effect[Future]                       = Effect.futureEffect
   private val start                                  = Instant.parse("2026-10-10T12:00:00Z")
   private val binding                                = "synthetic-binding-cookie"
   private val credential                             = "A" * 43

@@ -17,7 +17,7 @@ import spoonbill.security.store.InvocationStatus
 import spoonbill.security.transaction.*
 
 class OneUseAuthoritySpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private given ExecutionContext = ExecutionContext.global
   private val now = Instant.parse("2026-10-08T12:00:00Z")
   private def id(n: Long): UUID = new UUID(0L, n)

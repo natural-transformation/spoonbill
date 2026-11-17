@@ -14,10 +14,9 @@ class StreamOperatorOwnershipSpec extends AnyFlatSpec with Matchers {
   "Rejected cleanup startup" should "settle consumers and allow a later cancel to start the still-unentered cleanup" in {
     val attempts  = new AtomicInteger()
     val rejection = new java.util.concurrent.RejectedExecutionException("synthetic cleanup startup rejection")
-    given Effect[Future] = new Effect.FutureEffect {
-      override def start[A](task: => Future[A])(implicit ec: ExecutionContext): Future[Effect.Fiber[Future, A]] =
-        if (attempts.incrementAndGet() == 1) Future.failed(rejection) else super.start(task)
-    }
+    given Effect[Future] = Effect.future(Effect.FutureInstrumentation(beforeStart = () => {
+      if (attempts.incrementAndGet() == 1) throw rejection
+    }))
     val input   = Promise[Option[Int]]()
     val entered = Promise[Unit]()
     val source = new Stream[Future, Int] {

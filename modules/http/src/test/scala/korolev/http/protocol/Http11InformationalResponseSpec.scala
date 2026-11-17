@@ -25,7 +25,7 @@ final class Http11InformationalResponseSpec extends AnyFlatSpec with Matchers {
 
   for ((count, chunkSize) <- Seq((3, 8096), (250, 8096), (3000, 8096), (3000, 1))) {
     "Informational response handling" should s"reach the final response after $count eager headers in $chunkSize-byte chunks" in {
-      // Eager input reproduces the synchronous FutureEffect continuation chain;
+      // Eager input reproduces the synchronous built-in Future continuation chain;
       // the larger case spans multiple chunks within the default read size.
       val responses = parser.decodeResponse(Decoder(source(
         informational * count + finalResponse + finalResponse, chunkSize)))

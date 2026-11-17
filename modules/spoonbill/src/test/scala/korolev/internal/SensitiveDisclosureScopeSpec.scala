@@ -15,7 +15,7 @@ import spoonbill.sensitive.*
 import spoonbill.server.SessionAccessDenied
 
 class SensitiveDisclosureScopeSpec extends AsyncFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private def accepted[A](result: Either[SensitiveError, A]): A = result.fold(error => fail(error.toString), identity)
   private def payload = accepted(SensitivePayload.textList(Vector("synthetic-code")))
   private val region = accepted(RegionId.parse("recovery"))

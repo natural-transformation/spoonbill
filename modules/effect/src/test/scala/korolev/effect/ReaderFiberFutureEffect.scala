@@ -4,10 +4,11 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Try
 
 /**
- * Future's operations without the FutureEffect type. Stream operators serve it
- * by a reader fiber and its own `promise`, as they serve a native effect.
+ * Future's operations through composition, without the built-in implementation
+ * type. Stream operators serve it by a reader fiber and its own `promise`, as
+ * they serve a native effect.
  */
-class ReaderFiberFutureEffect(future: Effect.FutureEffect = new Effect.FutureEffect) extends Effect[Future] {
+class ReaderFiberFutureEffect(future: Effect[Future] = Effect.futureEffect) extends Effect[Future] {
   def pure[A](value: A): Future[A]                                                     = future.pure(value)
   def delay[A](value: => A): Future[A]                                                 = future.delay(value)
   def uncancelable[A](task: => Future[A]): Future[A]                                   = future.uncancelable(task)

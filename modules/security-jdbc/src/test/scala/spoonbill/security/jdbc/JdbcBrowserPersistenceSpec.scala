@@ -32,7 +32,7 @@ import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
 
 class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
-  private given Effect[Future]              = new Effect.FutureEffect
+  private given Effect[Future]              = Effect.futureEffect
   private given ExecutionContext            = ExecutionContext.global
   private def await[A](value: Future[A]): A = Await.result(value, 20.seconds)
   private def accepted[E, A](value: Either[E, A]): A =
@@ -105,7 +105,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
    */
   private type Deferred[A] = () => Future[A]
   private class DeferredFutureEffect extends Effect[Deferred] {
-    private val underlying                                                        = new Effect.FutureEffect
+    private val underlying                                                        = Effect.futureEffect
     def pure[A](value: A): Deferred[A]                                            = () => Future.successful(value)
     def delay[A](value: => A): Deferred[A]                                        = () => underlying.delay(value)
     def uncancelable[A](task: => Deferred[A]): Deferred[A]                        = () => underlying.uncancelable(task())

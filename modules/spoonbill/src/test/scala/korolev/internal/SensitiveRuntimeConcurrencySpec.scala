@@ -14,7 +14,7 @@ import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.sensitive.*
 
 class SensitiveRuntimeConcurrencySpec extends AnyFlatSpec with Matchers {
-  private implicit val effect: Effect[Future] = new Effect.FutureEffect
+  private implicit val effect: Effect[Future] = Effect.futureEffect
   private def accepted[A](value: Either[SensitiveError, A]): A = value.fold(error => fail(error.toString), identity)
 
   private def withoutTimers = new Frontend.RpcDeadlineScheduler {
@@ -61,7 +61,7 @@ class SensitiveRuntimeConcurrencySpec extends AnyFlatSpec with Matchers {
       }
       emitted.await(5, TimeUnit.SECONDS) shouldBe true
 
-      // Use Effect.flatMap deliberately: FutureEffect runs these continuations
+      // Use Effect.flatMap deliberately: the built-in Future effect runs these continuations
       // on the completing thread, so this detects a callback under its monitor.
       val continuation = effect.flatMap(first) { _ =>
         continuationEntered.countDown()

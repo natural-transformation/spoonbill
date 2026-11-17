@@ -34,7 +34,7 @@ class SchedulerJobSpec extends AnyFlatSpec with Matchers {
     val notified              = new CountDownLatch(1)
     val release               = new CountDownLatch(1)
     val holdFirstNotification = new AtomicBoolean(true)
-    given Effect[Future] = new Effect.FutureEffect {
+    given Effect[Future] = new ReaderFiberFutureEffect {
       override def promise[A](register: (Either[Throwable, A] => Unit) => Unit): Future[A] =
         super.promise { complete =>
           register { result =>

@@ -29,7 +29,7 @@ import spoonbill.state.{StateDeserializer, StateSerializer}
 import spoonbill.web.{PathAndQuery, Request}
 
 class JdbcBrowserSecuritySpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private case class Page(protectedPage: Boolean = false, subject: Option[UUID] = None, count: Int = 0)
   private given StateSerializer[Page]      = (value: Page) => Array.emptyByteArray
   private given StateDeserializer[Page]    = (_: Array[Byte]) => None

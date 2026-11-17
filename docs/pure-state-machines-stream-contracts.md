@@ -175,7 +175,7 @@ Sort missed the throughput guide. Compact3 and compact4 did not close the gap
 and also regressed buffer throughput; neither was retained as production. The
 unmeasured single-callback-storage prototype was excluded.
 
-## Accepted implementation
+## Compact7 checkpoint
 
 The owner later asked for the sort gap to be closed, and then for the result to
 hold its ownership in single values, without reflection. Production commit
@@ -229,3 +229,19 @@ review found no defect.
 The original four-workload gate has not been rerun on this final aggregate.
 A short screen's three-pair medians are observations, not a whole-application
 latency guarantee.
+
+## Current Future instance API
+
+The [typeclass-instance API](effect-future-instances.md) supersedes compact7's
+public `FutureEffect` subclass behavior. `Effect.futureEffect` and the explicit
+instrumentation factory return fixed built-in instances; the implementation
+family is closed. Custom `Effect[Future]` values use composition and retain the
+generic reader's calls to their own `promise` and `runAsync`. Selection remains
+tied to the supplied instance, not a separate capability inferred from `Future`.
+
+The per-item routing interpreters and all stream contracts above are unchanged.
+The source/binary migration, synchronous instrumentation-hook behavior, complete
+correctness checks and current-relative performance comparisons are recorded in
+the API guide. The measured sort median is 3.52% below compact7 but remains
+within the predeclared throughput guide. The separate original-main aggregate
+gate has not been rerun.

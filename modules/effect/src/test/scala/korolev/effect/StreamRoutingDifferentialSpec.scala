@@ -94,8 +94,8 @@ abstract class StreamRoutingDifferentialCases(effect: Effect[Future]) extends An
           verify()
         }
         effect match {
-          case _: Effect.FutureEffect => runtime shouldBe a[StreamRoutingRuntime.CallbackPump[?]]
-          case _                      => runtime shouldBe a[StreamRoutingRuntime.ReaderFiber[?, ?]]
+          case _: Effect.BuiltinFutureEffect => runtime shouldBe a[StreamRoutingRuntime.CallbackPump[?]]
+          case _                             => runtime shouldBe a[StreamRoutingRuntime.ReaderFiber[?, ?]]
         }
         applyStep(StreamRoutingMachine.cancel(model, None))
         await(runtime.cancel())

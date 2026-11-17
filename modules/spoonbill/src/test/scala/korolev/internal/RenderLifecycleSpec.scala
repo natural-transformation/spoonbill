@@ -13,7 +13,7 @@ import spoonbill.state.StateManager
 import spoonbill.state.javaSerialization.*
 
 class RenderLifecycleSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private def result[A](value: Future[A]): A = Await.result(value, 3.seconds)
 
   private class App(recovery: Boolean) {

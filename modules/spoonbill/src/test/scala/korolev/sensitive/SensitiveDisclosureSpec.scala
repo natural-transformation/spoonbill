@@ -11,7 +11,7 @@ import spoonbill.effect.Effect
 import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
 
 class SensitiveDisclosureSpec extends AsyncFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private def accepted[A](result: Either[SensitiveError, A]): A = result.fold(error => fail(error.toString), identity)
   private val region = accepted(RegionId.parse("recovery"))
   private val purpose = accepted(Purpose.parse("mfa.recovery"))

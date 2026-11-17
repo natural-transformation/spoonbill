@@ -12,7 +12,7 @@ import spoonbill.state.StateManager
 import spoonbill.state.javaSerialization.*
 
 class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future]               = new Effect.FutureEffect
+  private given Effect[Future]               = Effect.futureEffect
   private def result[A](value: Future[A]): A = Await.result(value, 2.seconds)
 
   "Component ownership" should "hold a successor behind an admitted write, notification, and deletion" in {

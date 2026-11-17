@@ -5,6 +5,10 @@ requested stopping experiments after the current round on 2026-11-17, and later
 asked for the sort throughput gap to be closed. It is closed, with stream
 ownership held in single values; the final four-workload aggregate gate has not
 been rerun.
+The subsequent [Future instance API](effect-future-instances.md) removes public
+implementation inheritance. Its stream and canonical-runtime comparisons pass
+the current-implementation-relative budgets; those comparisons do not substitute
+for the outstanding original-main aggregate gate.
 The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
 and validation. The latest extension candidate separates ownership and uses
@@ -1119,6 +1123,37 @@ rows are in the [stream evidence](../misc/stream-operator-cost/README.md).
 This closes the sort throughput requirement on the short screen. It is not a
 confidence interval or a whole-application guarantee, and the original
 four-workload gate has still not been rerun on the final aggregate.
+
+### Typeclass instances after compact7
+
+The public boundary is now `Effect[F]`. `Effect.futureEffect` keeps the standard
+Future instance; `Effect.future(FutureInstrumentation(...))` supplies explicit
+startup and continuation hooks. Both return values from a closed implementation
+family. Custom `Effect[Future]` values use composition and the generic reader,
+which respects their methods. No public implementation class or forwardable
+fast-path marker grants custom instances permission to bypass their operations.
+The typed stream interpreters and their per-item bodies are unchanged.
+
+The [migration and hook contract](effect-future-instances.md) records the source
+and binary API change. The default instance's `start` keeps its original body;
+only explicit instrumentation adds hook calls and child-completion observation.
+The full local Nix CI command passed 2,192 ScalaTest and 41 native ZIO cases,
+with six existing cleanup-basis cancellations. The purity guard remains at 45
+machine files and zero violations.
+
+One shared v3 stream workload, with separately recorded legacy/factory setup
+adapters, compared original operators, compact7 and this API in 27 fresh JVMs.
+Candidate/compact7 throughput is 99.59% (Hub), 96.48% (sort) and 99.55% (buffer),
+with effectively unchanged allocation. Sort is 3.52% lower on its observed
+median and close to the guide; this is not a zero-regression claim. All three
+cells also meet the original-operator throughput/allocation guides. All rows,
+controls and source identities are in the [v3 evidence](../misc/stream-operator-cost/v3/README.md).
+
+An independent [canonical-instance comparison](../misc/effect-instance-runtime-cost/README.md)
+uses the unchanged four-workload live-producer fixture for compact7 versus the
+API. All four cells pass the 0.95 throughput / 1.10 delivery-p99 / 1.10 allocation
+gate across 24 fresh trials. This verifies the API change against compact7;
+original-main aggregate acceptance remains outstanding.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key

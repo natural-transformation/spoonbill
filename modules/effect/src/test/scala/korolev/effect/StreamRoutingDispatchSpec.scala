@@ -13,7 +13,8 @@ import scala.util.{Failure, Success, Try}
  * without taking the ownership monitor. Work that arrives meanwhile must
  * neither overlap the running notification nor be left behind, and a cleanup
  * pause must hold it back. Every case runs with the callback pump that serves
- * FutureEffect and with the reader fiber that serves every other effect.
+ * built-in Future instances and with the reader fiber that serves every other
+ * effect.
  */
 class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
   private def await[A](value: Future[A]): A = Await.result(value, 10.seconds)
@@ -24,12 +25,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
         before(); val started = super.start(task); after(); started
       }
     }
-    else
-      new Effect.FutureEffect {
-        override def start[A](task: => Future[A])(implicit ec: ExecutionContext): Future[Effect.Fiber[Future, A]] = {
-          before(); val started = super.start(task); after(); started
-        }
-      }
+    else Effect.future(Effect.FutureInstrumentation(beforeStart = before, afterStart = _ => after()))
 
   /**
    * Detects two threads inside dispatch: reads and notifications are its

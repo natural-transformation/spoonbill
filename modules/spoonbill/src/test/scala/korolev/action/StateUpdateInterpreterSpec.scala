@@ -6,7 +6,7 @@ import scala.concurrent.{Future, Promise}
 import spoonbill.effect.Effect
 
 class StateUpdateInterpreterSpec extends AsyncFlatSpec with Matchers:
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
 
   "StateUpdateInterpreter" should "skip no-update and hand off one unevaluated composed reducer" in {
     var queued                                   = Vector.empty[Int => Int]
