@@ -329,3 +329,15 @@ and release of an HTTP rejection without prematurely closing transport.
 Disposition: retain under rule 7, with its single named state and pinned effect
 boundaries. `standalone/testOnly *StandaloneSetupDeadlineSpec` passed all 12 cases
 on unchanged production code. No timer, callback, or cleanup ordering changed.
+
+## WebSocket assembly: characterization ready, disposition pending
+
+Four direct public-upgrade cases now pin empty input, complete-before-tail-rearm
+ordering, fragmented messages across control frames, and suppression of tail
+restart when completion rejects a message. On unchanged protocol code,
+`http/testOnly *WebSocketMessageSignalsSpec *WebSocketProtocolSpec` passed 21 tests;
+`standalone/testOnly *StandaloneMessageDeadlineSpec` passed six real deadline and
+socket cases. The two pure decoder stages already have explicit state. Their
+remaining tail flag must still be read after the completion callback; precomputing
+a combined command batch would move that observation across an effect boundary.
+The final retain/extract decision remains for the next transport unit.
