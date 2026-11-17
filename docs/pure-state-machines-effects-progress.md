@@ -148,6 +148,17 @@ still borrowed). Both new regressions failed before the one-line fix: cleanup no
 uses the already-established retirement hook. All 79 effect tests pass, including
 late notifications, discard, creation failure and concurrent pool use.
 
+Pool ownership also depended on resource value equality and identity hashes.
+Two permanent regressions failed: closing an idle value removed another distinct
+but equal value, and two allocated leases sharing one object retired only one
+capacity reservation. Each successful allocation now receives an unbounded BigInt
+id from the same atomic pool value. Borrow, return, retirement and idle removal
+use that id; retirement hooks are immutable entries. The public diagnostic
+`PoolState`/`PoolItem` shape is preserved, with hashes retained only as diagnostic
+values, never ownership keys. All 81 effect and 54 HTTP-client tests pass; the final
+focused pool run passes 24 tests after removing the obsolete private diagnostic
+closure. Existing pool and client specs are unchanged.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate
