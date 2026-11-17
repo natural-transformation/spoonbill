@@ -299,3 +299,27 @@ Buffer median is 10,348,005.2711 → 9,712,845.4106, candidate range 9,685,356.8
 trials; these modes and all rows remain visible in the full summary. No complete
 candidate acceptance is claimed, and this screen alone does not establish that
 the volatile change caused the buffer miss.
+
+## Sole-phase compact candidate
+
+Compact 4 is base `6897a9ce` (a test-only successor of `7ef22b6b`) plus
+`variants/compact4-routing.patch`. Only Phase is the authoritative volatile
+publication; Reader/Cleanup storage remains monitor-owned, with the same pure
+Control views and cutoffs. Independent review verified the exact released
+source before timing. The separate callback-slot prototype was not included.
+
+The unchanged-fixture fresh 18-row screen in `evidence/compact4-v2` observed:
+
+| Cell | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: |
+| Hub | 2.800941190726258 | 0.3178617831810356 |
+| Sort | **0.6796338664103092** | 0.85165503066288 |
+| Zero-duration buffer | **0.9015808480363252** | 0.6481537134356251 |
+
+Sort median is 21,501,789.0596 → 14,613,344.0333 deliveries/s (candidate
+14,218,918.2431–14,847,240.6059). Buffer is 10,180,335.2483 → 9,178,395.2864
+(candidate 9,014,988.9166–9,322,729.2758). Both fail the 0.95 throughput guide.
+All controls, exact sources/class manifests, 18 rows and full ranges are retained;
+all correctness, thread, EOF/cleanup and stderr checks passed. This remains a
+rejected complete candidate, without claiming a causal explanation for differences
+between independently collected candidate screens.

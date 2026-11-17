@@ -1,0 +1,51 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "stream-compat-v2",
+  "scope": "Same short compatibility-path screen; not whole-semantics equivalence or acceptance",
+  "beforeRevision": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+  "afterBaseRevision": "6897a9cebce1b0245b73970a0e0a7166b608a49f",
+  "afterPatch": "../../variants/compact4-routing.patch",
+  "afterPatchSha256": "bf2b2a9c74ee1e9256d08729cb3f11ac62e5cfe601aac5f76c5ccc6369596fac",
+  "afterSourceHashes": {
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98ae3e7ef5996dcb4fa83e3e65c56183843d5eee67ee1b5883aeaba97446c26d",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "b4fe108edc0ecb6c14a5e065685a993ba65bf6a727c4ad836d33a3defa9d5cdf"
+  },
+  "unchangedEffectProduction": "Base 6897a9ce is a test-only successor of 7ef22b6b; only Runtime changes here; Machine hash unchanged",
+  "fixtureHashes": {
+    "StreamOperatorBenchmark.scala": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+    "prepare.sh": "c4ebe92420652ee8fef0bdb6b7db35177bcddff186c993f7e018990fed4fcbb3",
+    "run.sh": "857c7994a13fccf81e5f4189e2477803f22aad08fbaf3b9fe3fd6f84b6a986ef",
+    "analyze.mjs": "13a9df35259e7da46702dad943df48a4cfe7e4398e8420ac92306442b3d0cf80"
+  },
+  "beforeClassManifest": "../screen-v2/before.classes.json",
+  "beforeClassManifestSha256": "d30b88d5a3a4d536d1ca5f6ac8d5478ba7a7437b3bd40c668a7ac2557c73ff42",
+  "afterClassManifestSha256": "3f5139c4c9765826f725c8964f8209b223217f3ca1dcf92b3008d09a00d7089d",
+  "classpathHashes": {
+    "before": "3f453234c31204ab53a8dc979538cd6b5ee181e5c6670060a1bed1b229dd3677",
+    "after": "5419c4f200598f0f9dd6684d1d9e44de37619e281064f3171ec5804426ad6705"
+  },
+  "rawSha256": "b646d0fc3fa4c1bb90c44e473985d5849c31537e3a5236bd1a1e2f58eaa3b5a2",
+  "collection": "Exclusive coordinated window; 18 independent JVMs; 3 alternating pairs/cell; 2s warmup + 2s measurement",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "checks": [
+    "exact same fixture",
+    "original baseline bytecode unchanged",
+    "released candidate source hashes exact",
+    "valid deterministic continuation/thread/EOF-teardown smoke",
+    "escaping allocation control",
+    "all timed assertions and stderr clean"
+  ],
+  "outcome": "Sort throughput ratio 0.6796338664103092 and buffer 0.9015808480363252 both miss the 0.95 guide; no acceptance",
+  "review": "Independent sole-Phase authority/visibility/cutoff review passed exact candidate hashes before timing"
+}
