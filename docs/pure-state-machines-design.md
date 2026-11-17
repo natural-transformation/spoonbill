@@ -918,7 +918,8 @@ the evidence described below; they are not substitutes for unfinished work.
 
 ### Rollout progress
 
-The rollout is in progress. The per-area records below identify completed units,
+The rollout is in progress. The [inventory audit](pure-state-machines-inventory-status.md)
+accounts for every by-area row. The per-area records below identify completed units,
 retained protocols and outstanding work; a completed unit is not a claim that its
 whole phase is complete.
 
