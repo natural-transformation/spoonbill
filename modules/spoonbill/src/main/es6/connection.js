@@ -550,7 +550,7 @@ export class Connection {
    */
   async disconnect(reconnect = true) {
     this._reconnect = reconnect;
-    if (!reconnect && this._replacementEnabled && this._reconnectTimer !== null) {
+    if (!reconnect && this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }

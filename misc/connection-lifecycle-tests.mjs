@@ -137,3 +137,12 @@ test('guarded reconnect backoff is capped and resets on transport open', () => e
   env.sockets.at(-1).close(); await env.flush();
   assert.equal(env.nextTimer(), 200);
 }));
+
+test('permanent disconnect cancels a legacy connection attempt that has not started', () => environment(async env => {
+  const connection = env.create();
+  connection.connect();
+  await connection.disconnect(false);
+  while (env.timers.size) env.nextTimer();
+  assert.equal(env.sockets.length, 0);
+  assert.equal(env.requests.length, 0);
+}));

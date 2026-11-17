@@ -218,3 +218,10 @@ public `connect`, `send`, `disconnect`, `applicationReady` and transport events;
 it does not read or call private connection members. Nix Node validation passes
 all four. Private-field assertions in the older client suites remain to migrate
 before their represented state is changed.
+
+The first public-behavior regression found that legacy `disconnect(false)` left a
+pending reconnect timer alive, opening a websocket after permanent disconnect.
+The new case failed on the unchanged client. Pending attempts are now canceled
+for legacy and guarded connections alike; transport selection and ordinary
+reconnect behavior are unchanged. All 72 connection, redesign, sensitive,
+protocol and replacement-bootstrap Node tests pass through Nix.
