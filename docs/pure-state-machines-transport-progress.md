@@ -388,8 +388,8 @@ Before extraction, `standalone/testOnly *StandaloneLifecycleSpec
 *StandaloneMessageDeadlineSpec` passed 19 real lifecycle/deadline tests. The same
 command plus `*WebSocketOutputMachineSpec` passed 21 after extraction. Direct laws
 pin Close emission versus cleanup and abort dominance. The zio transport baseline,
-`zioHttp/testOnly *BoundedTransportSpec`, independently passed 9 tests; its scanner
-and timer extraction is still pending.
+`zioHttp/testOnly *BoundedTransportSpec`, independently passed 9 tests before
+the scanner/timer extraction recorded below.
 
 ### Standalone late attachment: separate confirmed defect
 
@@ -412,3 +412,38 @@ physical-close-before-cleanup ordering is unchanged.
 *StandaloneMessageDeadlineSpec *WebSocketOutputMachineSpec` passed 23 cases after
 the fix. The new regression was formatted through explicit-file `scalafmtOnly`;
 `git diff --check` passed.
+
+## Zio-http frame deadline: pure scan with compact event-loop storage
+
+`WebSocketFrameScan` owns bounded header metadata and remaining payload length;
+its pure read-only scan stops at a frame boundary so the interpreter performs
+completion/cancellation and the next timer arm before scanning a coalesced tail.
+It rejects fragmentation on the first header byte, skips payload without copying,
+and never changes `ByteBuf` reader/writer indexes. `WebSocketFrameTimer` owns the
+absolute completion-time decision. Timer handles, scheduling, buffer forwarding
+and release remain event-loop effects.
+
+The interpreter stores the same metadata as scalars in one event-loop-owned cell.
+The pure scan is inlined at that storage boundary; it returns immutable results
+for direct model use, while runtime results need not escape after their fields
+are installed. No parser rule is duplicated in the storage adapter. Clock values
+and payload counts remain full-width `Long`s. Complete frames still check elapsed
+time independently of a delayed timer task, and rejection remains once-only.
+
+Two public-handler characterizations passed before extraction: every split of
+short/extended/masked headers preserves the exact buffer and indexes, and a
+negative extended length is rejected after the full masked header as before.
+Together with `BoundedTransportSpec`, the original implementation passed 11 tests.
+The candidate passed 14 through `zioHttp/testOnly *BoundedTransportSpec
+*WebSocketFrameScanCharacterizationSpec *WebSocketFrameScanSpec`, adding direct
+frame-boundary, long-payload and absolute-deadline model laws. New models/tests
+were formatted and recompiled before their classpath/source freeze.
+
+The first immutable-cell implementation failed its cost gate and is retained.
+The [selected compact gate](../misc/transport-state-machines/evidence/frame-v2/summary.json)
+passes all four workloads with unchanged allocation. Throughput ratios are
+114.52%, 136.35%, 95.07% and 136.88%; sampled p99 is at most 100.09%. The fragmented
+throughput margin is narrow, and these uncontended EmbeddedChannel observations
+have no confidence interval or network/TLS/downstream-decoder performance claim.
+All 48 first/second-design rows, exact source snapshots and frozen-jar provenance
+are retained in the transport measurement directory.

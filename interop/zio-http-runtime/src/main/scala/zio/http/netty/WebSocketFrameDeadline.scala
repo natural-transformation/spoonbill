@@ -19,14 +19,30 @@ private[zio] final class WebSocketFrameDeadline(
     extends ChannelInboundHandlerAdapter {
   require(timeoutMillis > 0, "frame assembly timeout must be positive")
   private val timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
-  private val header = new Array[Byte](14)
-  private var headerBytes = 0
-  private var headerLength = 2
-  private var payloadRemaining = 0L
-  private var readingPayload = false
-  private var failed = false
+  // One event-loop-owned storage cell. The pure scan is inlined at its boundary
+  // so immutable input/result records need not escape each network read. No
+  // parser decision is duplicated here, and no counter is narrowed or packed.
+  private final class Storage {
+    var headerBytes = 0
+    var headerLength = 2
+    var lengthTag = 0
+    var payloadRemaining = 0L
+    var readingPayload = false
+    var deadline = WebSocketFrameTimer.Phase.Idle
+    var startedAt = 0L
+    inline def scanner: WebSocketFrameScan.State =
+      WebSocketFrameScan.State(headerBytes, headerLength, lengthTag, payloadRemaining, readingPayload)
+    inline def install(next: WebSocketFrameScan.State): Unit = {
+      headerBytes = next.headerBytes
+      headerLength = next.headerLength
+      lengthTag = next.lengthTag
+      payloadRemaining = next.payloadRemaining
+      readingPayload = next.readingPayload
+    }
+  }
+  private val state = new Storage
   private var timer: ScheduledFuture[?] = null
-  private var startedAt = 0L
+  private def failed: Boolean = state.deadline == WebSocketFrameTimer.Phase.Failed
 
   override def handlerAdded(ctx: ChannelHandlerContext): Unit = {
     // An existing decoder may already have consumed a header into its private
@@ -43,7 +59,7 @@ private[zio] final class WebSocketFrameDeadline(
 
   private def reject(error: Throwable): Unit = {
     if (!failed) {
-      failed = true
+      state.deadline = WebSocketFrameTimer.Phase.Failed
       cancelTimer()
       abort(error)
     }
@@ -51,7 +67,8 @@ private[zio] final class WebSocketFrameDeadline(
 
   private def begin(ctx: ChannelHandlerContext): Unit = {
     if (timer == null) {
-      startedAt = nanoTime()
+      state.startedAt = nanoTime()
+      state.deadline = WebSocketFrameTimer.Phase.Armed
       timer = ctx.executor().schedule(new Runnable {
         def run(): Unit = reject(new TimeoutException("WebSocket frame assembly timed out"))
       }, timeoutMillis, TimeUnit.MILLISECONDS)
@@ -61,13 +78,13 @@ private[zio] final class WebSocketFrameDeadline(
   private def complete(): Unit = {
     // A busy event loop can process this read before an overdue timer task.
     // Completion must enforce the same absolute deadline independently.
-    if (nanoTime() - startedAt >= timeoutNanos)
+    val next = WebSocketFrameTimer.complete(state.deadline, state.startedAt, nanoTime(), timeoutNanos)
+    if (next == WebSocketFrameTimer.Phase.Failed)
       reject(new TimeoutException("WebSocket frame assembly timed out"))
     else {
       cancelTimer()
-      headerBytes = 0
-      headerLength = 2
-      readingPayload = false
+      state.install(WebSocketFrameScan.initial)
+      state.deadline = next
     }
   }
 
@@ -76,41 +93,14 @@ private[zio] final class WebSocketFrameDeadline(
     val end = bytes.writerIndex()
     while (index < end && !failed) {
       begin(ctx)
-      if (readingPayload) {
-        val count = math.min(payloadRemaining, (end - index).toLong).toInt
-        payloadRemaining -= count
-        index += count
-        if (payloadRemaining == 0) complete()
-      } else {
-        header(headerBytes) = bytes.getByte(index)
-        headerBytes += 1
-        index += 1
-        if (headerBytes == 1) {
-          val first = header(0) & 0xff
-          if ((first & 0x80) == 0 || (first & 0x0f) == 0)
-            reject(new IllegalArgumentException("Fragmented WebSocket input is unsupported"))
-        }
-        if (headerBytes == 2) {
-          val length = header(1) & 0x7f
-          headerLength = 2 + (if (length == 126) 2 else if (length == 127) 8 else 0) +
-            (if ((header(1) & 0x80) != 0) 4 else 0)
-        }
-        if (!failed && headerBytes == headerLength) {
-          val length = header(1) & 0x7f
-          if (length < 126) payloadRemaining = length.toLong
-          else {
-            val lengthBytes = if (length == 126) 2 else 8
-            payloadRemaining = 0L
-            var i = 0
-            while (i < lengthBytes) {
-              payloadRemaining = (payloadRemaining << 8) | (header(i + 2) & 0xff).toLong
-              i += 1
-            }
-          }
-          if (payloadRemaining < 0) reject(new IllegalArgumentException("Invalid WebSocket frame length"))
-          else if (payloadRemaining == 0) complete()
-          else readingPayload = true
-        }
+      val result = WebSocketFrameScan.scan(state.scanner, bytes, index)
+      state.install(result.state)
+      index = result.index
+      result.boundary match {
+        case WebSocketFrameScan.Boundary.Complete => complete()
+        case WebSocketFrameScan.Boundary.Fragmented => reject(new IllegalArgumentException("Fragmented WebSocket input is unsupported"))
+        case WebSocketFrameScan.Boundary.InvalidLength => reject(new IllegalArgumentException("Invalid WebSocket frame length"))
+        case WebSocketFrameScan.Boundary.More => ()
       }
     }
   }
@@ -125,7 +115,7 @@ private[zio] final class WebSocketFrameDeadline(
   }
 
   override def channelInactive(ctx: ChannelHandlerContext): Unit = {
-    failed = true
+    state.deadline = WebSocketFrameTimer.Phase.Failed
     cancelTimer()
     ctx.fireChannelInactive(): Unit
   }
