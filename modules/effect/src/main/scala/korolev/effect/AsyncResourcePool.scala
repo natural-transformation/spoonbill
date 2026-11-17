@@ -310,7 +310,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
     @tailrec def loop(): F[Unit] = {
       val ref = pool.get
       if (!ref.disposed) {
-        if (pool.compareAndSet(ref, ref.copy(disposed = true))) {
+        if (pool.compareAndSet(ref, ref.copy(disposal = Disposal.Claimed))) {
           val token   = Right(())
           val effects = ref.items.map(item => Close[F, T].close(item.value))
           Effect[F].sequence(effects).flatMap { _ =>
@@ -402,16 +402,18 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
   }
 
   private case class PoolEntry(id: BigInt, idle: Long, value: T, retire: () => F[Unit])
+  private enum Disposal { case Unclaimed, Claimed }
   private case class PoolData(
     total: Int = 0,
     items: List[PoolEntry] = Nil,
     cbs: List[Promise] = Nil,
     closedItems: Map[BigInt, Int] = Map.empty,
     disposeCbs: List[DisposePromise] = Nil,
-    disposed: Boolean = false,
+    disposal: Disposal = Disposal.Unclaimed,
     serial: BigInt = BigInt(0)
   ) {
     def itemIsClosed(id: BigInt): Boolean = closedItems.contains(id)
+    def disposed: Boolean = disposal == Disposal.Claimed
   }
 
   @tailrec private def allocateId(): BigInt = {

@@ -190,12 +190,12 @@ reused effects with caller IOLocal state. The waiting/factory probes failed the
 previous implementation; the exact publication probe also failed the original
 pre-scope pool. Full effect82 and HTTP-client54 tests pass with this fix.
 
-Final pool retention remains pending the caller handoff audit: public `borrow`
-is still the explicit loan primitive, and arbitrary caller continuations have no
-pool-owned adoption scope. The transport audit reproduced a canceled queued
-HttpClient acquisition separately. Successful response headers transfer a loan
-to the streaming body, so that caller requires a distinct adoption protocol;
-managed `use` cannot replace it by returning the loan at header completion.
+The caller handoff audit confirmed that public `borrow` is still the explicit
+loan primitive, and arbitrary caller continuations have no pool-owned adoption
+scope. The transport audit reproduced a canceled queued HttpClient acquisition
+separately. Successful response headers transfer a loan to the streaming body,
+so that caller requires a distinct adoption protocol; managed `use` cannot
+replace it by returning the loan at header completion.
 
 The internal `borrowAndTransfer` helper now reuses that acquisition scope with
 an explicit, bounded contract: abort cancel/error before the supplied task
@@ -217,6 +217,21 @@ must still bracket/adopt ownership beyond the supplied task-success boundary.
 No new `guaranteeOutcome` capability or uncancelable capacity-wait policy was added.
 The [native handoff probes and limitations](../misc/effect-handoff-probes/README.md)
 retain the backend-specific evidence for that boundary.
+
+Final pool disposition is **retain**, under rule 7. Its global count, available
+allocations, waiting borrowers, returned-allocation diagnostics, disposal
+observers and allocation serial are one immutable `PoolData` in one atomic
+reference. Disposal now names `Unclaimed` and `Claimed`; a later observer still
+sees the claim immediately, while observers registered earlier await physical
+cleanup. Per-loan `UseRequest` ownership and `BorrowImpl.returned` are distinct
+capability guards, not competing global lifecycle flags. Allocation identities
+do not depend on resource equality. The separate bug fixes and permanent tests
+above cover cleanup, aliased resources, late returns, lazy effects and managed
+acquisition cancellation. The enum-only change passes effect96 and poolIO8.
+The transport workstream has adopted the bounded transfer helper and validated
+its real HTTP queued/native-publication cancellation cases. Raw returned-loan
+adoption and late caller cancellation remain the explicit contract limitations
+above, not claims of universal cancellation safety.
 
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; pool disposal claims precede
