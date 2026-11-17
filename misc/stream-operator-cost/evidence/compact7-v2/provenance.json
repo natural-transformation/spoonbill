@@ -1,0 +1,72 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "stream-compat-v2",
+  "scope": "Same short compatibility-path screen; not whole-semantics equivalence or acceptance",
+  "beforeRevision": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+  "afterRevision": "e57aabeacb7a4b8d943c222b6ac9ce3e5b17b424",
+  "afterBaseRevision": "3ce16c4b45cd6de16b1c9926295b5f2b710147e0",
+  "afterSourceHashes": {
+    "modules/effect/src/main/scala/korolev/effect/Effect.scala": "be8acbd87c5fc2ee992f25aad1fae1e117198285c48fb2dea034eb9f4b382518",
+    "modules/effect/src/main/scala/korolev/effect/Hub.scala": "353301c22f307ec45ceeabcf880011ab78f5467f7dfe18de527a64784a9051e0",
+    "modules/effect/src/main/scala/korolev/effect/Stream.scala": "9496fd2f40e093c91fc4cdd255f0b64419da946dbd171febaf8405e469ef8a2b",
+    "modules/effect/src/main/scala/korolev/effect/StreamBufferRuntime.scala": "6f292258fff6151f82b822e43b2dbf10a8ec4392faf29c3c482f50bee99cedd7",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98eefeb0aa93f1a6c45d3a6db81e838b4141c0c49ae077e772d5270196cd741d",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "adc021edaca75bc790d4ae1efe906acabd6b4e74009ab4d1e61c7875c01540d4"
+  },
+  "unchangedEffectProduction": "Measured from the production commit itself. Against retained compact2 base 3ce16c4b only Effect, Hub, Stream, StreamBufferRuntime, StreamRoutingMachine and StreamRoutingRuntime differ in effect main sources; Hub, Stream and StreamBufferRuntime differ in the one line that constructs the routing interpreter",
+  "fixtureHashes": {
+    "StreamOperatorBenchmark.scala": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+    "prepare.sh": "c4ebe92420652ee8fef0bdb6b7db35177bcddff186c993f7e018990fed4fcbb3",
+    "run.sh": "857c7994a13fccf81e5f4189e2477803f22aad08fbaf3b9fe3fd6f84b6a986ef",
+    "analyze.mjs": "13a9df35259e7da46702dad943df48a4cfe7e4398e8420ac92306442b3d0cf80"
+  },
+  "beforeClassManifest": "../screen-v2/before.classes.json",
+  "beforeClassManifestSha256": "d30b88d5a3a4d536d1ca5f6ac8d5478ba7a7437b3bd40c668a7ac2557c73ff42",
+  "afterClassManifestSha256": "58283d076108af9121eb786ec73d29ac0a899fab311cf6d192da616d2094c54d",
+  "classpathHashes": {
+    "before": "3f453234c31204ab53a8dc979538cd6b5ee181e5c6670060a1bed1b229dd3677",
+    "after": "085cf4e5e8f5f5f8cba7ae67298042f9a3b8a1a71dfe15a347e2507c355259f0"
+  },
+  "rawSha256": "22b6de478065be52138bedd6257d01ce956a47e83077df1436ea7452f9a2976d",
+  "collection": "No build or profiling ran during collection; the host carried its ordinary interactive load (one-minute load average 5.1 before and 6.0 after, 16 logical CPUs); 18 independent JVMs; 3 alternating pairs/cell; 2s warmup + 2s measurement",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "checks": [
+    "exact same fixture",
+    "original baseline bytecode unchanged",
+    "released candidate source hashes exact and equal to the production commit",
+    "valid deterministic continuation/thread/EOF-teardown smoke",
+    "escaping allocation control",
+    "all timed assertions and stderr clean",
+    "complete CI test command on this exact source: 2,185 ScalaTest and 41 ZIO cases, no failure",
+    "independent read-only review of the dispatch ownership protocol and its state before timing",
+    "sixteen single-rule mutations of the dispatch protocol each fail at least one effect test"
+  ],
+  "ratios": {
+    "hub": {
+      "throughput": 3.4718939421921693,
+      "allocation": 0.25529745315352526
+    },
+    "sort": {
+      "throughput": 0.979896152159511,
+      "allocation": 0.6446292530728676
+    },
+    "buffer": {
+      "throughput": 1.3477275423791149,
+      "allocation": 0.48895484157419694
+    }
+  },
+  "outcome": "All three cells satisfy the observed 0.95 throughput and 1.10 allocation guides. Sort throughput is 0.980 of baseline, below the superseded compact6 round (1.101), which held the same ownership in several fields. Short screen medians, not a confidence interval or whole-application guarantee.",
+  "afterPatch": "../../variants/compact7-routing.patch",
+  "afterPatchSha256": "3704f3de7758758967b72c2e121c692785e7281d7ea2c84169977d6c1d8fe020"
+}

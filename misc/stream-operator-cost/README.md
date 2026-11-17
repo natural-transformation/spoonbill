@@ -352,11 +352,11 @@ count/order/thread/teardown and stderr checks.
 
 ## Owner-released dispatch and plain Future callbacks
 
-Compact 6 is production commit `74fed761`. `variants/compact6-routing.patch` is
-its difference from the compact2 base in Effect, StreamRoutingMachine and
-StreamRoutingRuntime; the frozen sources equal that commit byte for byte. The
-operators' public contracts are unchanged. It removes three costs that every
-delivery of the earlier candidates paid:
+Compact 6 is commit `74fed761`, the production source until compact 7 replaced
+it. `variants/compact6-routing.patch` is its difference from the compact2 base
+in Effect, StreamRoutingMachine and StreamRoutingRuntime; the frozen sources
+equal that commit byte for byte. The operators' public contracts are unchanged.
+It removes three costs that every delivery of the earlier candidates paid:
 
 - **Monitor acquisitions.** Compact2 took the routing monitor six times per sort
   delivery; a pull and a value now take it once each. One notification or read
@@ -405,5 +405,111 @@ reproduce from their rows.
 
 These remain three-pair medians of a short screen: observations, not confidence
 intervals, and not a whole-application latency guarantee or a claim that the old
-dropping and overwriting contracts are equivalent. Seven candidate screens and
-all 126 timed rows are retained.
+dropping and overwriting contracts are equivalent.
+
+Compact 6 was superseded for what it did to the state, not for its cost. It
+spread dispatch ownership over `running`, `paused`, `backlog` and a staged-read
+flag, and Control over `phase`, `reading` and a cleanup flag, so that no single
+value named either: the kind of state this rollout removes. It also asked the
+reflection API whether a FutureEffect kept its callbacks, and cast pulls and
+outcomes to match the answer. Its rows stay as measured.
+
+## Single-value ownership and typed interpreters
+
+Compact 7 is production commit `e57aabea`. `variants/compact7-routing.patch`
+is its difference from the compact2 base in the effect main sources; the frozen
+sources equal that commit byte for byte. The operators' public contracts are
+unchanged.
+
+It keeps what compact 6 established about cost. A pull and a value take the
+routing monitor once each, one notification or read is held by its thread
+without passing through the FIFO, and a Future is settled and observed without
+an Either. It changes how the state is held and how the code is typed:
+
+- **One value per cell.** Control is again one published value. Dispatch
+  ownership is one value of a pure five-state machine in one atomic cell:
+  `Idle`, `Running`, `Backlogged`, `PausedIdle` and `PausedRunning`. Every
+  transition is a pure function applied under the monitor, except one. An owner
+  in `Running`, which says that nothing is queued behind it, releases by a
+  compare-and-set. A thread that queues a command behind a running owner moves
+  the same cell to `Backlogged`, so exactly one of the two sees the other.
+  `Backlogged` repeats in that value that the FIFO is not empty; the two change
+  in the same monitor section.
+- **Typed interpreters.** The interpreter is an abstract class with two
+  subclasses that name their own pull and outcome types. A callback pump serves
+  every FutureEffect: a pull is its Promise, completed with the Try that its
+  read was observed with. A reader fiber serves every other effect with the
+  Either callbacks of its `promise`. There is no reflection and no cast.
+- **One behavior follows from the types.** A FutureEffect subclass that
+  overrides `promise` or `runAsync` is not called for a pull or a read. Compact
+  6 found such overrides by reflection, and compact2 called both methods for
+  every delivery. `StreamRoutingSelectionSpec` pins the new rule.
+
+The unchanged-fixture fresh 18-row screen in `evidence/compact7-v2` observed:
+
+| Cell | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: |
+| Hub | 3.4718939421921693 | 0.25529745315352526 |
+| Sort | 0.979896152159511 | 0.6446292530728676 |
+| Zero-duration buffer | 1.3477275423791149 | 0.48895484157419694 |
+
+All three cells satisfy the 0.95 throughput and 1.10 allocation guides. Sort
+median is 23,917,307.5155 → 23,436,477.6045 deliveries/s. Its candidate trials
+range 23,320,663.6669–23,614,601.9270 and its baseline trials
+23,867,008.0000–24,028,705.8796, so the slowest candidate trial is 97.1% of the
+fastest baseline trial. Allocation is 359.94 → 232.03 bytes per delivery. Hub is
+8,013,745.8660 → 27,822,875.7264 deliveries/s at 768.02 → 196.07 bytes, and
+buffer 10,668,636.4829 → 14,378,415.2276 at 720.09 → 352.09 bytes. No build or
+profiling ran during collection; the host carried its ordinary interactive
+load, with a one-minute load average of 5.1 before and 6.0 after on 16 logical
+CPUs.
+
+The single values cost throughput. Sort is 0.980 here against compact 6's
+1.101, Hub 3.472 against 3.749 and buffer 1.348 against 1.573. The two screens
+have their own baseline rows, so this is not a paired comparison. For sort,
+compact 7 is 11% below compact 6 by the two ratios and 8% below it by the two
+raw candidate medians. A release is now a compare-and-set, a claim and a
+release each store a reference to a state value into a long-lived cell, and
+Control is a published reference again. Hub and sort allocate what they did in
+compact 6; buffer trials of either source show 336 or 352 bytes per delivery.
+
+The measured source passed the complete CI test command before timing: 2,185
+ScalaTest and 41 ZIO cases without a failure, with the six existing
+basis-specific cancellations (`/tmp/spoonbill-stream-compact7-full-ci.log`). The
+purity guard found 45 machine files and no violation. An independent read-only
+review of the ownership protocol, which also explored a step-by-step model of
+it, found no defect; the one redundancy it confirmed, a queue length passed to
+the resume transition, was removed before the freeze. Each of sixteen
+single-rule mutations of the protocol and its machine fails at least one effect
+test (`/tmp/spoonbill-stream-compact7-mutations.txt`). Two of them, a release by
+a plain store and a claim that is not retried after a release, fail only the
+timing case that sweeps a pull across its owner's release, and only for the
+callback pump. The model-oracle histories and the dispatch cases now run for
+both interpreters, the reader fiber through a Future effect that is not a
+FutureEffect, and the 26 dispatch cases also pass the compact2 source
+(`/tmp/spoonbill-stream-compact7-dispatch-on-compact2.log`). The fixture, the original baseline bytecode, the
+smoke/thread/EOF/cleanup checks and the escaping controls were verified
+unchanged, and the packaged summary reproduces from its rows.
+
+Four local comparisons shaped this source. They used the same fixture and
+baseline bytecode but only three to five alternating pairs of one cell, and
+they are not screen evidence:
+
+- A callback port object on `Effect`, with the pull and outcome types as its
+  type members, measured 6% to 9% below the same state design written against
+  concrete types. The calls it adds push small callees of the fixture past
+  HotSpot's inlining limits. The subclasses keep the Future-specific code in
+  the units that use it.
+- An owner reads the dispatch cell before it tries to release. A
+  compare-and-set that fails on a backlog cost about a fifth of Hub throughput.
+- A cell that kept the ordinal of the dispatch state in an integer was slower
+  than the reference cell, and would have encoded the state as a number.
+- The steps that run for every delivery are `inline` in the source, which keeps
+  `register` and `completeValue` whole compilation units of their own. As
+  ordinary methods the same steps left sort bimodal, between about 0.7 and 0.9,
+  depending on which method HotSpot compiled first.
+
+These remain three-pair medians of a short screen: observations, not confidence
+intervals, and not a whole-application latency guarantee or a claim that the old
+dropping and overwriting contracts are equivalent. Eight candidate screens and
+all 144 timed rows are retained.

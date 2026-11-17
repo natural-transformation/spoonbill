@@ -2,8 +2,9 @@
 
 Status: implementation present; performance acceptance incomplete. The owner
 requested stopping experiments after the current round on 2026-11-17, and later
-asked for the sort throughput gap to be closed. It is closed; the final
-four-workload aggregate gate has not been rerun.
+asked for the sort throughput gap to be closed. It is closed, with stream
+ownership held in single values; the final four-workload aggregate gate has not
+been rerun.
 The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
 and validation. The latest extension candidate separates ownership and uses
@@ -933,7 +934,7 @@ whole phase is complete.
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
 | 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
-| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. Compact6 (`74fed761`) meets the cost screen in all three cells: Hub 374.9%, sort 110.1% and buffer 157.3% of baseline throughput. The final four-workload aggregate gate remains open |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. Compact7 (`e57aabea`) holds stream ownership in single values and meets the cost screen in all three cells: Hub 347.2%, sort 98.0% and buffer 134.8% of baseline throughput. The final four-workload aggregate gate remains open |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
@@ -964,7 +965,7 @@ retained. These are local incremental checks, not the final aggregate gate.
 
 Outstanding acceptance work is a fresh original four-workload pilot gate against
 the final aggregate sources. The owner requested no further experiment rounds
-after compact4 completed, and later asked for the sort gap to be closed; compact6
+after compact4 completed, and later asked for the sort gap to be closed; compact7
 meets the sort throughput requirement. The functional implementation is
 present, but the aggregate performance gate has not been rerun.
 The PR remains draft for the owner's final review. The following integration
@@ -1049,7 +1050,8 @@ Compact5 kept `F.promise` and `F.runAsync` and changed only the interpreter: a
 staged first command, one callback slot per rack and a published open latch.
 Its screen observes sort throughput 0.84798, so it was rejected.
 
-Compact6 is production commit `74fed761`. Its screen observes
+Compact6 is commit `74fed761`, the production source until compact7 replaced
+it. Its screen observes
 throughput/allocation ratios 3.74903/0.26071 (Hub), 1.10111/0.64454 (sort) and
 1.57257/0.47734 (zero-duration buffer); all three satisfy the guide. Sort
 allocation is 232.01 bytes per delivery against the baseline's 359.96. Three
@@ -1074,8 +1076,45 @@ found 45 machine files and zero violations. An independent read-only review of
 the ownership protocol found no defect; its two robustness remarks were applied.
 The new dispatch and concurrency cases also pass the compact2 source
 (`/tmp/spoonbill-stream-compact2-dispatch-characterization.log`), so they
-describe retained behavior. Both rounds, their controls and all 36 rows are in
-the [stream evidence](../misc/stream-operator-cost/README.md).
+describe retained behavior.
+
+Compact6 met the guide by doing what this document sets out to remove. The
+second point above is a lifecycle spread over several fields: `running`,
+`paused`, `backlog` and a staged-read flag for dispatch, and `phase`, `reading`
+and a cleanup flag for Control. The third point asked the reflection API which
+methods a FutureEffect overrides, and cast pulls and outcomes to match. The
+owner asked for both to go.
+
+Compact7 is production commit `e57aabea`. Its screen observes
+throughput/allocation ratios 3.47189/0.25530 (Hub), 0.97990/0.64463 (sort) and
+1.34773/0.48895 (zero-duration buffer); all three satisfy the guide. It keeps
+the directly held first command and the two monitor acquisitions of the first
+point, and replaces the rest:
+
+- Control is one published value again. Dispatch ownership is one value of a
+  pure five-state machine in one atomic cell: `Idle`, `Running`, `Backlogged`,
+  `PausedIdle` and `PausedRunning`. Every transition is a pure function applied
+  under the monitor, except that an owner in `Running` releases by a
+  compare-and-set. A thread that queues a command behind a running owner moves
+  the same cell to `Backlogged`, so one of the two always sees the other.
+- The interpreter is an abstract class with two subclasses that name their own
+  pull and outcome types: a callback pump for every FutureEffect and a reader
+  fiber for every other effect. There is no reflection and no cast. A
+  FutureEffect subclass that overrides `promise` or `runAsync` is no longer
+  called for a pull or a read.
+
+The measured source passed the complete CI test command locally: 2,185 ScalaTest
+and 41 ZIO cases without a failure, with the six existing basis-specific
+cancellations (`/tmp/spoonbill-stream-compact7-full-ci.log`). The purity guard
+found 45 machine files and zero violations. An independent read-only review of
+the ownership protocol found no defect, and each of sixteen single-rule
+mutations fails at least one effect test
+(`/tmp/spoonbill-stream-compact7-mutations.txt`). The model-oracle and dispatch
+cases run for both interpreters, and the 26 dispatch cases also pass the
+compact2 source (`/tmp/spoonbill-stream-compact7-dispatch-on-compact2.log`).
+The single values cost throughput: sort is
+0.97990 against compact6's 1.10111. All three rounds, their controls and all 54
+rows are in the [stream evidence](../misc/stream-operator-cost/README.md).
 
 This closes the sort throughput requirement on the short screen. It is not a
 confidence interval or a whole-application guarantee, and the original

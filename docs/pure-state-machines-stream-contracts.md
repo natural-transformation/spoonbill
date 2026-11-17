@@ -177,42 +177,54 @@ unmeasured single-callback-storage prototype was excluded.
 
 ## Accepted implementation
 
-The owner later asked for the sort gap to be closed. Production commit
-`74fed761` (compact6) keeps every contract above and changes what the
-interpreter pays for it:
+The owner later asked for the sort gap to be closed, and then for the result to
+hold its ownership in single values, without reflection. Production commit
+`e57aabea` (compact7) keeps every contract above:
 
-- One notification or read is its thread's own first command. Dispatch still
-  has one owner at a time, runs outside the ownership monitor and stays paused
-  until cleanup has been dispatched. Its owner releases without the monitor and
-  keeps ownership for a backlog. A command that arrives during a release is
-  taken by exactly one of the two threads.
-- Reader, cleanup and dispatch ownership are scalar interpreter fields. The
-  claim rule is the pure `dispatchClaimable`; Phase remains the only published
-  terminal authority, and the immutable routing model remains the oracle.
-- A FutureEffect that keeps its own `promise`, `runAsync` and `fail` is served
-  by a plain Promise and a same-thread `onComplete`, with Try outcomes. A
-  subclass that overrides one of them, and every native effect, keeps its
-  Either callbacks, so an instrumented effect still sees every call.
+- One notification or read is held by its thread as its own first command.
+  Dispatch still has one owner at a time, runs outside the ownership monitor
+  and stays paused until cleanup has been dispatched.
+- The phase, read ownership and the cleanup claim are one published `Control`
+  value. Dispatch ownership is one value of the pure five-state `Dispatch`
+  machine in one atomic cell. Its owner releases without the monitor only from
+  `Running`, by a compare-and-set; a thread that queues a command behind it
+  moves the same cell to `Backlogged`. A command that arrives during a release
+  is therefore taken by exactly one of the two threads. The immutable routing
+  model remains the oracle.
+- Two typed interpreters share that core. A callback pump serves every
+  FutureEffect: a pull is its Promise, completed with the Try that its read was
+  observed with on the completing thread. A reader fiber serves every other
+  effect with the Either callbacks of its own `promise`.
+- A FutureEffect subclass that overrides `promise` or `runAsync` is therefore
+  not called for a pull or a read. Compact2 called both for every delivery.
 
-Its three-cell screen reports throughput/allocation ratios of 3.74903/0.26071
-(Hub), 1.10111/0.64454 (sort) and 1.57257/0.47734 (zero-duration buffer). All
-three satisfy the 0.95 throughput and 1.10 allocation guides. The interpreter-only
-step before it, compact5, reached 0.84798 for sort and was rejected. All 126
-measured rows and earlier controls remain in
+Its three-cell screen reports throughput/allocation ratios of 3.47189/0.25530
+(Hub), 0.97990/0.64463 (sort) and 1.34773/0.48895 (zero-duration buffer). All
+three satisfy the 0.95 throughput and 1.10 allocation guides. Two earlier steps
+are retained with their rows. Compact5 changed only the interpreter, reached
+0.84798 for sort and was rejected. Compact6 (`74fed761`) reached 1.10111 for
+sort, but it spread the same ownership over several interpreter fields and
+found a FutureEffect's own callbacks by reflection, so it was superseded. All
+144 measured rows and earlier controls remain in
 [the cost evidence](../misc/stream-operator-cost/README.md).
 
-The measured source passed the complete CI test command: 2,180 ScalaTest and 41
-ZIO cases without a failure. Generated histories compare the interpreter with
-the immutable model for FutureEffect's own callbacks and for overridden ones.
-New cases pin what the release must keep: a queued notification and then the
-read reserved after it follow a running notification, a cleanup pause holds
-back an owner that finishes during it, and a command that arrives at a release
-is not left behind. Concurrent Future and IO consumers of Hub, sort and buffer
-receive every value once and in order, and the Future cases never observe two
-threads inside dispatch.
-These dispatch cases also pass the compact2 source, so they describe retained
-behavior. Each of nine single-rule mutations of the ownership protocol fails at
-least one case (`/tmp/spoonbill-stream-compact6-mutations.txt`).
+The measured source passed the complete CI test command: 2,185 ScalaTest and 41
+ZIO cases without a failure. Generated histories compare both interpreters with
+the immutable model, the reader fiber through a Future effect that is not a
+FutureEffect, and a generated-history law covers the dispatch machine alone.
+The dispatch cases pin what the release must keep, also for both interpreters: a
+queued notification and then the read reserved after it follow a running
+notification, a read that a value leaves credit for starts after that value's
+notifications, a cleanup pause holds back an owner that finishes during it, and
+a command that arrives at a release is not left behind. Concurrent Future and
+IO consumers of Hub, sort and buffer receive every value once and in order, and
+the Future cases never observe two threads inside dispatch. All 26 dispatch
+cases also pass the compact2 source
+(`/tmp/spoonbill-stream-compact7-dispatch-on-compact2.log`), so they describe
+retained behavior. Each of sixteen single-rule mutations of the ownership
+protocol fails at least one case
+(`/tmp/spoonbill-stream-compact7-mutations.txt`), and an independent read-only
+review found no defect.
 
 The original four-workload gate has not been rerun on this final aggregate.
 A short screen's three-pair medians are observations, not a whole-application
