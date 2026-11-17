@@ -930,7 +930,7 @@ whole phase is complete.
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
 | 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
-| 8 | Table, scheduler, queue and pool dispositions complete. Approved Hub, sort and buffer implementations, native ownership proofs, finite publisher buffers and legacy overflow closure are integrated. Common-semantics stream cost evaluation and final aggregate validation remain pending |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated, but the first stream implementation fails its compatibility cost screen. A compact interpreter is under evaluation; performance acceptance remains open |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
@@ -986,6 +986,18 @@ count does not replace the remaining performance and final aggregate gates.
 After caller integration, 43 selected Frontend/session/client tests, all 56 Akka
 tests and all 64 Pekko tests passed (`/tmp/spoonbill-stream-callers-integration-17.log`).
 The integrated purity guard found 45 machine files and zero violations.
+
+The [stream compatibility cost screen](../misc/stream-operator-cost/README.md)
+then rejected the first implementation despite its passing correctness checks.
+Across 18 fresh JVM rows on paths where both versions deliver correctly,
+throughput ratios were 30.9% (Hub), 7.4% (sort) and 13.8% (zero-duration buffer),
+with allocation ratios 3.11, 9.04 and 5.56. Thread/counter/lifetime controls passed;
+changed overflow/cancellation semantics were not compared as equivalent workloads.
+Separate allocation profiles identify Future/protect machinery and repeated
+interpreter/model/container copies. A compact design keeps pure scalar ownership
+decisions while moving ordinary FIFO and callback storage into the interpreter;
+native effects retain a persistent reader and Future uses a callback-driven
+owner. This candidate is not accepted until its correctness and cost checks pass.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key

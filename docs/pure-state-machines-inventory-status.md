@@ -8,9 +8,10 @@ final aggregate CI, independent review, or the final four-workload pilot gate.
 “Missing” means not yet accepted/integrated, including actively implemented work.
 
 All 56 by-area rows now have implementation or retention dispositions. The new
-stream contracts and finite fanout publishers are integrated with focused tests;
-their common-semantics cost evaluation and the final aggregate acceptance gates
-remain open. This is implementation coverage, not final performance acceptance.
+stream contracts and finite fanout publishers are integrated with focused tests,
+but the first implementation failed its common-semantics cost screen. A compact
+variant and the final aggregate acceptance gates remain open. This is
+implementation coverage, not final performance acceptance.
 The [design progress](pure-state-machines-design.md#rollout-progress) links the
 per-area commands, behavioral evidence and measured acceptance records.
 
@@ -73,8 +74,8 @@ per-area commands, behavioral evidence and measured acceptance records.
 | Effects | AsyncTable | Complete — Waiting/Settled per-key enum after failure-publication fixes; resettable semantics retained. |
 | Effects | Resource pool | Retained — one immutable PoolData with allocation IDs and explicit disposal claim; extensive separate fixes and ownership tests; raw outer-caller adoption limits documented. |
 | Effects | Scheduler | Complete — shared result latch and ScheduledStreamMachine after separate lost-waiter/replay/cancellation fixes. |
-| Effects | Hub and Stream.sort | Implemented — lossless configured fanout, bounded FIFO racks and explicit overflow; independent read ownership and nonjoining cleanup pass Future, IO and ZIO checks. Finite publisher adoption and overflow-only legacy Frontend closure are integrated. Cost evaluation remains pending. |
-| Effects | Stream.buffer | Implemented — eager bounded reader, accepted-prefix drain, atomic batch selection, owned timers and nonjoining cancellation; model/native/ordering checks pass. Cost evaluation remains pending. |
+| Effects | Hub and Stream.sort | Implemented — lossless configured fanout, bounded FIFO racks and explicit overflow; independent read ownership and nonjoining cleanup pass Future, IO and ZIO checks. Finite publisher adoption and overflow-only legacy Frontend closure are integrated. Initial cost screen rejected; compact variant under evaluation. |
+| Effects | Stream.buffer | Implemented — eager bounded reader, accepted-prefix drain, atomic batch selection, owned timers and nonjoining cancellation; model/native/ordering checks pass. Initial cost screen rejected; compact variant under evaluation. |
 | Adapters | Setup ownership | Complete — shared adapter model; standalone differs and has a documented retain disposition. |
 | Adapters | Stream subscriber | Retained — equivalent single immutable state/monitor in both adapters, 12 behavioral cases each. |
 | Adapters | Stream publisher | Complete — lifecycle model/fixes plus explicit 128-item lossless fanout; tests pin both demand resumption and slow-subscriber cancellation in Akka/Pekko. |
