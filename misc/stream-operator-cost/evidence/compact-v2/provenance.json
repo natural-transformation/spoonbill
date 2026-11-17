@@ -1,0 +1,50 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "stream-compat-v2",
+  "scope": "Same short compatibility-path screen; not whole-semantics equivalence or acceptance",
+  "beforeRevision": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+  "afterBaseRevision": "60aa81ebf32b988defa74b1d3f75e110193f885b",
+  "afterPatch": "../../variants/compact-routing.patch",
+  "afterPatchSha256": "e62d7fd35f67bc980055338651cfdf74ff37fa26082e49309f42a224c019222b",
+  "afterSourceHashes": {
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98ae3e7ef5996dcb4fa83e3e65c56183843d5eee67ee1b5883aeaba97446c26d",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "e9dc186ee61b319dee59ff227ce93b3eeb1605ae14d5716c2da7de527940a1db"
+  },
+  "unchangedEffectProduction": "git diff 3fa0f496..60aa81eb -- modules/effect/src/main/scala is empty; only the two candidate files differ",
+  "fixtureHashes": {
+    "StreamOperatorBenchmark.scala": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+    "prepare.sh": "c4ebe92420652ee8fef0bdb6b7db35177bcddff186c993f7e018990fed4fcbb3",
+    "run.sh": "857c7994a13fccf81e5f4189e2477803f22aad08fbaf3b9fe3fd6f84b6a986ef",
+    "analyze.mjs": "13a9df35259e7da46702dad943df48a4cfe7e4398e8420ac92306442b3d0cf80"
+  },
+  "beforeClassManifest": "../screen-v2/before.classes.json",
+  "beforeClassManifestSha256": "d30b88d5a3a4d536d1ca5f6ac8d5478ba7a7437b3bd40c668a7ac2557c73ff42",
+  "afterClassManifestSha256": "9cc04aef06145ab6013e95ac54dcd69a58ad4ff21a8f460b9fc2a31eec3fe60e",
+  "classpathHashes": {
+    "before": "3f453234c31204ab53a8dc979538cd6b5ee181e5c6670060a1bed1b229dd3677",
+    "after": "51af4e64eb5046d01afc304e9341706d4b8057a927edfb86a93b09bdb754dbae"
+  },
+  "rawSha256": "15331e5407f25dfc9e1219f1a9aad51b7c8d5f0b56fd0f9d7d5f86c3bd1ae1a9",
+  "collection": "Exclusive coordinated window; 18 independent JVMs; 3 alternating pairs/cell; 2s warmup + 2s measurement",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "checks": [
+    "exact same fixture",
+    "original baseline bytecode unchanged",
+    "released candidate source hashes exact",
+    "valid deterministic continuation/thread/EOF-teardown smoke",
+    "escaping allocation control",
+    "all timed assertions and stderr clean"
+  ],
+  "outcome": "Hub and buffer improved; sort throughput ratio 0.5683397327969909 fails the 0.95 guide despite allocation ratio 0.889172853069413; no complete-candidate acceptance"
+}

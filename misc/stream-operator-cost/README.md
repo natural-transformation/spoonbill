@@ -187,3 +187,30 @@ nix develop --no-write-lock-file --command node misc/stream-operator-cost/attrib
 The optional final `217` selects the measured call site in this exact frozen fixture.
 Omit it for pooled warmup/measurement attribution; recheck source lines if the
 fixture changes.
+
+## Compact candidate: same matched screen
+
+The compact two-file candidate was frozen at base `60aa81eb` with the exact
+released source hashes and patch recorded under `evidence/compact-v2`. Effect
+production sources at that base match `3fa0f496`; only StreamRoutingMachine and
+StreamRoutingRuntime differ. The original baseline class-file manifest and the
+fixture/runner hashes were verified unchanged before collection. Both variants
+passed fresh deterministic smoke, continuation-thread, live-subscriber EOF,
+started-fiber cleanup and escaping-allocation controls.
+
+The same 18-row 2s+2s three-pair screen observed:
+
+| Cell | Throughput ratio | Allocation ratio | Bytes/delivery before → compact |
+| --- | ---: | ---: | ---: |
+| Hub | 2.625470596286163 | 0.3178588565437168 | 768.0212286974394 → 244.12234955506852 |
+| Sort | **0.5683397327969909** | 0.889172853069413 | 359.9586616455497 → 320.06547016242087 |
+| Zero-duration buffer | 1.0608066839041392 | 0.6479717891333839 | 704.1132626322316 → 456.24553054035135 |
+
+The complete candidate is not accepted: sort throughput remains below the 0.95
+comparison guide. Its median fell from 21,942,476.808201604 to 12,470,781.406077469
+deliveries/second; compact trials ranged 12,405,945.180661935–13,239,656.559188062.
+The allocation improvement does not erase that throughput miss. This suggests a
+remaining CPU/dispatch/synchronization cost rather than aggregate allocation
+pressure alone; the exact cause has not been profiled for this compact variant.
+No production optimization or claim of whole-contract equivalence is made here.
+All earlier sources, controls, regressions and profile evidence remain preserved.

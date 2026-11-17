@@ -1,0 +1,17 @@
+{
+  "scope": "Deterministic64-round public compatibility checks; no timing inference",
+  "baseRevision": "60aa81ebf32b988defa74b1d3f75e110193f885b",
+  "sourceHashes": {
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98ae3e7ef5996dcb4fa83e3e65c56183843d5eee67ee1b5883aeaba97446c26d",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "e9dc186ee61b319dee59ff227ce93b3eeb1605ae14d5716c2da7de527940a1db"
+  },
+  "fixtureSha256": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+  "checks": [
+    "exact counts/order",
+    "all checked Effect continuations on owner thread",
+    "source/delivery thread assertions",
+    "Hub EOF on live subscribers",
+    "source and started-fiber cleanup awaited",
+    "escaping16MiB allocation control"
+  ]
+}
