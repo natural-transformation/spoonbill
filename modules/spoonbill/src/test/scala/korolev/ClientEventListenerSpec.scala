@@ -27,21 +27,11 @@ class ClientEventListenerSpec extends AnyFlatSpec with Matchers {
     source.contains("removeEventListener(o.type, o.listener, o.capture)") shouldBe true
   }
 
-  it should "open long-polling early to attach listeners" in {
-    val path = Paths.get("modules/spoonbill/src/main/es6/connection.js")
-    val source = new String(Files.readAllBytes(path), "UTF-8")
-    source.contains("subscribe(true);") shouldBe true
-    source.contains("this._onOpen();") shouldBe true
-    source.contains("if (this._wasConnected)") shouldBe true
-  }
-
-  it should "signal ready after first successful subscribe" in {
-    val path = Paths.get("modules/spoonbill/src/main/es6/connection.js")
-    val source = new String(Files.readAllBytes(path), "UTF-8")
-    source.contains("this._onReady();") shouldBe true
-    source.contains("_createEvent('ready')") shouldBe true
-    source.contains("this._wasReady") shouldBe true
-  }
+  // Lifecycle coverage lives in misc/connection-lifecycle-tests.mjs:
+  // "legacy transport selection, long-poll renewal and publish use observable requests"
+  // checks early open, no readiness after 503, and readiness after the first 200.
+  // "websocket reopening emits a fresh open and ready lifecycle without private state reads"
+  // checks duplicate-open suppression and fresh open/ready events after reconnect.
 
   it should "use capture for submit events" in {
     val path = Paths.get("modules/spoonbill/src/main/es6/spoonbill.js")
@@ -66,12 +56,6 @@ class ClientEventListenerSpec extends AnyFlatSpec with Matchers {
     val path = Paths.get("modules/spoonbill/src/main/es6/connection.js")
     val source = new String(Files.readAllBytes(path), "UTF-8")
     source.contains("options && options['ws'] === false") shouldBe true
-  }
-
-  it should "re-emit open after reconnect" in {
-    val path = Paths.get("modules/spoonbill/src/main/es6/connection.js")
-    val source = new String(Files.readAllBytes(path), "UTF-8")
-    source.contains("this._wasConnected = false") shouldBe true
   }
 
   it should "guard extractProperty when element is missing" in {
