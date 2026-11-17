@@ -161,7 +161,7 @@ class Http11[B: BytesLike](
     }
 
   def decodeChunkedBody[F[_]: Effect](decoder: Decoder[F, B], complete: () => Unit = () => ()): Stream[F, B] = {
-    val framing = new ChunkedBodyDecoder[B](maxChunkLineBytes, maxTrailerBytes)
+    val framing = new ChunkedBodyDecoder.Cell[B](maxChunkLineBytes, maxTrailerBytes)
     val stream = decoder.decode(()) { (_, incoming) =>
       val result = framing.decode(incoming)
       if (framing.completed) complete()

@@ -447,3 +447,46 @@ throughput margin is narrow, and these uncontended EmbeddedChannel observations
 have no confidence interval or network/TLS/downstream-decoder performance claim.
 All 48 first/second-design rows, exact source snapshots and frozen-jar provenance
 are retained in the transport measurement directory.
+
+## Chunked HTTP body: checked pure scan and scalar payload cursor
+
+`ChunkedBodyDecoder` now exposes an immutable framing state and a pure checked
+step. Named phases replace the integer phase. Byte scanning uses local counters;
+payload slices are returned immediately, with framing/error and take-back order
+preserved. Partial line metadata is bounded and immutable across calls. The
+checked grammar still validates extensions, overflow, CRLF, trailers and forbidden
+trailer names before committing the corresponding framing transition.
+
+The single-owner interpreter retains a checked framing state directly, or a
+named payload cursor with a full-width scalar remaining count. Pure scalar
+decisions cover payload slices and bounded complete simple-header spans; every
+extension, partial metadata or rejected fast probe uses the checked model. The
+fast probe reads at most sixteen digits within the line budget, and does not
+narrow or pack lengths. Tests compare its output spans and the storage adapter
+against the checked model across every split and multi-chunk input.
+
+Empty inputs preserve state and return `TakeNext` without a snapshot: the generic
+driver returns even empty `Fork` remainders. A retained allocation diagnostic
+measured the original path at 0 bytes/call, the initial extracted path at 104,
+and the selected path back at 0. Lone CR/LF chunks inspect or retire an immutable
+prefix without constructing a builder; a specific law pins clearing the carried
+trailer prefix when its LF arrives alone. Ordinary metadata uses a stable local
+builder. Byte operations call the existing typeclass directly; the byte library
+and generic decoder are unchanged.
+
+Baseline framing suites passed 17 cases on `1f06cd3a`. Selected-source checks:
+
+- `http/testOnly *Http11BodyFramingSpec *Http11ResponseFramingSpec
+  *HttpServerBodyFramingSpec *ChunkedBodyMachineSpec`: pass, 24 tests.
+- `standalone/testOnly *StandaloneChunkedAuthenticationSpec`: pass, 4 tests.
+- Explicit-file formatting for the new model spec and `git diff --check`: pass.
+
+The [accepted v8 gate](../misc/transport-state-machines/evidence/chunked-v8/summary.json)
+passes all four cells: throughput 151.19% / 99.77% / 99.73% / 112.46% of baseline;
+allocation 92.00% / 98.56% / 101.02% / 86.04%; sampled p99
+66.72% / 97.02% / 106.92% / 86.53%. All 192 rows, rejected designs, exact sources,
+empty-tail attribution, whole-trace offset diagnostic and trailer profile remain
+in the measurement artifacts. The diagnostic motivated a predeclared stratified
+sampler on both sides; no favorable offset or row was selected, and old-protocol
+rows were not reclassified as accepted. This establishes the synthetic cost guide
+without a timing confidence interval or a network-wide performance claim.
