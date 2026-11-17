@@ -220,3 +220,11 @@ generic input/result snapshot path still allocates on fragmented payload slices
 and loses throughput: 84.08%, 94.41%, 86.65% and 99.71% across its four workloads.
 Fragmented allocation is 116.65% of baseline. This unsuccessful comparison and
 all exact sources remain available alongside the earlier chunk attempts.
+
+The [fourth chunk design](evidence/chunked-v4/) adds pure scalar payload decisions
+and bounded simple-header spans with checked fallback. Small messages improve to
+152.51% throughput, and trailers pass, but large sampled p99 (113.05%) and the
+fragmented cell (92.66% throughput / 109.89% allocation / 116.62% p99) still reject
+the candidate. All 24 rows and source snapshots are retained. Inspection then
+identified allocating `BytesLikeOps` implicit wrappers on this path; the next
+experiment uses direct typeclass reads/slices without changing the byte library.
