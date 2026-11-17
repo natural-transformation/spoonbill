@@ -90,7 +90,9 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
       val ref = pool.get()
       // Check value not in closed list
       if (!ref.itemIsClosed(id)) {
-        val closedItems = ref.closedItems.updated(id, System.identityHashCode(value))
+        // An idle entry has no outstanding loan that can return later.
+        val wasIdle     = ref.items.exists(_.id == id)
+        val closedItems = if (wasIdle) ref.closedItems else ref.closedItems.updated(id, System.identityHashCode(value))
         val items       = ref.items.filter(_.id != id)
         val (total, cbs) =
           if (ref.cbs.nonEmpty) {

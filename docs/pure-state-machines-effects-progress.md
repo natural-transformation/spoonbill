@@ -159,6 +159,13 @@ values, never ownership keys. All 81 effect and 54 HTTP-client tests pass; the f
 focused pool run passes 24 tests after removing the obsolete private diagnostic
 closure. Existing pool and client specs are unchanged.
 
+One final pool retention defect was confirmed before declaring the item retained:
+closing an already-returned idle resource kept a retired-loan marker although no
+loan could ever return to remove it. The permanent 100-cycle regression failed
+on its first close. Idle closure now drops its entry without a return marker;
+closed resources still borrowed retain their marker until return. All 82 effect
+and 54 HTTP-client tests pass after this separate fix.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate
