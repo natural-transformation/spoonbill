@@ -18,7 +18,8 @@ package spoonbill.pekko.util
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Objects
-import spoonbill.effect.{Effect, Hub, Reporter, Stream}
+import spoonbill.effect.{Effect, Hub, Reporter, StateCell, Stream}
+import spoonbill.internal.StreamPublisherMachine
 import spoonbill.effect.syntax._
 import spoonbill.pekko.util.SpoonbillStreamPublisher.MultipleSubscribersProhibitedException
 import org.reactivestreams.{Publisher, Subscriber, Subscription}
@@ -39,32 +40,36 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
   private final class StreamSubscription(stream: Stream[F, T], subscriber: Subscriber[_ >: T]) extends Subscription {
 
     private val countdown = new Countdown[F]()
-    private val stopped = new AtomicBoolean(false)
+    import StreamPublisherMachine.{Command, Event}
+    private val lifecycle = new StateCell(StreamPublisherMachine.initial)
+    private def live: Boolean = StreamPublisherMachine.live(lifecycle.get)
+    private def decide(event: Event): Command =
+      if (!live) Command.None else lifecycle.modify(StreamPublisherMachine.step(_, event))
 
     private def loop(): F[Unit] =
       for {
         _         <- countdown.decOrLock()
-        maybeItem <- if (stopped.get()) Effect[F].none[T] else stream.pull()
-        _ <- if (stopped.get()) Effect[F].unit else maybeItem match {
+        maybeItem <- if (!live) Effect[F].none[T] else stream.pull()
+        _ <- if (!live) Effect[F].unit else maybeItem match {
                case Some(item) =>
                  subscriber.onNext(item)
                  loop()
                case None =>
-                 if (stopped.compareAndSet(false, true)) subscriber.onComplete()
+                 if (decide(Event.Complete) == Command.Complete) subscriber.onComplete()
                  Effect[F].unit
              }
       } yield ()
 
     loop().runAsync {
-      case Left(error) => if (stopped.compareAndSet(false, true)) subscriber.onError(error)
+      case Left(error) => if (decide(Event.Fail) == Command.Fail) subscriber.onError(error)
       case Right(_)    => ()
     }
 
     def request(n: Long): Unit =
-      if (!stopped.get()) countdown.unsafeAdd(n)
+      if (live) countdown.unsafeAdd(n)
 
     def cancel(): Unit =
-      if (stopped.compareAndSet(false, true)) {
+      if (decide(Event.Cancel) == Command.CancelSource) {
         // Release a loop waiting for demand; it observes stopped before pulling.
         countdown.unsafeAdd(1)
         stream.cancel().runAsyncForget

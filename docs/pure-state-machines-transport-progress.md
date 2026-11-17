@@ -65,6 +65,22 @@ Nonpositive requests retain the existing ignored-input behavior; changing that
 policy requires its own terminal-signal serialization decision, not a hidden
 change inside a refactor.
 
+After those separate fixes, both publishers use the same `StreamPublisherMachine`
+for Active/Canceled/Completed/Failed terminal ownership and positive-demand
+arithmetic. The terminal model runs only at lifecycle edges; demand remains in
+the existing immutable countdown value with its callback slot. No event or command
+collection was added per element, and callback execution stays in the original
+effect loop. The single-subscriber atomic flag remains an independent one-shot
+claim. Cancellation still wakes a pending demand wait before starting cleanup.
+
+The candidate tables match: positive demand adds credit, zero credit parks one
+consumer, terminal outcomes claim their signal once, and cancellation suppresses
+late pull outcomes. Synchronous duplicate-subscriber exceptions and ignored
+nonpositive demand remain compatibility policies rather than a full-conformance
+claim. `spoonbill/testOnly *StreamPublisherMachineSpec` passed both table/generated
+tests, and the unchanged complete adapter suites passed 53 Pekko and 45 Akka tests
+after extraction. The purity guard passed.
+
 ## Subscriber: retain the existing explicit state
 
 The candidates are
