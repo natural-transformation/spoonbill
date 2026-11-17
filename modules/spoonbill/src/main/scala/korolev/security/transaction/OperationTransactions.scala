@@ -213,8 +213,7 @@ final class OperationProtocol[F[_], G[_], Tx](
     program.flatMap(store.readForDecision(tx, operation.invocation)) { existing =>
       val record = existing.getOrElse(throw new OperationProtocolException(OperationError.NotPrepared))
       OperationProtocol.requireExact(record, operation)
-      if (record.status != InvocationStatus.InProgress)
-        throw new OperationProtocolException(OperationError.NotPrepared)
+      OperationProtocol.requirePrepared(record.status)
       OperationProtocol.runMutation(tx, store, operation, clock, program, executor.scopePolicy, body)
     }
   }
@@ -250,18 +249,36 @@ object OperationProtocol {
 
   private[security] def validateDefinition(operation: PreparedOperation): Unit = {
     val definition = operation.definition
-    if (definition.id != operation.invocation.grantId || definition.binding != operation.invocation.binding ||
-        definition.policy != ReservationPolicy.ConsumeOnAttempt)
-      throw new OperationProtocolException(OperationError.InvalidDefinition)
+    check(InvocationDecisionMachine.definition(
+      definition.id == operation.invocation.grantId && definition.binding == operation.invocation.binding,
+      definition.policy))
   }
 
   private[transaction] def requireExact(record: StoredOperation, operation: PreparedOperation): Unit =
-    if (record.operation != operation)
-      throw new OperationProtocolException(OperationError.InvocationConflict)
+    check(InvocationDecisionMachine.exact(record.operation == operation))
 
   private[transaction] def requireFresh(operation: PreparedOperation, now: Instant): Unit =
-    if (!now.isBefore(operation.definition.expiresAt))
-      throw new OperationProtocolException(OperationError.Expired)
+    check(InvocationDecisionMachine.fresh(operation.definition.expiresAt, now))
+
+  private[transaction] def requirePrepared(status: InvocationStatus): Unit =
+    check(InvocationDecisionMachine.executePrepared(recordState(status)))
+
+  private def recordState(status: InvocationStatus): InvocationDecisionMachine.RecordState = status match {
+    case InvocationStatus.InProgress   => InvocationDecisionMachine.RecordState.InProgress
+    case InvocationStatus.Unknown      => InvocationDecisionMachine.RecordState.Unknown
+    case InvocationStatus.Committed    => InvocationDecisionMachine.RecordState.Committed
+    case InvocationStatus.NotCommitted => InvocationDecisionMachine.RecordState.NotCommitted
+  }
+
+  private def check(rejection: Option[InvocationDecisionMachine.Rejection]): Unit = rejection.foreach { value =>
+    val error = value match {
+      case InvocationDecisionMachine.Rejection.InvalidDefinition  => OperationError.InvalidDefinition
+      case InvocationDecisionMachine.Rejection.InvocationConflict => OperationError.InvocationConflict
+      case InvocationDecisionMachine.Rejection.Expired            => OperationError.Expired
+      case InvocationDecisionMachine.Rejection.NotPrepared        => OperationError.NotPrepared
+    }
+    throw new OperationProtocolException(error)
+  }
 
   private[transaction] def runMutation[G[_], Tx, A](tx: Tx, store: DurableOperationStore[G, Tx], operation: PreparedOperation,
     clock: () => Instant, program: TransactionProgram[G], policy: TransactionScopePolicy,
@@ -288,9 +305,9 @@ object OperationProtocol {
     program.flatMap(store.readForDecision(tx, operation.invocation)) {
       case Some(record) =>
         requireExact(record, operation)
-        record.status match {
-          case InvocationStatus.Committed | InvocationStatus.NotCommitted => program.pure(record)
-          case InvocationStatus.InProgress | InvocationStatus.Unknown =>
+        InvocationDecisionMachine.settle(recordState(record.status)) match {
+          case InvocationDecisionMachine.Settlement.KeepOutcome => program.pure(record)
+          case InvocationDecisionMachine.Settlement.RecordNotCommitted =>
             program.map(store.recordOutcome(tx, operation, InvocationStatus.NotCommitted)) { _ =>
               StoredOperation(operation, InvocationStatus.NotCommitted)
             }
