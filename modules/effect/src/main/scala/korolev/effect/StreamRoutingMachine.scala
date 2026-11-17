@@ -52,12 +52,59 @@ private[effect] object StreamRoutingMachine {
     Control(canceledPhase(mode, control.phase), control.reader, true)
 
   /**
-   * Notification dispatch has one owner at a time; a cleanup pause is an
-   * independent fact. Only an idle, unpaused dispatcher is claimed, and only
-   * for a pending command. Its owner alone releases it.
+   * Notification dispatch has one owner at a time, which runs the queued
+   * commands in order. `Running` also says that nothing is queued behind the
+   * command its owner runs; `Backlogged` says that something is. A cleanup
+   * pause holds every further command back, whether or not an owner still runs
+   * the command it had.
    */
-  def dispatchClaimable(running: Boolean, paused: Boolean, pending: Boolean): Boolean =
-    !running && !paused && pending
+  enum Dispatch { case Idle, Running, Backlogged, PausedIdle, PausedRunning }
+
+  /** Only a dispatcher without an owner and without a pause is claimed. */
+  def dispatchClaimable(state: Dispatch): Boolean = state == Dispatch.Idle
+
+  /**
+   * `pending` commands await dispatch. Their thread claims a claimable
+   * dispatcher for the first of them. An owner with nothing queued learns that
+   * it has to come back.
+   */
+  def claimDispatch(state: Dispatch, pending: Int): Dispatch =
+    if (pending <= 0) state
+    else
+      state match {
+        case Dispatch.Idle    => if (pending == 1) Dispatch.Running else Dispatch.Backlogged
+        case Dispatch.Running => Dispatch.Backlogged
+        case _                => state
+      }
+
+  /** Nothing is queued behind this owner, and no pause waits for it. */
+  def dispatchReleasable(state: Dispatch): Boolean = state == Dispatch.Running
+
+  /**
+   * The owner finished a command while `queued` commands wait. Unless paused it
+   * goes on with the first of them; it releases when there is none.
+   */
+  def advanceDispatch(state: Dispatch, queued: Int): Dispatch = state match {
+    case Dispatch.Running | Dispatch.Backlogged =>
+      if (queued <= 0) Dispatch.Idle else if (queued == 1) Dispatch.Running else Dispatch.Backlogged
+    case Dispatch.PausedRunning => Dispatch.PausedIdle
+    case _                      => state
+  }
+
+  /** An owner that advanced to this state holds the next command. */
+  def dispatchContinues(state: Dispatch): Boolean = state == Dispatch.Running || state == Dispatch.Backlogged
+  def pauseDispatch(state: Dispatch): Dispatch = state match {
+    case Dispatch.Idle                          => Dispatch.PausedIdle
+    case Dispatch.Running | Dispatch.Backlogged => Dispatch.PausedRunning
+    case _                                      => state
+  }
+
+  /** The commands held back meanwhile are claimed like any other afterwards. */
+  def resumeDispatch(state: Dispatch): Dispatch = state match {
+    case Dispatch.PausedIdle    => Dispatch.Idle
+    case Dispatch.PausedRunning => Dispatch.Running
+    case _                      => state
+  }
   final case class Endpoint[A](values: Queue[A] = Queue.empty[A], pulls: Vector[Pull] = Vector.empty)
   final case class State[A](
     mode: Mode,

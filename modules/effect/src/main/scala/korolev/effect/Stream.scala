@@ -278,7 +278,7 @@ abstract class Stream[F[_]: Effect, A] { self =>
     if (numRacks == 0) Nil
     else {
       val lanes = Vector.fill(numRacks)(new StreamRoutingMachine.Lane)
-      val runtime = new StreamRoutingRuntime(self, StreamRoutingMachine.Mode.Partition, capacityPerRack, lanes, Some(f))
+      val runtime = StreamRoutingRuntime(self, StreamRoutingMachine.Mode.Partition, capacityPerRack, lanes, Some(f))
       lanes.map(runtime.stream).toList
     }
   }

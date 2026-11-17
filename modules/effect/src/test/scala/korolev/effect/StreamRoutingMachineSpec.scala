@@ -212,4 +212,80 @@ class StreamRoutingMachineSpec extends AnyFlatSpec with Matchers with ScalaCheck
     retry.state.reader shouldBe Reader.Reading
     StreamRoutingMachine.cancel(retry.state, None).cleanup shouldBe false
   }
+
+  "Notification dispatch" should "name exactly one owner, the pause and the backlog across generated histories" in {
+    forAll(Gen.listOf(Gen.zip(Gen.choose(0, 4), Gen.choose(1, 3)))) { events =>
+      var state  = Dispatch.Idle
+      var owner  = false
+      var paused = false
+      var queued = 0
+
+      // The last step of every section that queued commands or ended a pause.
+      def claim(): Unit = {
+        val before = state
+        state = claimDispatch(before, queued)
+        if (queued > 0 && dispatchClaimable(before)) {
+          owner shouldBe false
+          owner = true
+          queued -= 1
+        }
+      }
+
+      events.foreach { case (event, count) =>
+        event match {
+          case 0 =>
+            queued += count
+            claim()
+          case 1 if queued == 0 && dispatchClaimable(state) =>
+            // A thread holds its own command; the rest of its section queues behind it.
+            state = claimDispatch(state, 1)
+            owner shouldBe false
+            owner = true
+            queued += count - 1
+            claim()
+          case 2 if owner =>
+            if (dispatchReleasable(state)) {
+              // The only move an owner makes without the interpreter's monitor.
+              queued shouldBe 0
+              state = advanceDispatch(state, 0)
+              owner = false
+            } else {
+              state = advanceDispatch(state, queued)
+              if (dispatchContinues(state)) {
+                queued should be > 0
+                queued -= 1
+              } else owner = false
+            }
+          case 3 =>
+            state = pauseDispatch(state)
+            paused = true
+          case 4 =>
+            state = resumeDispatch(state)
+            paused = false
+            claim()
+          case _ => ()
+        }
+        // An unpaused dispatcher never leaves a command without an owner.
+        if (!paused && !owner) queued shouldBe 0
+        state shouldBe (
+          if (paused) { if (owner) Dispatch.PausedRunning else Dispatch.PausedIdle }
+          else if (!owner) Dispatch.Idle
+          else if (queued > 0) Dispatch.Backlogged
+          else Dispatch.Running
+        )
+      }
+    }
+  }
+
+  it should "ignore every move that does not apply" in {
+    for (state <- Dispatch.values; queued <- 0 to 3) {
+      claimDispatch(state, 0) shouldBe state
+      if (state != Dispatch.Idle && state != Dispatch.Running) claimDispatch(state, queued) shouldBe state
+      if (state == Dispatch.Idle || state == Dispatch.PausedIdle) advanceDispatch(state, queued) shouldBe state
+      pauseDispatch(pauseDispatch(state)) shouldBe pauseDispatch(state)
+      if (state != Dispatch.PausedIdle && state != Dispatch.PausedRunning) resumeDispatch(state) shouldBe state
+      dispatchClaimable(state) shouldBe (state == Dispatch.Idle)
+      dispatchReleasable(state) shouldBe (state == Dispatch.Running)
+    }
+  }
 }

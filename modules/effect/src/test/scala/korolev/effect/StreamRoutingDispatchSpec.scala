@@ -12,30 +12,24 @@ import scala.util.{Failure, Success, Try}
  * Notification dispatch has one owner at a time, and that owner releases it
  * without taking the ownership monitor. Work that arrives meanwhile must
  * neither overlap the running notification nor be left behind, and a cleanup
- * pause must hold it back. Every case runs with FutureEffect's own callbacks
- * and with overridden ones.
+ * pause must hold it back. Every case runs with the callback pump that serves
+ * FutureEffect and with the reader fiber that serves every other effect.
  */
 class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
   private def await[A](value: Future[A]): A = Await.result(value, 10.seconds)
   private val idle                          = () => ()
-  private def effect(overridden: Boolean, before: () => Unit = idle, after: () => Unit = idle): Effect[Future] =
-    if (overridden) new OverriddenFutureCallbacks {
+  private def effect(fiber: Boolean, before: () => Unit = idle, after: () => Unit = idle): Effect[Future] =
+    if (fiber) new ReaderFiberFutureEffect {
       override def start[A](task: => Future[A])(implicit ec: ExecutionContext): Future[Effect.Fiber[Future, A]] = {
-        before(); val fiber = super.start(task); after(); fiber
+        before(); val started = super.start(task); after(); started
       }
     }
     else
       new Effect.FutureEffect {
         override def start[A](task: => Future[A])(implicit ec: ExecutionContext): Future[Effect.Fiber[Future, A]] = {
-          before(); val fiber = super.start(task); after(); fiber
+          before(); val started = super.start(task); after(); started
         }
       }
-
-  /** The operators take their effect from the source stream. */
-  private def overriddenCallbacksUsed(using effect: Effect[Future]): Boolean = effect match {
-    case overridden: OverriddenFutureCallbacks => overridden.calls.get() > 0
-    case _                                     => false
-  }
 
   /**
    * Detects two threads inside dispatch: reads and notifications are its
@@ -108,9 +102,9 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
     while (!done) { spins += 1; if (spins > 20000) Thread.`yield`() }
   }
 
-  for (overridden <- List(false, true); callbacks = if (overridden) "overridden" else "own") {
-    s"A running notification with $callbacks callbacks" should "be followed by the read another thread reserved meanwhile" in {
-      given Effect[Future] = effect(overridden)
+  for (fiber <- List(false, true); reader = if (fiber) "a reader fiber" else "the callback pump") {
+    s"A running notification with $reader" should "be followed by the read another thread reserved meanwhile" in {
+      given Effect[Future] = effect(fiber)
       val source           = new Gated
       val racks            = source.sort(2)(_ % 2)
       val held             = new Held(racks(0).pull())
@@ -127,11 +121,10 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       await(second) shouldBe Some(1)
       source.entered.get() shouldBe 2
       owner.join(10000)
-      overriddenCallbacksUsed shouldBe overridden
     }
 
     it should "precede a notification that queued data makes ready on another thread" in {
-      given Effect[Future] = effect(overridden)
+      given Effect[Future] = effect(fiber)
       val source           = new Gated
       val racks            = source.sort(2)(_ % 2)
       val first            = racks(0).pull()
@@ -146,11 +139,10 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       await(ready) shouldBe Some(1)
       await(held.result) shouldBe Some(0)
       owner.join(10000)
-      overriddenCallbacksUsed shouldBe overridden
     }
 
     it should "be followed first by a queued notification and then by the read reserved after it" in {
-      given Effect[Future] = effect(overridden)
+      given Effect[Future] = effect(fiber)
       val source           = new Gated
       val hub              = Hub(source, 1)
       val fast             = hub.newStreamUnsafe()
@@ -169,11 +161,28 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       await(next) shouldBe Some(1)
       await(held.result) shouldBe Some(0)
       owner.join(10000)
-      overriddenCallbacksUsed shouldBe overridden
+    }
+
+    it should "start the read a value leaves credit for only after that value's notifications" in {
+      given Effect[Future] = effect(fiber)
+      val source           = new Gated
+      val hub              = Hub(source, 4)
+      val first            = hub.newStreamUnsafe()
+      val second           = hub.newStreamUnsafe()
+      val readsAtNotification =
+        first.pull().map(value => (value, source.entered.get()))(ExecutionContext.parasitic)
+      // A second pull of the same subscriber leaves demand behind the first value.
+      val later = first.pull()
+      val other = second.pull()
+      source.publish(Some(0))
+      await(readsAtNotification) shouldBe (Some(0), 1)
+      await(other) shouldBe Some(0)
+      source.publish(Some(1))
+      await(later) shouldBe Some(1)
     }
 
     it should "release dispatch so that a later thread settles its own pull" in {
-      given Effect[Future] = effect(overridden)
+      given Effect[Future] = effect(fiber)
       val source           = new Gated
       val racks            = source.sort(2)(_ % 2)
       val first            = racks(0).pull()
@@ -184,7 +193,6 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       val ready = racks(1).pull()
       ready.isCompleted shouldBe true
       await(ready) shouldBe Some(1)
-      overriddenCallbacksUsed shouldBe overridden
     }
 
     it should "leave notifications to the cleanup pause that began while it ran" in {
@@ -192,7 +200,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       val holding           = new AtomicReference[Held]()
       @volatile var started = false
       given Effect[Future] = effect(
-        overridden,
+        fiber,
         before = () => {
           // Cleanup startup is inside the pause. Let the running owner finish
           // and leave dispatch before the cleanup child exists.
@@ -212,11 +220,10 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       await(holding.get().result) shouldBe Some(0)
       owner.join(10000)
       source.entered.get() shouldBe 1
-      overriddenCallbacksUsed shouldBe overridden
     }
 
     it should "not strand a command that arrives as its owner releases" in {
-      given Effect[Future]   = effect(overridden)
+      given Effect[Future]   = effect(fiber)
       val source             = new Gated
       val racks              = source.sort(2, Int.MaxValue)(_ % 2)
       val rounds             = 30000
@@ -253,11 +260,10 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
         spinUntil(finished == round)
       }
       owner.join(10000)
-      overriddenCallbacksUsed shouldBe overridden
     }
 
     it should "settle every pull when a cleanup pause races its release" in {
-      given Effect[Future]   = effect(overridden)
+      given Effect[Future]   = effect(fiber)
       val rounds             = 3000
       val current            = new AtomicReference[Gated]()
       @volatile var go       = -1
@@ -290,14 +296,13 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
         source.entered.get() should be <= 2
       }
       owner.join(10000)
-      overriddenCallbacksUsed shouldBe overridden
     }
 
     for (kind <- List("sort", "hub", "shared hub", "buffer", "delayed buffer")) {
-      s"Concurrent $kind consumers with $callbacks callbacks" should "each receive every value once and in order" in {
+      s"Concurrent $kind consumers with $reader" should "each receive every value once and in order" in {
         val total               = if (kind == "delayed buffer") 3000 else 20000
         val pool                = Executors.newFixedThreadPool(4)
-        given Effect[Future]    = effect(overridden)
+        given Effect[Future]    = effect(fiber)
         given ExecutionContext  = ExecutionContext.fromExecutor(pool)
         given Reporter          = Reporter.PrintReporter
         given Scheduler[Future] = Scheduler.schedulerF[Future]
@@ -383,7 +388,6 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
             case _ => sinks.foreach(_.values shouldBe (0 until total).toVector)
           }
           exclusion.overlapped shouldBe false
-          overriddenCallbacksUsed shouldBe overridden
         } finally pool.shutdownNow()
       }
     }

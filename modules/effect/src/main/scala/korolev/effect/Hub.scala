@@ -24,7 +24,7 @@ package spoonbill.effect
  * streams.
  */
 final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
-  private val runtime = new StreamRoutingRuntime(upstream, StreamRoutingMachine.Mode.Fanout, bufferSize)
+  private val runtime = StreamRoutingRuntime(upstream, StreamRoutingMachine.Mode.Fanout, bufferSize)
 
   def newStreamUnsafe(): Stream[F, T] = runtime.stream(runtime.newLane())
   def newStream(): F[Stream[F, T]]    = Effect[F].delay(newStreamUnsafe())

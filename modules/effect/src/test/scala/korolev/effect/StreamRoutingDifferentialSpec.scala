@@ -12,8 +12,8 @@ import scala.util.Random
  */
 class StreamRoutingDifferentialSpec extends StreamRoutingDifferentialCases(Effect.futureEffect)
 
-/** Overridden callbacks are called, not replaced by their plain equivalents. */
-class StreamRoutingOverriddenCallbacksSpec extends StreamRoutingDifferentialCases(new OverriddenFutureCallbacks)
+/** The same histories, served by a reader fiber as a native effect is. */
+class StreamRoutingReaderFiberSpec extends StreamRoutingDifferentialCases(new ReaderFiberFutureEffect)
 
 abstract class StreamRoutingDifferentialCases(effect: Effect[Future]) extends AnyFlatSpec with Matchers {
   import StreamRoutingMachine.*
@@ -37,7 +37,7 @@ abstract class StreamRoutingDifferentialCases(effect: Effect[Future]) extends An
         val fixed =
           if (mode == Mode.Fanout) Vector.empty else Vector.fill(if (mode == Mode.Buffered) 1 else 2)(new Lane)
         val route    = Option.when(mode == Mode.Partition)((value: Int) => value % 2)
-        val runtime  = new StreamRoutingRuntime(source, mode, capacity, fixed, route)
+        val runtime  = StreamRoutingRuntime(source, mode, capacity, fixed, route)
         var model    = fixed.foldLeft(State[Int](mode, capacity))((state, lane) => add(state, lane))
         val streams  = mutable.LinkedHashMap.from(fixed.map(lane => lane -> runtime.stream(lane)))
         val actual   = mutable.Map.empty[Pull, Future[Option[Int]]]
@@ -93,6 +93,10 @@ abstract class StreamRoutingDifferentialCases(effect: Effect[Future]) extends An
           }
           verify()
         }
+        effect match {
+          case _: Effect.FutureEffect => runtime shouldBe a[StreamRoutingRuntime.CallbackPump[?]]
+          case _                      => runtime shouldBe a[StreamRoutingRuntime.ReaderFiber[?, ?]]
+        }
         applyStep(StreamRoutingMachine.cancel(model, None))
         await(runtime.cancel())
         if (physical.nonEmpty) {
@@ -100,10 +104,6 @@ abstract class StreamRoutingDifferentialCases(effect: Effect[Future]) extends An
           physical.removeHead().success(None)
         }
         verify()
-      }
-      effect match {
-        case overridden: OverriddenFutureCallbacks => overridden.calls.get() should be > 0
-        case _                                     => Effect.FutureEffect.keepsCallbacks(effect) shouldBe true
       }
     }
   }

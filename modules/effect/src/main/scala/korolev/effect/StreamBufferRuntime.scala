@@ -21,7 +21,7 @@ private[effect] final class StreamBufferRuntime[F[_], A](
   private val monitor = new Object
   private var held    = Held()
   private val lane    = new StreamRoutingMachine.Lane
-  private val routing = new StreamRoutingRuntime(upstream, StreamRoutingMachine.Mode.Buffered, capacity, Vector(lane))
+  private val routing = StreamRoutingRuntime(upstream, StreamRoutingMachine.Mode.Buffered, capacity, Vector(lane))
   private val input   = routing.stream(lane)
 
   private def notify(callback: Effect.Promise[Option[Seq[A]]], result: Either[Throwable, Option[Seq[A]]]): Unit =
