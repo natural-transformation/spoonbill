@@ -1,0 +1,54 @@
+warning: not writing modified lock file of flake 'git+file:///private/tmp/spoonbill-rollout-main':
+• Removed input 'gitignore'
+• Removed input 'gitignore/nixpkgs'
+• Removed input 'sbtix'
+• Removed input 'sbtix/flake-parts'
+• Removed input 'sbtix/flake-parts/nixpkgs-lib'
+• Removed input 'sbtix/hercules-ci-effects'
+• Removed input 'sbtix/hercules-ci-effects/flake-parts'
+• Removed input 'sbtix/hercules-ci-effects/flake-parts/nixpkgs-lib'
+• Removed input 'sbtix/hercules-ci-effects/nixpkgs'
+• Removed input 'sbtix/nixpkgs'
+[info] welcome to sbt 1.10.7 (Azul Systems, Inc. Java 21.0.8)
+[info] loading settings for project spoonbill-rollout-main-build from plugins.sbt...
+[info] loading project definition from /private/tmp/spoonbill-rollout-main/project
+[info] loading settings for project root from build.sbt...
+[info] resolving key references (43428 settings) ...
+[info] set current project to Spoonbill Project (in build file:/private/tmp/spoonbill-rollout-main/)
+[info] Defining zio / Test / unmanagedSources
+[info] The new value will be used by zio / Test / bspBuildTargetSourcesItem, zio / Test / scalafmt and 1 others.
+[info] 	Run `last` for details.
+[info] Reapplying settings...
+[info] set current project to Spoonbill Project (in build file:/private/tmp/spoonbill-rollout-main/)
+[info] Defining zio2 / Test / unmanagedSources
+[info] The new value will be used by zio2 / Test / bspBuildTargetSourcesItem, zio2 / Test / scalafmt and 1 others.
+[info] 	Run `last` for details.
+[info] Reapplying settings...
+[info] set current project to Spoonbill Project (in build file:/private/tmp/spoonbill-rollout-main/)
+[info] compiling 2 Scala sources to /private/tmp/spoonbill-rollout-main/interop/zio/target/scala-3.3.8/classes ...
+[info] done compiling
+[info] compiling 1 Scala source to /private/tmp/spoonbill-rollout-main/interop/zio/target/scala-3.3.8/test-classes ...
+[info] done compiling
+[info] Zio1FinalizerProbeSpec:
+[info] Native ZIO 1 finalization
+[info] - should record interruption during successful finalization
+[info]   + Success finalizer input=Success(7); final fiber outcome=Success(7)
+[info] Run completed in 246 milliseconds.
+[info] Total number of tests run: 1
+[info] Suites: completed 1, aborted 0
+[info] Tests: succeeded 1, failed 0, canceled 0, ignored 0, pending 0
+[info] All tests passed.
+[success] Total time: 3 s, completed Nov 17, 2026, 3:24:13 AM
+[info] compiling 1 Scala source to /private/tmp/spoonbill-rollout-main/interop/zio2/target/scala-3.3.8/test-classes ...
+[info] done compiling
+[info] Zio2FinalizerProbeSpec:
+[info] Native ZIO 2 finalization
+[info] - should record interruption during successful finalization
+[info]   + Success finalizer input=Success(7); final fiber outcome=Failure(Interrupt(Runtime(845954281,1794882254698,spoonbill.zio.Zio2FinalizerProbeSpec.<local Zio2FinalizerProbeSpec>.result(Zio2FinalizerProbeSpec.scala:19)),Stack trace for thread "zio-fiber-1286136241":
+[info] 	at spoonbill.zio.Zio2FinalizerProbeSpec.<local Zio2FinalizerProbeSpec>.program(Zio2FinalizerProbeSpec.scala:14)))
+[info] Run completed in 127 milliseconds.
+[info] Total number of tests run: 1
+[info] Suites: completed 1, aborted 0
+[info] Tests: succeeded 1, failed 0, canceled 0, ignored 0, pending 0
+[info] All tests passed.
+[success] Total time: 1 s, completed Nov 17, 2026, 3:24:14 AM

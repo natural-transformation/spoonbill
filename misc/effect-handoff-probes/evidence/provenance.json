@@ -1,0 +1,28 @@
+{
+  "recordedOn": "2026-11-17",
+  "normalization": "Trailing horizontal whitespace removed from logs only; source fixtures are exact copies of the tested final versions.",
+  "logs": {
+    "spoonbill-ce2-monix-finalizer-controls.log": {
+      "rawSha256": "c35103b13103d3dda14681639bc91dbf951425f2b7748a22531c5e3135d972f1",
+      "retainedSha256": "d65dcfbee737cbc324dad2360914e0be28c44a0c443fc57be867eecaf655d368"
+    },
+    "spoonbill-ce2-monix-finalizer-probes.log": {
+      "rawSha256": "a983d800ea839fd28573c24f68197efcbedc8f85eb4346e6cbacef5d461e4201",
+      "retainedSha256": "f3f1ee86095ad489baca8be701ba6b90fa264f7051174ea4833f4a0ede833ecb"
+    },
+    "spoonbill-ce2-monix-finalizer-started-probes.log": {
+      "rawSha256": "bff294905b65865f6b783abba95b787a1f3250643b83cec24dbd1cb33c495d43",
+      "retainedSha256": "1360186e489036f421e1c1aee4ebc81fc79b1c2ecd10de69c940b4237804bada"
+    },
+    "spoonbill-zio-finalizer-probes.log": {
+      "rawSha256": "5684a2047b4d4aa67f9b7c90263a2ff6c5fb6fd053ef42c7f81e79fc98d554ae",
+      "retainedSha256": "4d890312d02e32d32e894222763a3b2167edee7e09bd11c687de343588f8db4b"
+    }
+  },
+  "fixtures": {
+    "Ce2FinalizerProbeSpec.scala": "e0d585c420e952b3a83019ea602f76e23490ed473b7bdf81a03fad7f6ce46fe6",
+    "MonixFinalizerProbeSpec.scala": "75cdc0a2e2eed5fd71f11ac960c546d5430854291dbeb18b93fcbe21d2067c37",
+    "Zio1FinalizerProbeSpec.scala": "6d4cb44fc356fd07b892cc8b6003e4cc41b7e363d2970f18b70e817403b5522a",
+    "Zio2FinalizerProbeSpec.scala": "f7cb6675338204a2b5dfa50bf5d4b9632f630178a51869ab4deee6f867b31e3b"
+  }
+}

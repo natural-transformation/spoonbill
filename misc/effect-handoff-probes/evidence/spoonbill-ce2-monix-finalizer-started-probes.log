@@ -1,0 +1,53 @@
+warning: not writing modified lock file of flake 'git+file:///private/tmp/spoonbill-rollout-main':
+• Removed input 'gitignore'
+• Removed input 'gitignore/nixpkgs'
+• Removed input 'sbtix'
+• Removed input 'sbtix/flake-parts'
+• Removed input 'sbtix/flake-parts/nixpkgs-lib'
+• Removed input 'sbtix/hercules-ci-effects'
+• Removed input 'sbtix/hercules-ci-effects/flake-parts'
+• Removed input 'sbtix/hercules-ci-effects/flake-parts/nixpkgs-lib'
+• Removed input 'sbtix/hercules-ci-effects/nixpkgs'
+• Removed input 'sbtix/nixpkgs'
+[info] welcome to sbt 1.10.7 (Azul Systems, Inc. Java 21.0.8)
+[info] loading settings for project spoonbill-rollout-main-build from plugins.sbt...
+[info] loading project definition from /private/tmp/spoonbill-rollout-main/project
+[info] loading settings for project root from build.sbt...
+[info] resolving key references (43428 settings) ...
+[info] set current project to Spoonbill Project (in build file:/private/tmp/spoonbill-rollout-main/)
+[info] Defining ce2 / Test / unmanagedSources
+[info] The new value will be used by ce2 / Test / bspBuildTargetSourcesItem, ce2 / Test / scalafmt and 1 others.
+[info] 	Run `last` for details.
+[info] Reapplying settings...
+[info] set current project to Spoonbill Project (in build file:/private/tmp/spoonbill-rollout-main/)
+[info] Defining monix / Test / unmanagedSources
+[info] The new value will be used by monix / Test / bspBuildTargetSourcesItem, monix / Test / scalafmt and 1 others.
+[info] 	Run `last` for details.
+[info] Reapplying settings...
+[info] set current project to Spoonbill Project (in build file:/private/tmp/spoonbill-rollout-main/)
+[info] compiling 1 Scala source to /private/tmp/spoonbill-rollout-main/interop/ce2/target/scala-3.3.8/test-classes ...
+[info] done compiling
+[info] Ce2FinalizerProbeSpec:
+[info] Native CE2 finalization
+[info] - should record cancellation during successful finalization
+[info]   + Before release: finalizer=Completed, cancel=None, joined=None
+[info]   + After release: finalizer=Completed, cancel=Some(Success(())), joined=None
+[info] Run completed in 125 milliseconds.
+[info] Total number of tests run: 1
+[info] Suites: completed 1, aborted 0
+[info] Tests: succeeded 1, failed 0, canceled 0, ignored 0, pending 0
+[info] All tests passed.
+[success] Total time: 2 s, completed Nov 17, 2026, 3:26:47 AM
+[info] compiling 1 Scala source to /private/tmp/spoonbill-rollout-main/interop/monix/target/scala-3.3.8/test-classes ...
+[info] done compiling
+[info] MonixFinalizerProbeSpec:
+[info] Native Monix finalization
+[info] - should record cancellation during successful finalization
+[info]   + Before release: finalizer=Completed, cancel=None, joined=None
+[info]   + After release: finalizer=Completed, cancel=Some(Success(())), joined=None
+[info] Run completed in 73 milliseconds.
+[info] Total number of tests run: 1
+[info] Suites: completed 1, aborted 0
+[info] Tests: succeeded 1, failed 0, canceled 0, ignored 0, pending 0
+[info] All tests passed.
+[success] Total time: 1 s, completed Nov 17, 2026, 3:26:48 AM
