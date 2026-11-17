@@ -17,11 +17,12 @@ class StreamSortTerminalSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "complete registered siblings when upstream cancellation supplies EOF" in {
-    val read     = Promise[Option[Int]]()
-    var canceled = 0
+    val read          = Promise[Option[Int]]()
+    val cancelStarted = Promise[Unit]()
+    var canceled      = 0
     val source = new Stream[Future, Int] {
       def pull(): Future[Option[Int]] = read.future
-      def cancel(): Future[Unit]      = { canceled += 1; read.trySuccess(None); Future.unit }
+      def cancel(): Future[Unit]      = { canceled += 1; cancelStarted.trySuccess(()); read.trySuccess(None); Future.unit }
     }
     val racks  = source.sort(3)(_ % 3)
     val first  = racks(0).pull()
@@ -30,6 +31,9 @@ class StreamSortTerminalSpec extends AnyFlatSpec with Matchers {
     await(first) shouldBe None
     await(second) shouldBe None
     await(racks(2).pull()) shouldBe None
+    // Cancellation dispatches owned cleanup without joining it; observe its
+    // entry explicitly before checking the source-side count.
+    await(cancelStarted.future)
     canceled shouldBe 1
   }
 }
