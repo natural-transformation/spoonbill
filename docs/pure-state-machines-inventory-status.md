@@ -1,8 +1,8 @@
 # Rollout inventory status
 
 Independent read-only audit of aggregate `730ef03ca2eea35f27dae1755079b179bcef7cc7`,
-its source and per-area progress records, updated through the integrated stream
-and caller sources at `349116bc`. The audit itself ran no builds or tests. “Complete” means the
+its source and per-area progress records, updated through the retained compact2
+stream source `106e3ed7`. The audit itself ran no builds or tests. “Complete” means the
 inventory implementation/disposition and local evidence exist; it does not replace
 final aggregate CI, independent review, or the final four-workload pilot gate.
 “Missing” means not yet accepted/integrated, including actively implemented work.
@@ -10,8 +10,9 @@ final aggregate CI, independent review, or the final four-workload pilot gate.
 All 56 by-area rows now have implementation or retention dispositions. The new
 stream contracts and finite fanout publishers are integrated with focused tests,
 but the first implementation failed its common-semantics cost screen. The
-integrated compact variant meets the Hub/buffer short-screen guide; sort
-throughput and the final aggregate acceptance gates remain open. This is
+retained compact2 variant meets the Hub/buffer short-screen guide; sort
+throughput is 64.4% of baseline and final aggregate acceptance remains open.
+The owner stopped further experiments after compact4's unsuccessful round. This is
 implementation coverage, not final performance acceptance.
 The [design progress](pure-state-machines-design.md#rollout-progress) links the
 per-area commands, behavioral evidence and measured acceptance records.
@@ -75,7 +76,7 @@ per-area commands, behavioral evidence and measured acceptance records.
 | Effects | AsyncTable | Complete — Waiting/Settled per-key enum after failure-publication fixes; resettable semantics retained. |
 | Effects | Resource pool | Retained — one immutable PoolData with allocation IDs and explicit disposal claim; extensive separate fixes and ownership tests; raw outer-caller adoption limits documented. |
 | Effects | Scheduler | Complete — shared result latch and ScheduledStreamMachine after separate lost-waiter/replay/cancellation fixes. |
-| Effects | Hub and Stream.sort | Implemented — lossless configured fanout, bounded FIFO racks and explicit overflow; independent read ownership and nonjoining cleanup pass Future, IO and ZIO checks. Finite publisher adoption and legacy overflow closure are integrated. Compact Hub meets the cost screen; sort still misses throughput and is under refinement. |
+| Effects | Hub and Stream.sort | Implemented — lossless configured fanout, bounded FIFO racks and explicit overflow; independent read ownership and nonjoining cleanup pass Future, IO and ZIO checks. Finite publisher adoption and legacy overflow closure are integrated. Compact2 Hub meets the cost screen; sort throughput remains unmet and further experiments are stopped. |
 | Effects | Stream.buffer | Implemented — eager bounded reader, accepted-prefix drain, atomic batch selection, owned timers and nonjoining cancellation; model/native/ordering checks pass. The compact implementation meets the short-screen throughput/allocation guide; final aggregate gates remain open. |
 | Adapters | Setup ownership | Complete — shared adapter model; standalone differs and has a documented retain disposition. |
 | Adapters | Stream subscriber | Retained — equivalent single immutable state/monitor in both adapters, 12 behavioral cases each. |

@@ -158,3 +158,20 @@ All delivery, thread-liveness and allocation controls passed. The candidate is
 **not accepted yet**: sort allocation is improved, but its CPU/dispatch cost needs
 an independently measured follow-up. V1 and this candidate's frozen sources,
 raw rows and profiles are retained by the experiment workstream.
+
+## Retained implementation after experiment stop
+
+The owner requested no further rounds after compact4 completed. The retained
+production choice is compact2: fixed lane references and first-command
+reservation under the existing monitor, preserving the original phase checks.
+Its three-cell screen reports throughput/allocation ratios of 2.71018/0.31786
+(Hub), 0.64402/0.88917 (sort), and 0.99523/0.64787 (zero-duration buffer).
+Its exact sources passed 132 effect, ten IO, four ZIO and seven caller cases.
+
+Sort still misses the throughput guide. Compact3 and compact4 did not close the
+gap and also regressed buffer throughput; neither is retained as production.
+All 90 measured rows and earlier controls remain in
+[the cost evidence](../misc/stream-operator-cost/README.md). The unmeasured
+single-callback-storage prototype is excluded. The original four-workload gate
+has not been rerun on this final aggregate. Functional implementation coverage
+does not mean that the full performance objective is complete.

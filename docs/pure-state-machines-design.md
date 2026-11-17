@@ -1,6 +1,7 @@
 # Pure state machines: design and plan
 
-Status: full rollout in final implementation and integration on 2026-11-17.
+Status: implementation present; performance acceptance incomplete. The owner
+requested stopping experiments after the current round on 2026-11-17.
 The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
 and validation. The latest extension candidate separates ownership and uses
@@ -930,7 +931,7 @@ whole phase is complete.
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
 | 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
-| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. The compact interpreter improves all three measured paths; Hub/buffer meet the short-screen guide, but sort throughput still misses. Final performance acceptance remains open |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. The retained compact2 variant meets the Hub/buffer cost screen but sort throughput is 64.4% of baseline. Further experiments stopped at the owner's request; final performance acceptance remains open |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
@@ -959,9 +960,11 @@ guard/snapshot cases. Its five-cell comparison passed with snapshot throughput
 99.7% of baseline and equal allocation; all failed designs and 100 trial rows are
 retained. These are local incremental checks, not the final aggregate gate.
 
-Remaining completion work is the stream cost evaluation, final combined
-correctness/CI validation, evidence reconciliation and a
-fresh original four-workload pilot gate against the final aggregate sources.
+Outstanding acceptance work is the sort throughput requirement and a fresh
+original four-workload pilot gate against the final aggregate sources. The owner
+requested no further experiment rounds after compact4 completed; no new round is
+scheduled. The functional implementation is present, but the full performance
+objective has not been achieved.
 The PR remains draft for the owner's final review. The following integration
 paragraphs are historical checkpoints; their then-pending items do not supersede
 the current table above.
@@ -1009,7 +1012,31 @@ match the frozen measured sources. The logs are
 `/tmp/spoonbill-stream-compact-root-check.log` and
 `/tmp/spoonbill-compact-purity.json`. Separate CPU profiles identify additional
 dispatch/registration work in sort; absence of blocking events does not make
-uncontended monitor work free. A sort-focused follow-up is being evaluated.
+uncontended monitor work free. The follow-up experiments are closed out below.
+
+### Experiment closeout at the owner's stop request
+
+The retained production variant is compact2 (`a2d884df`, integrated as
+`106e3ed7`): fixed-lane references and first-command reservation, with all
+original phase-admission checks and native ownership boundaries retained.
+Its matched screen observes Hub throughput/allocation ratios 2.71018/0.31786,
+sort 0.64402/0.88917 and buffer 0.99523/0.64787. This improves the published
+first implementation while preserving the two passing cells; sort still fails
+the throughput guide. Both integrated production files match its frozen source
+snapshots exactly. Selected-source validation passed 132 effect, ten IO, four
+ZIO and seven caller cases in `/tmp/spoonbill-stream-compact2-correctness.log`.
+
+The final completed round, compact4, passed correctness/control checks but
+observed sort throughput 0.67963 and buffer 0.90158; both miss the guide. It was
+not adopted. Every measured source variant, control and row remains in the
+[stream evidence](../misc/stream-operator-cost/README.md). The separate
+single-callback-storage prototype passed focused tests but was never measured
+and is not part of this PR. No further timing or design round follows the stop.
+
+The preceding published checkpoint `d9f383ca` passed both CI jobs (run 139).
+The selected compact2 source has the focused validation above; the closeout
+push starts normal CI. The original pilot's previously passed gate remains
+historical evidence, not a final aggregate performance pass.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
