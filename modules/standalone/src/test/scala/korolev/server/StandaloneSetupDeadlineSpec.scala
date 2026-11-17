@@ -109,6 +109,51 @@ final class StandaloneSetupDeadlineSpec extends AnyFlatSpec with Matchers {
     } finally Await.result(deadline.transportEnded(), timeout)
   }
 
+  it should "keep repeated attachment successful and leave an attached response owned after rejection" in {
+    val probe = new OwnershipProbe
+    try {
+      Await.result(probe.deadline.acquire(probe.release), timeout) shouldBe true
+      Await.result(probe.deadline.attach(), timeout) shouldBe true
+      Await.result(probe.deadline.attach(), timeout) shouldBe true
+      Await.result(probe.deadline.reject(), timeout)
+      probe.responses.get() shouldBe 0
+      probe.inputs.get() shouldBe 0
+      Await.result(probe.deadline.transportEnded(), timeout)
+      probe.responses.get() shouldBe 1
+      probe.inputs.get() shouldBe 1
+      probe.sockets.get() shouldBe 1
+    } finally Await.result(probe.deadline.transportEnded(), timeout)
+  }
+
+  it should "dispose a second result after attachment without replacing the attached owner" in {
+    val probe = new OwnershipProbe
+    val incoming = new AtomicInteger()
+    try {
+      Await.result(probe.deadline.acquire(probe.release), timeout) shouldBe true
+      Await.result(probe.deadline.attach(), timeout) shouldBe true
+      Await.result(probe.deadline.acquire(() => effect.delay { incoming.incrementAndGet(); () }), timeout) shouldBe false
+      incoming.get() shouldBe 1
+      probe.responses.get() shouldBe 0
+      Await.result(probe.deadline.transportEnded(), timeout)
+      incoming.get() shouldBe 1
+      probe.responses.get() shouldBe 1
+    } finally Await.result(probe.deadline.transportEnded(), timeout)
+  }
+
+  it should "release a prepared rejection without closing transport before the HTTP response" in {
+    val probe = new OwnershipProbe
+    try {
+      Await.result(probe.deadline.acquire(probe.release), timeout) shouldBe true
+      Await.result(probe.deadline.reject(), timeout)
+      probe.responses.get() shouldBe 1
+      probe.inputs.get() shouldBe 1
+      probe.sockets.get() shouldBe 0
+      Await.result(probe.deadline.transportEnded(), timeout)
+      probe.responses.get() shouldBe 1
+      probe.sockets.get() shouldBe 0
+    } finally Await.result(probe.deadline.transportEnded(), timeout)
+  }
+
   private def withPendingSetup(f: (Socket, Promise[WebSocketResponse[Future]], Future[Option[Bytes]]) => Unit): Unit = {
     val result = Promise[WebSocketResponse[Future]]()
     val reading = Promise[Future[Option[Bytes]]]()

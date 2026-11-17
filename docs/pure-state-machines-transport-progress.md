@@ -251,3 +251,22 @@ without retry. The input, handoff, and cleanup effect order otherwise stays inta
 `standalone/testOnly *SetupInputSpec *StandaloneLifecycleSpec *StandaloneSetupDeadlineSpec`
 passed all 26 tests after correction, including a terminal-predicate failure case.
 The phase extraction remains a separate unit following this fix.
+
+## Standalone setup deadline: retain its distinct explicit protocol
+
+`SetupDeadline` already publishes Pending(release?), Attached(release),
+Expired(release?) and Finished as one immutable atomic value. Its timer is a
+scheduler handle; the late observer detacher is an idempotent external handle.
+The existing late-result, expiry, disconnect and observer tests found no
+confirmed defect in this ownership protocol.
+
+It is not another copy of the shared adapter setup machine: repeated attachment
+succeeds, attachment retains response cleanup until physical termination,
+rejection after attachment is inert, and timer expiry closes only the physical
+transport until its reserved notification runs application cleanup. Three added
+laws pin repeated attachment/rejection, disposal of a second post-attach result,
+and release of an HTTP rejection without prematurely closing transport.
+
+Disposition: retain under rule 7, with its single named state and pinned effect
+boundaries. `standalone/testOnly *StandaloneSetupDeadlineSpec` passed all 12 cases
+on unchanged production code. No timer, callback, or cleanup ordering changed.
