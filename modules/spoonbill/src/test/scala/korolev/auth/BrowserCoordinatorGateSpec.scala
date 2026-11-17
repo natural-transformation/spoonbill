@@ -174,6 +174,19 @@ class BrowserCoordinatorGateSpec extends AnyFlatSpec with Matchers {
     await(gate.close(Future.unit))
   }
 
+  it should "not classify a read-cap wait as a key-conflict wait" in {
+    val gate = new BrowserCoordinatorGate[Future](capacity = 4, readCapacity = 1)
+    val held = Promise[Unit]()
+    val first = gate.read("same-key")(held.future)
+    val next = gate.read("same-key")(Future.unit)
+    next.isCompleted shouldBe false
+    held.success(())
+    await(first)
+    await(next)
+    gate.stats.bindingWaits shouldBe 0L
+    await(gate.close(Future.unit))
+  }
+
   it should "let close wait for running reads and reject reads requested after it" in {
     val gate    = new BrowserCoordinatorGate[Future](capacity = 4, readCapacity = 2)
     val held    = Promise[Unit]()
