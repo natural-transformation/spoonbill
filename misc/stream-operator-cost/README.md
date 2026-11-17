@@ -274,3 +274,28 @@ delivery. The complete candidate is not accepted; neither the substantial gain
 from the original rewrite nor the gain over the preceding compact screen rounds
 away this remaining miss. All 18 rows passed count/order/thread/teardown and
 stderr checks; every prior variant and diagnostic remains intact.
+
+## Volatile-control compact candidate
+
+Candidate 3 is base `a2d884df` plus `variants/compact3-routing.patch`: a single
+volatile Control reference replaces two read-only phase-gate monitor acquisitions
+at the same admission points. Data and mutations remain locked. The owning task's
+correctness checks and an independent visibility review passed before this exact
+source was frozen. The fixture, original baseline and smoke/control checks are
+unchanged.
+
+The fresh 18-row screen in `evidence/compact3-v2` observed:
+
+| Cell | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: |
+| Hub | 2.6877643025695033 | 0.31783984838246204 |
+| Sort | **0.6931574086397223** | 0.8515081788338319 |
+| Zero-duration buffer | **0.9386200679437765** | 0.6706535436103911 |
+
+Both sort and buffer miss the 0.95 throughput guide. Sort median is 22,692,444.0665 →
+15,729,435.7248 deliveries/s, candidate range 14,768,902.1566–15,752,048.9017.
+Buffer median is 10,348,005.2711 → 9,712,845.4106, candidate range 9,685,356.8327–
+9,784,994.2389. Baseline sort allocation includes both 359.94 and 375.86 B/delivery
+trials; these modes and all rows remain visible in the full summary. No complete
+candidate acceptance is claimed, and this screen alone does not establish that
+the volatile change caused the buffer miss.

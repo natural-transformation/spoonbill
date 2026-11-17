@@ -1,0 +1,157 @@
+{
+  "protocol": "stream-compat-v2",
+  "scope": "short compatibility-path cost screen; not whole-semantics equivalence or acceptance",
+  "trials": 18,
+  "pairs": 3,
+  "statistics": "independent JVM medians/ranges; no confidence interval",
+  "allocation": "live main-thread allocated bytes; timed source/delivery thread assertions and separate all-continuation smoke",
+  "results": [
+    {
+      "scenario": "hub",
+      "before": {
+        "deliveriesPerSecond": {
+          "median": 8189104.668048529,
+          "min": 7897047.693468573,
+          "max": 8314080.127973828
+        },
+        "bytesPerDelivery": {
+          "median": 768.0199578740339,
+          "min": 752.0166253438682,
+          "max": 768.0332573221926
+        },
+        "roundsPerSecond": {
+          "median": 4094552.3340242645,
+          "min": 3948523.8467342863,
+          "max": 4157040.063986914
+        },
+        "bytesPerRound": {
+          "median": 1536.0399157480679,
+          "min": 1504.0332506877364,
+          "max": 1536.0665146443853
+        }
+      },
+      "after": {
+        "deliveriesPerSecond": {
+          "median": 22010383.196786117,
+          "min": 21963085.671589185,
+          "max": 22256601.518335972
+        },
+        "bytesPerDelivery": {
+          "median": 244.10734696538782,
+          "min": 244.10338290056362,
+          "max": 244.11251959065348
+        },
+        "roundsPerSecond": {
+          "median": 11005191.598393058,
+          "min": 10981542.835794592,
+          "max": 11128300.759167986
+        },
+        "bytesPerRound": {
+          "median": 488.21469393077564,
+          "min": 488.20676580112723,
+          "max": 488.22503918130695
+        }
+      },
+      "throughputRatio": 2.6877643025695033,
+      "allocationRatio": 0.31783984838246204
+    },
+    {
+      "scenario": "sort",
+      "before": {
+        "deliveriesPerSecond": {
+          "median": 22692444.06651482,
+          "min": 22666008.586335823,
+          "max": 23533155.065985847
+        },
+        "bytesPerDelivery": {
+          "median": 375.8614709042292,
+          "min": 359.9422026360734,
+          "max": 375.8621511619708
+        },
+        "roundsPerSecond": {
+          "median": 11346222.03325741,
+          "min": 11333004.293167911,
+          "max": 11766577.532992924
+        },
+        "bytesPerRound": {
+          "median": 751.7229418084584,
+          "min": 719.8844052721468,
+          "max": 751.7243023239416
+        }
+      },
+      "after": {
+        "deliveriesPerSecond": {
+          "median": 15729435.724847255,
+          "min": 14768902.156557208,
+          "max": 15752048.901661128
+        },
+        "bytesPerDelivery": {
+          "median": 320.0491165834655,
+          "min": 320.0328754377839,
+          "max": 320.06993442146035
+        },
+        "roundsPerSecond": {
+          "median": 7864717.862423628,
+          "min": 7384451.078278604,
+          "max": 7876024.450830564
+        },
+        "bytesPerRound": {
+          "median": 640.098233166931,
+          "min": 640.0657508755678,
+          "max": 640.1398688429207
+        }
+      },
+      "throughputRatio": 0.6931574086397223,
+      "allocationRatio": 0.8515081788338319
+    },
+    {
+      "scenario": "buffer",
+      "before": {
+        "deliveriesPerSecond": {
+          "median": 10348005.271102386,
+          "min": 10066555.595881926,
+          "max": 10507383.462750938
+        },
+        "bytesPerDelivery": {
+          "median": 704.1153669177952,
+          "min": 704.1086177545643,
+          "max": 704.1191698187333
+        },
+        "roundsPerSecond": {
+          "median": 10348005.271102386,
+          "min": 10066555.595881926,
+          "max": 10507383.462750938
+        },
+        "bytesPerRound": {
+          "median": 704.1153669177952,
+          "min": 704.1086177545643,
+          "max": 704.1191698187333
+        }
+      },
+      "after": {
+        "deliveriesPerSecond": {
+          "median": 9712845.410644678,
+          "min": 9685356.832678827,
+          "max": 9784994.238940021
+        },
+        "bytesPerDelivery": {
+          "median": 472.21746593395005,
+          "min": 472.125869900779,
+          "max": 472.2257671772371
+        },
+        "roundsPerSecond": {
+          "median": 9712845.410644678,
+          "min": 9685356.832678827,
+          "max": 9784994.238940021
+        },
+        "bytesPerRound": {
+          "median": 472.21746593395005,
+          "min": 472.125869900779,
+          "max": 472.2257671772371
+        }
+      },
+      "throughputRatio": 0.9386200679437765,
+      "allocationRatio": 0.6706535436103911
+    }
+  ]
+}

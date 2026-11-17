@@ -1,0 +1,27 @@
+diff --git a/modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala b/modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala
+index df083724..de723b7c 100644
+--- a/modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala
++++ b/modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala
+@@ -46 +46 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
+-  private var control                                              = idleControl
++  @volatile private var control                                    = idleControl
+@@ -59,2 +59,4 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
+-  private def canReadNow: Boolean =
+-    readAllowed(mode, control.phase, control.reader, storage.lanes.nonEmpty, storage.demanding > 0, storage.full == 0)
++  private def canReadNow: Boolean = {
++    val current = control
++    readAllowed(mode, current.phase, current.reader, storage.lanes.nonEmpty, storage.demanding > 0, storage.full == 0)
++  }
+@@ -147 +149 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
+-      if (!monitor.synchronized(control.phase == Phase.Open)) change { control = settleControl(control); false }
++      if (control.phase != Phase.Open) change { control = settleControl(control); false }
+@@ -153 +155,2 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
+-          if (control.phase != Phase.Open) { control = settleControl(control); false }
++          val current = control
++          if (current.phase != Phase.Open) { control = settleControl(current); false }
+@@ -162 +165 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
+-            control = settleControl(control)
++            control = settleControl(current)
+@@ -191 +194 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
+-    if (monitor.synchronized(control.phase == Phase.Open)) {
++    if (control.phase == Phase.Open) {
