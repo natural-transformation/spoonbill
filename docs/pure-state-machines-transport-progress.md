@@ -49,6 +49,12 @@ Validation: the complete adapter suites passed 48 Pekko and 40 Akka tests after
 the cancellation fix. The publisher suites then passed nine cases each,
 including added late-success and late-failure checks after cancellation.
 
+A follow-up regression pinned null input before claiming the single-subscriber
+slot. The first atomic-claim fix had allowed a rejected null attempt to consume
+that slot. Both adapters now validate the subscriber first. The new case failed
+before correction; the corrected publisher suites pass ten tests each. This
+input-validation fix is separate from the lifecycle extraction.
+
 ## Subscriber: retain the existing explicit state
 
 The candidates are

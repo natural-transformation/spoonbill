@@ -160,4 +160,12 @@ class SpoonbillStreamPublisherSpec extends AnyFlatSpec with Matchers {
       subscriber.completed shouldBe 0
     }
   }
+
+  it should "reject null without consuming its single subscriber slot" in {
+    val publisher = new SpoonbillStreamPublisher(Stream.empty[Future, Int], fanout = false)
+    intercept[NullPointerException](publisher.subscribe(null))
+    val subscriber = new Probe
+    publisher.subscribe(subscriber)
+    subscriber.subscription should not be empty
+  }
 }

@@ -17,6 +17,7 @@
 package spoonbill.akka.util
 
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.Objects
 import spoonbill.akka.util.SpoonbillStreamPublisher.MultipleSubscribersProhibitedException
 import spoonbill.effect.{Effect, Hub, Reporter, Stream}
 import spoonbill.effect.syntax._
@@ -72,6 +73,7 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
   }
 
   def subscribe(subscriber: Subscriber[_ >: T]): Unit = {
+    Objects.requireNonNull(subscriber, "subscriber")
     if (hub != null) {
       hub.newStream().runAsyncSuccess { newStream =>
         val subscription = new StreamSubscription(newStream, subscriber)
