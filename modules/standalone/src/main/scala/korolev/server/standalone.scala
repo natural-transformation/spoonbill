@@ -172,7 +172,7 @@ object standalone {
   private def isPeerClose(frame: WebSocketProtocol.Frame.Merged[?]): Boolean =
     frame == WebSocketProtocol.Frame.ConnectionClose
 
-  private final class WebSocketOutputCell {
+  private[server] final class WebSocketOutputCell {
     import WebSocketOutputMachine.*
     private val state = new AtomicReference(initial)
     def current: State = state.get()
@@ -204,7 +204,7 @@ object standalone {
     * after failed pulls, encoding, or writes. Finalization runs once. When
     * aborted, end without that frame so the peer observes TCP EOF.
     */
-  private def finishAfter[F[_]: Effect, A, B](
+  private[server] def finishAfter[F[_]: Effect, A, B](
     frames: Stream[F, A],
     convert: A => B,
     close: () => F[Unit],

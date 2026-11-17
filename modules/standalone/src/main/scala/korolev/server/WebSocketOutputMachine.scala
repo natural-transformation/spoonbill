@@ -16,7 +16,8 @@ private[server] object WebSocketOutputMachine {
     state.copy(direction = if (abort) Direction.Aborted else graceful(state).direction, cleanupClaimed = true)
 
   def attached(state: State, accepted: Boolean): State =
-    state.copy(output = if (accepted) Output.Pulling else Output.Ended)
+    if (state.output == Output.Ended) state
+    else state.copy(output = if (accepted && state.direction != Direction.Aborted) Output.Pulling else Output.Ended)
 
   def closeEmitted(state: State): State = state.copy(output = Output.CloseEmitted)
   def ended(state: State): State = state.copy(output = Output.Ended)

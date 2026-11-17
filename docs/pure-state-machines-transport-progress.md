@@ -390,3 +390,25 @@ command plus `*WebSocketOutputMachineSpec` passed 21 after extraction. Direct la
 pin Close emission versus cleanup and abort dominance. The zio transport baseline,
 `zioHttp/testOnly *BoundedTransportSpec`, independently passed 9 tests; its scanner
 and timer extraction is still pending.
+
+### Standalone late attachment: separate confirmed defect
+
+Review found that a successful `attach()` result could arrive after abort or
+output cancellation. The old integer phase and the initial named-state extraction
+both changed output back to pulling, then invoked an application stream that had
+already been canceled. If that new pull never completed, the pending adapter read
+also never completed despite transport shutdown.
+
+`StandaloneOutputAttachmentSpec` exercises the actual `finishAfter` interpreter
+with a controlled attachment effect and a never-completing application pull. Both
+abort and cancellation variants failed before the fix (one forbidden application
+pull instead of zero). Attachment now preserves ended output and maps an aborted
+direction to ended output. It returns EOF without constructing another application
+pull. This is separate from the representation change; normal Close-frame and
+physical-close-before-cleanup ordering is unchanged.
+
+`standalone/testOnly *StandaloneOutputAttachmentSpec *StandaloneLifecycleSpec
+*StandaloneWebSocketLimitsSpec *StandaloneDeadlineIsolationSpec
+*StandaloneMessageDeadlineSpec *WebSocketOutputMachineSpec` passed 23 cases after
+the fix. The new regression was formatted through explicit-file `scalafmtOnly`;
+`git diff --check` passed.
