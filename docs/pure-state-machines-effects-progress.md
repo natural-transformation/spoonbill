@@ -166,6 +166,25 @@ on its first close. Idle closure now drops its entry without a return marker;
 closed resources still borrowed retain their marker until return. All 82 effect
 and 54 HTTP-client tests pass after this separate fix.
 
+The acquisition-cancellation audit found a further confirmed managed-use leak:
+with the actual CE3 3.3.12 adapter, cancellation completed while a use was waiting
+for capacity, but its callback stayed queued and consumed the next loan. A late
+factory result was lost in the same way. A private per-use ownership scope now
+records an assigned loan before publishing the native callback, encloses acquisition
+and user work in the finalizer, removes canceled waiters, and returns late loans.
+It does not mask capacity waiting, fork user work, or add a public API. Four IO
+regressions pass, including a loan held immediately before native publication and
+reused effects with caller IOLocal state. The waiting/factory probes failed the
+previous implementation; the exact publication probe also failed the original
+pre-scope pool. Full effect82 and HTTP-client54 tests pass with this fix.
+
+Final pool retention remains pending the caller handoff audit: public `borrow`
+is still the explicit loan primitive, and arbitrary caller continuations have no
+pool-owned adoption scope. The transport audit reproduced a canceled queued
+HttpClient acquisition separately. Successful response headers transfer a loan
+to the streaming body, so that caller requires a distinct adoption protocol;
+managed `use` cannot replace it by returning the loan at header completion.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate

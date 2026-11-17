@@ -73,10 +73,70 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
     }
   }
 
-  def use[R](f: T => F[R]): F[R] =
-    borrow().flatMap { borrowed =>
-      Effect[F].guarantee(Effect[F].delayAsync(f(borrowed.value)))(borrowed.give())
+  private enum UseState {
+    case Waiting(callback: Option[Promise])
+    case Acquired(value: Borrow[F, T])
+    case Released
+  }
+
+  /** Own the loan before publishing it to the possibly canceled caller. */
+  private final class UseRequest {
+    private val ownership = new AtomicReference[UseState](UseState.Waiting(None))
+    val deliver: Promise  = outcome => complete(outcome)
+
+    @tailrec def register(callback: Promise): Boolean = {
+      val before = ownership.get()
+      before match {
+        case UseState.Waiting(None) =>
+          if (ownership.compareAndSet(before, UseState.Waiting(Some(callback)))) true else register(callback)
+        case _ => false
+      }
     }
+
+    def released: Boolean = ownership.get() == UseState.Released
+
+    @tailrec private def complete(outcome: Either[Throwable, Borrow[F, T]]): Unit = {
+      val before = ownership.get()
+      before match {
+        case UseState.Waiting(Some(callback)) =>
+          val next = outcome.fold(_ => UseState.Released, UseState.Acquired.apply)
+          if (ownership.compareAndSet(before, next)) callback(outcome) else complete(outcome)
+        case UseState.Released =>
+          // Factory completion can arrive after cancellation already returned.
+          outcome.foreach(value => Effect[F].uncancelable(value.give()).runAsyncForget)
+        case _ => ()
+      }
+    }
+
+    def release(): F[Unit] = Effect[F].delayAsync {
+      ownership.getAndSet(UseState.Released) match {
+        case UseState.Acquired(value) => value.give()
+        case UseState.Waiting(_)      => forgetWaiter(deliver); Effect[F].unit
+        case UseState.Released        => Effect[F].unit
+      }
+    }
+  }
+
+  @tailrec private def forgetWaiter(callback: Promise): Unit = {
+    val before = pool.get()
+    if (before.cbs.exists(_ eq callback)) {
+      val after = before.copy(cbs = before.cbs.filterNot(_ eq callback))
+      if (!pool.compareAndSet(before, after)) forgetWaiter(callback)
+    }
+  }
+
+  def use[R](f: T => F[R]): F[R] = Effect[F].delayAsync {
+    val request = new UseRequest
+    val acquire = Effect[F].promise[Borrow[F, T]] { callback =>
+      if (request.register(callback)) {
+        borrowUnsafe(request.deliver)
+        // Cancellation can race the registration's admission CAS.
+        if (request.released) forgetWaiter(request.deliver)
+      }
+    }
+    // User work stays in the caller's effect, including its fiber-local context.
+    Effect[F].guarantee(acquire.flatMap(value => Effect[F].delayAsync(f(value.value))))(request.release())
+  }
 
   /**
    * Borrow item from the pool.
@@ -85,7 +145,9 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
    *      borrowed items would given back
    * @return
    */
-  def borrow(): F[Borrow[F, T]] = {
+  def borrow(): F[Borrow[F, T]] = Effect[F].promise(borrowUnsafe)
+
+  private def borrowUnsafe(cb: Promise): Unit = {
     @tailrec def onCloseLoop(value: T, id: BigInt): Unit = {
       val ref = pool.get()
       // Check value not in closed list
@@ -158,37 +220,35 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
     def startCreation(callback: Promise): Unit =
       ExecutionContext.parasitic.execute(() => createNew().runAsync(callback))
 
-    Effect[F].promise { cb =>
-      @tailrec def loop(): Unit = pool.get() match {
-        case ref @ PoolData(_, x :: xs, _, _, _, _, _) =>
-          // Return item from pool
-          if (pool.compareAndSet(ref, ref.copy(items = xs))) {
-            //reporter.debug("%s - Return item from pool", name)
-            cb(Right(new BorrowImpl(x.value, x.id, x.retire)))
-          } else {
-            loop()
-          }
-        case ref if ref.total >= maxCount =>
-          // Save callback
-          val newState = ref.copy(cbs = cb :: ref.cbs)
-          if (pool.compareAndSet(ref, newState)) {
-            //reporter.debug("%s - maxCount excited. save callback", name)
-          } else {
-            loop()
-          }
-        case ref if ref.items.isEmpty =>
-          val newState = ref.copy(total = ref.total + 1)
-          if (pool.compareAndSet(ref, newState)) {
-            //reporter.debug("%s - Pool is empty. Try to create new item, increment total", name)
-            startCreation(cb)
-          } else {
-            loop()
-          }
-        case _ =>
+    @tailrec def loop(): Unit = pool.get() match {
+      case ref @ PoolData(_, x :: xs, _, _, _, _, _) =>
+        // Return item from pool
+        if (pool.compareAndSet(ref, ref.copy(items = xs))) {
+          //reporter.debug("%s - Return item from pool", name)
+          cb(Right(new BorrowImpl(x.value, x.id, x.retire)))
+        } else {
           loop()
-      }
-      loop()
+        }
+      case ref if ref.total >= maxCount =>
+        // Save callback
+        val newState = ref.copy(cbs = cb :: ref.cbs)
+        if (pool.compareAndSet(ref, newState)) {
+          //reporter.debug("%s - maxCount excited. save callback", name)
+        } else {
+          loop()
+        }
+      case ref if ref.items.isEmpty =>
+        val newState = ref.copy(total = ref.total + 1)
+        if (pool.compareAndSet(ref, newState)) {
+          //reporter.debug("%s - Pool is empty. Try to create new item, increment total", name)
+          startCreation(cb)
+        } else {
+          loop()
+        }
+      case _ =>
+        loop()
     }
+    loop()
   }
 
   def onDispose(): F[Unit] = Effect[F].promise[Unit] { cb =>
