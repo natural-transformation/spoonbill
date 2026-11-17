@@ -261,3 +261,22 @@ fragmented sampled p99 is 110.677% of baseline (throughput 96.93%, allocation
 source change avoids constructing/copying a framing builder when a lone CR or LF
 can only inspect/retire an already immutable prefix; ordinary metadata keeps the
 stable builder that the profile motivated.
+
+The [eighth chunk comparison](evidence/chunked-v8/) passes every predeclared
+workload under the same stratified protocol as v7:
+
+| Workload | Throughput / baseline | Allocation / baseline | Sampled p99 / baseline |
+| --- | ---: | ---: | ---: |
+| small | 151.19% | 92.00% | 66.72% |
+| large | 99.77% | 98.56% | 97.02% |
+| fragmented | 99.73% | 101.02% | 106.92% |
+| trailers | 112.46% | 86.04% | 86.53% |
+
+All 192 chunk rows across all eight designs remain available. Versions 1–6 use
+the original fixed-offset sampler; versions 7–8 use the predeclared matched
+stratified sampler. Compare each candidate only with its own matching baseline;
+do not compare absolute rates or tails across sampler protocols. The accepted
+result has no confidence interval and is a synthetic public-decoder/Future-path
+cost guide, not a universal latency guarantee. All three v8 trials, including
+the spread in fragmented p99, are retained. Selected production source bytes are
+verified against the frozen v8 snapshots before the implementation commit.
