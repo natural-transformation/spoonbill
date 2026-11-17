@@ -17,12 +17,24 @@ const forbidden = [
   ['effect type', /\b(?:Effect|IO|ZIO|UIO|URIO|RIO|Task)\b/],
 ];
 
-export function violations(source) {
+const javascriptForbidden = [
+  ['mutable binding', /\b(?:let|var)\b/],
+  ['browser or process environment', /\b(?:window|document|navigator|location|globalThis|process|console)\s*[.[]/],
+  ['ambient clock or entropy', /\b(?:Date|performance)\s*\.\s*(?:now|timeOrigin)\b|\bMath\s*\.\s*random\b|\bcrypto\b/],
+  ['transport or timer effect', /\b(?:fetch|WebSocket|XMLHttpRequest|setTimeout|clearTimeout|setInterval|clearInterval|queueMicrotask)\b/],
+  ['asynchronous effect', /\b(?:async|await|Promise)\b/],
+  ['mutable collection', /\bnew\s+(?:Map|Set|WeakMap|WeakSet)\b|\.\s*(?:push|pop|shift|unshift|splice|sort|reverse|set|add|delete|clear)\s*\(/],
+  ['dynamic code execution', /\b(?:eval|Function)\s*\(/],
+  ['input mutation', /\b(?:state|event)\s*(?:\.\s*\w+|\[[^\]]+\])\s*(?:[+*/%-]?=(?!=)|\+\+|--)/],
+];
+
+export function violations(source, language = 'scala') {
   // Package declarations name a namespace, not a dependency. Keep imports,
   // qualified uses and strings (including reflection names) visible.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, match => match.replace(/[^\n]/g, ' '))
     .replace(/\/\/[^\n]*/g, '');
-  return code.split('\n').flatMap((line, index) => /^\s*package\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*;?\s*$/.test(line) ? [] : forbidden
+  const rules = language === 'javascript' ? [...forbidden, ...javascriptForbidden] : forbidden;
+  return code.split('\n').flatMap((line, index) => /^\s*package\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*;?\s*$/.test(line) ? [] : rules
     .filter(([, pattern]) => pattern.test(line)).map(([rule]) => ({line: index + 1, rule})));
 }
 
@@ -45,7 +57,7 @@ export function checkCore(root) {
   return {files, failures};
 }
 
-/** Machines stay beside their interpreters, including in adapter modules. */
+/** Machines stay beside their interpreters, including adapters and browser modules. */
 export function checkMachines(root) {
   const failures = [];
   let files = 0;
@@ -56,9 +68,10 @@ export function checkMachines(root) {
       if (entry.name === 'target' || entry.name.startsWith('.')) continue;
       if (entry.isSymbolicLink()) failures.push({file: relative(root, path), rule: 'symlink bypasses source boundary'});
       else if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && entry.name.endsWith('Machine.scala') && /[/\\]src[/\\]main[/\\]/.test(path)) {
+      else if (entry.isFile() && (entry.name.endsWith('Machine.scala') || /(?:Machine|[-.]machine)\.(?:js|mjs)$/.test(entry.name)) && /[/\\]src[/\\]main[/\\]/.test(path)) {
         files++;
-        failures.push(...violations(readFileSync(path, 'utf8')).map(value => ({file: relative(root, path), ...value})));
+        const language = entry.name.endsWith('.scala') ? 'scala' : 'javascript';
+        failures.push(...violations(readFileSync(path, 'utf8'), language).map(value => ({file: relative(root, path), ...value})));
       }
     }
   }

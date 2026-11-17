@@ -47,3 +47,29 @@ test('comments do not trigger the guard and source line numbers survive block co
     {line: 4, rule: 'ambient clock or entropy'},
   ]);
 });
+
+test('browser machines accept immutable decisions and reject effects or input mutation', () => {
+  assert.deepEqual(violations('export const next = (state, event) => ({...state, count: state.count + event.amount});', 'javascript'), []);
+  for (const source of [
+    'const now = Date.now();', 'window.fetch("/view")', 'document.querySelector("main")',
+    'const callback = new Promise(resolve => resolve());', 'setTimeout(callback, 10)',
+    'let phase = "open";', 'state.count += 1;', 'event.value = 2;', 'state.items.push(item);',
+    'const pending = new Map();', 'Math.random()', 'globalThis["fetch"]("/view")',
+  ]) assert.ok(violations(source, 'javascript').length > 0, source);
+});
+
+test('browser machine discovery includes JavaScript sources without checking fixtures or bundles', () => {
+  const root = mkdtempSync(join(tmpdir(), 'spoonbill-js-machines-'));
+  try {
+    for (const path of ['modules/runtime/src/main/es6/connection-machine.js', 'modules/runtime/src/main/es6/BridgeMachine.mjs',
+      'modules/runtime/src/test/es6/test-machine.js', 'modules/runtime/target/src/main/es6/bundle-machine.js']) {
+      const file = join(root, path);
+      mkdirSync(join(file, '..'), {recursive: true});
+      writeFileSync(file, 'const now = Date.now();');
+    }
+    const result = checkMachines(root);
+    assert.equal(result.files, 2);
+    assert.equal(result.failures.length, 2);
+    assert.ok(result.failures.every(failure => failure.rule === 'ambient clock or entropy'));
+  } finally { rmSync(root, {recursive: true, force: true}); }
+});
