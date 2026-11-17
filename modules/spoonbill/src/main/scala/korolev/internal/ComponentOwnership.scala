@@ -118,7 +118,7 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
     private[ComponentOwnership] val done = new Signal[Unit]
     private var lifecycle                = Model.OwnerState()
     private var predecessorError         = Option.empty[Throwable]
-    private[ComponentOwnership] def baseline: Baseline = Baseline(incarnation, lifecycle.baseline.revision)
+    private[ComponentOwnership] def baseline: Baseline = Baseline(incarnation, Model.baselineRevision(lifecycle))
 
     /**
      * Validate every traversal, including snapshots suspended across handoff.
@@ -137,9 +137,7 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
      * refreshes of this same owner do not invalidate its established snapshots.
      */
     def establishBaseline(): Unit = lock.synchronized {
-      val (next, overflow) = Model.establishBaseline(lifecycle)
-      lifecycle = next
-      if (overflow) throw new ArithmeticException("long overflow")
+      lifecycle = Model.establishBaseline(lifecycle)
     }
 
     def isOpen: Boolean       = lock.synchronized(Model.canAdmit(lifecycle, closed))
@@ -170,8 +168,10 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
      * Reserve through write AND notification; no application code under lock.
      */
     def admit(): Option[Lease] = lock.synchronized {
-      if (!Model.canAdmit(lifecycle, closed)) None
-      else { lifecycle = Model.admitted(lifecycle); Some(new Lease) }
+      val before = lifecycle
+      val next = Model.reserve(before, closed)
+      if (!Model.changed(before, next)) None
+      else { lifecycle = next; Some(new Lease) }
     }
 
     final class Lease private[Owner] () {
@@ -204,8 +204,10 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
 
     private def cleanIfDrained(): Unit = {
       val start = lock.synchronized {
-        val (next, start) = Model.beginCleanup(lifecycle)
-        lifecycle = next
+        val before = lifecycle
+        val next = Model.claimCleanup(before)
+        val start = Model.changed(before, next)
+        if (start) lifecycle = next
         start
       }
       if (start) {

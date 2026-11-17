@@ -1,0 +1,52 @@
+{
+  "protocol": "ownership-cost-v2",
+  "scope": "targeted screen, not full acceptance",
+  "repeats": 3,
+  "trials": 6,
+  "allocationStatus": "verified while all producers were alive; self-counter cross-check passed",
+  "statistics": "median/range of independent JVM trials; no confidence interval",
+  "nearZeroAllocation": "Ratios omitted when baseline allocation is below 0.001 bytes/operation; use the absolute delta.",
+  "results": [
+    {
+      "scenario": "guarded",
+      "writers": 4,
+      "before": {
+        "operationsPerSecond": {
+          "median": 6556187.5746853845,
+          "min": 6314249.0004937695,
+          "max": 6567541.0789927365
+        },
+        "bytesPerOperation": {
+          "median": 1098.5484999837308,
+          "min": 1098.4739606208234,
+          "max": 1098.9568277788605
+        },
+        "producerBytesPerOperation": {
+          "median": 1098.5484706992484,
+          "min": 1098.4739268363548,
+          "max": 1098.9567969206782
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 6413300.244616742,
+          "min": 6019649.377769704,
+          "max": 6792595.181033819
+        },
+        "bytesPerOperation": {
+          "median": 1095.5501083474655,
+          "min": 1062.1120240027676,
+          "max": 1097.7351779006308
+        },
+        "producerBytesPerOperation": {
+          "median": 1095.55007537215,
+          "min": 1062.1119924026716,
+          "max": 1097.7351460060954
+        }
+      },
+      "throughputRatio": 0.9782057287957477,
+      "allocationRatio": 0.9972705878381248,
+      "allocationDeltaBytes": -2.9983916362652963
+    }
+  ]
+}

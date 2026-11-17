@@ -175,3 +175,48 @@ interpreter tests cover stalled writes and notifications, failed deletion,
 retired predecessor chains, snapshot invalidation and concurrent replacement.
 The purity guard passes with ten machines; scoped new-model formatting and diff
 whitespace checks pass. These are correctness checks, not a new performance claim.
+
+## Compact ownership representation and measured gate
+
+The initial per-edge case-class owner states were materially costly. Owner state
+now uses one opaque Long: the full signed Int admission count, explicit lifecycle
+phase, and reachable baseline state. Baseline revisions are provably 0, 1 or 2:
+initial zero, establishment increments once, and successful reused-predecessor
+completion resets to one without clearing establishment. The global registry
+incarnation still uses the complete Long range and rejects exhaustion. Hot phase,
+baseline and snapshot permission getters do not reconstruct enum wrappers.
+
+Admission/release/cleanup remain pure transitions; synchronization and one-use
+lease ownership remain in the interpreter. Generated histories consume only
+owned leases, and boundary laws cover signed count wrapping at Int.MinValue,
+Int.MaxValue, minus one and zero. This preserves the original counter arithmetic;
+unowned duplicate release is rejected by the interpreter's one-use lease guard.
+
+The shared drain model is compact too. Its unbounded hot admission combines the
+closed check and increment in one pure transition. The final focused checks
+passed 3 effect, 4 HTTP, 130 runtime and 96 real PostgreSQL tests (233 total):
+
+```
+effect/testOnly *DrainGateMachineSpec
+http/testOnly *SocketCloseDispatcherSpec
+spoonbill/testOnly *ComponentOwnership*Spec *ViewSnapshotSessionSpec *GuardsSpec *InMemoryBrowserPersistenceSpec *Timer*Spec
+securityJdbc/testOnly *JdbcBrowserPersistenceSpec
+```
+
+Commands ran through the repository Nix flake and the standard sbt flags above;
+the JDBC selection used `scripts/with-test-postgres.sh`. The runtime selection
+also covered the separately pending timer extraction. An earlier owner/session/
+extension selection passed 197 tests. The purity check passed (13 model files,
+zero violations). These scoped changes leave timer and coordinator refactors
+uncommitted until their own measurement decisions.
+
+The evidence pack in [misc/ownership-cost](../misc/ownership-cost/README.md)
+retains every rejected design and raw trial. The first fixture sampled total
+allocation after producer exit; those allocation rows are explicitly provisional.
+The corrected fixture samples warmup and measured totals while producers remain
+alive and cross-checks each producer's self counter. Known-allocation controls
+passed. The final 30-row comparison passed the observed 95% throughput/110%
+allocation gates in all five cells; ratios and broad ranges are documented in
+the pack. This is a synthetic three-trial median result, not server latency or
+a confidence interval. Pending runtime work remains timer-render transitions,
+coordinator admission, bounded presentation ownership, and session lifetimes.

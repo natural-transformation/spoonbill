@@ -237,3 +237,21 @@ machines with no violations; scoped new-model formatting and diff whitespace
 checks pass. This completes the audited metadata plus late-handle portions of
 the two shared pending owners; it does not replace the separate sensitive
 presentation lifecycle or Frontend user-action/download protocols.
+
+## Measured compact drain follow-up
+
+The initial `DrainGateMachine` enum allocated an Open/Closing wrapper per count
+change. The accepted follow-up keeps the same explicit pure decisions in an
+opaque Long, preserving the complete signed Int count and permanent close bit.
+An authorized finish retains wrapping arithmetic, including through zero; the
+interpreter's one-use ownership guard, not a zero-count heuristic, rejects a
+duplicate release. This supersedes the initial model's zero-count saturation.
+Capacity precedence, closure and drain notifications retain their existing
+ordering. Hot unbounded admission uses one pure transition and primitive change
+test, without rebuilding a result wrapper.
+
+Three direct model laws, four dispatcher cases, runtime ownership/guard tests and
+96 real PostgreSQL cases passed through Nix. The complete command/results and
+final five-cell measured gate are recorded in the runtime progress notes and
+`misc/ownership-cost/README.md`; all failed comparisons remain available. Provider
+lanes remain independent and no callback or SQL effect moved across a lock.

@@ -93,9 +93,9 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
   private def mutation(operation: => F[Unit]): F[Unit] = {
     @tailrec def begin(): Unit = {
       val before = writes.get()
-      if (DrainGateMachine.admission(before.gate, None) != DrainGateMachine.Admission.Accepted)
-        throw new SessionAccessDenied
-      if (!writes.compareAndSet(before, before.copy(gate = DrainGateMachine.entered(before.gate)))) begin()
+      val next = DrainGateMachine.entered(before.gate)
+      if (!DrainGateMachine.changed(before.gate, next)) throw new SessionAccessDenied
+      if (!writes.compareAndSet(before, before.copy(gate = next))) begin()
     }
     @tailrec def finish(): Unit = {
       val before = writes.get()

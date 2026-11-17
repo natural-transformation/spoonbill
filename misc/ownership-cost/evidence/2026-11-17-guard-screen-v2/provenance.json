@@ -1,0 +1,30 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "ownership-cost-v2",
+  "beforeRevision": "e733c9454e595c59aaeb6c94d6a2c94e557cf074",
+  "afterBaseRevision": "5605813d1608ef0df7a7a26b9886d7f9ff0e9dc0",
+  "afterPatch": "variants/guard-shallow.patch",
+  "afterPatchSha256": "7c0461e6c431b56b6118a31dbc512ee333c6395d9c8f29c56dabf9c8d1f02bd7",
+  "fixture": "OwnershipBenchmark.scala",
+  "fixtureSha256": "576a5b636b4081de833b8267d9278e9b93e2db0cfe39755a9d08ca814e5fc2b3",
+  "analyzerSha256": "5f3aaede9302ea9c53a457cf5b58697c301fe111b2f32518258071976cd8b090",
+  "trialsSha256": "049962ab0d522eea6454920347b99b2ed08a990ca2978785a44354c4be48ab3a",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "limits": [
+    "Synthetic no-I/O operations, not application throughput or latency",
+    "Shared developer machine, no other coordinated builds during collection; processor hint is not CPU affinity",
+    "Three independent JVM trials per variant/cell, medians and ranges, no confidence interval",
+    "Warmup and measured samples taken with producers alive; global delta covers producer self deltas"
+  ]
+}

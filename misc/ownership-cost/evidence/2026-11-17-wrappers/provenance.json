@@ -1,0 +1,48 @@
+{
+  "protocol": "ownership-cost-v1",
+  "recordedOn": "2026-11-17",
+  "beforeRevision": "e733c9454e595c59aaeb6c94d6a2c94e557cf074",
+  "afterRevision": "5605813d1608ef0df7a7a26b9886d7f9ff0e9dc0",
+  "beforeSourceHashes": {
+    "modules/spoonbill/src/main/scala/korolev/internal/ComponentOwnership.scala": "f9bed60ea861a016ca6aad0aa6acfe376f0faaf79fc837356da5d43ee360bab2",
+    "modules/spoonbill/src/main/scala/korolev/internal/ComponentOwnershipMachine.scala": null,
+    "modules/spoonbill/src/main/scala/korolev/state/GuardedStateManager.scala": "f387ec1c1a49bfc28cd0a1f7cf7a0d9943431a220b759bf31059395d0fb9b042",
+    "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": null
+  },
+  "afterSourceHashes": {
+    "modules/spoonbill/src/main/scala/korolev/internal/ComponentOwnership.scala": "7b16e25f02b7d3d926bc433874b00dd784601cd027bd14ed7e6807ecc5541b6e",
+    "modules/spoonbill/src/main/scala/korolev/internal/ComponentOwnershipMachine.scala": "845ade090ec842335d49b8dce8b07d14bafd7205c969263f6cec91dc35965e75",
+    "modules/spoonbill/src/main/scala/korolev/state/GuardedStateManager.scala": "30f13b0d5429d3263a0c6f9c806b4a4ec1a2be2ad2749083d6a17191f2ffa5fe",
+    "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "afeab4dd61650dd7fdf152088507e8c471cd4e5fc26ee9b998add190bc40dcc0"
+  },
+  "fixtureHashes": {
+    "OwnershipBenchmark.scala": "6f0c08bc7644a9b8447c9ad7259aa29eb9058e5ea1141e1adda3c27a47fcbca2",
+    "prepare.sh": "5d99cc343bdc1e974656e9df4814d799a2058b82735bbd9364a98e2e3f8c27ca",
+    "run.sh": "2caac05e36d3c77fe0079e28f339693b30d53216b9246d37263e85f588d7f4c3",
+    "analyze.mjs": "3571aa87d962b709a80fd1b83a017c5bc7295d83ec85e2076195ae12f38d28ea"
+  },
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "rawDirectory": "/tmp/spoonbill-ownership-cost/comparison-initial",
+  "limitations": [
+    "synthetic no-I/O operations, not application throughput",
+    "shared developer machine; processor hint is not CPU affinity",
+    "fixture and JVM overhead included",
+    "three trials; no confidence interval",
+    "four-writer lease throughput is bimodal with overlapping ranges",
+    "Allocation provisional: global counter sampled after producer exit; no inference of escape-analysis elimination from near-zero observations"
+  ],
+  "archivedFixture": "evidence/OwnershipBenchmark-v1.scala",
+  "currentAnalyzerSha256": "5f3aaede9302ea9c53a457cf5b58697c301fe111b2f32518258071976cd8b090",
+  "trialsSha256": "e05fe65eb59468579a29b6af66c65fe8b456095ef34cedd68fe1101214f12c6d"
+}

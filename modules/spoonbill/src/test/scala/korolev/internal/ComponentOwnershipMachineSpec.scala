@@ -45,8 +45,8 @@ class ComponentOwnershipMachineSpec extends AnyFlatSpec with Matchers with Scala
     cleanup(cleaning, registryClosed = false, deleteOnRetire = true) shouldBe Cleanup.DeleteNode
     cleanup(cleaning, registryClosed = true, deleteOnRetire = true) shouldBe Cleanup.SkipDelete
     cleanup(cleaning, registryClosed = false, deleteOnRetire = false) shouldBe Cleanup.SkipDelete
-    completed(cleaning, successful = true).phase shouldBe Phase.Cleaned
-    completed(cleaning, successful = false).phase shouldBe Phase.CleanupFailed
+    phase(completed(cleaning, successful = true)) shouldBe Phase.Cleaned
+    phase(completed(cleaning, successful = false)) shouldBe Phase.CleanupFailed
 
     val retiredBeforeOpen = retire(gated)
     beginCleanup(retiredBeforeOpen) shouldBe (retiredBeforeOpen, false)
@@ -56,41 +56,63 @@ class ComponentOwnershipMachineSpec extends AnyFlatSpec with Matchers with Scala
     cleanup(failedCleanup, registryClosed = true, deleteOnRetire = false) shouldBe Cleanup.PropagateFailure
   }
 
-  it should "validate per-owner baselines and make overflow an explicit admission-retiring outcome" in {
+  it should "validate per-owner baselines using the structurally bounded zero, one and two revisions" in {
     val opened = predecessorCompleted(OwnerState(), successful = true, reused = false)
     acceptsSnapshot(opened, 1L, false, false, None, sameVersion = true) shouldBe true
     acceptsSnapshot(opened, 1L, false, false, None, sameVersion = false) shouldBe false
     acceptsSnapshot(opened, 1L, false, false, Some(Baseline(1L, 0L)), sameVersion = false) shouldBe true
     acceptsSnapshot(opened, 1L, false, false, Some(Baseline(2L, 0L)), sameVersion = true) shouldBe false
-    val (established, overflow) = establishBaseline(opened)
-    overflow shouldBe false
-    established.baseline.revision shouldBe 1L
-    establishBaseline(established) shouldBe (established, false)
+    val established = establishBaseline(opened)
+    baselineRevision(established) shouldBe 1L
+    establishBaseline(established) shouldBe established
     acceptsSnapshot(established, 1L, false, false, Some(Baseline(1L, 0L)), sameVersion = true) shouldBe false
     val reused = predecessorCompleted(OwnerState(), successful = true, reused = true)
-    reused.baseline.revision shouldBe 1L
+    baselineRevision(reused) shouldBe 1L
     acceptsSnapshot(reused, 2L, false, true, None, sameVersion = true) shouldBe false
-    val (exhausted, failed) = establishBaseline(opened.copy(baseline = BaselineState.Unestablished(Long.MaxValue)))
-    failed shouldBe true
-    active(exhausted) shouldBe false
+    val inheritedBaseline = establishBaseline(reused)
+    baselineRevision(inheritedBaseline) shouldBe 2L
+    establishBaseline(inheritedBaseline) shouldBe inheritedBaseline
+    baselineRevision(predecessorCompleted(inheritedBaseline, successful = true, reused = true)) shouldBe 1L
+  }
+
+  it should "preserve every signed counter bit without corrupting phase or baseline" in {
+    val opened = establishBaseline(predecessorCompleted(OwnerState(), successful = true, reused = true))
+    for (value <- Vector(Int.MinValue, Int.MinValue + 1, -1, 0, 1, Int.MaxValue - 1, Int.MaxValue)) {
+      val state = withAdmittedCount(opened, value)
+      admittedCount(state) shouldBe value
+      admittedCount(admitted(state)) shouldBe (value + 1)
+      reserve(state, false) shouldBe admitted(state)
+      changed(state, reserve(state, false)) shouldBe true
+      reserve(state, true) shouldBe state
+      admittedCount(released(state)) shouldBe (value - 1)
+      phase(admitted(state)) shouldBe Phase.Open
+      phase(released(state)) shouldBe Phase.Open
+      baselineRevision(admitted(state)) shouldBe 2L
+      baselineRevision(released(state)) shouldBe 2L
+    }
+    reserve(OwnerState(), false) shouldBe OwnerState()
+    val retired = retire(opened)
+    reserve(retired, false) shouldBe retired
   }
 
   it should "keep retirement terminal and cleanup once-only across generated lifecycle histories" in {
     forAll(Gen.listOf(Gen.choose(0, 7))) { events =>
       events.foldLeft((OwnerState(), false, 0)) { case ((state, wasRetired, cleanups), event) =>
         val (next, claimed) = event match {
-          case 0 => (predecessorCompleted(state, successful = true, reused = false), false)
-          case 1 => (predecessorCompleted(state, successful = false, reused = false), false)
-          case 2 => (admitted(state), false)
-          case 3 => (released(state), false)
-          case 4 => (retire(state), false)
-          case 5 => beginCleanup(state)
-          case 6 => (completed(state, successful = true), false)
-          case _ => (establishBaseline(state)._1, false)
+          case 0                             => (predecessorCompleted(state, successful = true, reused = false), false)
+          case 1                             => (predecessorCompleted(state, successful = false, reused = false), false)
+          case 2                             => (admitted(state), false)
+          case 3 if admittedCount(state) > 0 => (released(state), false)
+          case 3                             => (state, false) // No unspent interpreter lease exists to release.
+          case 4                             => (retire(state), false)
+          case 5                             => beginCleanup(state)
+          case 6                             => (completed(state, successful = true), false)
+          case _                             => (establishBaseline(state), false)
         }
         val retiredNow = wasRetired || event == 4
         if (retiredNow) active(next) shouldBe false
-        next.admitted should be >= 0
+        admittedCount(next) should be >= 0
+        baselineRevision(next) should (be >= 0L and be <= 2L)
         val started = cleanups + (if (claimed) 1 else 0)
         started should be <= 1
         (next, retiredNow, started)

@@ -1,0 +1,52 @@
+{
+  "protocol": "ownership-cost-v2",
+  "scope": "targeted screen, not full acceptance",
+  "repeats": 3,
+  "trials": 6,
+  "allocationStatus": "verified while all producers were alive; self-counter cross-check passed",
+  "statistics": "median/range of independent JVM trials; no confidence interval",
+  "nearZeroAllocation": "Ratios omitted when baseline allocation is below 0.001 bytes/operation; use the absolute delta.",
+  "results": [
+    {
+      "scenario": "leases",
+      "writers": 1,
+      "before": {
+        "operationsPerSecond": {
+          "median": 150453554.2003216,
+          "min": 149933534.9910527,
+          "max": 150964547.03524786
+        },
+        "bytesPerOperation": {
+          "median": 6.224761260842111e-7,
+          "min": 6.203349042812609e-7,
+          "max": 6.888876139561424e-7
+        },
+        "producerBytesPerOperation": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        }
+      },
+      "after": {
+        "operationsPerSecond": {
+          "median": 148667003.44005504,
+          "min": 144705998.18411714,
+          "max": 149037570.80560234
+        },
+        "bytesPerOperation": {
+          "median": 6.277893578009034e-7,
+          "min": 6.262293777298234e-7,
+          "max": 7.923965314408201e-7
+        },
+        "producerBytesPerOperation": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        }
+      },
+      "throughputRatio": 0.988125566260217,
+      "allocationRatio": null,
+      "allocationDeltaBytes": 5.313231716692265e-9
+    }
+  ]
+}

@@ -22,9 +22,27 @@ class DrainGateMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
     drained(done) shouldBe true
     admission(done, Some(0)) shouldBe Admission.Closed
     close(done) shouldBe done
-    finished(done) shouldBe done
-    finished(initial) shouldBe initial
     drained(close(initial)) shouldBe true
+  }
+
+  it should "preserve signed Int arithmetic and closure across the complete counter representation" in {
+    for (
+      value   <- Vector(Int.MinValue, Int.MinValue + 1, -1, 0, 1, Int.MaxValue - 1, Int.MaxValue);
+      closing <- Vector(false, true)
+    ) {
+      val state = withCount(if (closing) close(initial) else initial, value)
+      count(state) shouldBe value
+      count(finished(state)) shouldBe (value - 1)
+      if (closing) {
+        entered(state) shouldBe state
+        changed(state, entered(state)) shouldBe false
+        admission(finished(state), None) shouldBe Admission.Closed
+      } else {
+        count(entered(state)) shouldBe (value + 1)
+        changed(state, entered(state)) shouldBe true
+        admission(finished(state), None) shouldBe Admission.Accepted
+      }
+    }
   }
 
   it should "conserve outstanding permits and make close permanent across generated histories" in {
@@ -38,8 +56,10 @@ class DrainGateMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
             else decision shouldBe Admission.Accepted
             if (decision == Admission.Accepted) (entered(state), outstanding + 1, closed)
             else (state, outstanding, closed)
-          case 1 => (finished(state), math.max(0, outstanding - 1), closed)
-          case _ => (close(state), outstanding, true)
+          // A finish is supplied only by an owned, once-only release in each interpreter.
+          case 1 if outstanding > 0 => (finished(state), outstanding - 1, closed)
+          case 1                    => (state, outstanding, closed)
+          case _                    => (close(state), outstanding, true)
         }
         count(next) shouldBe expected
         drained(next) shouldBe (closing && expected == 0)
