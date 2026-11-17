@@ -61,10 +61,9 @@ to zero, losing the second item. Both adapter countdowns now saturate positive
 demand at the effectively unbounded maximum, which consumption does not reduce.
 The regression failed before this arithmetic fix. Full adapter suites passed
 53 Pekko and 45 Akka tests afterward, including a direct countdown boundary case.
-Nonpositive requests still have the existing ignored-input behavior. This is an
-outstanding Reactive Streams conformance defect, not an intended policy. A
-separate fix must serialize its terminal error with an in-flight `onNext` before
-the publisher item is complete; the refactor does not silently change it.
+Nonpositive requests were also confirmed as a separate Reactive Streams defect,
+then corrected after the behavior-preserving extraction below. They are not
+treated as an intended compatibility policy.
 
 After those separate fixes, both publishers use the same `StreamPublisherMachine`
 for Active/Canceled/Completed/Failed terminal ownership and positive-demand
@@ -77,10 +76,31 @@ claim. Cancellation still wakes a pending demand wait before starting cleanup.
 The candidate tables match: positive demand adds credit, zero credit parks one
 consumer, terminal outcomes claim their signal once, and cancellation suppresses
 late pull outcomes. Synchronous duplicate-subscriber exceptions remain the
-documented compatibility policy; nonpositive demand remains the separate defect
-above. `spoonbill/testOnly *StreamPublisherMachineSpec` passed both table/generated
+documented compatibility policy. `spoonbill/testOnly *StreamPublisherMachineSpec` passed both table/generated
 tests, and the unchanged complete adapter suites passed 53 Pekko and 45 Akka tests
 after extraction. The purity guard passed.
+
+### Invalid demand: serialized terminal failure
+
+Five new probes failed before correction: zero/negative demand, rejection from
+inside `onNext`, rejection concurrent with a blocked `onNext`, and rejection while
+a pull remains outstanding. The lifecycle now claims a pending demand rejection;
+the lane publishes an entering marker before rechecking that lifecycle. A request
+either observes the marker and defers its error, or fences the callback before it
+can start. The marker clears after the callback returns, and the pure model grants
+only one terminal-error report. No application callback runs under a lock.
+
+Invalid-demand cleanup is scheduled independently so a request inside `onNext`
+does not wait for cleanup which may need that callback to finish. A once-claim
+also protects the refusal fallback. Valid demand and normal callback execution
+remain in the original effect loop; the publisher does not allocate a transition
+per element. This fixes invalid-demand semantics, not the separately documented
+synchronous duplicate-subscriber exception API.
+
+Validation: the pure publisher suite passed three cases, and the complete adapter
+suites passed 58 Pekko and 50 Akka tests. The expanded seven-case invalid-demand
+suite then passed in each adapter, adding canceled-versus-invalid races and
+refused cleanup scheduling. The purity guard and staged whitespace check passed.
 
 ## Subscriber: retain the existing explicit state
 

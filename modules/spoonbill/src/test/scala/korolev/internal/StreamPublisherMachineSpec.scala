@@ -12,7 +12,7 @@ class StreamPublisherMachineSpec extends AnyFlatSpec with Matchers with ScalaChe
     step(initial, Event.Cancel) shouldBe (State.Canceled, Command.CancelSource)
     step(initial, Event.Complete) shouldBe (State.Completed, Command.Complete)
     step(initial, Event.Fail) shouldBe (State.Failed, Command.Fail)
-    forAll(Gen.listOf(Gen.oneOf(Event.values.toSeq))) { events =>
+    forAll(Gen.listOf(Gen.oneOf(Event.Cancel, Event.Complete, Event.Fail))) { events =>
       val (last, claims) = events.foldLeft((initial, 0)) { case ((before, claims), event) =>
         val (after, command) = step(before, event)
         if (!live(before)) {
@@ -24,6 +24,21 @@ class StreamPublisherMachineSpec extends AnyFlatSpec with Matchers with ScalaChe
       claims shouldBe (if (events.isEmpty) 0 else 1)
       live(last) shouldBe events.isEmpty
     }
+  }
+
+  it should "reserve one invalid-demand error until an in-flight signal has returned" in {
+    val (rejected, command) = step(initial, Event.RejectDemand)
+    command shouldBe Command.RejectDemand
+    live(rejected) shouldBe false
+    canReportDemand(rejected, Signal.Entering) shouldBe false
+    step(rejected, Event.ReportDemand(Signal.Entering)) shouldBe (rejected, Command.None)
+    Vector(Event.Cancel, Event.Complete, Event.Fail, Event.RejectDemand).foreach { event =>
+      step(rejected, event) shouldBe (rejected, Command.None)
+    }
+    val (failed, reported) = step(rejected, Event.ReportDemand(Signal.Idle))
+    reported shouldBe Command.ReportDemand
+    failed shouldBe State.Failed
+    step(failed, Event.ReportDemand(Signal.Idle)) shouldBe (failed, Command.None)
   }
 
   it should "saturate positive demand without changing ignored inputs" in {
