@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {violations, checkMachines} from '../scripts/check-core-purity.mjs';
+import {violations, checkCore, checkMachines} from '../scripts/check-core-purity.mjs';
 
 test('pure immutable decisions accept explicit time and typed results', () => {
   assert.deepEqual(violations('import java.time.Instant\nfinal case class Value(expiry: Instant) { def valid(now: Instant) = now.isBefore(expiry) }'), []);
@@ -72,4 +72,66 @@ test('browser machine discovery includes JavaScript sources without checking fix
     assert.equal(result.failures.length, 2);
     assert.ok(result.failures.every(failure => failure.rule === 'ambient clock or entropy'));
   } finally { rmSync(root, {recursive: true, force: true}); }
+});
+
+function withSensitiveMetadata(run) {
+  const root = mkdtempSync(join(tmpdir(), 'spoonbill-sensitive-metadata-'));
+  const definitions = ['SensitivePresentation.scala', 'SensitiveError.scala'].map(name =>
+    `modules/core/src/main/scala/spoonbill/sensitive/${name}`);
+  const machine = join(root, 'modules/runtime/src/main/scala/SensitiveRuntimeMachine.scala');
+  try {
+    for (const file of definitions) {
+      mkdirSync(join(root, file, '..'), {recursive: true});
+      writeFileSync(join(root, file), readFileSync(new URL(`../${file}`, import.meta.url)));
+    }
+    mkdirSync(join(machine, '..'), {recursive: true});
+    writeFileSync(machine, 'import spoonbill.sensitive.{SensitivePresentation, ClearReason}\nobject SensitiveRuntimeMachine');
+    run({root, machine, definitions: definitions.map(file => join(root, file))});
+  } finally { rmSync(root, {recursive: true, force: true}); }
+}
+
+test('machines may explicitly import verified core sensitive metadata while core rules remain strict', () => {
+  withSensitiveMetadata(({root, machine, definitions}) => {
+    assert.deepEqual(checkMachines(root).failures, []);
+    writeFileSync(machine, 'import spoonbill.sensitive.SensitiveError');
+    assert.deepEqual(checkMachines(root).failures, []);
+    assert.ok(violations('import spoonbill.sensitive.SensitivePresentation').length > 0);
+    writeFileSync(join(definitions[0], '..', 'Forbidden.scala'), 'import spoonbill.sensitive.SensitivePayload');
+    assert.ok(checkCore(root).failures.some(failure => failure.rule === 'runtime dependency'));
+  });
+});
+
+test('verified sensitive metadata does not allow wildcard, runtime, renamed or qualified imports', () => {
+  withSensitiveMetadata(({root, machine}) => {
+    for (const source of [
+      'import spoonbill.sensitive.*', 'import spoonbill.sensitive._',
+      'import spoonbill.sensitive.{SensitivePresentation, SensitivePayload}',
+      'import spoonbill.sensitive.{SensitivePresentation as Payload}',
+      'import spoonbill.sensitive.SensitivePayload',
+      'val payload: spoonbill.sensitive.SensitivePayload',
+      'import spoonbill.sensitive.SensitivePresentation; System.nanoTime()',
+    ]) {
+      writeFileSync(machine, source);
+      assert.ok(checkMachines(root).failures.some(failure => failure.rule === 'runtime dependency'), source);
+    }
+  });
+});
+
+test('sensitive metadata import permission requires both scanned pure definitions', () => {
+  withSensitiveMetadata(({root, definitions}) => {
+    const original = readFileSync(definitions[1], 'utf8');
+    for (const source of [
+      `${original}\nval clock = java.time.Instant.now()`,
+      `${original}\nimport spoonbill.sensitive.SensitivePayload`,
+      original.replace('enum SensitiveError', 'enum OtherError'),
+      original.replace('package spoonbill.sensitive', 'package unrelated'),
+    ]) {
+      writeFileSync(definitions[1], source);
+      assert.ok(checkMachines(root).failures.some(failure => failure.file.endsWith('SensitiveRuntimeMachine.scala')));
+    }
+    rmSync(definitions[1]);
+    assert.ok(checkMachines(root).failures.some(failure => failure.rule === 'missing or symlinked sensitive metadata definition'));
+    symlinkSync(definitions[0], definitions[1]);
+    assert.ok(checkMachines(root).failures.some(failure => failure.rule === 'missing or symlinked sensitive metadata definition'));
+  });
 });

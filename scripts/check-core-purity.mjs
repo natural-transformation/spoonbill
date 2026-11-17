@@ -1,4 +1,4 @@
-import {existsSync, readFileSync, readdirSync} from 'node:fs';
+import {existsSync, lstatSync, readFileSync, readdirSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
@@ -28,14 +28,58 @@ const javascriptForbidden = [
   ['input mutation', /\b(?:state|event)\s*(?:\.\s*\w+|\[[^\]]+\])\s*(?:[+*/%-]?=(?!=)|\+\+|--)/],
 ];
 
-export function violations(source, language = 'scala') {
+// This namespace also contains plaintext/runtime types. Only these core-owned
+// definitions may be imported by machines, after their sources pass the guard.
+const sensitiveMetadata = [
+  ['modules/core/src/main/scala/spoonbill/sensitive/SensitivePresentation.scala',
+    ['RegionId', 'Purpose', 'Audience', 'PresentationId', 'PresentationBinding',
+      'DisclosureOutcome', 'ClearReason', 'PresentationPhase', 'SensitivePresentation']],
+  ['modules/core/src/main/scala/spoonbill/sensitive/SensitiveError.scala', ['SensitiveError']],
+];
+
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, match => match.replace(/[^\n]/g, ' '))
+    .replace(/\/\/[^\n]*/g, '');
+}
+
+export function violations(source, language = 'scala', verifiedMetadata = new Set()) {
   // Package declarations name a namespace, not a dependency. Keep imports,
   // qualified uses and strings (including reflection names) visible.
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, match => match.replace(/[^\n]/g, ' '))
-    .replace(/\/\/[^\n]*/g, '');
+  const code = stripComments(source);
   const rules = language === 'javascript' ? [...forbidden, ...javascriptForbidden] : forbidden;
-  return code.split('\n').flatMap((line, index) => /^\s*package\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*;?\s*$/.test(line) ? [] : rules
-    .filter(([, pattern]) => pattern.test(line)).map(([rule]) => ({line: index + 1, rule})));
+  return code.split('\n').flatMap((line, index) => {
+    if (/^\s*package\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*;?\s*$/.test(line)) return [];
+    // Exact named imports only: no wildcard, rename, selector suffix, qualified
+    // use or additional statement can inherit this verified dependency allowance.
+    const metadataImport = language === 'scala' && line.match(
+      /^\s*import spoonbill\.sensitive\.(?:\{([A-Za-z_,\s]+)\}|([A-Za-z_]\w*))\s*;?\s*$/);
+    if (metadataImport && (metadataImport[1] ?? metadataImport[2]).split(',')
+      .every(name => verifiedMetadata.has(name.trim()))) return [];
+    return rules.filter(([, pattern]) => pattern.test(line)).map(([rule]) => ({line: index + 1, rule}));
+  });
+}
+
+function verifySensitiveMetadata(root) {
+  const failures = [];
+  for (const [file, symbols] of sensitiveMetadata) {
+    const parts = file.split('/');
+    const paths = parts.map((_, index) => join(root, ...parts.slice(0, index + 1)));
+    if (paths.some(path => !existsSync(path) || lstatSync(path).isSymbolicLink()) ||
+        !lstatSync(join(root, file)).isFile()) {
+      failures.push({file, rule: 'missing or symlinked sensitive metadata definition'});
+      continue;
+    }
+    const source = readFileSync(join(root, file), 'utf8');
+    const code = stripComments(source);
+    failures.push(...violations(source).map(value => ({file, ...value})));
+    if (!/^package spoonbill\.sensitive\s*$/m.test(code) || symbols.some(symbol =>
+      !new RegExp(`^(?:opaque type|(?:final )?(?:case )?class|enum) ${symbol}\\b`, 'm').test(code)))
+      failures.push({file, rule: 'missing expected sensitive metadata declaration'});
+  }
+  return {
+    failures,
+    symbols: new Set(failures.length ? [] : sensitiveMetadata.flatMap(([, symbols]) => symbols)),
+  };
 }
 
 export function checkCore(root) {
@@ -61,6 +105,7 @@ export function checkCore(root) {
 export function checkMachines(root) {
   const failures = [];
   let files = 0;
+  let metadata;
   function visit(directory) {
     for (const entry of readdirSync(directory, {withFileTypes: true})) {
       const path = join(directory, entry.name);
@@ -71,7 +116,12 @@ export function checkMachines(root) {
       else if (entry.isFile() && (entry.name.endsWith('Machine.scala') || /(?:Machine|[-.]machine)\.(?:js|mjs)$/.test(entry.name)) && /[/\\]src[/\\]main[/\\]/.test(path)) {
         files++;
         const language = entry.name.endsWith('.scala') ? 'scala' : 'javascript';
-        failures.push(...violations(readFileSync(path, 'utf8'), language).map(value => ({file: relative(root, path), ...value})));
+        const source = readFileSync(path, 'utf8');
+        if (language === 'scala' && /\bspoonbill\.sensitive\b/.test(stripComments(source)) && !metadata) {
+          metadata = verifySensitiveMetadata(root);
+          failures.push(...metadata.failures);
+        }
+        failures.push(...violations(source, language, metadata?.symbols).map(value => ({file: relative(root, path), ...value})));
       }
     }
   }

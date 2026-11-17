@@ -3,6 +3,7 @@ package spoonbill.internal
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.concurrent.duration.*
 import scala.util.control.NonFatal
@@ -24,20 +25,63 @@ private[spoonbill] final class SensitiveRuntime[F[_]: Effect](
   sendClear: (PresentationId, RegionId) => F[Unit],
   now: () => Instant = () => Instant.now()
 ) {
-  private final class Entry(val model: AtomicReference[SensitivePresentation], payload: SensitivePayload,
+  import SensitiveRuntimeMachine as Machine
+
+  private final class Entry(initial: SensitivePresentation, payload: SensitivePayload,
     val permit: SensitiveAuthorization[F], callback: Effect.Promise[DisclosureOutcome]) {
-    val plaintext = new AtomicReference(Option(payload))
-    val waiting = new AtomicReference(Option(callback))
-    val cancellations = new AtomicReference(List.empty[() => Unit])
-    def finish(outcome: DisclosureOutcome): Unit = waiting.getAndSet(None).foreach(_(Right(outcome)))
+    val token = new PendingRegistryMachine.Token
+    private final case class Held(state: Machine.Entry, plaintext: Option[SensitivePayload],
+      waiting: Option[Effect.Promise[DisclosureOutcome]], cancellations: List[() => Unit])
+    private val held = new AtomicReference(Held(Machine.Entry(initial), Some(payload), Some(callback), Nil))
+    def model: SensitivePresentation = held.get().state.presentation
+    def retainsPayload: Boolean = held.get().plaintext.nonEmpty
+    def awaitingOutcome: Boolean = held.get().state.waiter == Machine.Waiter.Pending
+
+    @tailrec private def update[A](choose: Held => (Held, A)): A = {
+      val before = held.get()
+      val (next, result) = choose(before)
+      if ((before eq next) || held.compareAndSet(before, next)) result else update(choose)
+    }
+
+    def install(cancel: () => Unit): Unit = update(before => (before.copy(cancellations = cancel :: before.cancellations), ()))
+
+    def emit(observed: Instant): Option[(SensitivePresentation, SensitivePayload)] = update { before =>
+      Machine.emit(before.state, observed) match {
+        case Machine.Emission.Ignore => (before, None)
+        case Machine.Emission.TooLate => throw new java.util.concurrent.TimeoutException("Sensitive delivery deadline exceeded")
+        case Machine.Emission.Emit(next) =>
+          (before.copy(state = next, plaintext = None), before.plaintext.map(next.presentation -> _))
+      }
+    }
+
+    def acknowledge(processed: Boolean, observed: Instant): Option[Boolean] = update { before =>
+      Machine.acknowledge(before.state, processed, observed) match {
+        case Machine.Acknowledgement.Ignore => (before, None)
+        case Machine.Acknowledgement.Retire => (before, Some(false))
+        case Machine.Acknowledgement.Accept(next) => (before.copy(state = next), Some(true))
+      }
+    }
+
+    def retire(reason: ClearReason): (SensitivePresentation, List[() => Unit]) = update { before =>
+      val next = Machine.clear(before.state, reason)
+      (before.copy(state = next, plaintext = None, cancellations = Nil), next.presentation -> before.cancellations)
+    }
+
+    def finish(outcome: DisclosureOutcome): Unit = {
+      val callback = update { before =>
+        if (before.state.waiter == Machine.Waiter.Completed) (before, None)
+        else (before.copy(state = Machine.finish(before.state), waiting = None), before.waiting)
+      }
+      callback.foreach(_(Right(outcome)))
+    }
   }
   private val entries = mutable.Map.empty[PresentationId, Entry]
   private final case class Retirement(entry: Entry, region: RegionId, outcome: DisclosureOutcome)
-  private var closed = false // ALLOW-VAR: guarded by entries monitor.
+  private var registry = Machine.initial // ALLOW-VAR: guarded by entries monitor.
   private def launch(operation: F[Unit]): Unit = Effect[F].runAsync(operation)(_ => ())
 
   private def install(entry: Entry, cancel: () => Unit): Unit = entries.synchronized {
-    if (entries.get(entry.model.get().binding.presentationId).contains(entry)) entry.cancellations.updateAndGet(cancel :: _)
+    if (entries.get(entry.model.binding.presentationId).contains(entry)) entry.install(cancel)
     else cancel()
     ()
   }
@@ -50,16 +94,15 @@ private[spoonbill] final class SensitiveRuntime[F[_]: Effect](
       val binding = PresentationBinding(connection, region, PresentationId.fromUuid(UUID.randomUUID()), permit.audience)
       val model = SensitivePresentation.prepare(binding, purpose, issued, issued.plusMillis(lifetime.toMillis))
         .fold(_ => throw new IllegalArgumentException("Invalid sensitive lifetime"), identity)
-      val entry = new Entry(new AtomicReference(model), payload, permit, callback)
+      val entry = new Entry(model, payload, permit, callback)
       entries.synchronized {
-        if (closed || entries.size >= 4 || entries.values.exists(_.model.get().binding.regionId == region))
-          throw new SessionAccessDenied
+        registry = Machine.register(registry, binding, entry.token).getOrElse(throw new SessionAccessDenied)
         entries.put(binding.presentationId, entry)
       }
       try {
       install(entry, deadlines.schedule(lifetime)(() => launch(clear(binding.presentationId, ClearReason.Expired))))
-      install(entry, deadlines.schedule(lifetime.min(5.seconds))(() => {
-        if (entry.waiting.get().nonEmpty) launch(clear(binding.presentationId, ClearReason.DeliveryFailed))
+      install(entry, deadlines.schedule(lifetime.min(Machine.acknowledgementWindowSeconds.seconds))(() => {
+        if (entry.awaitingOutcome) launch(clear(binding.presentationId, ClearReason.DeliveryFailed))
       }))
       def audit(): Unit = {
         if (pending(binding.presentationId)) Effect[F].runAsync(Effect[F].delayAsync(permit.revalidate())) {
@@ -80,7 +123,7 @@ private[spoonbill] final class SensitiveRuntime[F[_]: Effect](
     }}
 
   def pending(id: PresentationId): Boolean = entries.synchronized(entries.contains(id))
-  private[spoonbill] def retainedPayloads: Int = entries.synchronized(entries.values.count(_.plaintext.get().nonEmpty))
+  private[spoonbill] def retainedPayloads: Int = entries.synchronized(entries.values.count(_.retainsPayload))
 
   def revalidateActive(): F[Unit] = entries.synchronized(entries.toList).map { case (id, entry) =>
     Effect[F].delayAsync(entry.permit.revalidate()).recoverF { case _ => clear(id, ClearReason.Revoked) }
@@ -94,17 +137,8 @@ private[spoonbill] final class SensitiveRuntime[F[_]: Effect](
         entries.synchronized {
           if (!entries.get(id).contains(entry)) None
           else {
-            val current = entry.model.get()
             val observed = now()
-            if (current.phase == PresentationPhase.Prepared &&
-                (!observed.isBefore(current.issuedAt.plusSeconds(5)) || !observed.isBefore(current.expiresAt)))
-              throw new java.util.concurrent.TimeoutException("Sensitive delivery deadline exceeded")
-            current.emitted(current.binding, observed) match {
-              case Left(_) => None
-              case Right(emitted) =>
-                entry.model.set(emitted)
-                entry.plaintext.getAndSet(None).map(value => encode(emitted, value))
-            }
+            entry.emit(observed).map { case (emitted, value) => encode(emitted, value) }
           }
         }
       }}.recoverF {
@@ -116,15 +150,9 @@ private[spoonbill] final class SensitiveRuntime[F[_]: Effect](
 
   def acknowledge(id: PresentationId, region: RegionId, processed: Boolean): F[Unit] = Effect[F].delay {
     entries.synchronized {
-      entries.get(id).filter(_.model.get().binding.regionId == region).flatMap { entry =>
-        val current = entry.model.get()
+      entries.get(id).filter(_.model.binding.regionId == region).flatMap { entry =>
         val observed = now()
-        val timely = observed.isBefore(current.expiresAt) &&
-          (current.phase == PresentationPhase.BrowserAcknowledged || observed.isBefore(current.issuedAt.plusSeconds(5)))
-        if (processed && timely) current.acknowledge(current.binding, observed).toOption.map { next =>
-          entry.model.set(next)
-          true -> entry
-        } else Some(false -> entry)
+        entry.acknowledge(processed, observed).map(_ -> entry)
       }
     }
   }.flatMap {
@@ -136,29 +164,30 @@ private[spoonbill] final class SensitiveRuntime[F[_]: Effect](
   }
 
   def browserCleared(id: PresentationId, region: RegionId): F[Unit] =
-    if (entries.synchronized(entries.get(id).exists(_.model.get().binding.regionId == region)))
+    if (entries.synchronized(entries.get(id).exists(_.model.binding.regionId == region)))
       clear(id, ClearReason.Requested, notifyBrowser = false)
     else Effect[F].unit
 
   def clearRegion(region: RegionId, reason: ClearReason = ClearReason.Requested): F[Unit] = {
-    val ids = entries.synchronized(entries.values.filter(_.model.get().binding.regionId == region)
-      .map(_.model.get().binding.presentationId).toList)
+    val ids = entries.synchronized(entries.values.filter(_.model.binding.regionId == region)
+      .map(_.model.binding.presentationId).toList)
     ids.map(clear(_, reason)).sequence.unit
   }
 
   def clearAll(reason: ClearReason, notifyBrowser: Boolean = true): F[Unit] =
     entries.synchronized(entries.keys.toList).map(clear(_, reason, notifyBrowser)).sequence.unit
 
-  def close(): F[Unit] = Effect[F].delay { entries.synchronized { closed = true } }
+  def close(): F[Unit] = Effect[F].delay { entries.synchronized { registry = Machine.close(registry) } }
     .flatMap(_ => clearAll(ClearReason.Disconnected, notifyBrowser = false))
 
   private def clear(id: PresentationId, reason: ClearReason, notifyBrowser: Boolean = true): F[Unit] =
     Effect[F].delay {
-      entries.synchronized(entries.remove(id)).map { entry =>
-        val ended = entry.model.get().clear(reason)
-        entry.model.set(ended)
-        entry.plaintext.set(None)
-        entry.cancellations.getAndSet(Nil).foreach(cancel => try cancel() catch { case NonFatal(_) => () })
+      entries.synchronized {
+        registry = Machine.remove(registry, id)
+        entries.remove(id)
+      }.map { entry =>
+        val (ended, cancellations) = entry.retire(reason)
+        cancellations.foreach(cancel => try cancel() catch { case NonFatal(_) => () })
         val outcome = ended.phase match {
           case PresentationPhase.Closed(_, value) => value
           case _ => throw new IllegalStateException("Sensitive retirement is not terminal")
