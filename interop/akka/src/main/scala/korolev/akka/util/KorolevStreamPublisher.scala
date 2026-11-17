@@ -36,7 +36,7 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
   private val hasActualSubscriber = new AtomicBoolean(false)
 
   private val hub =
-    if (fanout) Hub(stream)
+    if (fanout) Hub(stream, 128)
     else null
 
   private final class StreamSubscription(stream: Stream[F, T], subscriber: Subscriber[_ >: T]) extends Subscription {
