@@ -199,7 +199,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
       }
     }
 
-    Effect[F].delay(loop())
+    loop()
   }
 
   def dispose(): F[Unit] = {

@@ -133,6 +133,14 @@ before the fix; `use` now applies the existing effect guarantee to callback
 evaluation and return. All 75 effect tests pass. This does not change the separate
 acquisition/disposal protocols or make repeated `Borrow.discard` join cleanup.
 
+`AsyncResourcePool.onDispose` discarded a delayed registration effect inside its
+promise constructor: strict Future ran it incidentally, while IO never registered
+the observer. The permanent IO regression failed before the one-line fix and now
+passes. Two additional characterizations passed before the fix and remain unchanged:
+late disposal observers see the claim before earlier observers see physical cleanup,
+and repeated discard/give do not join an in-flight retirement or release capacity
+early. All 77 effect tests and 14 selected cats-effect tests pass.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate
