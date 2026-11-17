@@ -142,3 +142,17 @@ fixture versions and [exact source hashes](../misc/transport-state-machines/evid
 are retained. These are uncontended Future-interpreter observations, with no
 network/browser timing or confidence interval; they establish the specified
 synthetic cost guide, not a universal performance bound.
+
+### Supplemental download ownership characterization
+
+`FrontendDownloadOwnershipSpec` pins detaching all downloads without joining a
+blocked cancellation finalizer, EOF retirement before later lookup/close, and
+refusal after connection close before claiming the caller's stream. The first
+probe had expected cancellation even for that last case; baseline execution and
+inspection showed that `nextDescriptor` checks openness before creating an owned
+entry. That expectation was corrected to preserve the existing pre-admission
+ownership boundary, with no production change.
+
+`spoonbill/testOnly *FrontendDownloadOwnershipSpec *ClusteredOutputAdmissionSpec`
+passed 7 cases on the untouched `1f06cd3a` baseline and 7 on the candidate. This
+also exercises download-chunk admission after producer completion and takeover.
