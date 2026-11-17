@@ -72,10 +72,20 @@ did not replay a prior cancellation to a new waiter; the effect-unit audit
 confirmed this as a defect through a late-listener test and a real FS2 consumer.
 The separate fix `d60a8352` adopts `CompletionLatchMachine` for explicit cancellation
 while retaining ordinary queue close as a different event. `Scheduler.JobHandler`
-and `Stream.handleConsumed` have a single waiter; the latter signals EOF rather
-than arbitrary termination. Pool disposal distinguishes claiming disposal from
-settling cleanup. Those contracts are not interchangeable; suspected defects
-need separate characterization/fixes before a refactor.
+was corrected separately (`d1fe59dd`) and adopted the completion latch in
+`af05366f`. `Stream.handleConsumed` still has an outstanding caller/termination
+audit; its current single waiter and EOF/error/cancel behavior are not classified
+as intentional. Pool disposal distinguishes claiming disposal from settling
+cleanup, with nonjoining repeated discard characterized separately. Those
+contracts are not interchangeable.
+
+The effect/testkit units also fixed AsyncTable failure fanout and explicit
+publication (`23fa583f`, `b3e3e4e0`) before its Waiting/Settled extraction
+(`666b182b`); this remains a resettable per-key protocol. RecoveryGates fixed stale
+rearm (`4ccd1cd0`) before its four-phase model (`c194a85a`); arrival and resume
+retain distinct meanings. These are downstream dispositions, not additional
+shared-latch candidates. Pool disposal's final representation/notes and
+Stream.handleConsumed remain explicitly owned by the effect-module rollout.
 
 ## Pending registry candidates
 
