@@ -214,3 +214,39 @@ remaining CPU/dispatch/synchronization cost rather than aggregate allocation
 pressure alone; the exact cause has not been profiled for this compact variant.
 No production optimization or claim of whole-contract equivalence is made here.
 All earlier sources, controls, regressions and profile evidence remain preserved.
+
+## Compact sort CPU diagnostic
+
+A separate baseline/compact sort JFR diagnostic used 3s warmup and 8s execution on
+the unchanged fixture and frozen classpaths. It finished before the next root
+functional build began. It is not acceptance timing. `attribute-cpu.mjs` selects
+main-thread Work.run stacks at frozen main line 217 and reports excluded samples,
+leaf/inclusive/source methods and monitor/park events separately.
+
+| Profile | Measured samples | Warmup/other-round excluded | Startup/teardown/harness excluded | Truncated or missing main frames |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline sort | 588 | 219 | 16 | 0 |
+| Compact sort | 637 | 237 | 5 | 0 |
+
+Prominent compact leaf locations are the immediate Future executor (272/637,
+42.70%), `inline$drainCommands` line 86 (130/637, 20.41%), `drainCommands` line 96
+(104/637, 16.33%), and the inlined pull/change monitor block at line 82
+(66/637, 10.36%). The callback lambda has 32 samples, and `completeFuture` line 171
+has 13. Baseline leaf locations are the same immediate executor (273/588, 46.43%),
+Promise.apply (213/588, 36.22%) and method-handle allocation (54/588, 9.18%).
+
+The compact command-drain accessor occurs inclusively in 415/637 samples (65.15%);
+these overlap callback/Future and other frames and cannot be added as independent
+costs. 565 compact leaf frames are reported Inlined and 72 JIT compiled. Source
+line 96 is a call/return/catch mapping: it does not establish that exception
+handling itself consumes 16.33% CPU. Full leaf/source tables and representative
+stacks are retained in `evidence/compact-v2/cpu-diagnostics`.
+
+There are no main-thread JavaMonitorEnter or ThreadPark events in either profile.
+That is consistent with this uncontended workload and does **not** show that
+monitor entry/exit is free. The frozen source contains read-only synchronized
+phase checks at StreamRoutingRuntime lines 142 and 186 in addition to command-drain
+and mutation monitors. The samples identify dispatcher/registration work as a
+hot region, but do not isolate those two checks' exact cost. Removing redundant
+gates is therefore a source-backed candidate for a new controlled experiment,
+not a proven explanation or an optimization performed by this evidence unit.

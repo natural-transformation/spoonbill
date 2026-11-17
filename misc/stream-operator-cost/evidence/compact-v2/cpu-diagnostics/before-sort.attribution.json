@@ -1,0 +1,1147 @@
+{
+  "scope": "Diagnostic only: live main Work.run ancestry at measured main callsite; sample proportions are not exact CPU times",
+  "coverage": {
+    "mainSamples": 823,
+    "roundSamples": 807,
+    "measuredSamples": 588,
+    "outside": {
+      "startup/teardown/harness": 16,
+      "warmup or other round caller": 219
+    },
+    "truncatedMain": 0,
+    "missingMain": 0,
+    "maxDepth": 46,
+    "mainCallSiteLine": 217
+  },
+  "states": {
+    "STATE_RUNNABLE": 588
+  },
+  "sampleKinds": {
+    "jdk.ExecutionSample": 588
+  },
+  "topLeaf": [
+    {
+      "method": "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+      "samples": 273,
+      "fraction": 0.4642857142857143
+    },
+    {
+      "method": "scala.concurrent.Promise$.apply:126",
+      "samples": 213,
+      "fraction": 0.3622448979591837
+    },
+    {
+      "method": "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+      "samples": 54,
+      "fraction": 0.09183673469387756
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.dispatchOrAddCallbacks:325",
+      "samples": 14,
+      "fraction": 0.023809523809523808
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.$init$$$anonfun$4:131",
+      "samples": 10,
+      "fraction": 0.017006802721088437
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.$init$$$anonfun$4:127",
+      "samples": 9,
+      "fraction": 0.015306122448979591
+    },
+    {
+      "method": "scala.Some$.apply:618",
+      "samples": 8,
+      "fraction": 0.013605442176870748
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$Transformation.run:500",
+      "samples": 7,
+      "fraction": 0.011904761904761904
+    }
+  ],
+  "topInclusive": [
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda.apply$mcV$sp:-1",
+      "samples": 588,
+      "fraction": 1
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.run:150",
+      "samples": 588,
+      "fraction": 1
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$.main:217",
+      "samples": 588,
+      "fraction": 1
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark.main:-1",
+      "samples": 588,
+      "fraction": 1
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$.measure:180",
+      "samples": 585,
+      "fraction": 0.9948979591836735
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Input.publish:71",
+      "samples": 288,
+      "fraction": 0.4897959183673469
+    },
+    {
+      "method": "spoonbill.effect.Effect$FutureEffect$$anon$2.execute:94",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$Transformation.submitWithValue:462",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.submitWithValue:371",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.tryComplete0:295",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.tryComplete:288",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.Promise.complete:57",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.Promise.complete$:56",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.complete:104",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.Promise.success:91",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.Promise.success$:91",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.success:104",
+      "samples": 280,
+      "fraction": 0.47619047619047616
+    },
+    {
+      "method": "scala.concurrent.Promise$.apply:126",
+      "samples": 213,
+      "fraction": 0.3622448979591837
+    },
+    {
+      "method": "spoonbill.effect.Effect$FutureEffect.promiseF:161",
+      "samples": 213,
+      "fraction": 0.3622448979591837
+    },
+    {
+      "method": "spoonbill.effect.Effect$FutureEffect.promiseF:160",
+      "samples": 213,
+      "fraction": 0.3622448979591837
+    },
+    {
+      "method": "spoonbill.effect.Stream$$anon$9.pull:275",
+      "samples": 213,
+      "fraction": 0.3622448979591837
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.$init$$$anonfun$4:132",
+      "samples": 165,
+      "fraction": 0.28061224489795916
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.$init$$$anonfun$4:127",
+      "samples": 158,
+      "fraction": 0.2687074829931973
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.$init$$$anonfun$4:131",
+      "samples": 142,
+      "fraction": 0.24149659863945577
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$Transformation.run:537",
+      "samples": 130,
+      "fraction": 0.22108843537414966
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.$init$$$anonfun$4:128",
+      "samples": 123,
+      "fraction": 0.20918367346938777
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.linkRootOf:380",
+      "samples": 115,
+      "fraction": 0.195578231292517
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$Transformation.run:504",
+      "samples": 115,
+      "fraction": 0.195578231292517
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$Transformation.run:500",
+      "samples": 78,
+      "fraction": 0.1326530612244898
+    },
+    {
+      "method": "spoonbill.effect.Effect$.spoonbill$effect$Effect$FutureEffect$$_$promiseF$$anonfun$1:163",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    },
+    {
+      "method": "spoonbill.effect.Effect$FutureEffect$$Lambda.applyVoid:-1",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    },
+    {
+      "method": "scala.runtime.function.JProcedure1.apply:15",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    },
+    {
+      "method": "scala.runtime.function.JProcedure1.apply:10",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    },
+    {
+      "method": "spoonbill.effect.Stream$$anon$9.pull$$anonfun$7$$anonfun$3:297",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    },
+    {
+      "method": "spoonbill.effect.Stream$$anon$9$$Lambda.applyVoid:-1",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    },
+    {
+      "method": "spoonbill.effect.StreamOperatorBenchmark$Work.expect:101",
+      "samples": 68,
+      "fraction": 0.11564625850340136
+    },
+    {
+      "method": "java.lang.invoke.DirectMethodHandle.allocateInstance:501",
+      "samples": 54,
+      "fraction": 0.09183673469387756
+    },
+    {
+      "method": "java.lang.invoke.LambdaForm$DMH+0x000000700114c400.434398524.newInvokeSpecial:-1",
+      "samples": 54,
+      "fraction": 0.09183673469387756
+    },
+    {
+      "method": "java.lang.invoke.LambdaForm$MH+0x000000700114c800.2035616217.linkToTargetMethod:-1",
+      "samples": 54,
+      "fraction": 0.09183673469387756
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.dispatchOrAddCallbacks:325",
+      "samples": 14,
+      "fraction": 0.023809523809523808
+    },
+    {
+      "method": "scala.concurrent.impl.Promise$DefaultPromise.map:182",
+      "samples": 14,
+      "fraction": 0.023809523809523808
+    },
+    {
+      "method": "spoonbill.effect.Effect$FutureEffect.map:113",
+      "samples": 14,
+      "fraction": 0.023809523809523808
+    },
+    {
+      "method": "scala.Some$.apply:618",
+      "samples": 8,
+      "fraction": 0.013605442176870748
+    }
+  ],
+  "nearestOperatorFrame": [
+    {
+      "method": "fixture/library-only",
+      "samples": 304,
+      "fraction": 0.5170068027210885
+    },
+    {
+      "method": "spoonbill.effect.Stream$$anon$9.pull:275",
+      "samples": 213,
+      "fraction": 0.3622448979591837
+    },
+    {
+      "method": "spoonbill.effect.Stream$$anon$9.pull$$anonfun$7$$anonfun$3:297",
+      "samples": 71,
+      "fraction": 0.12074829931972789
+    }
+  ],
+  "blockingEvents": [],
+  "representativeStacks": [
+    {
+      "leaf": {
+        "type": "scala.Some$",
+        "method": "apply",
+        "line": 618,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "scala.Some$",
+          "method": "apply",
+          "line": 618,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Input",
+          "method": "publish",
+          "line": 71,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 128,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+        "method": "execute",
+        "line": 94,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete",
+          "line": 288,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "complete",
+          "line": 57,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "complete$",
+          "line": 56,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "complete",
+          "line": 104,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "success",
+          "line": 91,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "success$",
+          "line": 91,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "success",
+          "line": 104,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Input",
+          "method": "publish",
+          "line": 71,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 132,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "scala.concurrent.Promise$",
+        "method": "apply",
+        "line": 126,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "scala.concurrent.Promise$",
+          "method": "apply",
+          "line": 126,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 161,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 160,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull",
+          "line": 275,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 131,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "scala.concurrent.Promise$",
+        "method": "apply",
+        "line": 126,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "scala.concurrent.Promise$",
+          "method": "apply",
+          "line": 126,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 161,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 160,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull",
+          "line": 275,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 127,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "scala.Some$",
+        "method": "apply",
+        "line": 618,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "scala.Some$",
+          "method": "apply",
+          "line": 618,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Input",
+          "method": "publish",
+          "line": 71,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 128,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "scala.concurrent.Promise$",
+        "method": "apply",
+        "line": 126,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "scala.concurrent.Promise$",
+          "method": "apply",
+          "line": 126,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 161,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 160,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull",
+          "line": 275,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 131,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "java.lang.invoke.DirectMethodHandle",
+        "method": "allocateInstance",
+        "line": 501,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501,
+          "execution": "Inlined"
+        },
+        {
+          "type": "java.lang.invoke.LambdaForm$DMH+0x000000700114c400.434398524",
+          "method": "newInvokeSpecial",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "java.lang.invoke.LambdaForm$MH+0x000000700114c800.2035616217",
+          "method": "linkToTargetMethod",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "expect",
+          "line": 101,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 127,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "scala.concurrent.Promise$",
+        "method": "apply",
+        "line": 126,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "scala.concurrent.Promise$",
+          "method": "apply",
+          "line": 126,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 161,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 160,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull",
+          "line": 275,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 127,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "java.lang.invoke.DirectMethodHandle",
+        "method": "allocateInstance",
+        "line": 501,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501,
+          "execution": "Inlined"
+        },
+        {
+          "type": "java.lang.invoke.LambdaForm$DMH+0x000000700114c400.434398524",
+          "method": "newInvokeSpecial",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "java.lang.invoke.LambdaForm$MH+0x000000700114c800.2035616217",
+          "method": "linkToTargetMethod",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "expect",
+          "line": 101,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 131,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    },
+    {
+      "leaf": {
+        "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+        "method": "execute",
+        "line": 94,
+        "execution": "Inlined"
+      },
+      "frames": [
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "linkRootOf",
+          "line": 380,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 504,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 537,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete",
+          "line": 288,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "complete",
+          "line": 57,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "complete$",
+          "line": 56,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "complete",
+          "line": 104,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "success",
+          "line": 91,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "success$",
+          "line": 91,
+          "execution": "Inlined"
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "success",
+          "line": 104,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Input",
+          "method": "publish",
+          "line": 71,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 128,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1,
+          "execution": "Inlined"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180,
+          "execution": "JIT compiled"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217,
+          "execution": "Interpreted"
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1,
+          "execution": "Interpreted"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Single controlled-publication Future/parasitic workload",
+    "No concurrent producers during timing",
+    "Uncontended synchronized cost may appear in compiled Java methods without any JavaMonitorEnter event",
+    "Inclusive frames overlap and cannot be summed",
+    "JFR sampling/safepoint and JIT attribution limits apply",
+    "Diagnostic timings are not acceptance evidence"
+  ]
+}
