@@ -926,8 +926,8 @@ whole phase is complete.
 | --- | --- |
 | 0–1 | Foundation and selected ownership-split pilot complete; agreed pilot benchmark gate passed |
 | 2 | Shared deadline, setup ownership, drain admission, completion latch, pending membership and late-handle ownership integrated; remaining candidate dispositions continue with their owning phases |
-| 3–4 | Lifecycle and session work underway; unchanged strong protocols are evaluated against the explicit retain criteria |
-| 5–6 | JDBC clock rules, immutable managed construction and canonical one-use leases integrated; connection/rendering and remaining authentication work continue |
+| 3–4 | Compact owner/drain and timer-render models pass their matched gates; guarded/legacy sessions and registries integrated. Coordinator optimization and bounded presentation rules continue; strong snapshot/lane protocols retained with evidence |
+| 5–6 | Application startup/lifecycle, retained render cycle, JDBC clock/construction, one-use leases, invocation table and reference model integrated. Frontend/component/sensitive and remaining authentication work continue |
 | 7 | Transport work underway; upgrade-input and close-reservation states modeled, publisher defects isolated, subscriber/raw-socket retention backed by laws; decoder/assembly/connection work continues |
 | 8 | AsyncTable and scheduler units integrated; queue/operator/pool work continues with separate defect fixes and hot-path measurements |
 | 9 | Browser behavioral coverage and lifecycle extraction remain outstanding |
@@ -938,7 +938,11 @@ Detailed records: [shared protocols](pure-state-machines-shared-progress.md),
 [transport and adapters](pure-state-machines-transport-progress.md), and
 [effects, browser and testkits](pure-state-machines-effects-progress.md).
 Phase-6 details are also recorded for [JDBC clock/construction](pure-state-machines-jdbc-clock-progress.md)
-and [one-use authority/invocation decisions](pure-state-machines-operation-progress.md).
+and [one-use authority/invocation decisions](pure-state-machines-operation-progress.md),
+plus [snapshot references](pure-state-machines-reference-progress.md).
+[Application lifecycle](pure-state-machines-application-progress.md),
+[frontend cleanup](pure-state-machines-frontend-progress.md) and
+[bounded presentation](pure-state-machines-presentation-progress.md) have separate records.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
@@ -958,15 +962,15 @@ records 86 effect, 847 runtime, 56 HTTP-client and one IO pool test. The public
 connection lifecycle tests now join the CI Node command; the local protocol,
 lifecycle and purity selection passed 11 tests.
 
-Performance acceptance remains per hot path. The compact queue representation
-passed its original matched comparison; its contended allocation observation is
-provisional under the exiting-thread counter audit and is being rechecked.
-Initial heap-allocated component-owner/drain
-states showed a material admission-loop cost; a compact representation is being
-evaluated, so correctness completion does not yet accept that representation's
-performance. Text scanning similarly retained its failed designs and their rows
-before selecting a measured candidate. No failed performance trial is discarded,
-and the PR remains a draft while the remaining units and gates are completed.
+Performance acceptance remains per hot path. The corrected live-worker queue
+comparison passed with throughput 101.7% and allocation 95.6% of its baseline;
+its earlier contended allocation rows remain provisional. Compact owner/drain
+design 4 passed all five observed throughput/allocation gates after preserving
+the rejected designs. Timer rendering passed all four measured cells. The initial
+coordinator design failed contention/allocation checks and remains uncommitted
+while a compact design is evaluated. Text scanning likewise retained its failed
+designs before selecting a measured candidate. No failed trial is discarded,
+and the PR remains draft while the remaining units and gates are completed.
 
 The corrected allocation-evidence commit `51eda530` passed both full CI jobs
 (Scala build/tests and native browser, run 132). Later local integration checks
@@ -974,6 +978,17 @@ passed the managed pool cancellation cases, 146 real-PostgreSQL JDBC cases and
 56 HTTP-client cases. The canonical one-use lease then passed 38 runtime and
 29 real-PostgreSQL operation-outcome cases. These are incremental checkpoints;
 pending effect handoffs and the remaining inventory are not marked complete.
+
+The subsequent broad integration checkpoint passed through the repository Nix
+flake and disposable PostgreSQL: core 39, effect 90, runtime 895, recovery testkit
+51, HTTP 175, standalone 57, CE3 50, ZIO2 41 native plus 13 ScalaTest cases, and
+178 selected PostgreSQL cases. Four recovery-testkit and two PostgreSQL cases
+retain their existing cleanup-basis cancellations. The log is
+`/tmp/spoonbill-rollout-integration-11.log`; all executed assertions passed.
+Known stream terminal behavior is still being investigated/fixed separately.
+The internal HTTP pool handoff now protects acquisition through task success;
+[native probes](../misc/effect-handoff-probes/README.md) explain why this does not
+promise irrevocable delivery to an unbracketed outer caller.
 
 A phase starts when the decisions that it needs are made. A decision that only
 a later phase needs does not block it. The table under
