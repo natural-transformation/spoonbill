@@ -250,3 +250,27 @@ and mutation monitors. The samples identify dispatcher/registration work as a
 hot region, but do not isolate those two checks' exact cost. Removing redundant
 gates is therefore a source-backed candidate for a new controlled experiment,
 not a proven explanation or an optimization performed by this evidence unit.
+
+## Sort-focused compact candidate
+
+The next candidate is base `bb58db49` plus only the Runtime patch in
+`variants/compact2-routing.patch`; the compact Machine hash is unchanged. Its
+fixed-lane references and first-command reservation were validated by the owning
+implementation task before freeze. The same fixture, original baseline bytecode,
+smoke/thread/EOF/cleanup and escaping controls were verified unchanged.
+
+A fresh 18-row matched screen is preserved under `evidence/compact2-v2`:
+
+| Cell | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: |
+| Hub | 2.7101838394950533 | 0.31785502201275945 |
+| Sort | **0.6440162023336519** | 0.8891743394497005 |
+| Zero-duration buffer | 0.9952317140088255 | 0.6478693014164414 |
+
+Sort still misses the 0.95 throughput guide. Its median is 21,721,648.34671551 →
+13,989,093.47667877 deliveries/second, with candidate range 11,446,375.19570495–
+14,485,399.886188317. Allocation is 359.9437831097047 → 320.05277558559794 bytes per
+delivery. The complete candidate is not accepted; neither the substantial gain
+from the original rewrite nor the gain over the preceding compact screen rounds
+away this remaining miss. All 18 rows passed count/order/thread/teardown and
+stderr checks; every prior variant and diagnostic remains intact.
