@@ -19,7 +19,6 @@ package spoonbill.server.internal.services
 import java.util.UUID
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.annotation.tailrec
-import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.*
 import spoonbill.Qsid
 import spoonbill.effect.{AsyncTable, Effect, Hub, LateHandleMachine, Scheduler, Stream, Var}
@@ -50,18 +49,19 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   type App        = ApplicationInstance[F, S, M]
   type Extensions = ExtensionRuntime[F, S, M]
 
-  private val apps               = AsyncTable.unsafeCreateEmpty[F, Qsid, App]
-  private val guardedAttachments = TrieMap.empty[Qsid, ConnectionId]
-  // Retry a failed storage retirement only while holding the next attachment's
-  // local fence, before opening/restoring a replacement. Never retire an old
-  // view asynchronously after its replacement has started writing.
-  private val pendingStorageRemovals = TrieMap.empty[Qsid, Unit]
-  private case object MissingLocalView extends RuntimeException("Local view is unavailable")
-  // Only URI metadata is retained, never bootstrap authority or application
-  // state. Bound unused HTTP bootstraps and consume them on durable attachment.
-  private val bootstrapPaths = new java.util.LinkedHashMap[Qsid, (Long, PathAndQuery)] {
-    override def removeEldestEntry(entry: java.util.Map.Entry[Qsid, (Long, PathAndQuery)]): Boolean = size() > 5000
+  private val apps = AsyncTable.unsafeCreateEmpty[F, Qsid, App]
+  private type Metadata = SessionRegistryMachine.State[Qsid, ConnectionId, PathAndQuery]
+  private val registryMonitor = new Object
+  private var metadata = SessionRegistryMachine.State[Qsid, ConnectionId, PathAndQuery]()
+  private def updateMetadata(change: Metadata => Metadata): Unit = registryMonitor.synchronized {
+    metadata = change(metadata)
   }
+  private def claimAttachment(qsid: Qsid, connection: ConnectionId): Boolean = registryMonitor.synchronized {
+    val (next, accepted) = SessionRegistryMachine.claim(metadata, qsid, connection)
+    metadata = next
+    accepted
+  }
+  private case object MissingLocalView extends RuntimeException("Local view is unavailable")
 
   private def checkedApplicationPath(raw: String): PathAndQuery = {
     if (
@@ -86,9 +86,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   }
 
   private def applicationRequest(qsid: Qsid, current: Head): Head = {
-    val bootstrap = bootstrapPaths
-      .synchronized(Option(bootstrapPaths.remove(qsid)))
-      .filter { case (created, _) => System.nanoTime() - created <= 5.minutes.toNanos }
+    // Consume once before validating time or the current browser location.
+    val bootstrap = registryMonitor.synchronized {
+      val (next, value) = SessionRegistryMachine.take(metadata, qsid)
+      metadata = next
+      value
+    }.filter { case (created, _) => SessionRegistryMachine.fresh(created, System.nanoTime(), 5.minutes.toNanos) }
       .map(_._2)
     val path = current.param("__spoonbill_location") match {
       // Current browser location takes precedence after client-side navigation.
@@ -104,9 +107,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   }
 
   private def retryStorageRemoval(qsid: Qsid): F[Unit] = Effect[F].delay {
-    if (pendingStorageRemovals.contains(qsid)) {
+    // Called only after claiming this attachment: a retry cannot race a newer
+    // local owner. Keep external storage effects outside the metadata monitor.
+    if (registryMonitor.synchronized(SessionRegistryMachine.needsRemoval(metadata, qsid))) {
       stateStorage.remove(qsid.deviceId, qsid.sessionId)
-      pendingStorageRemovals.remove(qsid)
+      updateMetadata(state => SessionRegistryMachine.removalSucceeded(state, qsid))
     }
     ()
   }
@@ -140,7 +145,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _ <- stateStorage.create(qsid.deviceId, qsid.sessionId, state)
       _ <- Effect[F].delay {
              bootstrapPath.foreach { path =>
-               bootstrapPaths.synchronized { bootstrapPaths.put(qsid, (System.nanoTime(), path)); () }
+               registryMonitor.synchronized {
+                 metadata = SessionRegistryMachine.remember(metadata, qsid, System.nanoTime(), path, 5000)
+               }
              }
            }
     } yield state
@@ -357,13 +364,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           case Stage.RemoveStorage =>
             if (GuardedSessionMachine.ownsStorage(lifecycle.get())) {
               Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)).recover { case error =>
-                pendingStorageRemovals.put(qsid, ())
+                updateMetadata(state => SessionRegistryMachine.removalFailed(state, qsid))
                 config.reporter.error("Guarded storage cleanup failed; retry required before restoration", error)
                 ()
               }
             } else Effect[F].unit
           case Stage.RemoveApplication => attempt(apps.remove(qsid))
-          case Stage.ReleaseAttachment => Effect[F].delay { guardedAttachments.remove(qsid, connectionId); () }
+          case Stage.ReleaseAttachment => Effect[F].delay { updateMetadata(state => SessionRegistryMachine.release(state, qsid, connectionId)); () }
         }
         operation.flatMap(_ => Effect[F].delay(transition(GuardedSessionMachine.Event.Finished(stage)))).flatMap(teardown)
       case _ => Effect[F].unit
@@ -587,7 +594,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     // completed. In between, the attach owns everything it has created so far.
 
     val attach = Effect[F].delay {
-      if (config.sessionIdleTimeout.toMillis <= 0 || guardedAttachments.putIfAbsent(qsid, connectionId).nonEmpty)
+      if (config.sessionIdleTimeout.toMillis <= 0 || !claimAttachment(qsid, connectionId))
         throw new SessionAccessDenied
       transition(GuardedSessionMachine.Event.Claim)
     }.flatMap { _ =>

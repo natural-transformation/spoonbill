@@ -342,3 +342,42 @@ New model files were formatted with exact-path scalafmtOnly; the purity guard
 reported 16 models and zero violations. Session metadata registry adoption is
 the remaining phase-four unit; coordinator performance refinement remains a
 separate phase-three item.
+
+## Session metadata registries
+
+`SessionRegistryMachine` now owns one metadata slot per Qsid: the exact attachment
+owner, pending storage-retirement retry and optional read-once bootstrap path/time.
+A bounded insertion-order index limits bootstrap paths independently of owner and
+retry retention. Refreshing an existing bootstrap preserves its FIFO position;
+eviction or consumption removes only that path. Stale-owner release cannot erase
+a successor, and a failed retirement survives release until the next fenced retry
+succeeds. Empty metadata slots are removed.
+
+The interpreter publishes metadata under one short monitor. External storage
+removal stays outside it, and retry still occurs only after claiming attachment,
+before opening/restoring a replacement. Bootstrap consumption still precedes
+clock/URI validation; the inclusive five-minute monotonic-duration test takes
+explicit samples in the pure helper and preserves signed Long wrap behavior.
+Only routing metadata is retained, never authority or application state.
+
+`apps` is intentionally retained as the existing AsyncTable resource/publication
+protocol: asynchronous waiters, terminal development-state failures and application
+handles are not duplicated in metadata slots. Its existing attach/abandon/poison
+tests remain unchanged. This is a protocol distinction, not a deferred duplicate
+registry implementation.
+
+The following Nix validation passed 28 runtime cases and all three native-IO late
+guard acquisition cases:
+
+```
+spoonbill/testOnly *SessionRegistryMachineSpec *SessionLifetimeSpec *SessionsServiceSpec *GuardedRestoreCleanupSpec *GuardedEventObservationSpec *MissingViewReloadSpec *InvalidDevRenderContextSpec
+ce3/testOnly *GuardedOpenCancellationSpec
+```
+
+The CE3 command also included an unmatched `*ExtensionAdapterIOSpec` selector;
+the three guard cases were the tests actually run. Prior guarded/legacy validation
+ran the full matching extension/native-cancellation selections. Model laws cover
+takeover fencing, failed-removal retention, FIFO bounds/refresh, read-once expiry
+and clock wrap. The new model was formatted and the purity check passed with
+16 models and zero violations. This completes the owned phase-four extraction and
+retention decisions; coordinator compact-performance acceptance is still pending.
