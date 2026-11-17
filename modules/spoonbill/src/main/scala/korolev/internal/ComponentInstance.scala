@@ -371,13 +371,14 @@ final class ComponentInstance[
                 effect.flatMap(newState => writeLoaded(newState, establishBaseline = false)).runAsyncForget
             }
           }
-          component.render(parameters, value)
+          val rendered = component.render(parameters, value)
+          lastParameters = parameters
+          rendered
         case Left(generateState) =>
-          Effect[F].delayAsync(generateState(parameters)).flatMap(value => writeLoaded(value)).runAsyncForget
+          loadInitial(parameters, generateState)
           component.renderNoState(parameters)
       }
 
-    if (hasBaseline) lastParameters = parameters
     val proxy = createMiscProxy(
       rc,
       (proxy, misc) =>
@@ -457,6 +458,26 @@ final class ComponentInstance[
     baselineReady = true
     loading = false
   }.flatMap(_ => publishState(state, None))
+
+  private def loadInitial(parameters: P, generate: P => F[CS]): Unit = if (!loading) {
+    loading = true
+    try
+      Effect[F].delayAsync(generate(parameters)).flatMap { value =>
+        // A loading placeholder did not render state for its latest parameters.
+        // Keep the parameters that produced this state so the next real render
+        // can offer any newer ones to maybeUpdateState.
+        lastParameters = parameters
+        writeLoaded(value)
+      }.recoverF { case error =>
+        if (owner.isOpen) loading = false
+        Effect[F].fail(error)
+      }.runAsyncForget
+    catch {
+      case NonFatal(error) =>
+        if (owner.isOpen) loading = false
+        throw error
+    }
+  }
 
   private def loadWhenReady(parameters: P): Unit = if (!loading) {
     loading = true
