@@ -386,16 +386,33 @@ abstract class Stream[F[_]: Effect, A] { self =>
     reporter: Reporter
   ): Stream[F, Seq[A]] = new Stream[F, Seq[A]] {
 
-    final val queue = Queue[F, A](maxSize)
+    import Stream.BufferTerminal
+    final val queue       = Queue[F, A](maxSize)
+    private val terminal = new AtomicReference[BufferTerminal](BufferTerminal.Running)
+
+    private def end(): F[Option[Seq[A]]] = terminal.get() match {
+      case BufferTerminal.Failed(error) => Effect[F].fail(error)
+      case _                            => Effect[F].none
+    }
 
     self
       .foreach(queue.enqueue)
+      .map[Either[Throwable, Unit]](_ => Right(()))
+      .recover { case error => Left(error) }
+      .flatMap { result =>
+        Effect[F].delay {
+          val completed = result.fold(BufferTerminal.Failed.apply, _ => BufferTerminal.Completed)
+          terminal.compareAndSet(BufferTerminal.Running, completed)
+          // Stop admits no new items but lets every accepted item drain first.
+          queue.unsafeStop()
+        }
+      }
       .start
       .runAsyncForget
 
     override def pull(): F[Option[Seq[A]]] = if (duration.toMillis > 0) {
       queue.stream.pull().flatMap {
-        case None => Effect[F].none
+        case None        => end()
         case Some(first) =>
           scheduler.sleep(duration).flatMap { _ =>
             queue.dequeueAll().map { rest =>
@@ -404,17 +421,28 @@ abstract class Stream[F[_]: Effect, A] { self =>
           }
       }
     } else {
-      queue.stream.pull().map(x => x.map(Seq(_)))
+      queue.stream.pull().flatMap {
+        case Some(value) => Effect[F].pure(Some(Seq(value)))
+        case None => end()
+      }
     }
 
     override def cancel(): F[Unit] = {
       self.cancel()
-      queue.close()
+      Effect[F].delay {
+        terminal.set(BufferTerminal.Canceled)
+        queue.unsafeClose()
+      }
     }
   }
 }
 
 object Stream {
+
+  private enum BufferTerminal {
+    case Running, Completed, Canceled
+    case Failed(error: Throwable)
+  }
 
   implicit class SpoonbillUnchunkExtension[F[_]: Effect, A](stream: Stream[F, Seq[A]]) {
 

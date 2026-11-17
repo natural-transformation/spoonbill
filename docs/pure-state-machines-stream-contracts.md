@@ -10,7 +10,7 @@ buffering or ownership contract.
 | --- | --- | --- | --- |
 | `Hub(stream, bufferSize)` | A subscriber wins one shared upstream read. Its item is offered to every currently registered sibling queue. A finite full queue drops the **new incoming** item. Default capacity is `Int.MaxValue`, effectively unbounded. | EOF closes/discards sibling buffers; failure now settles all subscribers with the same error. A subscriber's explicit cancel detaches only its queue, never the shared source. | Legacy Sessions: Frontend plus activity/idle-timeout watcher. Akka/Pekko `asPublisher(fanout=true)`: independently demanded subscribers. |
 | `Stream.sort(numRacks)(route)` | **One value slot and one callback slot per rack**, not an unbounded queue. No capacity argument. Reading an item for an unwaited rack replaces its previous slot. A read routed elsewhere can leave its driving request pending without restarting the pump. | EOF replaces slots with `None` (discarding queued values); the null-callback EOF defect is fixed. Failure can still strand siblings. Canceling any rack delegates to the shared source's cancel. | Legacy Frontend partitions DOM events, browser history and control/RPC messages into three racks. Guarded Frontend bypasses this operator. |
-| `Stream.buffer(duration, maxSize=16)` | Already starts an **eager producer** into `Queue.enqueue`; a full queue backpressures that producer. Each output pull takes one element, waits its own duration, then drains the queue. Nonpositive duration produces singleton batches. | Producer EOF/failure is not propagated to the output queue, so its final pull can wait forever. Cancel closes the output queue, but discards a lazy upstream-cancel effect. | ApplicationInstance's delayed-render loop, in both initialization paths. |
+| `Stream.buffer(duration, maxSize=16)` | Already starts an **eager producer** into `Queue.enqueue`; a full queue backpressures that producer. Each output pull takes one element, waits its own duration, then drains the queue. Nonpositive duration produces singleton batches. | The independent fix now drains its accepted prefix before EOF or producer failure. Cancel closes the output queue, but still discards a lazy upstream-cancel effect pending the cleanup-contract decision. | ApplicationInstance's delayed-render loop, in both initialization paths. |
 
 Sources: [Hub](../modules/effect/src/main/scala/korolev/effect/Hub.scala),
 [Stream](../modules/effect/src/main/scala/korolev/effect/Stream.scala),
@@ -100,8 +100,8 @@ The remaining decisions concern terminal state and ownership:
 
 | Boundary | Recommended contract to confirm | Compatibility detail |
 | --- | --- | --- |
-| Natural EOF | Drain accepted queued elements, then return `None`. | Preserve the existing first-element delay; immediate EOF-triggered flushing would be a timing change. |
-| Upstream failure | Either drain the accepted prefix then fail, or abort queued data immediately; choose explicitly. | Current queued values remain readable before the eventual hang. Queue failure alone has priority over queued data, while `dequeueAll` in an already-started batch still drains it, so simply calling `queue.fail` does not define one uniform policy. |
+| Natural EOF | Drain accepted queued elements, then return `None`; independently implemented. | Preserves the existing first-element delay; immediate EOF-triggered flushing would be a timing change. |
+| Upstream failure | Drain the already accepted prefix, then fail with the original error; independently implemented with the terminal fix. | Preserves the previously readable prefix and completes its eventual terminal pull instead of hanging. This avoids the inconsistent partial-buffer behavior of simply calling `queue.fail`. |
 | Explicit cancel | Abort pending batches, stop admitting producer work, and execute upstream cancellation. | Specify whether cancel joins upstream cleanup. The current strict-Future implementation starts cancellation without awaiting its result; the lazy-effect call is discarded entirely. |
 | Canceled output pull | Define whether this cancels the whole buffered stream or only that waiting pull. | Do not silently assume a native effect cancellation removes an already registered queue callback. |
 
@@ -132,6 +132,6 @@ exposes join, not a portable cancel-and-join operation.
 
 Suggested next decision: choose Hub fanout policy/default, choose Sort overflow
 policy separately with its Frontend implication, and keep Buffer's eager bounded
-behavior while selecting its failure-drain and cancellation-completion rules.
+behavior and terminal drain while selecting its cancellation-completion rules.
 Until then the confirmed independent terminal bugs are fixed separately and the
 three policy-dependent replacements remain open.

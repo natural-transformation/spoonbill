@@ -239,6 +239,18 @@ physical cleanup. Queue cancellation joins the shared latch after the separate
 confirmed late-listener fix above.
 Those differences must not disappear in a shared-helper migration.
 
+The independent `Stream.buffer` terminal-drain fix preserves its eager producer,
+bounded enqueue backpressure and first-element batching delay. Its accepted
+prefix now drains before EOF or the original producer error; an already-delayed
+batch retains its timing and contents. Four explicit terminal states distinguish
+running, completed, failed and canceled, and a late producer result cannot
+replace explicit cancellation. Three permanent cases failed the old code; the
+explicit-cancel precedence characterization already passed it. All 100 effect
+tests and 103 named render/session/extension cases pass after the fix.
+The remaining lazy upstream-cancel defect is independently reproduced with IO
+and held for the owner-selected nonjoining/joining cleanup contract. That defect
+is not classified as intended behavior or hidden by this terminal fix.
+
 `handleConsumed`'s previous EOF-only, single-waiter fields were confirmed defects,
 not a supported policy. Upload responses could wait forever after body-read
 failure, and two evaluations of the signal in CE3 lost one observer. The wrapper
