@@ -247,8 +247,13 @@ all current and late observers; strict read construction errors are captured.
 Canceling an individual pull effect is not declared successful consumption.
 Three Future regressions and the real IO multiple-observer regression failed
 the old code. All five Future cases, the IO case and the full effect96/poolIO8
-checks pass. The legacy session caller must also retire after observing a failed
-terminal signal; that companion correction is prepared on the current aggregate.
+checks pass. The companion legacy-session regression then failed against the
+current session machines: an incoming Queue failure left its extension alive
+and its application registered. The close watcher now records either terminal
+outcome before following the existing retirement sequence. The same regression
+passes, including a subsequent fresh attachment, together with 16 existing
+session lifecycle cases. The stream's error is reported before cleanup; cleanup
+ordering and once-only retirement remain unchanged.
 
 After the defect fix, `handleConsumed` now adopts `CompletionLatchMachine` in a
 separate representation change. One monitor-held immutable value pairs the
@@ -256,6 +261,12 @@ pure phase with the result and callbacks; notifications still run outside the
 monitor. The model runs only on terminal publication or observer registration,
 not on each data element. The unchanged consumption cases and shared table tests
 pass (seven Future/pure cases and one IO case), as does the source purity guard.
+
+A companion diagnostic review reproduced an intentional cancellation being
+reported as a connection error. The watcher still retires on both outcomes, but
+`CancellationException` now follows normal terminal cleanup without an error
+report; real read failures remain reported. The paired actual Queue-to-session
+regression and 16 existing lifecycle cases pass (18 total).
 
 Decision 6 remains explicit. Hub currently pulls on demand, drops offers to full
 subscriber buffers, discards buffers at upstream EOF, and cancels subscribers

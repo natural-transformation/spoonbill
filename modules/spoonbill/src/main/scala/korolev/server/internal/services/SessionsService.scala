@@ -17,6 +17,7 @@
 package spoonbill.server.internal.services
 
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.annotation.tailrec
 import scala.concurrent.duration.*
@@ -754,6 +755,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
 
       consumed
+        .recover {
+          case _: CancellationException => ()
+          case error =>
+            config.reporter.error("Legacy connection closed with an error", error)
+            ()
+        }
         .flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.ConnectionClosed)))
         // Retire only when this attach has registered the view or rolled it
         // back. So the registry never forgets a view that is registered
