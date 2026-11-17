@@ -303,4 +303,43 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
     val fourth = f.clock()
     fourth.now() shouldBe start.plusMillis(1600)
   }
+
+  it should "renew at the exact half-lease boundary and consume each demand once" in {
+    val f     = new Fixture
+    val clock = f.clock()
+    clock.now() shouldBe start
+    clock.renewAhead() shouldBe true
+    val leased = f.counts
+    f.time.set(start.plusMillis(500).minusNanos(1))
+    clock.now() shouldBe f.time.get()
+    clock.renewAhead() shouldBe false
+    f.counts shouldBe leased
+    f.time.set(start.plusMillis(500))
+    // The earlier unsuccessful check consumed demand too.
+    clock.renewAhead() shouldBe false
+    clock.now() shouldBe f.time.get()
+    clock.renewAhead() shouldBe true
+    f.counts shouldBe ((leased._1 + 1, leased._2 + 1, leased._3 + 1))
+    clock.renewAhead() shouldBe false
+  }
+
+  it should "preserve the acknowledged lease after a failed background renewal" in {
+    val f     = new Fixture
+    val clock = f.clock()
+    clock.now() shouldBe start
+    clock.renewAhead() shouldBe true
+    f.time.set(start.plusMillis(600))
+    clock.now() shouldBe f.time.get()
+    f.failAcquire.set(true)
+    clock.renewAhead() shouldBe false
+    val failed = f.counts
+    f.time.set(start.plusMillis(900))
+    clock.now() shouldBe f.time.get()
+    f.counts shouldBe failed
+    // A fresh demand retries normally; failure did not acknowledge a new lease.
+    clock.renewAhead() shouldBe true
+    f.counts shouldBe ((failed._1 + 1, failed._2 + 1, failed._3 + 1))
+    f.time.set(start.plusMillis(1800))
+    clock.now() shouldBe f.time.get()
+  }
 }
