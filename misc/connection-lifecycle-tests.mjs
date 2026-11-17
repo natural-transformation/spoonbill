@@ -12,7 +12,7 @@ const {Connection} = await import(pathToFileURL(moduleFile));
 after(() => rmSync(directory, {recursive: true, force: true}));
 
 async function environment(check) {
-  const keys = ['window', 'document', 'WebSocket', 'XMLHttpRequest', 'setTimeout', 'clearTimeout'];
+  const keys = ['window', 'document', 'WebSocket', 'XMLHttpRequest', 'FileReader', 'setTimeout', 'clearTimeout'];
   const previous = new Map(keys.map(key => [key, {present: Object.hasOwn(globalThis, key), value: globalThis[key]}]));
   const sockets = [], requests = [], connections = [], timers = new Map();
   let serial = 0;
@@ -177,4 +177,42 @@ test('an old socket decoder cannot let later frames overtake a new socket decode
   } finally {
     old.complete('stale'); first.complete('first'); await env.flush();
   }
+}));
+
+test('a failed Blob decoder reports an error and releases the close lifecycle', () => environment(async env => {
+  const connection = env.create();
+  const events = [];
+  for (const name of ['error', 'close', 'message'])
+    connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer(); env.sockets[0].open();
+  env.sockets[0].message(new class extends Blob {
+    text() { return Promise.reject(new Error('invalid encoded frame')); }
+  }());
+  await env.flush();
+  assert.deepEqual(events, ['error', 'close']);
+  assert.equal(env.sockets[0].readyState, WebSocket.CLOSED);
+  assert.equal(env.timers.size, 1, 'decoder failure must leave the normal reconnect path available');
+}));
+
+test('legacy FileReader decoding keeps frames ordered until reading completes', () => environment(async env => {
+  const readers = [];
+  globalThis.FileReader = class {
+    constructor() { readers.push(this); }
+    readAsText() {}
+    complete(text) { this.result = text; this.onload(); }
+  };
+  const connection = env.create();
+  const messages = [];
+  connection.dispatcher.addEventListener('message', event => messages.push(event.data));
+  connection.connect(); env.nextTimer(); env.sockets[0].open();
+  const blob = new Blob();
+  Object.defineProperty(blob, 'text', {value: undefined});
+  env.sockets[0].message(blob);
+  env.sockets[0].message('second');
+  await env.flush();
+  assert.deepEqual(messages, []);
+  assert.equal(readers.length, 1);
+  readers[0].complete('first');
+  await env.flush();
+  assert.deepEqual(messages, ['first', 'second']);
 }));

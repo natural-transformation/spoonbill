@@ -266,3 +266,11 @@ frame. The public-event regression failed with that exact order. Processing is
 now owned by each physical socket; only that owner clears its current shared
 close-wait marker, and stale socket messages cannot start a new drain. All 73
 browser lifecycle, redesign, sensitive, protocol and bootstrap tests pass.
+
+Two further decoder regressions failed on the existing client: a rejected
+Blob.text() left the close waiter pending and emitted an unhandled rejection;
+the FileReader fallback dispatched later frames before its read completed.
+The drain now observes decoding failure, closes the affected current transport
+through the ordinary error/reconnect lifecycle, and always releases its waiter.
+Legacy FileReader completion, error and abort are awaited by the same drain.
+Both permanent public-event regressions and all 75 browser tests pass under Nix.

@@ -262,12 +262,14 @@ export class Connection {
           data = await data.text();
           if (sendingSocket === this._webSocket) this._onMessage(data);
         } else {
-          let reader = new FileReader();
-          reader.onload = async () => {
-            const text = /** @type {string} */ (reader.result);
-            if (sendingSocket === this._webSocket) this._onMessage(text);
-          }
-          reader.readAsText(data);
+          const text = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error('Unable to decode websocket frame'));
+            reader.onabort = () => reject(new Error('Websocket frame decoding aborted'));
+            reader.readAsText(data);
+          });
+          if (sendingSocket === this._webSocket) this._onMessage(text);
         }
       } else if (data instanceof ArrayBuffer) {
         const decoder = typeof TextDecoder === 'undefined' ? null : new TextDecoder();
@@ -283,15 +285,21 @@ export class Connection {
         return false;
       }
 
-      processing = this._processing = new Promise(async (resolve) => {
+      const drain = (async () => {
         while (messages.length > 0) {
           const message = messages.shift();
           await processMessage(message);
         }
-
+      })();
+      processing = this._processing = drain.catch(() => {
+        messages.length = 0;
+        if (sendingSocket === this._webSocket) {
+          this._onError();
+          sendingSocket.close();
+        }
+      }).finally(() => {
         if (this._processing === processing) this._processing = null;
         processing = null;
-        resolve()
       });
     }
 
