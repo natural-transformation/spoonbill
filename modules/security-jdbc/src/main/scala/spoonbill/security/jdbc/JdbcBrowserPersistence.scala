@@ -380,8 +380,7 @@ final class JdbcBrowserPersistence[F[_], P](
     }
   }
   private val browser =
-    new JdbcBrowserSessions(source, realm, namespace, () => now(), hooks, limits.activeViewsPerBinding)
-  browser.useManagedLifecycle()
+    new JdbcBrowserSessions(source, realm, namespace, () => now(), hooks, limits.activeViewsPerBinding, managedLifecycle = true)
 
   /** Explicit deployment migration; never run implicitly from a request. */
   def initialize(connection: Connection): Unit = {

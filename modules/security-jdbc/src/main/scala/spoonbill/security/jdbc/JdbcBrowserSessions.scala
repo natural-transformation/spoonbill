@@ -21,20 +21,28 @@ import spoonbill.snapshot.{SnapshotFormat, SnapshotIdentity, ViewSnapshotError}
  * stored here. A completion UUID is not a bearer credential: delivery also
  * requires the current high-entropy browser-binding proof, supplied as a hash.
  */
-final class JdbcBrowserSessions(
+final class JdbcBrowserSessions private[jdbc] (
   dataSource: DataSource,
   realm: String,
   cookieNamespace: String,
   clock: () => Instant,
   host: HostSessionHooks,
-  maxActiveViews: Int = 16
+  maxActiveViews: Int,
+  managedLifecycle: Boolean
 ) {
+  /** Public low-level construction retains enrollment checks. */
+  def this(
+    dataSource: DataSource,
+    realm: String,
+    cookieNamespace: String,
+    clock: () => Instant,
+    host: HostSessionHooks,
+    maxActiveViews: Int = 16
+  ) = this(dataSource, realm, cookieNamespace, clock, host, maxActiveViews, false)
+
   require(realm.matches("[A-Za-z0-9_.-]{1,96}"), "Invalid browser authentication realm")
   require(cookieNamespace.matches("[A-Za-z0-9_.-]{1,96}"), "Invalid browser authentication namespace")
   require(maxActiveViews > 0, "Active view limit must be positive")
-  private var managedLifecycle = false
-  private[jdbc] def useManagedLifecycle(): Unit = managedLifecycle = true
-
   private def checkManagedCreation(connection: Connection): Unit =
     if (!managedLifecycle) {
       // Enrollment must exclude an older low-level writer which checked the
