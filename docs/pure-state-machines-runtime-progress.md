@@ -281,3 +281,64 @@ Unit explicitly corrected it, and the full second run passed. Pure laws cover
 out-of-order completion, repeated cleanup, failure, signal and admission ordering.
 Legacy retirement and session registry decisions remain separate pending units;
 the native late-acquisition regression remains part of this validation matrix.
+
+## Timer render ownership and measured acceptance
+
+`TimerRenderMachine` now owns dormant/running render admission, prepared retiring
+identities and deferred wakes, staged command/report outboxes, suppression and
+declaration validity/conflict/budget decisions. Pending/offered/detached delivery
+record ownership is explicit too. Physical descriptions, reducers, targets and
+cancel handles remain in `TimerRuntime` under its existing monitor, and individual
+effect starts retain their boundaries. Cached empty states avoid allocating a
+new wrapper for common no-op render transitions. Public timer APIs are unchanged.
+
+The original timer characterizations passed 51 tests before extraction. The
+extracted selection passed 130 runtime tests including five new model cases,
+timer-runtime/exhaustion/application, owner/snapshot, guards and memory-provider
+cases; the same run passed 3 effect, 4 HTTP and 96 JDBC cases. Commands and Nix
+entry point are recorded above in the compact ownership section. Subsequent
+session/extension selections also compile and exercise the same timer sources.
+
+The frozen matched eight-cell lifecycle comparison passed all four timer cells
+at the 95% throughput/110% allocation median gates. Accepted-render throughput
+ratios for 0/1/1,024 declarations were 1.068/1.042/0.997 and allocation ratios
+0.955/0.922/1.000; aborted one-declaration render was 1.044/0.976. All rows retain
+live-producer and global-versus-self allocation checks. This fixture measures
+render bookkeeping, not wake delivery or server latency.
+
+[The complete evidence pack](../misc/lifecycle-cost/README.md) also retains the
+rejected coordinator candidate, all 48 matched rows, and explicitly non-comparative
+smoke rows. The coordinator refactor remains uncommitted pending a compact design;
+its failures are not hidden by the timer acceptance. Each measured source and
+fixture is hashed, with reproducible zero-context candidate patches.
+
+## Legacy retirement
+
+`LegacySessionMachine` keeps connection loss separate from retirement and records
+whether the first retirement belongs to rollback or a disconnected watcher. The
+winning interpreter retains its restore/registry effects; another retirement
+cannot substitute its cause or join its work. Pure stage decisions stop delivery,
+cancel input, close/destroy the view, destroy extensions, restore the baseline,
+remove storage, then settle the application registry. An unisolated failure is
+terminal, as with the original once-only claim.
+
+The physical `created: Option[View]` remains an interpreter resource slot. The
+application table continues to own pending publication, abandonment and poisoned
+development-state failures; those states are not duplicated in the retirement
+model. The close watcher's one-shot callback guard remains a single independent
+capability, and its scheduler/stream effect chain retains cancellation order.
+
+All existing legacy rollback, reconnect, pending computation and native
+cancellation checks were preserved. Through Nix, the following passed 159 runtime
+cases and 16 CE3 cases, including three pure legacy laws and three independently
+prepared registry laws:
+
+```
+spoonbill/testOnly *LegacySessionMachineSpec *SessionRegistryMachineSpec *SessionLifetimeSpec *SessionsServiceSpec *Extension*Spec
+ce3/testOnly *GuardedOpenCancellationSpec *Extension*Spec *Session*Spec
+```
+
+New model files were formatted with exact-path scalafmtOnly; the purity guard
+reported 16 models and zero violations. Session metadata registry adoption is
+the remaining phase-four unit; coordinator performance refinement remains a
+separate phase-three item.

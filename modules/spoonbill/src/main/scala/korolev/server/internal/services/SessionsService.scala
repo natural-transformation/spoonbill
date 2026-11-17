@@ -650,9 +650,14 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     val created = new AtomicReference(Option.empty[View])
     // Set when the connection has closed. Setup then stops before the next
     // extension, and delivery does not start.
-    val connectionClosed = new AtomicBoolean(false)
-    // The close watcher and a failed attach both retire the view.
-    val retired = new AtomicBoolean(false)
+    val lifecycle = new AtomicReference(LegacySessionMachine.State())
+    @tailrec def transition(event: LegacySessionMachine.Event): LegacySessionMachine.Command = {
+      val before = lifecycle.get()
+      val (next, command) = LegacySessionMachine.step(before, event)
+      if (next eq before) command
+      else if (lifecycle.compareAndSet(before, next)) command
+      else transition(event)
+    }
 
     /**
      * Closes the view, then destroys its extensions. It runs once, and to its
@@ -663,24 +668,27 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * @param registry
      *   settles the registration of this view. It runs last.
      */
-    def retire(view: View)(restore: () => F[Unit], registry: () => F[Unit]): F[Unit] = Effect[F].uncancelable {
-      Effect[F].delay(retired.compareAndSet(false, true)).flatMap {
-        case false => Effect[F].unit
-        case true =>
-          for {
-            // Stop extension delivery first: no callback starts once teardown began.
-            _ <- attempt(Effect[F].delay(view.extensions.foreach(_.stop())))
-            _ <- attempt(incomingStream.cancel())
-            _ <- attempt(view.frontend.close())
-            _ <- attempt(view.app.destroy())
-            // The view is closed by now, so the access fails inside onDestroy.
-            _ <- attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
-            _ <- attempt(restore())
-            // A failed removal must not keep the registration: later attaches
-            // of this session would wait for it without an end.
-            _ <- attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
-            _ <- attempt(registry())
-          } yield ()
+    def retire(view: View, cause: LegacySessionMachine.Cause)(restore: () => F[Unit], registry: () => F[Unit]): F[Unit] = {
+      def execute(command: LegacySessionMachine.Command): F[Unit] = command match {
+        case LegacySessionMachine.Command.Run(stage) =>
+          import LegacySessionMachine.Stage
+          val operation: F[Unit] = stage match {
+            case Stage.StopExtensions => attempt(Effect[F].delay(view.extensions.foreach(_.stop())))
+            case Stage.CancelInput => attempt(incomingStream.cancel())
+            case Stage.CloseFrontend => attempt(view.frontend.close())
+            case Stage.DestroyApplication => attempt(view.app.destroy())
+            case Stage.DestroyExtensions => attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
+            case Stage.Restore => attempt(restore())
+            case Stage.RemoveStorage => attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            case Stage.SettleRegistry => attempt(registry())
+          }
+          operation.flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.Finished(stage)))).flatMap(execute)
+        case _ => Effect[F].unit
+      }
+      Effect[F].uncancelable {
+        Effect[F].delay(transition(LegacySessionMachine.Event.Retire(cause))).flatMap(execute).recoverF { case error =>
+          Effect[F].delay(transition(LegacySessionMachine.Event.Failed)).flatMap(_ => Effect[F].fail(error))
+        }
       }
     }
 
@@ -695,7 +703,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // and not the removal.
       val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
       created.get() match {
-        case Some(view) => retire(view)(view.restore, settle)
+        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, settle)
         case None       => attempt(settle())
       }
     }
@@ -739,12 +747,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
 
       consumed
-        .flatMap(_ => Effect[F].delay(connectionClosed.set(true)))
+        .flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.ConnectionClosed)))
         // Retire only when this attach has registered the view or rolled it
         // back. So the registry never forgets a view that is registered
         // afterwards, which would keep a retired view for good.
         .flatMap(_ => apps.settled(qsid))
-        .flatMap(_ => retire(view)(() => Effect[F].unit, () => apps.remove(qsid)))
+        .flatMap(_ => retire(view, LegacySessionMachine.Cause.Disconnected)(() => Effect[F].unit, () => apps.remove(qsid)))
     }
 
     def create(): F[ApplicationInstance[F, S, M]] = {
@@ -800,7 +808,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                    app.topLevelComponentInstance.browserAccess,
                    initialState,
                    () =>
-                     if (connectionClosed.get()) Effect[F].fail[Unit](new ExtensionRuntime.SetupAborted)
+                     if (LegacySessionMachine.connectionClosed(lifecycle.get())) Effect[F].fail[Unit](new ExtensionRuntime.SetupAborted)
                      else Effect[F].unit
                  )
                  .flatMap(_ => runtime.start())
