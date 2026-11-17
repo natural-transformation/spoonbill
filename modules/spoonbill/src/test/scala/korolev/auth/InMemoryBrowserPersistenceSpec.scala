@@ -166,6 +166,7 @@ class InMemoryBrowserPersistenceSpec extends BrowserReplacementConformance {
     Using.resource(new MemoryFixture) { db =>
       db.replacement(db.login())
       var inspectedRecords = 0
+      var inspectedPredecessors = 0
       def inspect(value: Any): Unit = value match {
         case _: BrowserView[?] => fail("Immutable records retain a credential-bearing view capability")
         case _: BrowserIdentity[?] => fail("Immutable records retain a credential-bearing identity capability")
@@ -173,12 +174,14 @@ class InMemoryBrowserPersistenceSpec extends BrowserReplacementConformance {
         case values: Iterable[?] => values.foreach(inspect)
         case record: Product =>
           inspectedRecords += 1
+          if (record.isInstanceOf[BrowserReplacementPredecessor]) inspectedPredecessors += 1
           record.productIterator.foreach(inspect)
         case _ => () // Runtime handles and services are not immutable record data.
       }
       db.persistence.getClass.getDeclaredFields.filterNot(field => java.lang.reflect.Modifier.isStatic(field.getModifiers))
         .foreach { field => field.setAccessible(true); inspect(field.get(db.persistence)) }
       inspectedRecords should be > 0
+      inspectedPredecessors should be > 0
     }
 
   "Memory replacement" should "commit revocation and successor atomically and disclose only through an activated successor" in
