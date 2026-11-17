@@ -228,6 +228,32 @@ monitor rules. After extraction, `sbt 'http/test'` passed all 167 tests and the
 purity guard passed. No request-write, response-publication, cleanup, or TLS effect
 was reordered.
 
+### HTTP acquisition cancellation: separate caller fix
+
+Controlled real-IO/loopback probes exposed two lost-loan cases: canceling while a
+request waits for the one-slot pool, and canceling after a loan is assigned but
+before its native effect callback is published. Both prevented a later request
+from acquiring capacity. They failed before the fix.
+
+HTTP, HTTPS, WebSocket and secure-WebSocket entry points now use the coordinated
+internal `borrowAndTransfer` scope. It owns acquisition through successful request
+task completion, preserving caller effect context and interruptible waiting.
+Before success, abort schedules `loan.discard` without joining user cleanup.
+Discard's once-claim precedes physical mutation; a stale abort cannot close a
+connection which another owner already reused. Successful streaming responses
+keep their loan until body consumption/cancellation, as before.
+
+The transfer boundary is task success, not irrevocable delivery to an outer
+caller. CE2/Monix/ZIO2 can honor late cancellation after a successful finalizer;
+callers still need an effect-appropriate bracket/adoption scope for returned
+bodies. No universal sealed-success primitive or public API change is claimed.
+
+After correction, both red probes passed. An additional real-IO case cancels an
+active header wait, verifies physical closure and prompt cancellation while
+request cleanup remains blocked, and verifies capacity returns only after cleanup
+finishes. The combined client/pool IO suites passed 10 tests; existing HTTP client
+tests passed 56, including streaming-body retention, TLS, errors and cleanup.
+
 ## WebSocket text limits
 
 `WebSocketTextMachine` now owns pure per-chunk UTF-16 validation and UTF-8 byte

@@ -21,6 +21,11 @@ import spoonbill.http.protocol.{Http11, WebSocketProtocol}
 import spoonbill.http.protocol.WebSocketProtocol.Frame
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 
+/** Streaming responses own their connection until the body is consumed or canceled.
+  * Acquisition and request-task cancellation are protected until task success.
+  * This is not irrevocable delivery to an outer caller under late cancellation;
+  * callers must still bracket/adopt the returned body in their effect runtime.
+  */
 class HttpClient[F[_]: Effect, B: BytesLike] private (
   name: String,
   maxIdleTime: FiniteDuration,
@@ -60,16 +65,10 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   }
 
   def https(address: InetSocketAddress, request: Request[Stream[F, B]]): F[Response[Stream[F, B]]] =
-    for {
-      borrow   <- takeSecureConnection(address)
-      response <- http(borrow, address.getHostName, request)
-    } yield response
+    withSecureConnection(address)(borrow => http(borrow, address.getHostName, request))
 
   def http(address: InetSocketAddress, request: Request[Stream[F, B]]): F[Response[Stream[F, B]]] =
-    for {
-      borrow   <- takeRawConnection(address)
-      response <- http(borrow, address.getHostName, request)
-    } yield response
+    withRawConnection(address)(borrow => http(borrow, address.getHostName, request))
 
   private def http(
     borrow: Borrow[F, ClientConnection],
@@ -188,10 +187,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     cookie: Map[String, String],
     headers: Map[String, String]
   ): F[Response[Stream[F, Frame.Merged[B]]]] =
-    for {
-      borrow <- takeSecureConnection(address)
-      frames <- webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers)
-    } yield frames
+    withSecureConnection(address)(borrow => webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers))
 
   def webSocket(
     uri: URI,
@@ -226,10 +222,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     cookie: Map[String, String],
     headers: Map[String, String]
   ): F[Response[Stream[F, Frame.Merged[B]]]] =
-    for {
-      borrow <- takeRawConnection(address)
-      frames <- webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers)
-    } yield frames
+    withRawConnection(address)(borrow => webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers))
 
   private def webSocket(
     borrow: Borrow[F, ClientConnection],
@@ -350,7 +343,14 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     }
   }
 
-  private def takeRawConnection(address: InetSocketAddress) = {
+  private def abortAcquisition(borrow: Borrow[F, ClientConnection]): F[Unit] = Effect[F].delay {
+    // Discard must win the loan's claim before touching its physical connection:
+    // a late abort must not close a resource which was already returned/reused.
+    // Cleanup does not join user finalizers that may await this request's outcome.
+    borrow.discard().runAsyncForget
+  }
+
+  private def withRawConnection[A](address: InetSocketAddress)(task: Borrow[F, ClientConnection] => F[A]): F[A] = {
     val pool = rawConnectionsPools.getOrElseUpdate(
       address,
       new AsyncResourcePool(
@@ -361,10 +361,10 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         maxIdleTime
       )
     )
-    pool.borrow()
+    pool.borrowAndTransfer(task)(abortAcquisition)
   }
 
-  private def takeSecureConnection(address: InetSocketAddress) = {
+  private def withSecureConnection[A](address: InetSocketAddress)(task: Borrow[F, ClientConnection] => F[A]): F[A] = {
     val pool = secureConnectionsPools.getOrElseUpdate(
       // InetSocketAddress equality collapses names sharing an IP; TLS identity must not.
       (address.getHostString.toLowerCase(java.util.Locale.ROOT), address),
@@ -376,7 +376,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         maxIdleTime
       )
     )
-    pool.borrow()
+    pool.borrowAndTransfer(task)(abortAcquisition)
   }
 
   private val closeDispatcher       = new SocketCloseDispatcher(maxTotalConnections, closeNotificationWorkers)
