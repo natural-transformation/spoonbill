@@ -1,16 +1,16 @@
 # Pure state machines: design and plan
 
-Status: draft 5, with phases 0 and 1 implemented for review on
-2026-11-16. The proposal below retains the original before/after descriptions;
+Status: full rollout in final implementation and integration on 2026-11-17.
+The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
 and validation. The latest extension candidate separates ownership and uses
 compact pure admission decisions; [the two design experiments](#ownership-design-experiments)
 supersede the earlier whole-runtime CAS proposal. The owner has now authorized
 the full plan through phase 10, with incremental commits on PR #34 and a final
-review after completion. The existing shared-deadline work is integrated first.
-Nine of the ten decisions are made;
-see [decisions](#decisions-to-confirm). Decision 6 is open, and nothing before
-phase 8 needs it.
+review after completion. [Rollout progress](#rollout-progress) records the current
+state separately from the historical pilot and investigation checkpoints.
+All ten decisions are made; see [decisions](#decisions-to-confirm). The approved
+stream contracts are being implemented and validated in phase 8.
 
 **Pilot benchmark gate: passed by design Round 2.** The owner confirmed at least
 95% of main's throughput and at most 110% of main's delivery p99 and allocation
@@ -925,12 +925,12 @@ whole phase is complete.
 | Phase | Current state |
 | --- | --- |
 | 0–1 | Foundation and selected ownership-split pilot complete; agreed pilot benchmark gate passed |
-| 2 | Shared deadline, setup ownership, drain admission, completion latch, pending membership and late-handle ownership integrated; remaining candidate dispositions continue with their owning phases |
-| 3–4 | Compact owner/drain and timer-render models pass their matched gates; guarded/legacy sessions and registries integrated. Coordinator optimization and bounded presentation rules continue; strong snapshot/lane protocols retained with evidence |
-| 5–6 | Application startup/lifecycle, retained render cycle, JDBC clock/construction, one-use leases, invocation table and reference model integrated. Frontend/component/sensitive and remaining authentication work continue |
-| 7 | Transport work underway; upgrade-input and close-reservation states modeled, publisher defects isolated, subscriber/raw-socket retention backed by laws; decoder/assembly/connection work continues |
-| 8 | AsyncTable and scheduler units integrated; queue/operator/pool work continues with separate defect fixes and hot-path measurements |
-| 9 | Browser behavioral coverage and lifecycle extraction remain outstanding |
+| 2 | Shared deadline, setup ownership, drain admission, completion latch, pending membership and late-handle ownership integrated. Idle-timer comparison closes the remaining deadline disposition: distinct session idle policies are retained with deterministic tests and a separate late-install fix |
+| 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
+| 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
+| 7 | Transport and adapter work integrated except chunked-body extraction, whose rejected designs remain documented while the next candidate undergoes its matched gate |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved Hub, sort and buffer contracts are under implementation and independent cancellation/cleanup review |
+| 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
 Detailed records: [shared protocols](pure-state-machines-shared-progress.md),
@@ -942,7 +942,28 @@ and [one-use authority/invocation decisions](pure-state-machines-operation-progr
 plus [snapshot references](pure-state-machines-reference-progress.md).
 [Application lifecycle](pure-state-machines-application-progress.md),
 [frontend cleanup](pure-state-machines-frontend-progress.md) and
-[bounded presentation](pure-state-machines-presentation-progress.md) have separate records.
+[bounded presentation](pure-state-machines-presentation-progress.md) have separate records,
+as do [component loading](pure-state-machines-component-progress.md),
+[browser authentication](pure-state-machines-browser-auth-progress.md),
+[memory records](pure-state-machines-memory-store-progress.md),
+[idle policy comparison](pure-state-machines-idle-progress.md) and the
+[approved stream contracts](pure-state-machines-stream-contracts.md).
+
+The latest broad local checkpoint passed core 40, effect 105, runtime 935,
+HTTP 175, standalone 59, CE3 52, ZIO2 41 native plus 13 ScalaTest, and 178 selected
+PostgreSQL tests: 1,598 passing tests. The two existing PostgreSQL cleanup-basis
+cancellations remain. The log is `/tmp/spoonbill-rollout-integration-13.log`.
+Selected presentation sources subsequently passed 83 focused store/authentication/
+guard/snapshot cases. Its five-cell comparison passed with snapshot throughput
+99.7% of baseline and equal allocation; all failed designs and 100 trial rows are
+retained. These are local incremental checks, not the final aggregate gate.
+
+Remaining completion work is the chunk parser gate, the three stream operators,
+their combined correctness/CI validation, final inventory reconciliation and a
+fresh original four-workload pilot gate against the final aggregate sources.
+The PR remains draft for the owner's final review. The following integration
+paragraphs are historical checkpoints; their then-pending items do not supersede
+the current table above.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
@@ -1180,9 +1201,9 @@ gets an `enum` in place of its number.
 
 ## Decisions to confirm
 
-Nine of the ten decisions are made. They were confirmed on 2026-11-15, with
-the amendments of the fifth review. Those are part of the text below.
-Decision 6 is open.
+All ten decisions are made. The original decisions were confirmed on 2026-11-15,
+with amendments from review and performance experiments. The owner subsequently
+authorized the full rollout and explicitly selected all three stream contracts.
 
 Only the decisions that the next phase needs block that phase. Phase 0 needs
 decisions 3, 5 and 10.
@@ -1194,7 +1215,7 @@ decisions 3, 5 and 10.
 | 3. Where machines live | Phase 0 | Decided |
 | 4. The lock of the pilot | Phase 1 | Revised after experiments: short admission monitor, independently owned delivery progress |
 | 5. Suspected defects | Phase 0 | Decided, in new words: investigate first, fix what is confirmed |
-| 6. `Hub`, `Stream.sort` and `Stream.buffer` | Phase 8 | Open. A contract for each operator comes first |
+| 6. `Hub`, `Stream.sort` and `Stream.buffer` | Phase 8 | Decided: lossless configured Hub capacity; bounded FIFO sort with explicit overflow failure; owned reads and nonjoining cleanup as detailed below |
 | 7. The browser client | Phase 9 | Decided: in scope. Its details are confirmed with the second part |
 | 8. The Akka adapter | Phase 2 | Decided: shared transitions, two interpreters |
 | 9. The zio-http runtime | Phase 2 | Decided: its own copy |
@@ -1228,18 +1249,22 @@ decisions 3, 5 and 10.
    instruction to change behaviour, and it blocks no refactor of another
    area; see rule 3 of the plan. Draft 4 said "suspected defects are fixed
    first". That left no room for the two other outcomes.
-6. **Open: what becomes of `Hub`, `Stream.sort` and `Stream.buffer`.** Draft
-   4 proposed to replace all three, and named routing by demand as their
-   common flaw. That is wrong for `Stream.buffer`, which already starts an
-   eager pump into a queue. The three do not share one problem. So each
-   operator gets a written contract first:
-   - its backpressure, and what happens on overflow;
-   - what happens to buffered elements when the upstream completes or fails;
-   - who cancels the upstream and releases its resources.
+6. **Separate approved contracts for `Hub`, `Stream.sort` and `Stream.buffer`.**
+   Hub provides lossless backpressure at its configured capacity, preserves the
+   generic `Int.MaxValue` default, and uses an explicit 128-item buffer in fanout
+   publishers. Sort retains FIFO values with a default capacity of 128 per rack,
+   a configurable-capacity overload, and a documented named overflow error that
+   fails the whole partition. Buffer preserves its eager bounded pump, delayed
+   batching and accepted-prefix drain before EOF or upstream failure.
 
-   The eager pump of `Frontend` for guarded sessions is evidence for that
-   work. It is not by itself the contract of a general stream operator.
-   Nothing before phase 8 needs this decision.
+   Native Hub pull cancellation detaches only the canceled subscriber; an
+   independently owned shared reader retains ownership of the actual pending
+   read and its fiber context. Canceling a sort or buffer pull stops that whole
+   operator. Cleanup starts without joining user finalizers. Each implementation
+   must prove single-read ownership, bounded retention, terminal delivery and
+   reentrant notification/cleanup ordering. The
+   [contract record](pure-state-machines-stream-contracts.md) preserves the
+   original observations, caller implications and implementation evidence.
 7. **The browser client is in scope, and its refactor comes last.** Its tests
    read private fields today, so they are rewritten first. "Last" is the
    order of the refactor only: a confirmed defect of the client is fixed when
