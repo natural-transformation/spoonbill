@@ -326,25 +326,32 @@ abstract class Stream[F[_]: Effect, A] { self =>
    * does not by itself mean that the stream has been consumed.
    */
   def handleConsumed: (F[Unit], Stream[F, A]) = {
+    case class Completion(
+      state: CompletionLatchMachine.State,
+      result: Option[Either[Throwable, Unit]] = None,
+      callbacks: List[Effect.Promise[Unit]] = Nil
+    )
     val monitor = new Object
-    var completed = Option.empty[Either[Throwable, Unit]]
-    var callbacks = List.empty[Effect.Promise[Unit]]
+    var completion = Completion(CompletionLatchMachine.State.Pending)
     def complete(result: Either[Throwable, Unit]): Unit = {
       val notify = monitor.synchronized {
-        if (completed.nonEmpty) Nil
-        else {
-          completed = Some(result)
-          val notify = callbacks
-          callbacks = Nil
-          notify
-        }
+        val current = completion
+        val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Complete)
+        if (command == CompletionLatchMachine.Command.Publish) {
+          completion = Completion(next, Some(result))
+          current.callbacks
+        } else Nil
       }
       notify.foreach(_(result))
     }
     val handler = Effect[F].promise[Unit] { cb =>
       val ready = monitor.synchronized {
-        if (completed.isEmpty) callbacks = cb :: callbacks
-        completed
+        val current = completion
+        val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Observe)
+        if (command == CompletionLatchMachine.Command.Register) {
+          completion = current.copy(state = next, callbacks = cb :: current.callbacks)
+          None
+        } else current.result
       }
       ready.foreach(cb)
     }

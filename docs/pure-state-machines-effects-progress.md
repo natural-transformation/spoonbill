@@ -250,6 +250,13 @@ the old code. All five Future cases, the IO case and the full effect96/poolIO8
 checks pass. The legacy session caller must also retire after observing a failed
 terminal signal; that companion correction is prepared on the current aggregate.
 
+After the defect fix, `handleConsumed` now adopts `CompletionLatchMachine` in a
+separate representation change. One monitor-held immutable value pairs the
+pure phase with the result and callbacks; notifications still run outside the
+monitor. The model runs only on terminal publication or observer registration,
+not on each data element. The unchanged consumption cases and shared table tests
+pass (seven Future/pure cases and one IO case), as does the source purity guard.
+
 Decision 6 remains explicit. Hub currently pulls on demand, drops offers to full
 subscriber buffers, discards buffers at upstream EOF, and cancels subscribers
 individually without canceling upstream. `Stream.sort` routes by rack demand with
