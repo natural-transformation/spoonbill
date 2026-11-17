@@ -28,14 +28,15 @@ private[services] object SessionIdleTestSupport {
   def await[A](value: Future[A]): A = Await.result(value, 3.seconds)
 
   final class Timing extends SessionsService.IdleTiming[Future] {
-    val jobs                   = mutable.ArrayBuffer.empty[Job]
-    var events                 = Vector.empty[String]
-    var onCreated: Job => Unit = _ => ()
+    val jobs                     = mutable.ArrayBuffer.empty[Job]
+    var events                   = Vector.empty[String]
+    var onCreated: Job => Unit   = _ => ()
+    var onCancelled: Job => Unit = _ => ()
     final class Job(val id: Int, val delay: FiniteDuration, body: () => Future[Unit])
         extends Scheduler.JobHandler[Future, Unit] {
       var cancellations          = 0
       private val outcome        = Promise[Unit]()
-      def unsafeCancel(): Unit   = { cancellations += 1; events :+= s"cancel:$id" }
+      def unsafeCancel(): Unit   = { cancellations += 1; events :+= s"cancel:$id"; onCancelled(this) }
       def cancel(): Future[Unit] = Effect[Future].delay(unsafeCancel())
       def result: Future[Unit]   = outcome.future
       // This also models a callback already dispatched when cancellation arrives.

@@ -278,7 +278,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     def touch(): F[Unit] = Effect[F].delay {
       if (GuardedSessionMachine.live(lifecycle.get())) {
         val timer = unsafeScheduleIdle(signal())
-        idleTimer.getAndSet(Some(timer)).foreach(_.unsafeCancel())
+        val installed: Option[Scheduler.JobHandler[F, Unit]] = Some(timer)
+        idleTimer.getAndSet(installed).foreach(_.unsafeCancel())
+        // Teardown may finish before scheduling returns its handle. Claim only
+        // this installation: cleanup or a later rearm may already own it.
+        if (!GuardedSessionMachine.live(lifecycle.get()) && idleTimer.compareAndSet(installed, None))
+          timer.unsafeCancel()
       }
     }
     val monitored = new Stream[F, String] {
