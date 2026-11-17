@@ -14,7 +14,60 @@ private[effect] object StreamRoutingMachine {
     case Open, Ended, Canceled
     case Failed(error: Throwable)
   }
-  enum Reader { case Waiting, Reading }
+  enum Reader    { case Waiting, Reading                         }
+  enum Recipient { case Deliver, Store, Overflow                 }
+  enum Dispatch  { case Idle, Running, PausedIdle, PausedRunning }
+  final case class Control(phase: Phase, reader: Reader, cleanupClaimed: Boolean)
+  val idleControl: Control    = Control(Phase.Open, Reader.Waiting, false)
+  val readingControl: Control = Control(Phase.Open, Reader.Reading, false)
+
+  def readAllowed(
+    mode: Mode,
+    phase: Phase,
+    reader: Reader,
+    hasLanes: Boolean,
+    hasDemand: Boolean,
+    hasRoom: Boolean
+  ): Boolean =
+    phase == Phase.Open && reader == Reader.Waiting && hasLanes &&
+      (mode == Mode.Buffered || hasDemand) && (mode == Mode.Partition || hasRoom)
+  def recipient(waiting: Boolean, queued: Int, capacity: Int): Recipient =
+    if (waiting) Recipient.Deliver else if (queued < capacity) Recipient.Store else Recipient.Overflow
+  def settleControl(control: Control): Control =
+    if (control.phase == Phase.Open) idleControl
+    else if (control.reader == Reader.Waiting) control
+    else control.copy(reader = Reader.Waiting)
+  def endControl(control: Control): Control =
+    if (control.phase == Phase.Open) Control(Phase.Ended, Reader.Waiting, control.cleanupClaimed)
+    else settleControl(control)
+  def failureCleanup(mode: Mode, phase: Phase, claimed: Boolean): Boolean =
+    phase == Phase.Open && mode == Mode.Partition && !claimed
+  def failControl(control: Control, mode: Mode, error: Throwable): Control =
+    if (control.phase != Phase.Open) settleControl(control)
+    else Control(Phase.Failed(error), Reader.Waiting, control.cleanupClaimed || mode == Mode.Partition)
+  def canceledPhase(mode: Mode, phase: Phase): Phase = phase match {
+    case failed: Phase.Failed if mode == Mode.Partition => failed
+    case _                                              => Phase.Canceled
+  }
+  def cancelControl(control: Control, mode: Mode): Control =
+    Control(canceledPhase(mode, control.phase), control.reader, true)
+  def claimDispatch(state: Dispatch, pending: Boolean): Dispatch =
+    if (state == Dispatch.Idle && pending) Dispatch.Running else state
+  def pauseDispatch(state: Dispatch): Dispatch = state match {
+    case Dispatch.Idle    => Dispatch.PausedIdle
+    case Dispatch.Running => Dispatch.PausedRunning
+    case _                => state
+  }
+  def resumeDispatch(state: Dispatch): Dispatch = state match {
+    case Dispatch.PausedIdle    => Dispatch.Idle
+    case Dispatch.PausedRunning => Dispatch.Running
+    case _                      => state
+  }
+  def releaseDispatch(state: Dispatch): Dispatch = state match {
+    case Dispatch.PausedRunning => Dispatch.PausedIdle
+    case _                      => Dispatch.Idle
+  }
+  def dispatchPaused(state: Dispatch): Boolean = state == Dispatch.PausedIdle || state == Dispatch.PausedRunning
   final case class Endpoint[A](values: Queue[A] = Queue.empty[A], pulls: Vector[Pull] = Vector.empty)
   final case class State[A](
     mode: Mode,
@@ -35,9 +88,14 @@ private[effect] object StreamRoutingMachine {
     state.copy(lanes = state.lanes.updated(lane, Endpoint[A]()))
 
   def canRead[A](state: State[A]): Boolean =
-    state.phase == Phase.Open && state.reader == Reader.Waiting && state.lanes.nonEmpty &&
-      (state.mode == Mode.Buffered || state.lanes.valuesIterator.exists(_.pulls.nonEmpty)) &&
-      (state.mode == Mode.Partition || state.lanes.valuesIterator.forall(_.values.size < state.capacity))
+    readAllowed(
+      state.mode,
+      state.phase,
+      state.reader,
+      state.lanes.nonEmpty,
+      state.lanes.valuesIterator.exists(_.pulls.nonEmpty),
+      state.lanes.valuesIterator.forall(_.values.size < state.capacity)
+    )
 
   def beginRead[A](state: State[A]): State[A]   = state.copy(reader = Reader.Reading)
   def readSettled[A](state: State[A]): State[A] = state.copy(reader = Reader.Waiting)
@@ -63,7 +121,11 @@ private[effect] object StreamRoutingMachine {
    * The interpreter constructs the public error only if a target lacks credit.
    */
   def overflow[A](state: State[A], lane: Lane): Boolean =
-    state.lanes.get(lane).exists(endpoint => endpoint.pulls.isEmpty && endpoint.values.size >= state.capacity)
+    state.lanes
+      .get(lane)
+      .exists(endpoint =>
+        recipient(endpoint.pulls.nonEmpty, endpoint.values.size, state.capacity) == Recipient.Overflow
+      )
 
   def received[A](state: State[A], value: A, target: Option[Lane]): Step[A] =
     if (state.phase != Phase.Open) Step(state.copy(reader = Reader.Waiting))
@@ -99,7 +161,7 @@ private[effect] object StreamRoutingMachine {
   def failed[A](state: State[A], error: Throwable): Step[A] =
     if (state.phase != Phase.Open) Step(state.copy(reader = Reader.Waiting))
     else {
-      val cleanup = state.mode == Mode.Partition && !state.cleanupClaimed
+      val cleanup = failureCleanup(state.mode, state.phase, state.cleanupClaimed)
       Step(
         state.copy(
           phase = Phase.Failed(error),
@@ -125,10 +187,7 @@ private[effect] object StreamRoutingMachine {
       Step(state.copy(lanes = state.lanes - lane.get), pending.map(Delivery(_, Right(None))))
     } else {
       val cleanup = !state.cleanupClaimed
-      val phase = state.phase match {
-        case failed: Phase.Failed if state.mode == Mode.Partition => failed
-        case _                                                    => Phase.Canceled
-      }
+      val phase   = canceledPhase(state.mode, state.phase)
       val result = phase match {
         case Phase.Failed(error) => Left(error)
         case _                   => Right(None)

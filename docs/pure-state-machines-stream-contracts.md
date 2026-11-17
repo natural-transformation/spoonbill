@@ -127,3 +127,34 @@ No throughput/allocation parity with the old lossy or overwriting operators is
 claimed. The new routing state/results allocate on item handling, so the cost
 screen must inform the final disposition rather than being replaced by a claim
 that stronger semantics alone make cost irrelevant.
+
+## Compact experiment (not yet accepted)
+
+The first compact candidate retains the pure read-credit, recipient, lifecycle
+and dispatch decisions, while ordinary FIFO data and callback handles use
+interpreter-owned stores. Its immutable routing model remains a differential
+oracle. Native backends keep the persistent reader and protected pull boundaries;
+Scala Future uses an iterative callback pump and does not allocate native
+cancellation scopes. Future construction failures are still normalized through
+`Effect.fail`.
+
+Validation passes 132 effect tests, 10 IO cases and four ZIO cases; adapter
+fanout and legacy overflow caller tests also pass. Generated histories compare
+per-ticket/per-lane outcomes rather than unspecified cross-lane callback order.
+A gated first publication followed by 100,000 ready values verifies reentrant pump
+stack bounds. A separate fully synchronous `Stream.foreach` stack limitation was
+reproduced in both v1 and pre-operator sources; this experiment does not change
+that helper.
+
+The unchanged 18-row short-screen fixture reports compact/baseline ratios:
+
+| Cell | Throughput | Allocation per delivery |
+| --- | ---: | ---: |
+| Hub | 2.6255 | 0.3179 |
+| Sort | 0.5683 | 0.8892 |
+| Zero-duration buffer | 1.0608 | 0.6480 |
+
+All delivery, thread-liveness and allocation controls passed. The candidate is
+**not accepted yet**: sort allocation is improved, but its CPU/dispatch cost needs
+an independently measured follow-up. V1 and this candidate's frozen sources,
+raw rows and profiles are retained by the experiment workstream.
