@@ -1,0 +1,1 @@
+{"label":"coalesced-baseline-2","scenario":"coalesced","seconds":2,"chunks":1,"payloadBytes":224,"messages":1437440,"elapsedSeconds":2.00026725,"messagesPerSecond":718623.9738714915,"bytesPerMessage":2624.0,"p99Nanos":1750,"samples":5615,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

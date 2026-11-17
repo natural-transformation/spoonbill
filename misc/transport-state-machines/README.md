@@ -167,3 +167,31 @@ Set `env -u JAVA_HOME SBT_NATIVE_CLIENT=false` for each Nix invocation, as in th
 project validation commands. The archived scripts and analyzer are the versions
 used for these rows. The first unmeasured frontend draft was superseded during
 review before collection; it produced no rows.
+
+The [second chunk design](evidence/chunked-v2/) hoists the immutable forbidden
+trailer-name set and bypasses framing setup for payload-only chunks. Its trailer
+cell improves to 104.15% throughput / 88.04% allocation / 93.02% p99, but the full
+candidate remains rejected: fragmented input reaches 90.30% throughput and 110.18%
+allocation, and large-input sampled p99 is 149.95%. All three fresh matched trials
+remain; the wide large-input p99 spread is reported, not filtered away.
+
+## Zio-http frame deadline
+
+`WebSocketFrameDeadlineBenchmark` runs the actual observer in an `EmbeddedChannel`,
+including timer registration/cancellation and buffer forwarding/release. The clock
+is fixed so valid complete input cannot expire during timing. It measures one
+small frame, one 8 KiB frame, a split extended masked header plus its payload, or
+32 coalesced small frames. The raw `messagesPerSecond` field counts fixture
+operations; the coalesced operation contains 32 wire frames. Payload arrays are
+reused and the observer must forward the same `ByteBuf` without moving indexes.
+This excludes network IO, TLS and the downstream WebSocket decoder.
+
+All [24 first-design rows](evidence/frame-v1/) are rejected: whole-frame throughput
+improves, but allocation is 227.78%–295.12% of baseline; the fragmented cell also
+misses throughput and p99. The source snapshots, exact hashes, fixture, derived
+runtime-jar classpath freeze, runner, JVM version and summaries are retained.
+The local derived jar was copied alongside class directories so later builds
+cannot replace the measured implementation. `prepare-frame.sh`, `run-frame.sh`
+and `analyze-cost.mjs OUTPUT frame` use the same Nix-only and exclusive-window
+workflow described above. `freeze-frame.mjs` freezes both directories and local
+target jars; downloaded immutable dependencies keep their cache paths.

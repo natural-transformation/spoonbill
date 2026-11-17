@@ -1,0 +1,1 @@
+{"label":"fragmented-baseline-3","scenario":"fragmented","seconds":2,"chunks":9,"payloadBytes":136,"messages":2720000,"elapsedSeconds":2.00019375,"messagesPerSecond":1359868.2627620448,"bytesPerMessage":656.0,"p99Nanos":1084,"samples":10625,"sampleStride":256,"sampleCapacity":1048576,"correct":true}
