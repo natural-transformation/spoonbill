@@ -73,19 +73,24 @@ confirmed this as a defect through a late-listener test and a real FS2 consumer.
 The separate fix `d60a8352` adopts `CompletionLatchMachine` for explicit cancellation
 while retaining ordinary queue close as a different event. `Scheduler.JobHandler`
 was corrected separately (`d1fe59dd`) and adopted the completion latch in
-`af05366f`. `Stream.handleConsumed` still has an outstanding caller/termination
-audit; its current single waiter and EOF/error/cancel behavior are not classified
-as intentional. Pool disposal distinguishes claiming disposal from settling
-cleanup, with nonjoining repeated discard characterized separately. Those
-contracts are not interchangeable.
+`af05366f`. `Stream.handleConsumed`'s EOF-only/single-observer defects were then
+confirmed and fixed separately (`04e1b92e`): all terminal outcomes are cached and
+replayed, EOF succeeds and explicit cancellation fails. It adopts the shared
+latch in `921f47a6`. Its legacy-session failure-to-retirement caller correction
+remains a separately validated companion unit. Pool disposal distinguishes
+claiming disposal from settling cleanup, with nonjoining repeated discard
+characterized separately. Those contracts are not interchangeable.
 
 The effect/testkit units also fixed AsyncTable failure fanout and explicit
 publication (`23fa583f`, `b3e3e4e0`) before its Waiting/Settled extraction
 (`666b182b`); this remains a resettable per-key protocol. RecoveryGates fixed stale
 rearm (`4ccd1cd0`) before its four-phase model (`c194a85a`); arrival and resume
 retain distinct meanings. These are downstream dispositions, not additional
-shared-latch candidates. Pool disposal's final representation/notes and
-Stream.handleConsumed remain explicitly owned by the effect-module rollout.
+shared-latch candidates. Pool disposal is retained in `92e19cfe` as an explicit
+enum with one atomic PoolData/allocation-identity state and strong ownership
+tests; raw-borrow/task-success boundary limitations remain documented by that
+effect unit. These dispositions were reconciled with the effect/testkit owner;
+they do not imply that unrelated browser/effect inventory rows are complete.
 
 ## Pending registry candidates
 
