@@ -136,6 +136,33 @@ class OneUseAuthoritySpec extends AnyFlatSpec with Matchers {
     result(fixture.protocol.executeIssued(authority)(fixture.mutate)) shouldBe Right("one-read-result")
   }
 
+  it should "issue only one authority when aliases race to redeem the same evidence" in {
+    val fixture = new Fixture
+    val evidence = fixture.evidence()
+    val outcomes = result(Future.sequence(Vector.fill(16)(Future(fixture.issuer.issue(evidence)))))
+    outcomes.count(_.isRight) shouldBe 1
+    outcomes.count(_ == Left(OperationError.EvidenceUsed)) shouldBe 15
+    val authority = outcomes.collectFirst { case Right(value) => value }.get
+    result(fixture.protocol.executeIssued(authority)(fixture.mutate)) shouldBe Right("one-read-result")
+    fixture.dispatches.get() shouldBe 1
+  }
+
+  it should "keep observed expiry terminal for used aliases even when the clock moves backward" in {
+    val fixture = new Fixture
+    val evidence = fixture.evidence()
+    val authority = accepted(fixture.issuer.issue(evidence))
+    result(fixture.protocol.executeIssued(authority)(fixture.mutate)) shouldBe Right("one-read-result")
+    fixture.clock.set(now.plusSeconds(60))
+    // Expiry precedes the used-evidence/used-permit checks, including at equality.
+    fixture.issuer.issue(evidence) shouldBe Left(OperationError.Expired)
+    fixture.clock.set(now)
+    fixture.issuer.issue(evidence) shouldBe Left(OperationError.Expired)
+    result(fixture.protocol.executeIssued(authority)(fixture.mutate)) shouldBe
+      Left(TransactionFailure.Rejected(OperationError.Expired))
+    fixture.dispatches.get() shouldBe 1
+    fixture.calls.get() shouldBe 1
+  }
+
   it should "consume before dispatch even if no transaction starts and never replay an admitted body" in {
     val fixture = new Fixture
     val authority = fixture.authority()
