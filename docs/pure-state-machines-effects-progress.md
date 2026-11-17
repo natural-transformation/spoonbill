@@ -112,7 +112,14 @@ Subsequent counter audit invalidated reliance on the contended allocation ratio:
 the old fixture sampled after thread termination, where the JDK global counter
 can undercount. Those rows remain provisional; roundtrip/batch main-thread rows
 are unaffected. A live-worker/self-counter/control fixture and fresh contended
-comparison are in progress; no old contended allocation claim is used as proof.
+comparison replace that claim below; no old contended allocation claim is used as proof.
+The corrected [six-trial contended comparison](../misc/queue-state-benchmark/evidence/2026-11-17-live-contended/)
+is now complete: throughput ratio 1.0167 and allocation ratio 0.9561, with all
+ten owned threads alive and global totals only 232–264 bytes above the sum of
+measured thread self counters. Every escaping control and delivery check passed.
+All six new and 18 original rows remain retained. Three analyzer regressions
+reject counter underflow and mixed protocols; integrated source hashes pin
+reproducible baseline/candidate revisions. No significance claim is made.
 The baseline is `57d7a8b4`, after the separate waiter fixes. The exact measured
 machine source is retained; subsequent alignment-only formatting is recorded in
 provenance. The packaged analyzer reproduces the original summary byte-for-byte.
@@ -208,6 +215,8 @@ cancellation after a success-finalizer observation. Those counterexamples rule
 out a universal map-marker/default-outcome primitive. Returned-resource callers
 must still bracket/adopt ownership beyond the supplied task-success boundary.
 No new `guaranteeOutcome` capability or uncancelable capacity-wait policy was added.
+The [native handoff probes and limitations](../misc/effect-handoff-probes/README.md)
+retain the backend-specific evidence for that boundary.
 
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede

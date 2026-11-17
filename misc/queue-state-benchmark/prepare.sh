@@ -6,7 +6,7 @@ checkout="$1"
 output="$2"
 mkdir -p "$(dirname -- "$output")"
 (cd "$checkout" && sbt --batch --supershell=false -Dsbt.server.autostart=false \
-  "set effect / Test / unmanagedSources += file(\"$here/QueueLifecycleBenchmark.scala\")" \
+  "set effect / Test / unmanagedSources += file(\"$here/QueueLiveAllocationBenchmark.scala\")" \
   'effect/Test/compile' 'export effect/Test/fullClasspath') > "$output.compile.log" 2>&1
 node - "$output.compile.log" "$output" <<'NODE'
 const fs = require('node:fs');
