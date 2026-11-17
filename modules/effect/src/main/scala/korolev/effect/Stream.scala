@@ -265,57 +265,21 @@ abstract class Stream[F[_]: Effect, A] { self =>
    * @return
    *   List of streams appropriate to racks.
    */
-  def sort(numRacks: Int)(f: A => Int): List[Stream[F, A]] = {
-    val values     = new Array[Option[A]](numRacks)
-    val promises   = new Array[Effect.Promise[Option[A]]](numRacks)
-    val inProgress = new AtomicBoolean(false)
-    (0 until numRacks).toList map { i =>
-      new Stream[F, A] {
-        def pull(): F[Option[A]] =
-          Effect[F].promiseF { cb =>
-            val maybeItem = values(i)
-            if (maybeItem != null && maybeItem.isEmpty) {
-              // End of parent stream
-              Effect[F].delay(cb(Right(maybeItem)))
-            } else if (maybeItem != null && maybeItem.nonEmpty) {
-              // Contains value
-              Effect[F].delay {
-                cb(Right(maybeItem))
-                values(i) = null
-              }
-            } else {
-              promises(i) = cb
-              // FIXME where is restart if cas failed?
-              if (inProgress.compareAndSet(false, true)) {
-                Effect[F].map(self.pull()) {
-                  case maybeItem @ Some(item) =>
-                    val j  = f(item)
-                    val cb = promises(j)
-                    if (cb != null) {
-                      promises(j) = null
-                      inProgress.compareAndSet(true, false)
-                      cb(Right(maybeItem))
-                    } else {
-                      values(j) = maybeItem
-                      inProgress.compareAndSet(true, false)
-                    }
-                  case None =>
-                    for (j <- 0 until numRacks)
-                      values(j) = None
-                    inProgress.compareAndSet(true, false)
-                    for (j <- 0 until numRacks) {
-                      val callback = promises(j)
-                      promises(j) = null
-                      if (callback != null) callback(Right(None))
-                    }
-                }
-              } else {
-                Effect[F].unit
-              }
-            }
-          }
-        def cancel(): F[Unit] = self.cancel()
-      }
+  def sort(numRacks: Int)(f: A => Int): List[Stream[F, A]] = sort(numRacks, 128)(f)
+
+  /** FIFO partitioning with a positive capacity per rack. Overflow fails every
+    * rack with [[StreamSortOverflowException]], carrying only rack/capacity
+    * metadata. Explicit or native pull cancellation stops the whole partition;
+    * upstream cleanup starts without joining user finalizers.
+    */
+  def sort(numRacks: Int, capacityPerRack: Int)(f: A => Int): List[Stream[F, A]] = {
+    require(numRacks >= 0, "Number of stream racks must not be negative")
+    require(capacityPerRack > 0, "Stream rack capacity must be positive")
+    if (numRacks == 0) Nil
+    else {
+      val lanes = Vector.fill(numRacks)(new StreamRoutingMachine.Lane)
+      val runtime = new StreamRoutingRuntime(self, StreamRoutingMachine.Mode.Partition, capacityPerRack, lanes, Some(f))
+      lanes.map(runtime.stream).toList
     }
   }
 
@@ -380,69 +344,17 @@ abstract class Stream[F[_]: Effect, A] { self =>
     aux()
   }
 
+  /** Eager bounded batching. Accepted data drains before EOF/failure. Any
+    * explicit or native pull cancellation stops the whole operator, settles
+    * pending batches and starts upstream cleanup without joining it.
+    */
   def buffer(duration: FiniteDuration, maxSize: Int = 16)(implicit
-    scheduler: Scheduler[F],
-    ec: ExecutionContext,
-    reporter: Reporter
-  ): Stream[F, Seq[A]] = new Stream[F, Seq[A]] {
-
-    import Stream.BufferTerminal
-    final val queue       = Queue[F, A](maxSize)
-    private val terminal = new AtomicReference[BufferTerminal](BufferTerminal.Running)
-
-    private def end(): F[Option[Seq[A]]] = terminal.get() match {
-      case BufferTerminal.Failed(error) => Effect[F].fail(error)
-      case _                            => Effect[F].none
-    }
-
-    self
-      .foreach(queue.enqueue)
-      .map[Either[Throwable, Unit]](_ => Right(()))
-      .recover { case error => Left(error) }
-      .flatMap { result =>
-        Effect[F].delay {
-          val completed = result.fold(BufferTerminal.Failed.apply, _ => BufferTerminal.Completed)
-          terminal.compareAndSet(BufferTerminal.Running, completed)
-          // Stop admits no new items but lets every accepted item drain first.
-          queue.unsafeStop()
-        }
-      }
-      .start
-      .runAsyncForget
-
-    override def pull(): F[Option[Seq[A]]] = if (duration.toMillis > 0) {
-      queue.stream.pull().flatMap {
-        case None        => end()
-        case Some(first) =>
-          scheduler.sleep(duration).flatMap { _ =>
-            queue.dequeueAll().map { rest =>
-              Some(first +: rest)
-            }
-          }
-      }
-    } else {
-      queue.stream.pull().flatMap {
-        case Some(value) => Effect[F].pure(Some(Seq(value)))
-        case None => end()
-      }
-    }
-
-    override def cancel(): F[Unit] = {
-      self.cancel()
-      Effect[F].delay {
-        terminal.set(BufferTerminal.Canceled)
-        queue.unsafeClose()
-      }
-    }
-  }
+    scheduler: Scheduler[F], ec: ExecutionContext, reporter: Reporter
+  ): Stream[F, Seq[A]] =
+    new StreamBufferRuntime(self, duration, maxSize, job => scheduler.unsafeScheduleOnce(duration)(job()))
 }
 
 object Stream {
-
-  private enum BufferTerminal {
-    case Running, Completed, Canceled
-    case Failed(error: Throwable)
-  }
 
   implicit class SpoonbillUnchunkExtension[F[_]: Effect, A](stream: Stream[F, Seq[A]]) {
 

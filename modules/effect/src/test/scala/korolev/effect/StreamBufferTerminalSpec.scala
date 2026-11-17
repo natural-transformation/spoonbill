@@ -59,18 +59,7 @@ class StreamBufferTerminalSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "finish an already delayed batch before exposing producer failure" in {
-    val delayReady = Promise[() => Unit]()
-    given Effect[Future] = new Effect.FutureEffect {
-      override def promise[A](register: (Either[Throwable, A] => Unit) => Unit): Future[A] =
-        super.promise(callback =>
-          register { result =>
-            result match {
-              case Right(()) => delayReady.trySuccess(() => callback(result)); ()
-              case _         => callback(result)
-            }
-          }
-        )
-    }
+    val delayReady          = Promise[() => Unit]()
     val worker              = new Worker
     given ExecutionContext  = worker
     given Scheduler[Future] = Scheduler.schedulerF[Future]
@@ -81,7 +70,20 @@ class StreamBufferTerminalSpec extends AnyFlatSpec with Matchers {
       def pull(): Future[Option[Int]] = { reads += 1; if (reads <= 2) Future.successful(Some(reads)) else last.future }
       def cancel(): Future[Unit]      = Future.unit
     }
-    val buffered = source.buffer(1.millis)
+    val buffered = new StreamBufferRuntime(
+      source,
+      1.millis,
+      16,
+      job => {
+        var canceled = false
+        delayReady.success(() => if (!canceled) await(job()))
+        new Scheduler.JobHandler[Future, Unit] {
+          def unsafeCancel(): Unit   = canceled = true
+          def cancel(): Future[Unit] = Future.successful(unsafeCancel())
+          def result: Future[Unit]   = Future.never
+        }
+      }
+    )
     worker.drain()
     val batch       = buffered.pull()
     val finishDelay = await(delayReady.future)
@@ -101,13 +103,15 @@ class StreamBufferTerminalSpec extends AnyFlatSpec with Matchers {
     given ExecutionContext  = worker
     given Scheduler[Future] = Scheduler.schedulerF[Future]
     var canceled            = 0
+    val cancellationStarted = Promise[Unit]()
     val source = new Stream[Future, Int] {
       def pull(): Future[Option[Int]] = Future.failed(new IllegalStateException("producer failed before cancellation"))
-      def cancel(): Future[Unit]      = { canceled += 1; Future.unit }
+      def cancel(): Future[Unit]      = { canceled += 1; cancellationStarted.trySuccess(()); Future.unit }
     }
     val buffered = source.buffer(Duration.Zero)
     worker.drain()
     await(buffered.cancel())
+    await(cancellationStarted.future)
     canceled shouldBe 1
     await(buffered.pull()) shouldBe None
   }
