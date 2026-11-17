@@ -41,7 +41,8 @@ import spoonbill.web.Request.Head
 private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer: StateDeserializer, M](
   config: SpoonbillServiceConfig[F, S, M],
   pageService: PageService[F, S, M],
-  requiredTiming: Option[SessionsService.RequiredTiming[F]] = None
+  requiredTiming: Option[SessionsService.RequiredTiming[F]] = None,
+  idleTiming: Option[SessionsService.IdleTiming[F]] = None
 ) {
 
   import config.executionContext
@@ -171,6 +172,15 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     case None        => scheduler.scheduleOnce(10.seconds)(job)
   }
 
+  private def unsafeScheduleIdle(job: => F[Unit]): Scheduler.JobHandler[F, Unit] = idleTiming match {
+    case Some(timing) => timing.unsafeScheduleOnce(config.sessionIdleTimeout)(job)
+    case None => scheduler.unsafeScheduleOnce(config.sessionIdleTimeout)(job)
+  }
+  private def scheduleIdle(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] = idleTiming match {
+    case Some(timing) => timing.scheduleOnce(config.sessionIdleTimeout)(job)
+    case None => scheduler.scheduleOnce(config.sessionIdleTimeout)(job)
+  }
+
   private[services] def required[A](
     operation: => F[A],
     late: Option[A => F[Unit]] = None,
@@ -267,7 +277,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
     def touch(): F[Unit] = Effect[F].delay {
       if (GuardedSessionMachine.live(lifecycle.get())) {
-        val timer = scheduler.unsafeScheduleOnce(config.sessionIdleTimeout)(signal())
+        val timer = unsafeScheduleIdle(signal())
         idleTimer.getAndSet(Some(timer)).foreach(_.unsafeCancel())
       }
     }
@@ -728,7 +738,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
         def handleCommunicationTimeout(): F[Unit] = {
           def createTimeout(stream: Stream[F, String]): F[Scheduler.JobHandler[F, Unit]] =
-            scheduler.scheduleOnce(config.sessionIdleTimeout) {
+            scheduleIdle {
               invokeOnce("session idle timeout")(Right(()))
               stream.cancel()
             }
@@ -900,6 +910,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 private[spoonbill] object SessionsService {
   /** Internal timing seam: expiry still executes the same effect on the scheduler's thread/runtime. */
   trait RequiredTiming[F[_]] {
+    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
+  }
+  /** Idle rearming keeps synchronous and effectful handle installation distinct. */
+  trait IdleTiming[F[_]] {
+    def unsafeScheduleOnce(delay: FiniteDuration)(job: => F[Unit]): Scheduler.JobHandler[F, Unit]
     def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
   }
 }
