@@ -30,7 +30,7 @@ import scala.util.control.NonFatal
 import spoonbill.Context.FileHandler
 import spoonbill.Metrics
 import spoonbill.data.Bytes
-import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream}
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream, StreamSortOverflowException}
 import spoonbill.effect.syntax._
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.server.SessionAccessDenied
@@ -499,9 +499,19 @@ final class Frontend[F[_]: Effect](
     case Incoming(CallbackType.History.code, _, _, _)  => 1
     case _                                             => 2
   }
+  private def closeOnRoutingOverflow(source: Stream[F, Incoming]): Stream[F, Incoming] = new Stream[F, Incoming] {
+    def pull(): F[Option[Incoming]] = source.pull().recoverF {
+      case error: StreamSortOverflowException =>
+        // The legacy input is a Hub lane: canceling that lane alone leaves the
+        // activity watcher and raw connection alive. Output EOF drives the
+        // transport release and the session's raw-input retirement signal.
+        close().recover { case NonFatal(_) => () }.flatMap(_ => Effect[F].fail(error))
+    }
+    def cancel(): F[Unit] = source.cancel()
+  }
   private val List(rawDomEvents, rawBrowserHistoryChanges, rawClientMessages) = guardedRacks match {
     case Some(queues) => queues.map(_.stream).toList
-    case None         => incomingMessages.map(parseMessage).sort(3)(rack)
+    case None         => incomingMessages.map(parseMessage).sort(3)(rack).map(closeOnRoutingOverflow)
   }
 
   val outgoingMessages: Stream[F, String] = outgoingQueue.stream.mapAsync {
