@@ -16,7 +16,9 @@ final class Countdown[F[_]: Effect] {
     @tailrec
     def aux(): Unit = {
       val ref = state.get()
-      if (ref.n == 0) {
+      if (ref.n == Long.MaxValue) {
+        cb(Countdown.unitToken)
+      } else if (ref.n == 0) {
         val newValue = ref.copy(pending = Some(cb))
         if (!state.compareAndSet(ref, newValue)) {
           aux()
@@ -39,15 +41,15 @@ final class Countdown[F[_]: Effect] {
       @tailrec
       def aux(): Unit = {
         val ref = state.get()
-        ref.pending match {
+        if (ref.n != Long.MaxValue) ref.pending match {
           case Some(cb) =>
-            if (state.compareAndSet(ref, Countdown.State(pending = None, n = ref.n + x - 1))) {
+            if (state.compareAndSet(ref, Countdown.State(pending = None, n = Countdown.addDemand(ref.n, x) - 1))) {
               cb(Countdown.unitToken)
             } else {
               aux()
             }
           case None =>
-            if (!state.compareAndSet(ref, ref.copy(n = ref.n + x))) {
+            if (!state.compareAndSet(ref, ref.copy(n = Countdown.addDemand(ref.n, x)))) {
               aux()
             }
         }
@@ -59,6 +61,10 @@ final class Countdown[F[_]: Effect] {
 }
 
 object Countdown {
+  /** Positive demand cannot wrap to zero; the maximum is effectively unbounded. */
+  private def addDemand(current: Long, incoming: Long): Long =
+    if (current > Long.MaxValue - incoming) Long.MaxValue else current + incoming
+
   val unitToken = Right(())
   case class State(pending: Option[Effect.Promise[Unit]], n: Long)
 }

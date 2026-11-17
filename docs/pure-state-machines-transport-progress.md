@@ -55,6 +55,16 @@ that slot. Both adapters now validate the subscriber first. The new case failed
 before correction; the corrected publisher suites pass ten tests each. This
 input-validation fix is separate from the lifecycle extraction.
 
+A positive-demand overflow was then reproduced: requesting `Long.MaxValue` twice
+and three more elements while the first pull waits wrapped the remaining demand
+to zero, losing the second item. Both adapter countdowns now saturate positive
+demand at the effectively unbounded maximum, which consumption does not reduce.
+The regression failed before this arithmetic fix. Full adapter suites passed
+53 Pekko and 45 Akka tests afterward, including a direct countdown boundary case.
+Nonpositive requests retain the existing ignored-input behavior; changing that
+policy requires its own terminal-signal serialization decision, not a hidden
+change inside a refactor.
+
 ## Subscriber: retain the existing explicit state
 
 The candidates are

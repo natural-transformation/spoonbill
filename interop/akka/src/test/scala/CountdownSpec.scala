@@ -92,4 +92,12 @@ class CountdownSpec extends AsyncFreeSpec {
     } yield ()
   }
 
+  "positive demand saturates and remains effectively unbounded" in {
+    val countdown = new Countdown[Future]()(new FutureEffect)
+    countdown.unsafeAdd(Long.MaxValue)
+    countdown.unsafeAdd(Long.MaxValue)
+    countdown.unsafeAdd(2)
+    assert(countdown.unsafeValue == Long.MaxValue)
+    countdown.decOrLock().map(_ => assert(countdown.unsafeValue == Long.MaxValue))
+  }
 }

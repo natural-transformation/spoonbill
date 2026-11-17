@@ -168,4 +168,28 @@ class SpoonbillStreamPublisherSpec extends AnyFlatSpec with Matchers {
     publisher.subscribe(subscriber)
     subscriber.subscription should not be empty
   }
+
+  it should "retain effectively unbounded demand instead of wrapping back to zero" in {
+    val first = Promise[Option[Int]]()
+    var pulls = 0
+    val stream = new Stream[Future, Int] {
+      def pull(): Future[Option[Int]] = {
+        pulls += 1
+        if (pulls == 1) first.future
+        else Future.successful(if (pulls == 2) Some(2) else None)
+      }
+      def cancel(): Future[Unit] = Future.unit
+    }
+    val publisher = new SpoonbillStreamPublisher(stream, fanout = false)
+    val subscriber = new Probe
+    publisher.subscribe(subscriber)
+    val subscription = subscriber.subscription.get
+    subscription.request(Long.MaxValue)
+    subscription.request(Long.MaxValue)
+    subscription.request(3)
+    first.success(Some(1))
+    subscriber.values shouldBe Vector(1, 2)
+    subscriber.completed shouldBe 1
+    subscriber.errors shouldBe empty
+  }
 }
