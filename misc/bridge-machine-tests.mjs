@@ -77,20 +77,34 @@ test('barriers block guarded user actions while preserving history and unguarded
 test('replay admission is bounded and immutable, and closure does not erase barriers prematurely', () => {
   const initial = initialSensitive();
   const installed = sensitiveStep(initial, {type: 'installed-presentation', connection, presentation});
-  assert.equal(initial.seen.size, 0);
+  assert.equal(initial.seen.length, 0);
   assert.equal(validSensitiveBinding(connection, presentation, 'codes'), true);
   assert.equal(sensitivePresentationAllowed(initial, connection, presentation, 'mfa', 10, 110, 100), true);
   assert.equal(sensitivePresentationAllowed(installed, connection, presentation, 'mfa', 10, 110, 100), false);
   let bounded = installed;
   for (let i = 0; i < 300; i++) bounded = sensitiveStep(bounded, {type: 'rejected-presentation', presentation: String(i)});
-  assert.equal(bounded.seen.size, 256);
+  assert.equal(bounded.seen.length, 256);
   const pending = sensitiveStep(bounded, {type: 'begin-navigation', counter: 1});
   const closed = sensitiveStep(pending, {type: 'close'});
   assert.equal(navigationPending(closed), true);
-  assert.equal(closed.seen.size, 256);
-  assert.equal(sensitiveStep(closed, {type: 'forget'}).seen.size, 0);
+  assert.equal(closed.seen.length, 256);
+  assert.equal(sensitiveStep(closed, {type: 'forget'}).seen.length, 0);
   assert.equal(regionCapacityAvailable(false, 4), false);
   assert.equal(regionCapacityAvailable(true, 4), true);
+});
+
+test('persistent replay IDs preserve duplicate and SameValueZero membership without mutating snapshots', () => {
+  const initial = initialSensitive();
+  let state = initial;
+  for (const presentation of ['same', 'same', NaN, NaN, 0, -0])
+    state = sensitiveStep(state, {type: 'rejected-presentation', presentation});
+  assert.deepEqual(state.seen, ['same', NaN, 0]);
+  assert.deepEqual(initial.seen, []);
+  const duplicate = sensitiveStep(state, {type: 'installed-presentation', connection, presentation: 'same'});
+  assert.deepEqual(duplicate.seen, state.seen);
+  const forgotten = sensitiveStep(duplicate, {type: 'forget'});
+  assert.deepEqual(forgotten.seen, []);
+  assert.deepEqual(state.seen, ['same', NaN, 0]);
 });
 
 test('exhausted counters fence without emitting a wrapped barrier', () => {

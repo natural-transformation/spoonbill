@@ -60,7 +60,7 @@ export const validBarrier = commands => commands.length === 1 && Number.isSafeIn
 export const regionCapacityAvailable = (replacing, active) => replacing || active < 4;
 
 export function initialSensitive() {
-  return {phase: 'open', connection: null, seen: new Set(),
+  return {phase: 'open', connection: null, seen: [],
     navigation: {phase: 'open', counter: null}, departure: {issued: 0, pending: null}};
 }
 
@@ -89,11 +89,13 @@ export function sensitiveStep(state, event) {
       return !sensitiveTerminal(state) && state.departure.pending === event.counter ?
         {...state, departure: {...state.departure, pending: null}} : state;
     case 'rejected-presentation':
-      return state.seen.size < 256 ? {...state, seen: new Set([...state.seen, event.presentation])} : state;
+      return state.seen.length < 256 && !state.seen.includes(event.presentation) ?
+        {...state, seen: [...state.seen, event.presentation]} : state;
     case 'installed-presentation':
-      return {...state, connection: event.connection, seen: new Set([...state.seen, event.presentation])};
+      return {...state, connection: event.connection,
+        seen: state.seen.includes(event.presentation) ? state.seen : [...state.seen, event.presentation]};
     case 'close': return {...state, phase: 'closed'};
-    case 'forget': return {...state, seen: new Set()};
+    case 'forget': return {...state, seen: []};
     default: return state;
   }
 }
@@ -109,5 +111,5 @@ export function sensitivePresentationAllowed(state, connection, presentation, pu
   return state.phase !== 'closed' && (state.connection === null || state.connection === connection) &&
     typeof purpose === 'string' && NAME_PATTERN.test(purpose) &&
     Number.isInteger(remaining) && remaining > 0 && remaining <= 300000 &&
-    Number.isSafeInteger(expires) && expires > now && !state.seen.has(presentation) && state.seen.size < 256;
+    Number.isSafeInteger(expires) && expires > now && !state.seen.includes(presentation) && state.seen.length < 256;
 }

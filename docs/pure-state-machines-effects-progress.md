@@ -412,3 +412,11 @@ the existing multiple-attempt policy itself is unchanged. The failing case,
 explicit-restart characterization and departure/restoration case pass. Final
 validation passes 94 Node cases, all three native fixtures in both engines, and
 the optimized-bundle real-service acknowledgement checks in both engines.
+
+The JavaScript-specific purity guard additionally rejects mutable collection
+types in models. Sensitive replay IDs now use bounded persistent arrays (at most
+256 IDs), with copy-on-update and SameValueZero `includes` membership. Duplicate
+IDs do not consume capacity, and snapshots remain unchanged. The follow-up
+passes 95 Node cases, all three native fixtures in both engines, and Closure
+assembly with zero errors/warnings. Both JS models pass the coordinator's actual
+JavaScript-specific forbidden-API guard with zero violations.
