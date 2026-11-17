@@ -330,7 +330,7 @@ Disposition: retain under rule 7, with its single named state and pinned effect
 boundaries. `standalone/testOnly *StandaloneSetupDeadlineSpec` passed all 12 cases
 on unchanged production code. No timer, callback, or cleanup ordering changed.
 
-## WebSocket assembly: characterization ready, disposition pending
+## WebSocket assembly: retain the pure stages and one observer flag
 
 Four direct public-upgrade cases now pin empty input, complete-before-tail-rearm
 ordering, fragmented messages across control frames, and suppression of tail
@@ -340,4 +340,30 @@ restart when completion rejects a message. On unchanged protocol code,
 socket cases. The two pure decoder stages already have explicit state. Their
 remaining tail flag must still be read after the completion callback; precomputing
 a combined command batch would move that observation across an effect boundary.
-The final retain/extract decision remains for the next transport unit.
+Disposition: retain under rule 7. `decodeFrames` and `mergeFrames` already expose
+their complete immutable state and next result. The observer owns exactly one
+boolean, `pendingFrameBytes`, in one place; there is no additional lifecycle
+combination to reconcile. The four public-upgrade cases fail if the flag is not
+updated, completion is moved after rearming, control frames finish a fragmented
+message, or rejection still rearms. The callback remains between completion and
+the flag read, preserving its effect boundary. No confirmed defect was found.
+The extraction review reran the 21 HTTP cases unchanged and they passed. No hot
+path changed, so no new performance comparison is required.
+
+## Server connection tracking: a dedicated drain model
+
+`ActiveConnectionsMachine` owns the accepting flag, active-handler count, and
+first failure. `ServerSocket.ActiveConnections` retains its synchronized cell
+and once-completed promise. This is deliberately not the shared drain protocol:
+handler failure does not stop acceptance, stop can carry a failure, and completion
+waits for both acceptance to stop and handlers to settle. Repeated stop may update
+the diagnostic state but cannot replace an already published result.
+
+Two added interpreter characterizations passed on the original implementation:
+accept failure wins over a later handler failure, and completed success survives
+a repeated failing stop. `http/testOnly *ServerSocketLifecycleSpec` passed 8 cases
+before extraction. After extraction,
+`http/testOnly *ServerSocketLifecycleSpec *ActiveConnectionsMachineSpec
+*WebSocketMessageSignalsSpec *WebSocketProtocolSpec` passed 31 tests. The two direct
+model cases cover both completion prerequisites and first-failure carry in either
+event order. The model runs at connection ownership edges, never per read/frame.

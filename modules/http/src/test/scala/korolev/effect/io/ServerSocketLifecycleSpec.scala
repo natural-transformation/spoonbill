@@ -39,6 +39,31 @@ final class ServerSocketLifecycleSpec extends AnyFlatSpec with Matchers {
     tracker.retainedState shouldBe (0 -> 1)
   }
 
+  it should "keep the accept failure while draining and ignore later stop failures after completion" in {
+    val tracker = new ServerSocket.ActiveConnections
+    val first = new IllegalStateException("Accept failed")
+    tracker.started()
+    tracker.stopped(Some(first))
+    val result = tracker.awaitFinished[Future]()
+    result.isCompleted shouldBe false
+    tracker.finished(Some(new IllegalArgumentException("Handler failed later")))
+    intercept[IllegalStateException](await(result)) should be theSameInstanceAs first
+    tracker.stopped(Some(new IllegalArgumentException("Repeated stop")))
+    intercept[IllegalStateException](await(tracker.awaitFinished[Future]())) should be theSameInstanceAs first
+  }
+
+  it should "publish success only after acceptance stops and retain it across a repeated stop" in {
+    val tracker = new ServerSocket.ActiveConnections
+    val result = tracker.awaitFinished[Future]()
+    tracker.started()
+    tracker.finished(None)
+    result.isCompleted shouldBe false
+    tracker.stopped(None)
+    await(result) shouldBe ()
+    tracker.stopped(Some(new IllegalStateException("Too late")))
+    await(tracker.awaitFinished[Future]()) shouldBe ()
+  }
+
   it should "wait for the remaining live socket before propagating an earlier handler failure" in {
     val count = new AtomicInteger()
     val entered = Promise[Unit]()

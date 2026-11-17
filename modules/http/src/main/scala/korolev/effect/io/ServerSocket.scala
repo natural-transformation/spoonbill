@@ -126,36 +126,32 @@ object ServerSocket {
 
   /** One count and first failure, never a history of completed handler effects. */
   private[io] final class ActiveConnections {
-    private var active = 0
-    private var accepting = true
-    private var failure = Option.empty[Throwable]
+    private var state = ActiveConnectionsMachine.initial
     private val done = Promise[Unit]()
 
-    def started(): Unit = synchronized { active += 1 }
+    def started(): Unit = synchronized { state = ActiveConnectionsMachine.started(state) }
 
     def finished(error: Option[Throwable]): Unit = synchronized {
-      active -= 1
-      if (failure.isEmpty) failure = error
+      state = ActiveConnectionsMachine.finished(state, error)
       completeIfStopped()
     }
 
     def stopped(error: Option[Throwable]): Unit = synchronized {
-      accepting = false
-      if (failure.isEmpty) failure = error
+      state = ActiveConnectionsMachine.stopped(state, error)
       completeIfStopped()
     }
 
     private def completeIfStopped(): Unit =
-      if (!accepting && active == 0) failure match {
-        case Some(error) => done.tryFailure(error); ()
-        case None => done.trySuccess(()); ()
+      ActiveConnectionsMachine.completion(state).foreach {
+        case Left(error) => done.tryFailure(error); ()
+        case Right(_) => done.trySuccess(()); ()
       }
 
     def awaitFinished[F[_]: Effect](): F[Unit] = Effect[F].promise { callback =>
       done.future.onComplete(result => callback(result.toEither))(ExecutionContext.parasitic)
     }
 
-    private[io] def retainedState: (Int, Int) = synchronized(active -> failure.size)
+    private[io] def retainedState: (Int, Int) = synchronized(state.active -> state.failure.size)
   }
 
   /**
