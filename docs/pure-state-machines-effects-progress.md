@@ -141,6 +141,13 @@ late disposal observers see the claim before earlier observers see physical clea
 and repeated discard/give do not join an in-flight retirement or release capacity
 early. All 77 effect tests and 14 selected cats-effect tests pass.
 
+`AsyncResourcePool.cleanup` closed idle resources directly, bypassing their
+once-only retirement hook. A close notification delivered after cleanup completed
+decremented capacity a second time (to -1 with no other loan, or to 0 with one
+still borrowed). Both new regressions failed before the one-line fix: cleanup now
+uses the already-established retirement hook. All 79 effect tests pass, including
+late notifications, discard, creation failure and concurrent pool use.
+
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
 reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate

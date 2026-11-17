@@ -238,7 +238,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
         val total         = ref.total - obsoleteCount
         val newValue      = ref.copy(total = total, items = items, closedItems = closedSet)
         if (pool.compareAndSet(ref, newValue)) {
-          val xs = obsolete.map(item => implicitly[Close[F, T]].close(item.value))
+          val xs = obsolete.map(item => item.retire())
           Effect[F].sequence(xs).map { _ =>
             @tailrec def removeClosedSedLoop(): Unit = {
               val ref = pool.get
