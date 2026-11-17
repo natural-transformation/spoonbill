@@ -219,10 +219,21 @@ The [native handoff probes and limitations](../misc/effect-handoff-probes/README
 retain the backend-specific evidence for that boundary.
 
 The shared-once comparison excludes distinct existing contracts: AsyncTable keys
-reset on removal; `handleConsumed` signals EOF only; pool disposal claims precede
+reset on removal; pool disposal claims precede
 physical cleanup. Queue cancellation joins the shared latch after the separate
 confirmed late-listener fix above.
 Those differences must not disappear in a shared-helper migration.
+
+`handleConsumed`'s previous EOF-only, single-waiter fields were confirmed defects,
+not a supported policy. Upload responses could wait forever after body-read
+failure, and two evaluations of the signal in CE3 lost one observer. The wrapper
+now caches the first EOF success, read failure, or explicit-cancel failure for
+all current and late observers; strict read construction errors are captured.
+Canceling an individual pull effect is not declared successful consumption.
+Three Future regressions and the real IO multiple-observer regression failed
+the old code. All five Future cases, the IO case and the full effect96/poolIO8
+checks pass. The legacy session caller must also retire after observing a failed
+terminal signal; that companion correction is prepared on the current aggregate.
 
 Decision 6 remains explicit. Hub currently pulls on demand, drops offers to full
 subscriber buffers, discards buffers at upstream EOF, and cancels subscribers

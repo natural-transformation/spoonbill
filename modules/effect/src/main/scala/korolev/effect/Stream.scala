@@ -17,6 +17,7 @@
 package spoonbill.effect
 
 import java.io.Closeable
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import spoonbill.effect.syntax.*
 import scala.collection.mutable
@@ -318,26 +319,47 @@ abstract class Stream[F[_]: Effect, A] { self =>
     }
   }
 
+  /**
+   * Observe this wrapper's terminal outcome: EOF succeeds, a failed read fails,
+   * and explicit cancellation fails with CancellationException. The first
+   * outcome is replayed to every observer. Canceling an individual pull effect
+   * does not by itself mean that the stream has been consumed.
+   */
   def handleConsumed: (F[Unit], Stream[F, A]) = {
-    var consumed                       = false
-    var callback: Effect.Promise[Unit] = null
+    val monitor = new Object
+    var completed = Option.empty[Either[Throwable, Unit]]
+    var callbacks = List.empty[Effect.Promise[Unit]]
+    def complete(result: Either[Throwable, Unit]): Unit = {
+      val notify = monitor.synchronized {
+        if (completed.nonEmpty) Nil
+        else {
+          completed = Some(result)
+          val notify = callbacks
+          callbacks = Nil
+          notify
+        }
+      }
+      notify.foreach(_(result))
+    }
     val handler = Effect[F].promise[Unit] { cb =>
-      if (consumed) cb(Right(()))
-      else callback = cb
+      val ready = monitor.synchronized {
+        if (completed.isEmpty) callbacks = cb :: callbacks
+        completed
+      }
+      ready.foreach(cb)
     }
     val downstream = new Stream[F, A] {
-      def pull(): F[Option[A]] = self.pull().map {
+      def pull(): F[Option[A]] = Effect[F].delayAsync(self.pull()).recoverF { case error =>
+        Effect[F].delay(complete(Left(error))).flatMap(_ => Effect[F].fail(error))
+      }.map {
         case None =>
-          consumed = true
-          if (callback != null) {
-            val cb = callback
-            callback = null
-            cb(Right(()))
-          }
+          complete(Right(()))
           None
         case maybeItem => maybeItem
       }
-      def cancel(): F[Unit] = self.cancel()
+      def cancel(): F[Unit] =
+        Effect[F].delay(complete(Left(new CancellationException("Stream canceled before consumption completed"))))
+          .flatMap(_ => Effect[F].delayAsync(self.cancel()))
     }
     (handler, downstream)
   }
