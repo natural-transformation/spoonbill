@@ -80,11 +80,12 @@ private[server] final class SetupInput[F[_]: Effect, A](upstream: Stream[F, A]) 
     */
   def drain(isTerminal: A => Boolean, onTerminated: () => F[Unit]): F[Unit] = {
     def loop(): F[Unit] =
-      upstream.pull().flatMap {
+      upstream.pull().recover { case NonFatal(_) => None }.flatMap {
         case None                                        => onTerminated()
-        case Some(value) if isTerminal(value)            => onTerminated()
-        case Some(_)                                     => loop()
-      }.recoverF { case NonFatal(_) => onTerminated() }
+        case Some(value) =>
+          val terminal = try isTerminal(value) catch { case NonFatal(_) => true }
+          if (terminal) onTerminated() else loop()
+      }
     loop()
   }
 

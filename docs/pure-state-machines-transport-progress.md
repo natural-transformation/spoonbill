@@ -61,9 +61,10 @@ to zero, losing the second item. Both adapter countdowns now saturate positive
 demand at the effectively unbounded maximum, which consumption does not reduce.
 The regression failed before this arithmetic fix. Full adapter suites passed
 53 Pekko and 45 Akka tests afterward, including a direct countdown boundary case.
-Nonpositive requests retain the existing ignored-input behavior; changing that
-policy requires its own terminal-signal serialization decision, not a hidden
-change inside a refactor.
+Nonpositive requests still have the existing ignored-input behavior. This is an
+outstanding Reactive Streams conformance defect, not an intended policy. A
+separate fix must serialize its terminal error with an in-flight `onNext` before
+the publisher item is complete; the refactor does not silently change it.
 
 After those separate fixes, both publishers use the same `StreamPublisherMachine`
 for Active/Canceled/Completed/Failed terminal ownership and positive-demand
@@ -75,9 +76,9 @@ claim. Cancellation still wakes a pending demand wait before starting cleanup.
 
 The candidate tables match: positive demand adds credit, zero credit parks one
 consumer, terminal outcomes claim their signal once, and cancellation suppresses
-late pull outcomes. Synchronous duplicate-subscriber exceptions and ignored
-nonpositive demand remain compatibility policies rather than a full-conformance
-claim. `spoonbill/testOnly *StreamPublisherMachineSpec` passed both table/generated
+late pull outcomes. Synchronous duplicate-subscriber exceptions remain the
+documented compatibility policy; nonpositive demand remains the separate defect
+above. `spoonbill/testOnly *StreamPublisherMachineSpec` passed both table/generated
 tests, and the unchanged complete adapter suites passed 53 Pekko and 45 Akka tests
 after extraction. The purity guard passed.
 
@@ -237,3 +238,16 @@ sources were unchanged between those checks and their benchmark collection.
 
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.
+
+## Standalone input: confirmed drain defect
+
+The drain's recovery surrounded both input reads and its terminal callback.
+Consequently a failed terminal callback ran three times after an ordinary EOF
+and twice after an input failure in the new one-item characterization. Both
+probes failed before the fix. Recovery now classifies input/predicate failure
+before calling the terminal callback, so that callback's own failure propagates
+without retry. The input, handoff, and cleanup effect order otherwise stays intact.
+
+`standalone/testOnly *SetupInputSpec *StandaloneLifecycleSpec *StandaloneSetupDeadlineSpec`
+passed all 26 tests after correction, including a terminal-predicate failure case.
+The phase extraction remains a separate unit following this fix.
