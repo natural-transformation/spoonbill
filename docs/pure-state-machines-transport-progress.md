@@ -367,3 +367,26 @@ before extraction. After extraction,
 *WebSocketMessageSignalsSpec *WebSocketProtocolSpec` passed 31 tests. The two direct
 model cases cover both completion prerequisites and first-failure carry in either
 event order. The model runs at connection ownership edges, never per read/frame.
+
+## Standalone output and close ownership
+
+`WebSocketOutputMachine` combines the output phase, close direction and cleanup
+claim. Its interpreter publishes one atomic state; CAS retries compute state only.
+Ordinary frames read direction and phase without creating events or next states.
+Lifecycle transitions attach output, request graceful closure, emit Close, finish
+the following pull, or abort. Abort remains dominant even after cleanup is claimed.
+The cleanup promise remains a result handle outside the model.
+
+The interpreter keeps the security/effect ordering: in-flight output checks the
+current close direction; the Close frame is returned before the following pull
+closes the channel; physical channel closure precedes response cancellation and
+release. Cleanup is claimed before user callbacks. Inbound peer Close launches
+output cancellation without joining finalizers that can await that same read.
+
+Before extraction, `standalone/testOnly *StandaloneLifecycleSpec
+*StandaloneWebSocketLimitsSpec *StandaloneDeadlineIsolationSpec
+*StandaloneMessageDeadlineSpec` passed 19 real lifecycle/deadline tests. The same
+command plus `*WebSocketOutputMachineSpec` passed 21 after extraction. Direct laws
+pin Close emission versus cleanup and abort dominance. The zio transport baseline,
+`zioHttp/testOnly *BoundedTransportSpec`, independently passed 9 tests; its scanner
+and timer extraction is still pending.

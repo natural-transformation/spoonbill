@@ -13,7 +13,8 @@ import spoonbill.web.{Headers, Request, Response}
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.control.NonFatal
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import java.util.concurrent.TimeoutException
 
 object standalone {
@@ -105,10 +106,9 @@ object standalone {
       Effect[F].delayAsync(service.ws(wsRequest)).flatMap { response =>
       val closeFrame =
         WebSocketProtocol.Frame.ConnectionClose.asInstanceOf[WebSocketProtocol.Frame.Merged[B]]
-      // 0 open, 1 graceful close, 2 abort. The gate also suppresses an
+      // The direction gate also suppresses an
       // application element that was already in flight when the peer ended.
-      val closing = new AtomicInteger(0)
-      val finalized = new AtomicBoolean(false)
+      val lifecycle = new WebSocketOutputCell
       val cleanupFinished = scala.concurrent.Promise[Unit]()
       def awaitCleanup(): F[Unit] = Effect[F].promise { callback =>
         cleanupFinished.future.onComplete(result => callback(result.toEither))(ExecutionContext.parasitic)
@@ -117,8 +117,7 @@ object standalone {
       // Claim before invoking user cleanup: releasing a session can cancel its
       // input recursively. That callback must not wait on its own release.
       def close(abort: Boolean): F[Unit] = Effect[F].delayAsync {
-        if (abort) closing.set(2) else closing.compareAndSet(0, 1)
-        if (finalized.compareAndSet(false, true)) {
+        if (lifecycle.claimCleanup(abort)) {
           // The normal path arrives only after writing Close. Close the channel
           // before user cleanup, which may await an outstanding application read.
           (client.shutdown() *>
@@ -129,7 +128,7 @@ object standalone {
         } else Effect[F].unit
       }
       def requestGracefulClose(): F[Unit] = Effect[F].delayAsync {
-        if (closing.compareAndSet(0, 1)) {
+        if (lifecycle.requestGraceful()) {
           // Do not await finalizers (or cancellation waiting for this very read)
           // inside inbound Close conversion. The output writer owns completion.
           Effect[F].start(cancelOutput()).as(())
@@ -144,7 +143,7 @@ object standalone {
         () => abort(),
         () => deadline.attach(),
         closeFrame,
-        closing
+        lifecycle
       )
       peerClose = () => requestGracefulClose()
       deadline.acquire(() => abort() *> awaitCleanup()).flatMap { acquired =>
@@ -153,7 +152,7 @@ object standalone {
         case WebSocketResponse.Duplex(_, protocol, _) =>
           // Input cancellation, EOF, and read failure share one teardown.
           // Register it before couple so a resumed setup read can see EOF.
-          handoff.onInputEnd(() => if (closing.get() == 0) abort() else Effect[F].unit)
+          handoff.onInputEnd(() => if (lifecycle.current.direction == WebSocketOutputMachine.Direction.Open) abort() else Effect[F].unit)
           handoff.couple().flatMap { terminated =>
             if (terminated) abort().as(socketResponse(protocol, Stream.empty))
             else Effect[F].pure(socketResponse(protocol, output))
@@ -172,6 +171,22 @@ object standalone {
 
   private def isPeerClose(frame: WebSocketProtocol.Frame.Merged[?]): Boolean =
     frame == WebSocketProtocol.Frame.ConnectionClose
+
+  private final class WebSocketOutputCell {
+    import WebSocketOutputMachine.*
+    private val state = new AtomicReference(initial)
+    def current: State = state.get()
+
+    @tailrec final def advance(change: State => State): State = {
+      val before = state.get()
+      val after = change(before)
+      if ((before eq after) || state.compareAndSet(before, after)) before
+      else advance(change)
+    }
+
+    def requestGraceful(): Boolean = advance(graceful).direction == Direction.Open
+    def claimCleanup(abort: Boolean): Boolean = advance(finalizeClose(_, abort)).cleanupClaimed == false
+  }
 
   private def socketResponse[F[_], B](
     protocol: String,
@@ -196,45 +211,44 @@ object standalone {
     abort: () => F[Unit],
     attach: () => F[Boolean],
     closeFrame: B,
-    closing: AtomicInteger
+    lifecycle: WebSocketOutputCell
   ): Stream[F, B] =
     new Stream[F, B] {
-      @volatile private var phase = -1
+      import WebSocketOutputMachine.*
       private val mapFrame: Option[A] => Option[B] = frame =>
-        closing.get() match {
-          case 2 =>
-            phase = 2
+        lifecycle.current.direction match {
+          case Direction.Aborted =>
+            lifecycle.advance(ended)
             None
-          case 0 if frame.nonEmpty => frame.map(convert)
+          case Direction.Open if frame.nonEmpty => frame.map(convert)
           case _ =>
-            phase = 1
+            lifecycle.advance(closeEmitted)
             Some(closeFrame)
         }
 
       def pull(): F[Option[B]] =
-        if (phase == 0) Effect[F].map(frames.pull())(mapFrame)
+        if (lifecycle.current.output == Output.Pulling) Effect[F].map(frames.pull())(mapFrame)
         else pullLifecycle()
 
       private def pullLifecycle(): F[Option[B]] =
-        phase match {
-          case -1 => attach().flatMap { attached =>
-            if (attached) {
-              phase = 0
+        lifecycle.current.output match {
+          case Output.Unattached => attach().flatMap { accepted =>
+            lifecycle.advance(attached(_, accepted))
+            if (accepted) {
               pull()
             } else {
-              phase = 2
               Effect[F].pure(None)
             }
           }
-          case 2 => Effect[F].pure(None)
-          case 1 => Effect[F].delayAsync {
-            phase = 2
+          case Output.Ended => Effect[F].pure(None)
+          case Output.CloseEmitted => Effect[F].delayAsync {
+            lifecycle.advance(ended)
             close().as(None)
           }
-          case _ => Effect[F].map(frames.pull())(mapFrame)
+          case Output.Pulling => Effect[F].map(frames.pull())(mapFrame)
         }
       def cancel(): F[Unit] = Effect[F].delayAsync {
-        phase = 2
+        lifecycle.advance(ended)
         abort()
       }
     }
