@@ -1,5 +1,14 @@
 # Stream operator compatibility cost screen
 
+## Current API versus historical reproduction
+
+For the closed Future-instance API, use the shared [v3 fixture and adapters](v3/README.md).
+Its fresh three-version screen compares the original baseline, compact7 and the
+new API, retaining both reference comparisons and all 27 rows. The v2 fixture,
+`prepare.sh`, `run.sh` and evidence below are historical reproduction artifacts
+for their recorded revisions; their `FutureEffect` subclass instrumentation does
+not compile against the new API. Those fixture and evidence bytes remain unchanged.
+
 This experiment compares pre-operator `570d3678` with operator implementation
 `fb67724b` plus laws `3fa0f496`. It does not change production and does not claim
 that the old and new operator contracts are equivalent.

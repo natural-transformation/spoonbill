@@ -1,0 +1,463 @@
+/*
+ * Copyright 2017-2020 Aleksey Fomkin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package spoonbill.effect
+
+import java.io.Closeable
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
+import spoonbill.effect.syntax.*
+import scala.collection.mutable
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.FiniteDuration
+
+abstract class Stream[F[_]: Effect, A] { self =>
+
+  def pull(): F[Option[A]]
+
+
+  def cancel(): F[Unit]
+
+  /**
+   * @see
+   *   concat
+   */
+  def ++(rhs: Stream[F, A]): Stream[F, A] =
+    concat(rhs)
+
+  /**
+   * Sequently concat two streams
+   * {{{
+   *   Stream(1,2,3) ++ Stream(4,5,6)
+   *   // 1,2,3,4,5,6
+   * }}}
+   * @return
+   */
+  def concat(rhs: Stream[F, A]): Stream[F, A] = new Stream[F, A] { // TODO optimize me
+    def pull(): F[Option[A]] =
+      Effect[F].flatMap(self.pull()) { maybeValue =>
+        if (maybeValue.nonEmpty) Effect[F].pure(maybeValue)
+        else rhs.pull()
+      }
+    def cancel(): F[Unit] = {
+      val lc = self.cancel()
+      val rc = rhs.cancel()
+      Effect[F].flatMap(lc)(_ => rc)
+    }
+  }
+
+  def collect[B](f: PartialFunction[A, B]): Stream[F, B] = new Stream[F, B] {
+    val liftedF: A => Option[B] = f.lift
+    def cancel(): F[Unit]       = self.cancel()
+    def pull(): F[Option[B]] = self.pull() flatMap {
+      case None => Effect[F].pure(None)
+      case Some(value) =>
+        val result = liftedF(value)
+        if (result.isEmpty) pull()
+        else Effect[F].pure(result)
+    }
+  }
+
+  def map[B](f: A => B): Stream[F, B] = new Stream[F, B] {
+    def cancel(): F[Unit] = self.cancel()
+    def pull(): F[Option[B]] = Effect[F]
+      .map(self.pull())(maybeValue => maybeValue.map(f))
+  }
+
+  def mapAsync[B](f: A => F[B]): Stream[F, B] = new Stream[F, B] {
+    def pull(): F[Option[B]] = self.pull() flatMap {
+      case Some(value) => f(value).map(Some(_))
+      case None        => Effect[F].pure(None)
+    }
+    def cancel(): F[Unit] =
+      self.cancel()
+  }
+
+  /**
+   * Merges underlying streams concurrently.
+   * @param concurrency
+   *   number of concurrent underlying streams
+   * {{{
+   *   Stream.eval(1, 2, 3) flatMapMerge(3) { x =>
+   *     Stream.eval(x + "a", x + "b", x + "c")
+   *   }
+   *   // 1a,2a,3a,1b,2b,3b,1c,2c,3c
+   * }}}
+   */
+  def flatMapMerge[B](concurrency: Int)(f: A => Stream[F, B]): Stream[F, B] = new Stream[F, B] {
+    val streams: Array[Stream[F, B]] = new Array(concurrency)
+    var takeFromCounter              = 0
+    def aux(): F[Option[B]] = { // FIXME should be lazy
+      val takeFrom   = takeFromCounter % concurrency
+      val underlying = streams(takeFrom)
+      takeFromCounter += 1
+      if (underlying == null) {
+        Effect[F].flatMap(self.pull()) {
+          case Some(value) =>
+            val newStream = f(value)
+            streams(takeFrom) = newStream
+            newStream.pull()
+          case None =>
+            streams(takeFrom) = null
+            aux()
+        }
+      } else {
+        underlying.pull()
+      }
+    }
+    def pull(): F[Option[B]] = aux()
+    def cancel(): F[Unit]    = self.cancel()
+  }
+
+  def flatMapAsync[B](f: A => F[Stream[F, B]]): Stream[F, B] =
+    flatMapMergeAsync(1)(f)
+
+  def flatMapMergeAsync[B](concurrency: Int)(f: A => F[Stream[F, B]]): Stream[F, B] = new Stream[F, B] {
+    val streams: Array[Stream[F, B]] = new Array(concurrency)
+    var takeFromCounter              = 0
+
+    def aux(): F[Option[B]] = {
+      val takeFrom   = takeFromCounter % concurrency
+      val underlying = streams(takeFrom)
+      takeFromCounter += 1
+      if (underlying == null) {
+        pullNextStream(takeFrom)
+      } else {
+        underlying.pull().flatMap {
+          case Some(value) =>
+            Effect[F].pure(Some(value))
+          case None =>
+            pullNextStream(takeFrom)
+        }
+      }
+    }
+
+    private def pullNextStream(takeFrom: Int): F[Option[B]] =
+      self.pull().flatMap {
+        case Some(value) =>
+          takeFromNextStream(value, takeFrom)
+        case None =>
+          streams(takeFrom) = null
+          if (hasNonEmptyStream()) aux()
+          else Effect[F].pure(None)
+      }
+
+    private def hasNonEmptyStream() = streams.exists(_ != null)
+
+    private def takeFromNextStream(value: A, takeFrom: Int): F[Option[B]] =
+      f(value).flatMap { newStream =>
+        streams(takeFrom) = newStream
+        newStream.pull().flatMap {
+          case Some(value) => Effect[F].pure(Some(value))
+          case None        => aux()
+        }
+      }
+
+    def pull(): F[Option[B]] = aux()
+    def cancel(): F[Unit]    = self.cancel()
+  }
+
+  /**
+   * @see
+   *   flatMapConcat
+   */
+  def flatMap[B](f: A => Stream[F, B]): Stream[F, B] =
+    flatMapMerge(1)(f)
+
+  /**
+   * Merges underlying streams to one line.
+   * {{{
+   *   Stream.eval(1, 2, 3) flatMapConcat { x =>
+   *     Stream.eval(x + "a", x + "b", x + "c")
+   *   }
+   *   // 1a,1b,1c,2a,2b,2c,3a,3b,3c
+   * }}}
+   */
+  def flatMapConcat[B](f: A => Stream[F, B]): Stream[F, B] =
+    flatMapMerge(1)(f)
+
+  def foldAsync[B](default: B)(f: (B, A) => F[B]): F[B] = {
+    def aux(acc: B): F[B] =
+      Effect[F].flatMap(pull()) {
+        case Some(value) => Effect[F].flatMap(f(acc, value))(acc => aux(acc))
+        case None        => Effect[F].pure(acc)
+      }
+    aux(default)
+  }
+
+  def fold[B](default: B)(f: (B, A) => B): F[B] = {
+    def aux(acc: B): F[B] =
+      Effect[F].flatMap(pull()) {
+        case Some(value) => aux(f(acc, value))
+        case None        => Effect[F].pure(acc)
+      }
+    aux(default)
+  }
+
+  /**
+   * React on values of the stream keeping it the same. Useful when you want to
+   * track progress of downloading.
+   *
+   * {{{
+   *   file
+   *     .over(0L) {
+   *       case (acc, chunk) =>
+   *         val loaded = chunk.fold(acc)(_.length.toLong + acc)
+   *         showProgress(loaded, file.bytesLength)
+   *     }
+   *     .to(s3bucket("my-large-file"))
+   * }}}
+   */
+  def over[B](default: B)(f: (B, Option[A]) => F[B]): Stream[F, A] = new Stream[F, A] {
+    var state: B = default
+    def pull(): F[Option[A]] = self
+      .pull()
+      .flatMap { maybeValue =>
+        f(state, maybeValue) map { newState =>
+          state = newState
+          maybeValue
+        }
+      }
+    def cancel(): F[Unit] = self.cancel()
+  }
+
+  def tap[U](f: A => F[U]): Stream[F, A] = new Stream[F, A] {
+    def pull(): F[Option[A]] = self
+      .pull()
+      .flatMap {
+        case None                     => Effect[F].none
+        case maybeValue @ Some(value) => f(value).as(maybeValue)
+      }
+    def cancel(): F[Unit] = self.cancel()
+  }
+
+  def to[U](f: Stream[F, A] => F[U]): F[U] =
+    f(this)
+
+  /**
+   * Sort elements of the stream between "racks".
+   *
+   * {{{
+   *   val List(girls, boys, queers) = persons.sort(3) {
+   *     case person if person.isFemale => 0
+   *     case person if person.isMale => 1
+   *     case person => 2
+   *   }
+   * }}}
+   *
+   * @param numRacks
+   *   Number of racks.
+   * @param f
+   *   Takes element of the stream return number of rack.
+   * @return
+   *   List of streams appropriate to racks.
+   */
+  def sort(numRacks: Int)(f: A => Int): List[Stream[F, A]] = sort(numRacks, 128)(f)
+
+  /** FIFO partitioning with a positive capacity per rack. Overflow fails every
+    * rack with [[StreamSortOverflowException]], carrying only rack/capacity
+    * metadata. Explicit or native pull cancellation stops the whole partition;
+    * upstream cleanup starts without joining user finalizers.
+    */
+  def sort(numRacks: Int, capacityPerRack: Int)(f: A => Int): List[Stream[F, A]] = {
+    require(numRacks >= 0, "Number of stream racks must not be negative")
+    require(capacityPerRack > 0, "Stream rack capacity must be positive")
+    if (numRacks == 0) Nil
+    else {
+      val lanes = Vector.fill(numRacks)(new StreamRoutingMachine.Lane)
+      val runtime = StreamRoutingRuntime(self, StreamRoutingMachine.Mode.Partition, capacityPerRack, lanes, Some(f))
+      lanes.map(runtime.stream).toList
+    }
+  }
+
+  /**
+   * Observe this wrapper's terminal outcome: EOF succeeds, a failed read fails,
+   * and explicit cancellation fails with CancellationException. The first
+   * outcome is replayed to every observer. Canceling an individual pull effect
+   * does not by itself mean that the stream has been consumed.
+   */
+  def handleConsumed: (F[Unit], Stream[F, A]) = {
+    case class Completion(
+      state: CompletionLatchMachine.State,
+      result: Option[Either[Throwable, Unit]] = None,
+      callbacks: List[Effect.Promise[Unit]] = Nil
+    )
+    val monitor = new Object
+    var completion = Completion(CompletionLatchMachine.State.Pending)
+    def complete(result: Either[Throwable, Unit]): Unit = {
+      val notify = monitor.synchronized {
+        val current = completion
+        val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Complete)
+        if (command == CompletionLatchMachine.Command.Publish) {
+          completion = Completion(next, Some(result))
+          current.callbacks
+        } else Nil
+      }
+      notify.foreach(_(result))
+    }
+    val handler = Effect[F].promise[Unit] { cb =>
+      val ready = monitor.synchronized {
+        val current = completion
+        val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Observe)
+        if (command == CompletionLatchMachine.Command.Register) {
+          completion = current.copy(state = next, callbacks = cb :: current.callbacks)
+          None
+        } else current.result
+      }
+      ready.foreach(cb)
+    }
+    val downstream = new Stream[F, A] {
+      def pull(): F[Option[A]] = Effect[F].delayAsync(self.pull()).recoverF { case error =>
+        Effect[F].delay(complete(Left(error))).flatMap(_ => Effect[F].fail(error))
+      }.map {
+        case None =>
+          complete(Right(()))
+          None
+        case maybeItem => maybeItem
+      }
+      def cancel(): F[Unit] =
+        Effect[F].delay(complete(Left(new CancellationException("Stream canceled before consumption completed"))))
+          .flatMap(_ => Effect[F].delayAsync(self.cancel()))
+    }
+    (handler, downstream)
+  }
+
+  def foreach(f: A => F[Unit]): F[Unit] = {
+    def aux(): F[Unit] =
+      Effect[F].flatMap(pull()) {
+        case Some(value) => Effect[F].flatMap(f(value))(_ => aux())
+        case None        => Effect[F].unit
+      }
+    aux()
+  }
+
+  /** Eager bounded batching. Accepted data drains before EOF/failure. Any
+    * explicit or native pull cancellation stops the whole operator, settles
+    * pending batches and starts upstream cleanup without joining it.
+    */
+  def buffer(duration: FiniteDuration, maxSize: Int = 16)(implicit
+    scheduler: Scheduler[F], ec: ExecutionContext, reporter: Reporter
+  ): Stream[F, Seq[A]] =
+    new StreamBufferRuntime(self, duration, maxSize, job => scheduler.unsafeScheduleOnce(duration)(job()))
+}
+
+object Stream {
+
+  implicit class SpoonbillUnchunkExtension[F[_]: Effect, A](stream: Stream[F, Seq[A]]) {
+
+    /**
+     * Flatten Stream of any collection to single elements
+     * @return
+     */
+    def unchunk: Stream[F, A] = stream.flatMapAsync(chunk => Stream.emits(chunk).mat())
+
+  }
+
+  def endless[F[_]: Effect, T]: Stream[F, T] =
+    new Stream[F, T] {
+      def pull(): F[Option[T]] = Effect[F].never
+      def cancel(): F[Unit]    = Effect[F].unit
+    }
+
+  def empty[F[_]: Effect, T]: Stream[F, T] =
+    new Stream[F, T] {
+      def pull(): F[Option[T]] = Effect[F].pure(Option.empty[T])
+      def cancel(): F[Unit]    = Effect[F].unit
+    }
+
+  def apply[T](xs: T*): Template[T] = emits(xs)
+
+  def emits[T](xs: Seq[T]): Stream.Template[T] = new Template[T] {
+    def mat[F[_]: Effect](): F[Stream[F, T]] = Effect[F].delay {
+      new Stream[F, T] {
+        var n        = 0
+        var canceled = false
+        def pull(): F[Option[T]] = Effect[F].delay {
+          if (canceled || n == xs.length) {
+            None
+          } else {
+            val res = xs(n)
+            n += 1
+            Some(res)
+          }
+        }
+        def cancel(): F[Unit] = Effect[F].delay {
+          canceled = true
+        }
+      }
+    }
+  }
+
+//  TODO this implementation doesn't work properly
+//  /**
+//    * Immediately gives same stream as `eventuallyStream`.
+//    */
+//  def proxy[F[_]: Effect, T](eventuallyStream: F[Stream[F, T]]): Stream[F, T] = {
+//    new Stream[F, T] {
+//      def pull(): F[Option[T]] = Effect[F].flatMap(eventuallyStream)(_.pull())
+//      def cancel(): F[Unit] = Effect[F].flatMap(eventuallyStream)(_.cancel())
+//    }
+//  }
+
+  def unfold[F[_]: Effect, S, T](default: S, doCancel: () => F[Unit] = null)(
+    loop: S => F[(S, Option[T])]
+  ): Stream[F, T] =
+    new Stream[F, T] {
+      @volatile private var state = default
+      def pull(): F[Option[T]] = loop(state).map {
+        case (newState, None) =>
+          state = newState
+          None
+        case (newState, maybeElem) =>
+          state = newState
+          maybeElem
+      }
+      def cancel(): F[Unit] =
+        if (doCancel != null) doCancel()
+        else Effect[F].unit
+    }
+
+  def unfoldResource[F[_]: Effect, R <: Closeable, S, T](
+    create: => F[R],
+    default: S,
+    loop: (R, S) => F[(S, Option[T])]
+  ): F[Stream[F, T]] =
+    create.map { resource =>
+      new Stream[F, T] {
+        @volatile private var state = default
+        def pull(): F[Option[T]] = loop(resource, state).map {
+          case (newState, None) =>
+            state = newState
+            resource.close()
+            None
+          case (newState, maybeElem) =>
+            state = newState
+            maybeElem
+        }.recover { case error =>
+          resource.close()
+          throw error
+        }
+
+        def cancel(): F[Unit] = Effect[F].delay {
+          resource.close()
+        }
+      }
+    }
+
+  trait Template[A] {
+    def mat[F[_]: Effect](): F[Stream[F, A]]
+  }
+}

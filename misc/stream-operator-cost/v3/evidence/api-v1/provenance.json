@@ -1,0 +1,159 @@
+{
+  "protocol": "stream-compat-v3",
+  "status": "Superseded preparation/control snapshot; no timing collected",
+  "currentRevision": "5d71d676f6ad3837767f4fb3fcbab5b04d6697d5",
+  "originalRevision": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+  "candidateBase": "5d71d676f6ad3837767f4fb3fcbab5b04d6697d5",
+  "fixtureHashes": {
+    "FactoryBackend.scala": "381b369741d23e8b0e9300230d9a0a05d69512aba646ebf37fef2b926f9fd8a7",
+    "LegacyBackend.scala": "62652bddcc321d591cdbd19edd83585bd2bc935a205ee4b7988bd2b1fc434390",
+    "StreamOperatorBenchmarkV3.scala": "afce3bc560ca2f5438d8d6e2d29fa8b3c390fbce759ec76de98ef69034c6174e",
+    "analyze.mjs": "aa009ceda7695b388c6f403cb2fa25dfe49f14d85e7fddcc5061da01aee52bf9",
+    "controls.sh": "f8f5128c797b64f7f6d07aa6abd1a7d7a26662bfcdedb74b69b12a3cdb3e8a8d",
+    "prepare.sh": "72ba03a7feaeb0764ff294260a38745ce1b65bcde5b740dbd1b28b7342a90043",
+    "run.sh": "efcea34408d403bd8794c80685930457c0146e462fbd9399577b803d01f40c58"
+  },
+  "variants": {
+    "original": {
+      "classpathSha256": "6c43b3361fe623dd88283a22da31a19a432541cb96488170b3609d44195365a1",
+      "classManifestSha256": "287553857ccc6d1c7e177c8b7257d534b98bcc83435a3d7f20ebd7cd5eb65ebf",
+      "sourceHashes": {
+        "modules/effect/src/main/scala/korolev/effect/AsyncResourcePool.scala": "14096e8b93bed8aaa460a126d1c675525ce898bf5a9ad8380a003878220da79d",
+        "modules/effect/src/main/scala/korolev/effect/AsyncTable.scala": "767e8ec0484be1ac522caa5ff2c286d3ebef14939db9b5cdfeb4db2db3751bb1",
+        "modules/effect/src/main/scala/korolev/effect/Close.scala": "bd1c0b1916f5dc9867eedf1400907128545ea335fdfc9fce7db62b4d44219639",
+        "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0",
+        "modules/effect/src/main/scala/korolev/effect/DeadlineMachine.scala": "3d0779c2dcb5ce9e05aed044c140f6bc116a5194ba5cfa5cdf0c04eef0d42b72",
+        "modules/effect/src/main/scala/korolev/effect/Decoder.scala": "cae6cf4557cacecb6f5a0869e4deb59b4641fb823b225ade8a056e89bd2295de",
+        "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "e156121b1032b48bd04d0aef1fd0403e0a4d9f3d427d6c80dd370a0a2477b9ff",
+        "modules/effect/src/main/scala/korolev/effect/Effect.scala": "0815398f2c212de37ea15e785aeb2a5a60020f8e1ed921be0e71f5d516124db7",
+        "modules/effect/src/main/scala/korolev/effect/Hub.scala": "041e60c97b3f71faef1630930265c84cc7414f990a71549ba8867b972e2bbed3",
+        "modules/effect/src/main/scala/korolev/effect/LateHandleMachine.scala": "2839839ed64cf09ec9f24c3ae7c10e3f43b15b61eff0ef122cbd2bea05c86eb5",
+        "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+        "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+        "modules/effect/src/main/scala/korolev/effect/Reporter.scala": "3e4e177387522771036c172002d0959adf903559d3ecbd3416831ca1bd1a39fb",
+        "modules/effect/src/main/scala/korolev/effect/ScheduledStreamMachine.scala": "23effa581f5076ad41eb7788222a470903d1a20c930fa3afa0448b7bac6ab86a",
+        "modules/effect/src/main/scala/korolev/effect/Scheduler.scala": "47711f929365e965a8b0f92d4367a55327dd63874a20ac3d18aed719b31752ea",
+        "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90",
+        "modules/effect/src/main/scala/korolev/effect/Stream.scala": "5c899466d836fc76e933a488cc66f9a968b8582aab1e65565a0c9d5986ff71f9",
+        "modules/effect/src/main/scala/korolev/effect/Var.scala": "797d362a081919b1f671378fc9033cdc0f57ff1af96ec3089fbe96a170c4098a",
+        "modules/effect/src/main/scala/korolev/effect/io/FileIO.scala": "80e594ca730b17e3236d486dcae6c5e6cc667b5b7f05d8a81d7d2ca568816672",
+        "modules/effect/src/main/scala/korolev/effect/io/JavaIO.scala": "bf8de756b1f2b86bc5c54e627a85e8d0256eaf7ab9ef3edf2edeb0b3d33b48fe",
+        "modules/effect/src/main/scala/korolev/effect/syntax.scala": "321a81691959c82698644a5cefa344f7df03cc33f97456e3ddaa8a4fbfbee5f9"
+      },
+      "adapter": "LegacyBackend.scala"
+    },
+    "current": {
+      "classpathSha256": "77fd4826f714953130268f7c660be0785c2485c8280c00cbc32b32da4d26ac82",
+      "classManifestSha256": "a35726dc9138676e96581f2f0da1146463ef6fe95ffadfbd51e47ce7c49f4183",
+      "sourceHashes": {
+        "modules/effect/src/main/scala/korolev/effect/AsyncResourcePool.scala": "14096e8b93bed8aaa460a126d1c675525ce898bf5a9ad8380a003878220da79d",
+        "modules/effect/src/main/scala/korolev/effect/AsyncTable.scala": "767e8ec0484be1ac522caa5ff2c286d3ebef14939db9b5cdfeb4db2db3751bb1",
+        "modules/effect/src/main/scala/korolev/effect/Close.scala": "bd1c0b1916f5dc9867eedf1400907128545ea335fdfc9fce7db62b4d44219639",
+        "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0",
+        "modules/effect/src/main/scala/korolev/effect/DeadlineMachine.scala": "3d0779c2dcb5ce9e05aed044c140f6bc116a5194ba5cfa5cdf0c04eef0d42b72",
+        "modules/effect/src/main/scala/korolev/effect/Decoder.scala": "cae6cf4557cacecb6f5a0869e4deb59b4641fb823b225ade8a056e89bd2295de",
+        "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "e156121b1032b48bd04d0aef1fd0403e0a4d9f3d427d6c80dd370a0a2477b9ff",
+        "modules/effect/src/main/scala/korolev/effect/Effect.scala": "be8acbd87c5fc2ee992f25aad1fae1e117198285c48fb2dea034eb9f4b382518",
+        "modules/effect/src/main/scala/korolev/effect/Hub.scala": "353301c22f307ec45ceeabcf880011ab78f5467f7dfe18de527a64784a9051e0",
+        "modules/effect/src/main/scala/korolev/effect/LateHandleMachine.scala": "2839839ed64cf09ec9f24c3ae7c10e3f43b15b61eff0ef122cbd2bea05c86eb5",
+        "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+        "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+        "modules/effect/src/main/scala/korolev/effect/Reporter.scala": "3e4e177387522771036c172002d0959adf903559d3ecbd3416831ca1bd1a39fb",
+        "modules/effect/src/main/scala/korolev/effect/ScheduledStreamMachine.scala": "23effa581f5076ad41eb7788222a470903d1a20c930fa3afa0448b7bac6ab86a",
+        "modules/effect/src/main/scala/korolev/effect/Scheduler.scala": "47711f929365e965a8b0f92d4367a55327dd63874a20ac3d18aed719b31752ea",
+        "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90",
+        "modules/effect/src/main/scala/korolev/effect/Stream.scala": "9496fd2f40e093c91fc4cdd255f0b64419da946dbd171febaf8405e469ef8a2b",
+        "modules/effect/src/main/scala/korolev/effect/StreamBatchMachine.scala": "d776f5d1a258a170f1ee49c6daffc9cf3057a1c7af564a4929827736ad9f3ff7",
+        "modules/effect/src/main/scala/korolev/effect/StreamBufferRuntime.scala": "6f292258fff6151f82b822e43b2dbf10a8ec4392faf29c3c482f50bee99cedd7",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98eefeb0aa93f1a6c45d3a6db81e838b4141c0c49ae077e772d5270196cd741d",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "adc021edaca75bc790d4ae1efe906acabd6b4e74009ab4d1e61c7875c01540d4",
+        "modules/effect/src/main/scala/korolev/effect/StreamSortOverflowException.scala": "f38736aa8a911eace8f0ea30aa3882769e95bdd9c3ec97fb1661d9eff5c73bea",
+        "modules/effect/src/main/scala/korolev/effect/Var.scala": "797d362a081919b1f671378fc9033cdc0f57ff1af96ec3089fbe96a170c4098a",
+        "modules/effect/src/main/scala/korolev/effect/io/FileIO.scala": "80e594ca730b17e3236d486dcae6c5e6cc667b5b7f05d8a81d7d2ca568816672",
+        "modules/effect/src/main/scala/korolev/effect/io/JavaIO.scala": "bf8de756b1f2b86bc5c54e627a85e8d0256eaf7ab9ef3edf2edeb0b3d33b48fe",
+        "modules/effect/src/main/scala/korolev/effect/syntax.scala": "321a81691959c82698644a5cefa344f7df03cc33f97456e3ddaa8a4fbfbee5f9"
+      },
+      "adapter": "LegacyBackend.scala"
+    },
+    "candidate": {
+      "classpathSha256": "1cd68ddbb15f1ae32940711504f41f413d33aaf501fc545aa07878e86e635870",
+      "classManifestSha256": "768f79cd79ddd1d21337893984d5d54f65b5967ef4bb244349edd190fa0a6ffa",
+      "sourceHashes": {
+        "modules/effect/src/main/scala/korolev/effect/AsyncResourcePool.scala": "14096e8b93bed8aaa460a126d1c675525ce898bf5a9ad8380a003878220da79d",
+        "modules/effect/src/main/scala/korolev/effect/AsyncTable.scala": "767e8ec0484be1ac522caa5ff2c286d3ebef14939db9b5cdfeb4db2db3751bb1",
+        "modules/effect/src/main/scala/korolev/effect/Close.scala": "bd1c0b1916f5dc9867eedf1400907128545ea335fdfc9fce7db62b4d44219639",
+        "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0",
+        "modules/effect/src/main/scala/korolev/effect/DeadlineMachine.scala": "3d0779c2dcb5ce9e05aed044c140f6bc116a5194ba5cfa5cdf0c04eef0d42b72",
+        "modules/effect/src/main/scala/korolev/effect/Decoder.scala": "cae6cf4557cacecb6f5a0869e4deb59b4641fb823b225ade8a056e89bd2295de",
+        "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "e156121b1032b48bd04d0aef1fd0403e0a4d9f3d427d6c80dd370a0a2477b9ff",
+        "modules/effect/src/main/scala/korolev/effect/Effect.scala": "cc4fd53f82107c12b7f035a662431727ee70a050e910867bb6a5c99ef0cd93ef",
+        "modules/effect/src/main/scala/korolev/effect/Hub.scala": "353301c22f307ec45ceeabcf880011ab78f5467f7dfe18de527a64784a9051e0",
+        "modules/effect/src/main/scala/korolev/effect/LateHandleMachine.scala": "2839839ed64cf09ec9f24c3ae7c10e3f43b15b61eff0ef122cbd2bea05c86eb5",
+        "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+        "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+        "modules/effect/src/main/scala/korolev/effect/Reporter.scala": "3e4e177387522771036c172002d0959adf903559d3ecbd3416831ca1bd1a39fb",
+        "modules/effect/src/main/scala/korolev/effect/ScheduledStreamMachine.scala": "23effa581f5076ad41eb7788222a470903d1a20c930fa3afa0448b7bac6ab86a",
+        "modules/effect/src/main/scala/korolev/effect/Scheduler.scala": "47711f929365e965a8b0f92d4367a55327dd63874a20ac3d18aed719b31752ea",
+        "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90",
+        "modules/effect/src/main/scala/korolev/effect/Stream.scala": "9496fd2f40e093c91fc4cdd255f0b64419da946dbd171febaf8405e469ef8a2b",
+        "modules/effect/src/main/scala/korolev/effect/StreamBatchMachine.scala": "d776f5d1a258a170f1ee49c6daffc9cf3057a1c7af564a4929827736ad9f3ff7",
+        "modules/effect/src/main/scala/korolev/effect/StreamBufferRuntime.scala": "6f292258fff6151f82b822e43b2dbf10a8ec4392faf29c3c482f50bee99cedd7",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98eefeb0aa93f1a6c45d3a6db81e838b4141c0c49ae077e772d5270196cd741d",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "92017bb7294b3fc26375e57b96a4a072aabc966072ee993b3862a17ca5f90587",
+        "modules/effect/src/main/scala/korolev/effect/StreamSortOverflowException.scala": "f38736aa8a911eace8f0ea30aa3882769e95bdd9c3ec97fb1661d9eff5c73bea",
+        "modules/effect/src/main/scala/korolev/effect/Var.scala": "797d362a081919b1f671378fc9033cdc0f57ff1af96ec3089fbe96a170c4098a",
+        "modules/effect/src/main/scala/korolev/effect/io/FileIO.scala": "80e594ca730b17e3236d486dcae6c5e6cc667b5b7f05d8a81d7d2ca568816672",
+        "modules/effect/src/main/scala/korolev/effect/io/JavaIO.scala": "bf8de756b1f2b86bc5c54e627a85e8d0256eaf7ab9ef3edf2edeb0b3d33b48fe",
+        "modules/effect/src/main/scala/korolev/effect/syntax.scala": "321a81691959c82698644a5cefa344f7df03cc33f97456e3ddaa8a4fbfbee5f9"
+      },
+      "adapter": "FactoryBackend.scala"
+    }
+  },
+  "preparationNotes": [
+    "An initial controls-script creation used the original worktree cwd, where v3 did not exist; no script/JVM/control output was created. Corrected the destination and ran controls successfully. No timed measurements were attempted.",
+    "Original, current and candidate preparation/controls may overlap other functional builds; these are correctness controls, not timing evidence.",
+    "Analyzer was checked on explicitly synthetic records in /tmp/spoonbill-effect-api-v3-analyzer-check; identity ratios passed, duplicate rows, inconsistent derived metrics and nonempty stderr were rejected. Synthetic records are not benchmark evidence.",
+    "Before timing, review found that the canonical uninstrumented default start unnecessarily called no-op hooks and allocated a completion map. A separate candidate snapshot will remove that default-only overhead; explicit instrumented factory behavior used by this fixture remains unchanged. All v1 sources/classes/controls are retained."
+  ],
+  "commonFixtureBytecodeIdentical": true,
+  "candidatePatchSha256": "28453c543807664c4ea93d05728b8c12c553e202643b81841ac20a64c7b13d65",
+  "guides": {
+    "throughputAtLeast": 0.95,
+    "allocationAtMost": 1.1,
+    "references": [
+      "original",
+      "current"
+    ],
+    "allCellsRequired": true,
+    "p99Measured": false
+  },
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "plannedCollection": {
+    "rows": 27,
+    "blocks": 3,
+    "warmupSeconds": 2,
+    "measurementSeconds": 2,
+    "orders": [
+      [
+        "original",
+        "current",
+        "candidate"
+      ],
+      [
+        "current",
+        "candidate",
+        "original"
+      ],
+      [
+        "candidate",
+        "original",
+        "current"
+      ]
+    ]
+  }
+}

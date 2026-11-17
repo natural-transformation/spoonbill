@@ -1,0 +1,98 @@
+[
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/backlog-baseline-1.jfr",
+    "sha256": "0acfd97c3a9c39c9bac5f2fe8a5ead74b7aa47f4482d02f350e4356f5671238c"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/backlog-baseline-2.jfr",
+    "sha256": "0817ca50e78961e9fbf0c9979d2e88f69a05fcc0cc6e35d5b648059331c63245"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/backlog-baseline-3.jfr",
+    "sha256": "413ddb9eaa639aec88fb013c78e4396bb670dc9acd89e3d23957a7b07cfc58a6"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/backlog-pilot-1.jfr",
+    "sha256": "36b0186b4dd83e7613fd490391a17c327926afee32321a2e5ba2f33f5612a73c"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/backlog-pilot-2.jfr",
+    "sha256": "25e4eec3f1eb6901a04adf908cebc03b991fd867b1298f92f5089c4613d1f9f5"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/backlog-pilot-3.jfr",
+    "sha256": "baac80213a4e1c7784264e7b0b2163e3f030245e744ba18246be2545ef079850"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/contended-baseline-1.jfr",
+    "sha256": "ffb98d7741440dd343792a6740bcf8adea66e278730eec75b7d0dc182f8cf44c"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/contended-baseline-2.jfr",
+    "sha256": "36860479b1248e2377b67f3d1ca21442dd1f99ee0545e03ec63b71e17ecced2a"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/contended-baseline-3.jfr",
+    "sha256": "13d0c530946afccd1e0905cf6a68bb66eece7b82a59bc5568c67a4e9faf903ef"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/contended-pilot-1.jfr",
+    "sha256": "3e69d45c73cb635db9d338061dcd2b39ae5e8bebf701c2ea3efc7c51d0f9f6ca"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/contended-pilot-2.jfr",
+    "sha256": "1ffbe9551c93f339c710244d1c95f553bea8d6916235819ee6365f99bc2575a6"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/contended-pilot-3.jfr",
+    "sha256": "ff4636c09268ecb0f64a430c6cbb6b4e8b932dc5fb5181221b337f9f0db1f7ba"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/extensions-baseline-1.jfr",
+    "sha256": "c243217c425c458b59de64f5da6ee7d45187b933511fa60ae4be047c5079e36a"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/extensions-baseline-2.jfr",
+    "sha256": "6cc02c7568ad28ea964dc05762dc26ad25a211703eff47bab8561641ac3b19a9"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/extensions-baseline-3.jfr",
+    "sha256": "cbbd5bf2ae932dc89cc89b4fc5c62f388badcb037078a35a23d2d8533cb797d2"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/extensions-pilot-1.jfr",
+    "sha256": "36c089869a353931901ff8990b0b7f68a80fa191fc9fd50e948923478ff2b789"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/extensions-pilot-2.jfr",
+    "sha256": "9fe4b8c4e33464e6e95eb32cf9519f9accbd79aae760b0200178d7eb18bde79c"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/extensions-pilot-3.jfr",
+    "sha256": "b3dbb5f00db7a6ef6ef852b7a8c5c6bbf4b63c6e6b6e868dedf1cc7e3f1bf99b"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/isolated-baseline-1.jfr",
+    "sha256": "439f3d96a86fcaebd0e928707ad42d201f731dfbe58397e77625e1f8423e87e0"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/isolated-baseline-2.jfr",
+    "sha256": "06e65028570758200e18cf15f8f8f6edc49fd5181f1f7d67177011d28d87cf8e"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/isolated-baseline-3.jfr",
+    "sha256": "0965d875d33e691f09f1ccd9b54dee33c9afe99416cfdcf2c8e1ffb97e0db1f2"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/isolated-pilot-1.jfr",
+    "sha256": "8829441627331575b471468d189e5865faaf70fe12d9e22ba156bd7ce5878f08"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/isolated-pilot-2.jfr",
+    "sha256": "5c9d61a62a59c681c833fcc5657f7ce04fae93bc182ff9ba023eec471c3902ee"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/trials-v1/isolated-pilot-3.jfr",
+    "sha256": "d24745c99ccc7eab6b6962e1d2ba45d99f2831d1e99afd2a9ec23305a4651dea"
+  }
+]

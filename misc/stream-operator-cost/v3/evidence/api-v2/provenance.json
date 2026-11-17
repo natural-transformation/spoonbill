@@ -1,0 +1,432 @@
+{
+  "protocol": "stream-compat-v3",
+  "status": "Complete 27-row short compatibility-path screen; both predeclared median comparisons pass",
+  "currentRevision": "5d71d676f6ad3837767f4fb3fcbab5b04d6697d5",
+  "originalRevision": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+  "candidateBase": "5d71d676f6ad3837767f4fb3fcbab5b04d6697d5",
+  "fixtureHashes": {
+    "StreamOperatorBenchmarkV3.scala": "afce3bc560ca2f5438d8d6e2d29fa8b3c390fbce759ec76de98ef69034c6174e",
+    "FactoryBackend.scala": "381b369741d23e8b0e9300230d9a0a05d69512aba646ebf37fef2b926f9fd8a7",
+    "prepare.sh": "72ba03a7feaeb0764ff294260a38745ce1b65bcde5b740dbd1b28b7342a90043",
+    "run.sh": "efcea34408d403bd8794c80685930457c0146e462fbd9399577b803d01f40c58",
+    "controls.sh": "f8f5128c797b64f7f6d07aa6abd1a7d7a26662bfcdedb74b69b12a3cdb3e8a8d",
+    "LegacyBackend.scala": "62652bddcc321d591cdbd19edd83585bd2bc935a205ee4b7988bd2b1fc434390",
+    "analyze.mjs": "aa009ceda7695b388c6f403cb2fa25dfe49f14d85e7fddcc5061da01aee52bf9"
+  },
+  "variants": {
+    "original": {
+      "classpathSha256": "6c43b3361fe623dd88283a22da31a19a432541cb96488170b3609d44195365a1",
+      "classManifestSha256": "287553857ccc6d1c7e177c8b7257d534b98bcc83435a3d7f20ebd7cd5eb65ebf",
+      "sourceHashes": {
+        "modules/effect/src/main/scala/korolev/effect/AsyncResourcePool.scala": "14096e8b93bed8aaa460a126d1c675525ce898bf5a9ad8380a003878220da79d",
+        "modules/effect/src/main/scala/korolev/effect/AsyncTable.scala": "767e8ec0484be1ac522caa5ff2c286d3ebef14939db9b5cdfeb4db2db3751bb1",
+        "modules/effect/src/main/scala/korolev/effect/Close.scala": "bd1c0b1916f5dc9867eedf1400907128545ea335fdfc9fce7db62b4d44219639",
+        "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0",
+        "modules/effect/src/main/scala/korolev/effect/DeadlineMachine.scala": "3d0779c2dcb5ce9e05aed044c140f6bc116a5194ba5cfa5cdf0c04eef0d42b72",
+        "modules/effect/src/main/scala/korolev/effect/Decoder.scala": "cae6cf4557cacecb6f5a0869e4deb59b4641fb823b225ade8a056e89bd2295de",
+        "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "e156121b1032b48bd04d0aef1fd0403e0a4d9f3d427d6c80dd370a0a2477b9ff",
+        "modules/effect/src/main/scala/korolev/effect/Effect.scala": "0815398f2c212de37ea15e785aeb2a5a60020f8e1ed921be0e71f5d516124db7",
+        "modules/effect/src/main/scala/korolev/effect/Hub.scala": "041e60c97b3f71faef1630930265c84cc7414f990a71549ba8867b972e2bbed3",
+        "modules/effect/src/main/scala/korolev/effect/LateHandleMachine.scala": "2839839ed64cf09ec9f24c3ae7c10e3f43b15b61eff0ef122cbd2bea05c86eb5",
+        "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+        "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+        "modules/effect/src/main/scala/korolev/effect/Reporter.scala": "3e4e177387522771036c172002d0959adf903559d3ecbd3416831ca1bd1a39fb",
+        "modules/effect/src/main/scala/korolev/effect/ScheduledStreamMachine.scala": "23effa581f5076ad41eb7788222a470903d1a20c930fa3afa0448b7bac6ab86a",
+        "modules/effect/src/main/scala/korolev/effect/Scheduler.scala": "47711f929365e965a8b0f92d4367a55327dd63874a20ac3d18aed719b31752ea",
+        "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90",
+        "modules/effect/src/main/scala/korolev/effect/Stream.scala": "5c899466d836fc76e933a488cc66f9a968b8582aab1e65565a0c9d5986ff71f9",
+        "modules/effect/src/main/scala/korolev/effect/Var.scala": "797d362a081919b1f671378fc9033cdc0f57ff1af96ec3089fbe96a170c4098a",
+        "modules/effect/src/main/scala/korolev/effect/io/FileIO.scala": "80e594ca730b17e3236d486dcae6c5e6cc667b5b7f05d8a81d7d2ca568816672",
+        "modules/effect/src/main/scala/korolev/effect/io/JavaIO.scala": "bf8de756b1f2b86bc5c54e627a85e8d0256eaf7ab9ef3edf2edeb0b3d33b48fe",
+        "modules/effect/src/main/scala/korolev/effect/syntax.scala": "321a81691959c82698644a5cefa344f7df03cc33f97456e3ddaa8a4fbfbee5f9"
+      },
+      "adapter": "LegacyBackend.scala",
+      "sourceSnapshot": "../api-v1/source/original"
+    },
+    "current": {
+      "classpathSha256": "77fd4826f714953130268f7c660be0785c2485c8280c00cbc32b32da4d26ac82",
+      "classManifestSha256": "a35726dc9138676e96581f2f0da1146463ef6fe95ffadfbd51e47ce7c49f4183",
+      "sourceHashes": {
+        "modules/effect/src/main/scala/korolev/effect/AsyncResourcePool.scala": "14096e8b93bed8aaa460a126d1c675525ce898bf5a9ad8380a003878220da79d",
+        "modules/effect/src/main/scala/korolev/effect/AsyncTable.scala": "767e8ec0484be1ac522caa5ff2c286d3ebef14939db9b5cdfeb4db2db3751bb1",
+        "modules/effect/src/main/scala/korolev/effect/Close.scala": "bd1c0b1916f5dc9867eedf1400907128545ea335fdfc9fce7db62b4d44219639",
+        "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0",
+        "modules/effect/src/main/scala/korolev/effect/DeadlineMachine.scala": "3d0779c2dcb5ce9e05aed044c140f6bc116a5194ba5cfa5cdf0c04eef0d42b72",
+        "modules/effect/src/main/scala/korolev/effect/Decoder.scala": "cae6cf4557cacecb6f5a0869e4deb59b4641fb823b225ade8a056e89bd2295de",
+        "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "e156121b1032b48bd04d0aef1fd0403e0a4d9f3d427d6c80dd370a0a2477b9ff",
+        "modules/effect/src/main/scala/korolev/effect/Effect.scala": "be8acbd87c5fc2ee992f25aad1fae1e117198285c48fb2dea034eb9f4b382518",
+        "modules/effect/src/main/scala/korolev/effect/Hub.scala": "353301c22f307ec45ceeabcf880011ab78f5467f7dfe18de527a64784a9051e0",
+        "modules/effect/src/main/scala/korolev/effect/LateHandleMachine.scala": "2839839ed64cf09ec9f24c3ae7c10e3f43b15b61eff0ef122cbd2bea05c86eb5",
+        "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+        "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+        "modules/effect/src/main/scala/korolev/effect/Reporter.scala": "3e4e177387522771036c172002d0959adf903559d3ecbd3416831ca1bd1a39fb",
+        "modules/effect/src/main/scala/korolev/effect/ScheduledStreamMachine.scala": "23effa581f5076ad41eb7788222a470903d1a20c930fa3afa0448b7bac6ab86a",
+        "modules/effect/src/main/scala/korolev/effect/Scheduler.scala": "47711f929365e965a8b0f92d4367a55327dd63874a20ac3d18aed719b31752ea",
+        "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90",
+        "modules/effect/src/main/scala/korolev/effect/Stream.scala": "9496fd2f40e093c91fc4cdd255f0b64419da946dbd171febaf8405e469ef8a2b",
+        "modules/effect/src/main/scala/korolev/effect/StreamBatchMachine.scala": "d776f5d1a258a170f1ee49c6daffc9cf3057a1c7af564a4929827736ad9f3ff7",
+        "modules/effect/src/main/scala/korolev/effect/StreamBufferRuntime.scala": "6f292258fff6151f82b822e43b2dbf10a8ec4392faf29c3c482f50bee99cedd7",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98eefeb0aa93f1a6c45d3a6db81e838b4141c0c49ae077e772d5270196cd741d",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "adc021edaca75bc790d4ae1efe906acabd6b4e74009ab4d1e61c7875c01540d4",
+        "modules/effect/src/main/scala/korolev/effect/StreamSortOverflowException.scala": "f38736aa8a911eace8f0ea30aa3882769e95bdd9c3ec97fb1661d9eff5c73bea",
+        "modules/effect/src/main/scala/korolev/effect/Var.scala": "797d362a081919b1f671378fc9033cdc0f57ff1af96ec3089fbe96a170c4098a",
+        "modules/effect/src/main/scala/korolev/effect/io/FileIO.scala": "80e594ca730b17e3236d486dcae6c5e6cc667b5b7f05d8a81d7d2ca568816672",
+        "modules/effect/src/main/scala/korolev/effect/io/JavaIO.scala": "bf8de756b1f2b86bc5c54e627a85e8d0256eaf7ab9ef3edf2edeb0b3d33b48fe",
+        "modules/effect/src/main/scala/korolev/effect/syntax.scala": "321a81691959c82698644a5cefa344f7df03cc33f97456e3ddaa8a4fbfbee5f9"
+      },
+      "adapter": "LegacyBackend.scala",
+      "sourceSnapshot": "../api-v1/source/current"
+    },
+    "candidate": {
+      "classpathSha256": "e73e6d8c0991a2dd23efa6990af75be41de7c1340745c8aaed15f488852440f1",
+      "classManifestSha256": "9da0332a540797cfdc3d62633eac9cc446ea0cb730a9e346210a5280a3bdaeef",
+      "sourceHashes": {
+        "modules/effect/src/main/scala/korolev/effect/AsyncResourcePool.scala": "14096e8b93bed8aaa460a126d1c675525ce898bf5a9ad8380a003878220da79d",
+        "modules/effect/src/main/scala/korolev/effect/AsyncTable.scala": "767e8ec0484be1ac522caa5ff2c286d3ebef14939db9b5cdfeb4db2db3751bb1",
+        "modules/effect/src/main/scala/korolev/effect/Close.scala": "bd1c0b1916f5dc9867eedf1400907128545ea335fdfc9fce7db62b4d44219639",
+        "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0",
+        "modules/effect/src/main/scala/korolev/effect/DeadlineMachine.scala": "3d0779c2dcb5ce9e05aed044c140f6bc116a5194ba5cfa5cdf0c04eef0d42b72",
+        "modules/effect/src/main/scala/korolev/effect/Decoder.scala": "cae6cf4557cacecb6f5a0869e4deb59b4641fb823b225ade8a056e89bd2295de",
+        "modules/effect/src/main/scala/korolev/effect/DrainGateMachine.scala": "e156121b1032b48bd04d0aef1fd0403e0a4d9f3d427d6c80dd370a0a2477b9ff",
+        "modules/effect/src/main/scala/korolev/effect/Effect.scala": "3524d05c796d0232212683755c6a3af3ea5f3df4551b6a4b1be3a49f7ac0c700",
+        "modules/effect/src/main/scala/korolev/effect/Hub.scala": "353301c22f307ec45ceeabcf880011ab78f5467f7dfe18de527a64784a9051e0",
+        "modules/effect/src/main/scala/korolev/effect/LateHandleMachine.scala": "2839839ed64cf09ec9f24c3ae7c10e3f43b15b61eff0ef122cbd2bea05c86eb5",
+        "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+        "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+        "modules/effect/src/main/scala/korolev/effect/Reporter.scala": "3e4e177387522771036c172002d0959adf903559d3ecbd3416831ca1bd1a39fb",
+        "modules/effect/src/main/scala/korolev/effect/ScheduledStreamMachine.scala": "23effa581f5076ad41eb7788222a470903d1a20c930fa3afa0448b7bac6ab86a",
+        "modules/effect/src/main/scala/korolev/effect/Scheduler.scala": "47711f929365e965a8b0f92d4367a55327dd63874a20ac3d18aed719b31752ea",
+        "modules/effect/src/main/scala/korolev/effect/StateCell.scala": "ca4bd14b8fd846b756c2d4e013f779c5aabb1e32d8ac1188103b1c550c245b90",
+        "modules/effect/src/main/scala/korolev/effect/Stream.scala": "9496fd2f40e093c91fc4cdd255f0b64419da946dbd171febaf8405e469ef8a2b",
+        "modules/effect/src/main/scala/korolev/effect/StreamBatchMachine.scala": "d776f5d1a258a170f1ee49c6daffc9cf3057a1c7af564a4929827736ad9f3ff7",
+        "modules/effect/src/main/scala/korolev/effect/StreamBufferRuntime.scala": "6f292258fff6151f82b822e43b2dbf10a8ec4392faf29c3c482f50bee99cedd7",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98eefeb0aa93f1a6c45d3a6db81e838b4141c0c49ae077e772d5270196cd741d",
+        "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "92017bb7294b3fc26375e57b96a4a072aabc966072ee993b3862a17ca5f90587",
+        "modules/effect/src/main/scala/korolev/effect/StreamSortOverflowException.scala": "f38736aa8a911eace8f0ea30aa3882769e95bdd9c3ec97fb1661d9eff5c73bea",
+        "modules/effect/src/main/scala/korolev/effect/Var.scala": "797d362a081919b1f671378fc9033cdc0f57ff1af96ec3089fbe96a170c4098a",
+        "modules/effect/src/main/scala/korolev/effect/io/FileIO.scala": "80e594ca730b17e3236d486dcae6c5e6cc667b5b7f05d8a81d7d2ca568816672",
+        "modules/effect/src/main/scala/korolev/effect/io/JavaIO.scala": "bf8de756b1f2b86bc5c54e627a85e8d0256eaf7ab9ef3edf2edeb0b3d33b48fe",
+        "modules/effect/src/main/scala/korolev/effect/syntax.scala": "321a81691959c82698644a5cefa344f7df03cc33f97456e3ddaa8a4fbfbee5f9"
+      },
+      "adapter": "FactoryBackend.scala",
+      "sourceSnapshot": "source/candidate"
+    }
+  },
+  "preparationNotes": [
+    "An initial controls-script creation used the original worktree cwd, where v3 did not exist; no script/JVM/control output was created. Corrected the destination and ran controls successfully. No timed measurements were attempted.",
+    "Original, current and candidate preparation/controls may overlap other functional builds; these are correctness controls, not timing evidence.",
+    "Analyzer was checked on explicitly synthetic records in /tmp/spoonbill-effect-api-v3-analyzer-check; identity ratios passed, duplicate rows, inconsistent derived metrics and nonempty stderr were rejected. Synthetic records are not benchmark evidence.",
+    "Before timing, review found that the canonical uninstrumented default start unnecessarily called no-op hooks and allocated a completion map. A separate candidate snapshot will remove that default-only overhead; explicit instrumented factory behavior used by this fixture remains unchanged. All v1 sources/classes/controls are retained.",
+    "Candidate2 applies validated default-only start overhead correction. Original/current classpaths and all fixture sources are unchanged from api-v1. Candidate1 remains preserved without any timed rows."
+  ],
+  "commonFixtureBytecodeIdentical": true,
+  "candidatePatchSha256": "fe8cdbb2e67728130edfd25f46637f0545ec3c1d2c6f8d9077aa6e6fd5f9d568",
+  "guides": {
+    "throughputAtLeast": 0.95,
+    "allocationAtMost": 1.1,
+    "references": [
+      "original",
+      "current"
+    ],
+    "allCellsRequired": true,
+    "p99Measured": false
+  },
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "plannedCollection": {
+    "rows": 27,
+    "blocks": 3,
+    "warmupSeconds": 2,
+    "measurementSeconds": 2,
+    "orders": [
+      [
+        "original",
+        "current",
+        "candidate"
+      ],
+      [
+        "current",
+        "candidate",
+        "original"
+      ],
+      [
+        "candidate",
+        "original",
+        "current"
+      ]
+    ]
+  },
+  "recordedOn": "2026-11-17",
+  "collection": "Exclusive window granted by root after other agents confirmed idle; no builds/profilers or reported user CPU-heavy application during collection; 27 independent JVMs in declared cyclic order; no source edits/refreezes/reruns during collection.",
+  "rawSha256": "26e7663350e363f993dd67a8900bf42ff3ee6c449f3d4b561b216ff76401edcf",
+  "summarySha256": "e917abd70c7607d9d2e85862c895c78416d330c638991053ec12c84d141cf64e",
+  "postCollectionClassIntegrity": {
+    "original": {
+      "files": 258,
+      "allHashesMatch": true
+    },
+    "current": {
+      "files": 312,
+      "allHashesMatch": true
+    },
+    "candidate": {
+      "files": 316,
+      "allHashesMatch": true
+    }
+  },
+  "results": [
+    {
+      "scenario": "hub",
+      "original": {
+        "deliveriesPerSecond": {
+          "median": 7550965.930786932,
+          "min": 7532246.885230377,
+          "max": 7578003.384477491
+        },
+        "bytesPerDelivery": {
+          "median": 752.0972915533766,
+          "min": 752.0963388044141,
+          "max": 752.1135338195054
+        },
+        "roundsPerSecond": {
+          "median": 3775482.965393466,
+          "min": 3766123.4426151887,
+          "max": 3789001.6922387453
+        },
+        "bytesPerRound": {
+          "median": 1504.1945831067533,
+          "min": 1504.1926776088283,
+          "max": 1504.2270676390108
+        }
+      },
+      "current": {
+        "deliveriesPerSecond": {
+          "median": 26104082.68915374,
+          "min": 25791473.492296163,
+          "max": 26104096.82446298
+        },
+        "bytesPerDelivery": {
+          "median": 196.08284252540994,
+          "min": 196.07831585057298,
+          "max": 196.08304735116874
+        },
+        "roundsPerSecond": {
+          "median": 13052041.34457687,
+          "min": 12895736.746148081,
+          "max": 13052048.41223149
+        },
+        "bytesPerRound": {
+          "median": 392.1656850508199,
+          "min": 392.15663170114595,
+          "max": 392.1660947023375
+        }
+      },
+      "candidate": {
+        "deliveriesPerSecond": {
+          "median": 25998179.285010982,
+          "min": 25923673.64592484,
+          "max": 26142286.434224922
+        },
+        "bytesPerDelivery": {
+          "median": 196.07777126979346,
+          "min": 196.07601830226648,
+          "max": 196.0784167893418
+        },
+        "roundsPerSecond": {
+          "median": 12999089.642505491,
+          "min": 12961836.82296242,
+          "max": 13071143.217112461
+        },
+        "bytesPerRound": {
+          "median": 392.1555425395869,
+          "min": 392.15203660453295,
+          "max": 392.1568335786836
+        }
+      },
+      "comparisons": {
+        "original": {
+          "throughputRatio": 3.443026961492535,
+          "allocationRatio": 0.2607079874796727,
+          "passesGuide": true
+        },
+        "current": {
+          "throughputRatio": 0.9959430329192621,
+          "allocationRatio": 0.9999741371781887,
+          "passesGuide": true
+        }
+      }
+    },
+    {
+      "scenario": "sort",
+      "original": {
+        "deliveriesPerSecond": {
+          "median": 21710827.64609908,
+          "min": 21447196.356325727,
+          "max": 22136225.45618108
+        },
+        "bytesPerDelivery": {
+          "median": 359.93688043471775,
+          "min": 359.93672679108363,
+          "max": 359.93769529407604
+        },
+        "roundsPerSecond": {
+          "median": 10855413.82304954,
+          "min": 10723598.178162863,
+          "max": 11068112.72809054
+        },
+        "bytesPerRound": {
+          "median": 719.8737608694355,
+          "min": 719.8734535821673,
+          "max": 719.8753905881521
+        }
+      },
+      "current": {
+        "deliveriesPerSecond": {
+          "median": 21550937.84406455,
+          "min": 21533994.768448707,
+          "max": 21782047.799585894
+        },
+        "bytesPerDelivery": {
+          "median": 232.02757192320266,
+          "min": 232.02014016618384,
+          "max": 232.03311126141108
+        },
+        "roundsPerSecond": {
+          "median": 10775468.922032274,
+          "min": 10766997.384224353,
+          "max": 10891023.899792947
+        },
+        "bytesPerRound": {
+          "median": 464.0551438464053,
+          "min": 464.0402803323677,
+          "max": 464.06622252282216
+        }
+      },
+      "candidate": {
+        "deliveriesPerSecond": {
+          "median": 20793386.227281813,
+          "min": 20420665.375128802,
+          "max": 21789814.924542084
+        },
+        "bytesPerDelivery": {
+          "median": 232.02030213736467,
+          "min": 232.0177649985534,
+          "max": 248.0269657273861
+        },
+        "roundsPerSecond": {
+          "median": 10396693.113640906,
+          "min": 10210332.687564401,
+          "max": 10894907.462271042
+        },
+        "bytesPerRound": {
+          "median": 464.04060427472933,
+          "min": 464.0355299971068,
+          "max": 496.0539314547722
+        }
+      },
+      "comparisons": {
+        "original": {
+          "throughputRatio": 0.9577426787328345,
+          "allocationRatio": 0.6446138607889794,
+          "passesGuide": true
+        },
+        "current": {
+          "throughputRatio": 0.9648483225062349,
+          "allocationRatio": 0.999968668439799,
+          "passesGuide": true
+        }
+      }
+    },
+    {
+      "scenario": "buffer",
+      "original": {
+        "deliveriesPerSecond": {
+          "median": 9731834.52584308,
+          "min": 9699014.610930547,
+          "max": 10150064.14052478
+        },
+        "bytesPerDelivery": {
+          "median": 704.1267964605273,
+          "min": 704.1215505690595,
+          "max": 704.1284205247929
+        },
+        "roundsPerSecond": {
+          "median": 9731834.52584308,
+          "min": 9699014.610930547,
+          "max": 10150064.14052478
+        },
+        "bytesPerRound": {
+          "median": 704.1267964605273,
+          "min": 704.1215505690595,
+          "max": 704.1284205247929
+        }
+      },
+      "current": {
+        "deliveriesPerSecond": {
+          "median": 13991297.039163325,
+          "min": 13889203.846946634,
+          "max": 14158514.726392442
+        },
+        "bytesPerDelivery": {
+          "median": 336.14566655516734,
+          "min": 336.12768479976216,
+          "max": 336.1551955128353
+        },
+        "roundsPerSecond": {
+          "median": 13991297.039163325,
+          "min": 13889203.846946634,
+          "max": 14158514.726392442
+        },
+        "bytesPerRound": {
+          "median": 336.14566655516734,
+          "min": 336.12768479976216,
+          "max": 336.1551955128353
+        }
+      },
+      "candidate": {
+        "deliveriesPerSecond": {
+          "median": 13928969.440226704,
+          "min": 13876405.01682543,
+          "max": 14033835.243957674
+        },
+        "bytesPerDelivery": {
+          "median": 336.1418996765315,
+          "min": 336.1366811801404,
+          "max": 336.1924188493628
+        },
+        "roundsPerSecond": {
+          "median": 13928969.440226704,
+          "min": 13876405.01682543,
+          "max": 14033835.243957674
+        },
+        "bytesPerRound": {
+          "median": 336.1418996765315,
+          "min": 336.1366811801404,
+          "max": 336.1924188493628
+        }
+      },
+      "comparisons": {
+        "original": {
+          "throughputRatio": 1.4312789025787531,
+          "allocationRatio": 0.47738830756936734,
+          "passesGuide": true
+        },
+        "current": {
+          "throughputRatio": 0.9955452594021728,
+          "allocationRatio": 0.9999887939098713,
+          "passesGuide": true
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Three observations per variant/cell and short warmup; medians/ranges are not confidence intervals.",
+    "Sort candidate/current throughput .9648483225062349 and candidate/original .9577426787328345 are close to .95; do not describe this as zero regression.",
+    "One candidate sort allocation row is248.0269657273861 B/delivery versus232.02 in the other two; all rows retained and median guide used as predeclared.",
+    "Only compatibility workloads and the explicitly instrumented builtin factory path are measured. No native-effects, p99, canonical-default-start, whole-semantics-equivalence or final aggregate acceptance claim."
+  ]
+}

@@ -1,0 +1,1 @@
+Correctness/allocation-boundary controls only. Functional builds may have run concurrently. Throughput, latency and allocation magnitudes are not acceptance evidence. Raw JFR stays local; only hashes are packaged.

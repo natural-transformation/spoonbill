@@ -1,0 +1,250 @@
+{
+  "scope": "Canonical default Future API versus current5d71 runtime; NOT original main or final aggregate acceptance",
+  "baseRevision": "5d71d676f6ad3837767f4fb3fcbab5b04d6697d5",
+  "labelMapping": {
+    "baseline": "current5d71",
+    "pilot": "current5d71 plus exact closed Future API",
+    "gate.main": "current5d71, not original main"
+  },
+  "status": "Completed scoped API/current runtime comparison; all four median gates pass",
+  "fixtureHashes": {
+    "check-gate.mjs": "b2443613c7385149f569055abaa11d17fee4ddfeb9e16022cec8ef2e1e99d004",
+    "ExtensionRuntimeBenchmark.scala": "afdaa6b4fb2ab0ac9e1e7e13d4c09a15fecb6212019c5dc5fb375f284bab511b",
+    "prepare.sh": "1555de0c805d5f8d1c2df83ab9317e2a1d7f3681e381d0fca169233e3eeb2e03",
+    "run.sh": "8faaf233949d95de7b0a199db6ef09da74246b8490e975c68080226886759e44",
+    "analyze.mjs": "9d706ff51143a25caca4b5f75ba6fe701f07d5f7333ff81cd4d1fbcaaf0a32f1"
+  },
+  "variants": {
+    "baseline": {
+      "classpathSha256": "b8e0fc6a248e628578b13d232858593ef82037ce497a8cdcf61e7dadc8e847e5",
+      "classManifestSha256": "24296b53c34c15814c4e7a0aa7904554520317544d6570d9c5cd9028a722708e",
+      "sourceManifestSha256": "e16065f671ac8fd01e186e4f1d3b8fe10e4fb40671289bb6cfb3e334d7f72827",
+      "files": 2066
+    },
+    "pilot": {
+      "classpathSha256": "579bcbd8e88ab3bdee6afddcd0fb911eca55cfbcbce21dce3f5fae890033562c",
+      "classManifestSha256": "bbba9917f6ef508ccdc5aa3dae3b7e788ac9b05bd8da6f9bd260ad5b8e72878a",
+      "sourceManifestSha256": "df2171f6588e43c48abb95e4a72bdbc4059feceaec3e6666221b857c9f3de7d0",
+      "files": 2072
+    }
+  },
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "plannedCollection": {
+    "rows": 24,
+    "repetitions": 3,
+    "warmupSeconds": 5,
+    "measurementSeconds": 5,
+    "order": "baseline/pilot; pilot/baseline; baseline/pilot for each of four workloads"
+  },
+  "guides": {
+    "throughputMin": 0.95,
+    "deliveryP99Max": 1.1,
+    "allocationMax": 1.1,
+    "allWorkloadsRequired": true
+  },
+  "fixtureBytecodeIdentical": true,
+  "candidatePatchSha256": "fe8cdbb2e67728130edfd25f46637f0545ec3c1d2c6f8d9077aa6e6fd5f9d568",
+  "smoke": {
+    "rows": 8,
+    "warmupSeconds": 2,
+    "measurementSeconds": 2,
+    "allStderrEmpty": true,
+    "allLiveProducerCrossChecksPassed": true,
+    "comparativeTiming": false
+  },
+  "recordedOn": "2026-11-17",
+  "collection": "Explicit exclusive window after full CI completed and root/B/C confirmed no active JVM; user CPU-heavy application finished. All24 independent JVM rows retained, no selective rerun/source edit/refreeze during collection.",
+  "correctnessBeforeCollection": "Root reported2192 ScalaTest and41 native ZIO cases passed, with6 existing basis-specific cancellations; ZIO total58 includes17 already-counted ScalaTest cases.",
+  "rawSha256": "3c819e0b86be849fd9413ee0aeefdd36818be27251bbcece906ca1978799e257",
+  "summarySha256": "2e40e0191181ba6d418c0cad2de41efd4e6026f4ff6c77a301165ca90a250a92",
+  "gateSha256": "f40b316d6181ef9506a43a11d4865229c7bb92879b8f9b0ef3cf81c6f217573c",
+  "jfrManifestSha256": "3d522e7e777730819471ad1b8451074aed606bfcda7face8bb08e47f93713fbc",
+  "postCollectionClassIntegrity": {
+    "baseline": {
+      "files": 2066,
+      "allHashesMatch": true
+    },
+    "pilot": {
+      "files": 2072,
+      "allHashesMatch": true
+    }
+  },
+  "results": [
+    {
+      "scenario": "isolated",
+      "throughputRatio": 0.996314551698485,
+      "p99Ratio": 0.9322842155460181,
+      "allocationRatio": 1.0005040830509382,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 1127086.984464076,
+          "min": 1117542.73739934,
+          "max": 1149033.762930568
+        },
+        "p99": {
+          "median": 4.194,
+          "min": 4.018,
+          "max": 4.234
+        },
+        "allocation": {
+          "median": 1136.098544317173,
+          "min": 1040.845307351217,
+          "max": 1136.8851291487097
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 1122933.1636515234,
+          "min": 1115352.6459045727,
+          "max": 1148041.5364778722
+        },
+        "p99": {
+          "median": 3.91,
+          "min": 3.861,
+          "max": 4.19
+        },
+        "allocation": {
+          "median": 1136.6712323375589,
+          "min": 1136.3270293400726,
+          "max": 1136.718823491442
+        }
+      }
+    },
+    {
+      "scenario": "contended",
+      "throughputRatio": 0.9834941442467718,
+      "p99Ratio": 1.0437636761487965,
+      "allocationRatio": 1.0000553381732062,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 2204180.7070146124,
+          "min": 2153579.189196777,
+          "max": 2295583.1941655898
+        },
+        "p99": {
+          "median": 0.914,
+          "min": 0.762,
+          "max": 1
+        },
+        "allocation": {
+          "median": 1130.1933860177803,
+          "min": 1130.145350898201,
+          "max": 1130.2640099156874
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 2167798.818210581,
+          "min": 2151980.1881958633,
+          "max": 2212314.0026584375
+        },
+        "p99": {
+          "median": 0.954,
+          "min": 0.935,
+          "max": 0.975
+        },
+        "allocation": {
+          "median": 1130.2559288551324,
+          "min": 1130.2383010805372,
+          "max": 1130.2945088213821
+        }
+      }
+    },
+    {
+      "scenario": "extensions",
+      "throughputRatio": 0.9969059848427076,
+      "p99Ratio": 0.9477911646586347,
+      "allocationRatio": 0.9999878130196344,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 105150.01528855371,
+          "min": 103592.13228888797,
+          "max": 105306.18422185106
+        },
+        "p99": {
+          "median": 24.9,
+          "min": 24.4,
+          "max": 25.7
+        },
+        "allocation": {
+          "median": 2520.660272757932,
+          "min": 2519.4306736951016,
+          "max": 2521.5487200637176
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 104824.6795474614,
+          "min": 104807.1101214912,
+          "max": 104891.94759077924
+        },
+        "p99": {
+          "median": 23.6,
+          "min": 23.4,
+          "max": 24
+        },
+        "allocation": {
+          "median": 2520.6295535206796,
+          "min": 2520.5804803658484,
+          "max": 2520.630899908958
+        }
+      }
+    },
+    {
+      "scenario": "backlog",
+      "throughputRatio": 0.9953886605488417,
+      "p99Ratio": 1.013761467889908,
+      "allocationRatio": 1.0001554918078974,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 142182.6803829891,
+          "min": 141773.62737309167,
+          "max": 142287.12853131845
+        },
+        "p99": {
+          "median": 65.4,
+          "min": 65,
+          "max": 66.2
+        },
+        "allocation": {
+          "median": 1151.4687196977297,
+          "min": 1151.1512971943916,
+          "max": 1151.532727605748
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 141527.0277796676,
+          "min": 141128.37602224445,
+          "max": 142383.74119940566
+        },
+        "p99": {
+          "median": 66.3,
+          "min": 64.9,
+          "max": 66.9
+        },
+        "allocation": {
+          "median": 1151.647763650693,
+          "min": 1151.1168187160688,
+          "max": 1151.722187165857
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Reference is current compact7 5d71d676, not originalmain; this does not satisfy a final original-main aggregate gate.",
+    "Three independent JVM trials per workload/version, summarized as medians/ranges, are not confidence intervals.",
+    "One current isolated allocation trial is1040.845307351217 B/notification while the other two are1136B; all retained, median policy unchanged.",
+    "Raw JFR recordings can contain process metadata and remain local; only their paths/hashes are committed.",
+    "Smoke timing metrics are non-comparative; only full exclusive collection is used for numerical gate."
+  ]
+}

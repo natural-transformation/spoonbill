@@ -1,0 +1,34 @@
+[
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/backlog-baseline-1.jfr",
+    "sha256": "1c6c50bf96cfb5be95d2924d92c61bd9e880374d2ae3f7bc9de3cc678916eb43"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/backlog-pilot-1.jfr",
+    "sha256": "eff0debdf2f567da726d1b2013939d5e18fab12923c9ac08c106fa30b9e9a0b7"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/contended-baseline-1.jfr",
+    "sha256": "ee91b83d30c8193337818483b8021e16921883052ec08cf688025873adceb0e6"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/contended-pilot-1.jfr",
+    "sha256": "561d0953ac8c10fd6aa1cac940e1546ad14d8c2c6a68c13739eacc662e70da57"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/extensions-baseline-1.jfr",
+    "sha256": "350696b528628d029b19718f216b90f5a12fccc0da95648ed48be3ddea9aa1b4"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/extensions-pilot-1.jfr",
+    "sha256": "67b8ea52592fd542548479f78549eb0db87cec778c7d936fb5f62c0d5436560f"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/isolated-baseline-1.jfr",
+    "sha256": "1e31e51cee28e6ceefc20de32c95c60d74dcf3339e2f8a1a8b923dc328e070ba"
+  },
+  {
+    "path": "/tmp/spoonbill-effect-runtime-cp/smoke-v1/isolated-pilot-1.jfr",
+    "sha256": "627f815d61233fc1c7cf8cbc49b898a5e7f19e3d2b2ad5bd1b6a1093ef9cd59e"
+  }
+]
