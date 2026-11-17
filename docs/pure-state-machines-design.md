@@ -15,10 +15,20 @@ phase 8 needs it.
 **Pilot benchmark gate: passed by design Round 2.** The owner confirmed at least
 95% of main's throughput and at most 110% of main's delivery p99 and allocation
 in every measured workload, with correctness checks passing. The final corrected
-candidate meets that gate on the three-trial medians. Contended throughput is
-95.2%, close to the boundary; this is not a confidence interval or a production-wide
-performance guarantee. Review and broader rollout remain separate decisions.
+candidate meets that gate on the corrected live-producer comparison's three-trial
+medians. Minimum throughput is 96.2%; maximum delivery p99 is 109.5%, close to its
+boundary. This is not a confidence interval or a production-wide performance
+guarantee. Review and broader rollout remain separate decisions.
 Earlier CAS and lock comparisons below are retained as historical evidence.
+
+**Allocation measurement recheck completed:** the later ownership audit found that JDK 21's
+total-allocation counter can temporarily omit exiting threads. Earlier fixtures
+sampled after producer joins, so their allocation observations are retained but
+provisional. A fresh live-thread cross-check and comparison passed the gate. Throughput,
+delivery-order and latency observations are separate from this counter issue.
+The corrected fixtures keep producers alive through the sample and compare the
+total against producer-local allocation deltas. The authoritative result is the
+[live-producer recheck](#live-producer-allocation-recheck).
 
 Draft 2 followed a review: the plan no longer promises an unchanged spec where
 a machine itself changes. Draft 3 followed another and changed the pilot. In
@@ -1611,6 +1621,46 @@ Final validation through the repository-local Nix flake:
 - `node misc/extension-contention/analyze.mjs <output> 3` and
   `node misc/extension-contention/check-gate.mjs <output>/summary.json`: pass.
   Packaged summaries reproduce the original results exactly.
+
+### Live-producer allocation recheck
+
+The ownership-cost audit exposed a measurement boundary issue: JDK 21's total
+allocation implementation can omit a thread between removal from its live list
+and accounting for its exited allocation. Earlier fixtures sampled after producer
+joins. They remain historical observations, not evidence that a suspicious
+near-zero row represents allocation elimination. The implementation and rationale
+are documented in [OpenJDK's counter source](https://raw.githubusercontent.com/openjdk/jdk21u/jdk-21.0.8%2B9/src/hotspot/share/services/management.cpp).
+
+The corrected extension fixture waits for producer startup, samples baseline
+allocation, and keeps producers alive behind a latch through full delivery drain
+and the final allocation sample. Each producer independently records its own
+allocation delta. Every warmup and measured run asserts that all producers are
+alive and the JVM total includes their sum. Only then are they released and
+joined; application worker threads also remain alive until after sampling.
+
+All eight smoke trials and all 24 fresh acceptance trials passed the boundary,
+delivery-count and ordering checks. Five-second warmup/measurement, fixed heap/GC,
+workloads and alternating order are unchanged. The new allocation-boundary field
+prevents mixing old and corrected rows; the gate checker requires the corrected
+boundary for current acceptance.
+
+| Workload | Throughput / main | Delivery p99 / main | Allocation / main |
+| --- | ---: | ---: | ---: |
+| Independent views | 101.0% | 109.5% | 106.8% |
+| Four writers, one view | 96.2% | 104.6% | 106.8% |
+| Eight writers, eight extensions | 99.5% | 106.8% | 106.4% |
+| Sustained backlog | 99.6% | 102.8% | 106.6% |
+
+The owner-confirmed 95%/110%/110% gate passes on these medians. Isolated-view p99
+is close to its limit. This remains a three-trial synthetic comparison on a shared
+machine, without a confidence interval or production-wide guarantee. The total
+counter includes JVM/fixture overhead; producer-local values are a lower-bound
+cross-check, not allocation-site attribution.
+
+[All corrected rows, smoke results, gate and source/JFR hashes](../misc/extension-contention/evidence/2026-11-17-live-allocation/)
+are retained separately. Earlier rows and numeric-only gate reports are unchanged;
+current acceptance uses this corrected comparison. Runtime implementation was not
+changed for the counter correction.
 
 ### Click-latency gate
 

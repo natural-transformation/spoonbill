@@ -1,0 +1,176 @@
+{
+  "passed": true,
+  "numericalGatePassed": true,
+  "allocationBoundaryVerified": true,
+  "gate": {
+    "throughputMin": 0.95,
+    "deliveryP99Max": 1.1,
+    "allocationMax": 1.1
+  },
+  "rows": [
+    {
+      "scenario": "isolated",
+      "throughputRatio": 1.0095402768628088,
+      "p99Ratio": 1.0952201731275875,
+      "allocationRatio": 1.0675977029124768,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 1201342.2512006892,
+          "min": 1201279.2929441805,
+          "max": 1246771.4508171107
+        },
+        "p99": {
+          "median": 2.657,
+          "min": 2.548,
+          "max": 2.679
+        },
+        "allocation": {
+          "median": 1063.0328495399544,
+          "min": 968.648909004007,
+          "max": 1063.6196692951635
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 1212803.3888841337,
+          "min": 1198616.2073506264,
+          "max": 1231651.2968427497
+        },
+        "p99": {
+          "median": 2.91,
+          "min": 2.515,
+          "max": 2.94
+        },
+        "allocation": {
+          "median": 1134.89142828936,
+          "min": 1041.5820197303647,
+          "max": 1135.3180388161213
+        }
+      }
+    },
+    {
+      "scenario": "contended",
+      "throughputRatio": 0.9621781486162084,
+      "p99Ratio": 1.0461711711711712,
+      "allocationRatio": 1.0682729115250489,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 2474510.586537186,
+          "min": 2351560.153225442,
+          "max": 2604148.216937788
+        },
+        "p99": {
+          "median": 0.888,
+          "min": 0.632,
+          "max": 0.949
+        },
+        "allocation": {
+          "median": 1058.060488561834,
+          "min": 1057.8619695422117,
+          "max": 1058.0914512841307
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 2380920.014885558,
+          "min": 2368512.0701146363,
+          "max": 2480993.527536055
+        },
+        "p99": {
+          "median": 0.929,
+          "min": 0.724,
+          "max": 0.933
+        },
+        "allocation": {
+          "median": 1130.2973586855662,
+          "min": 1130.2851014202586,
+          "max": 1130.3698856163064
+        }
+      }
+    },
+    {
+      "scenario": "extensions",
+      "throughputRatio": 0.995151467104,
+      "p99Ratio": 1.0681818181818181,
+      "allocationRatio": 1.0644009253984026,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 108482.2733179403,
+          "min": 108455.98992494158,
+          "max": 108504.28042414112
+        },
+        "p99": {
+          "median": 22,
+          "min": 21.8,
+          "max": 22.1
+        },
+        "allocation": {
+          "median": 2369.496284159831,
+          "min": 2369.2493370453894,
+          "max": 2369.550776148518
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 107956.29344712541,
+          "min": 106858.15284212526,
+          "max": 108280.70818306204
+        },
+        "p99": {
+          "median": 23.5,
+          "min": 23.4,
+          "max": 24.5
+        },
+        "allocation": {
+          "median": 2522.0940375878004,
+          "min": 2521.851448390315,
+          "max": 2522.819833704008
+        }
+      }
+    },
+    {
+      "scenario": "backlog",
+      "throughputRatio": 0.996097820122008,
+      "p99Ratio": 1.0284810126582278,
+      "allocationRatio": 1.0663384454942475,
+      "passed": true,
+      "main": {
+        "throughput": {
+          "median": 142793.93268006828,
+          "min": 142665.7941547283,
+          "max": 143136.46716435233
+        },
+        "p99": {
+          "median": 63.2,
+          "min": 62.9,
+          "max": 63.7
+        },
+        "allocation": {
+          "median": 1081.313186235154,
+          "min": 1081.2181707721197,
+          "max": 1081.5200272664547
+        }
+      },
+      "candidate": {
+        "throughput": {
+          "median": 142236.72506926476,
+          "min": 142226.2585205284,
+          "max": 142257.62257543916
+        },
+        "p99": {
+          "median": 65,
+          "min": 64.4,
+          "max": 66.9
+        },
+        "allocation": {
+          "median": 1153.045822102426,
+          "min": 1151.9141808883207,
+          "max": 1153.5581253804016
+        }
+      }
+    }
+  ]
+}

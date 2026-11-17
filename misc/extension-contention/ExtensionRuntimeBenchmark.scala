@@ -118,13 +118,20 @@ object ExtensionRuntimeBenchmark {
       }
       require(ready.await(5, TimeUnit.SECONDS), "Attach did not complete")
       val start = new CountDownLatch(1)
+      val writersReady = new CountDownLatch(writers)
       val finished = new CountDownLatch(writers)
+      val releaseWriters = new CountDownLatch(1)
       val offered = new Array[Long](writers)
+      val writerAllocated = new Array[Long](writers)
       @volatile var until = 0L
       val producers = Vector.tabulate(writers) { writer => new Thread(() => {
         val view = writer % views
         try {
+          writersReady.countDown()
           require(start.await(5, TimeUnit.SECONDS))
+          val thread = Thread.currentThread().threadId()
+          val beforeBytes = allocation.getThreadAllocatedBytes(thread)
+          require(beforeBytes >= 0L)
           var sequence = 0
           while (System.nanoTime() < until) {
             require(permits(view).tryAcquire(30, TimeUnit.SECONDS), "Delivery stalled")
@@ -136,26 +143,42 @@ object ExtensionRuntimeBenchmark {
             } else permits(view).release()
           }
           offered(writer) = sequence
+          writerAllocated(writer) = allocation.getThreadAllocatedBytes(thread) - beforeBytes
+          require(writerAllocated(writer) >= 0L, "Producer allocation counter unavailable")
         } catch { case error: Throwable => errors.compareAndSet(null, error); () }
-        finally finished.countDown()
+        finally {
+          finished.countDown()
+          // Total allocation accounting can temporarily omit exiting threads.
+          // Keep every producer alive until the controller has sampled it.
+          releaseWriters.await()
+        }
       }, s"writer-$writer") }
       val recording = if (measured) Some(new Recording()) else None
       recording.foreach { value =>
         value.enable("jdk.GCPhasePause").withThreshold(java.time.Duration.ZERO)
         value.start()
       }
-      producers.foreach(_.start())
-      val beforeAllocation = allocated
-      val begun = Instant.now()
-      val before = System.nanoTime()
-      until = before + duration.seconds.toNanos
-      start.countDown()
-      require(finished.await(duration + 35L, TimeUnit.SECONDS), "Writers stalled")
-      producers.foreach(_.join())
-      permits.foreach(p => require(p.tryAcquire(window, 30, TimeUnit.SECONDS), "Backlog did not drain"))
-      val elapsed = System.nanoTime() - before
-      val ended = Instant.now()
-      val bytes = allocated - beforeAllocation
+      val (elapsed, begun, ended, bytes) = try {
+        producers.foreach(_.start())
+        require(writersReady.await(5, TimeUnit.SECONDS), "Writers did not start")
+        val beforeAllocation = allocated
+        val begun = Instant.now()
+        val before = System.nanoTime()
+        until = before + duration.seconds.toNanos
+        start.countDown()
+        require(finished.await(duration + 35L, TimeUnit.SECONDS), "Writers stalled")
+        permits.foreach(p => require(p.tryAcquire(window, 30, TimeUnit.SECONDS), "Backlog did not drain"))
+        require(producers.forall(_.isAlive), "A producer exited before the allocation sample")
+        val elapsed = System.nanoTime() - before
+        val ended = Instant.now()
+        val bytes = allocated - beforeAllocation
+        require(bytes >= writerAllocated.sum, "Total allocation omitted producer allocations")
+        (elapsed, begun, ended, bytes)
+      } finally {
+        start.countDown()
+        releaseWriters.countDown()
+        producers.foreach(_.join())
+      }
       Option(errors.get()).foreach(error => throw error)
       val notifications = offered.sum
       require(notifications > 0)
@@ -178,7 +201,7 @@ object ExtensionRuntimeBenchmark {
         admission.foreach(admitted.merge)
         require(delivered.count == notifications)
         val wall = elapsed / 1e9
-        println(s"""{"label":"$label","views":$views,"writers":$writers,"extensions":$extensionCount,"windowPerView":$window,"callbackNanos":$workNanos,"workers":$workers,"seconds":$duration,"warmupSeconds":$warmSeconds,"completed":$notifications,"callbacks":${counts.map(_.sum).sum},"elapsedSeconds":$wall,"notificationsPerSecond":${notifications / wall},"allocatedBytes":$bytes,"bytesPerNotification":${bytes.toDouble / notifications},"allocatedBytesPerSecond":${bytes / wall},"gcPauses":${pauses.size},"gcPauseTotalMs":${pauses.sum / 1e6},"gcPauseP99Ms":${pause(.99)},"gcPauseMaxMs":${pause(1.0)},"delivery":${delivered.json},"admission":${admitted.json},"java":"${System.getProperty("java.version")}","processors":${Runtime.getRuntime.availableProcessors()},"maxHeapBytes":${Runtime.getRuntime.maxMemory()},"correct":true}""")
+        println(s"""{"label":"$label","views":$views,"writers":$writers,"extensions":$extensionCount,"windowPerView":$window,"callbackNanos":$workNanos,"workers":$workers,"seconds":$duration,"warmupSeconds":$warmSeconds,"completed":$notifications,"callbacks":${counts.map(_.sum).sum},"elapsedSeconds":$wall,"notificationsPerSecond":${notifications / wall},"allocatedBytes":$bytes,"producerAllocatedBytes":${writerAllocated.sum},"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":${bytes.toDouble / notifications},"allocatedBytesPerSecond":${bytes / wall},"gcPauses":${pauses.size},"gcPauseTotalMs":${pauses.sum / 1e6},"gcPauseP99Ms":${pause(.99)},"gcPauseMaxMs":${pause(1.0)},"delivery":${delivered.json},"admission":${admitted.json},"java":"${System.getProperty("java.version")}","processors":${Runtime.getRuntime.availableProcessors()},"maxHeapBytes":${Runtime.getRuntime.maxMemory()},"correct":true}""")
       }
     }
     try { round(warmSeconds, measured = false); round(seconds, measured = true) }

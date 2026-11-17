@@ -33,7 +33,13 @@ normal application serialization may admit less contention. Results should
 remain separate by workload, not averaged into a single performance score.
 
 The JDK 21 total thread-allocation counter includes all JVM threads and includes
-fixture overhead, so it is not an allocation-site profile. JFR `GCPhasePause`
+fixture overhead, so it is not an allocation-site profile. Its implementation
+can temporarily omit terminating threads ([OpenJDK source](https://raw.githubusercontent.com/openjdk/jdk21u/jdk-21.0.8%2B9/src/hotspot/share/services/management.cpp)).
+The current fixture waits for producer startup and keeps producers alive through
+the final sample, checking that the total includes their self-reported allocation
+deltas. Older post-join rows remain historical evidence; their allocation values
+are provisional until rechecked with this boundary. The analyzer prevents mixing
+the two boundary protocols in one comparison. JFR `GCPhasePause`
 events supply stop-the-world pause durations within the measurement window.
 Delivery latency runs from `state` invocation to the final extension callback;
 admission latency measures the `state` call and excludes waiting for a permit.
@@ -171,6 +177,10 @@ nix develop --no-write-lock-file --command node misc/extension-contention/analyz
 
 ## Ownership design experiments
 
+The original observations below are retained. Current allocation acceptance uses
+the [live-producer recheck](#live-producer-allocation-recheck), not the older
+post-join counter boundary.
+
 [The retained experiment evidence](evidence/2026-11-16-ownership-designs/) includes
 Round 1 screening, Round 2 screening, its pre-correction comparison, and the final
 corrected 24-trial comparison. The selected Round 2 design separates admission,
@@ -201,6 +211,24 @@ nix develop --no-write-lock-file --command node misc/extension-contention/check-
 ```
 
 The gate checker rejects missing workloads, invalid metrics, fewer than three
-trials per workload/version, or a ratio outside the budget. It does not replace
+trials per workload/version, an unverified allocation sampling boundary, or a
+ratio outside the budget. Historical numeric-only gate reports are retained as
+computed at the time; the current checker does not accept them until allocation
+is rechecked with live producers. It does not replace
 the runtime and adapter correctness suites. The final candidate passed 819 runtime,
 13 cats-effect and nine ZIO tests, including the new startup/teardown race cases.
+
+## Live-producer allocation recheck
+
+[Corrected evidence](evidence/2026-11-17-live-allocation/) retains eight smoke runs
+and 24 fresh main/selected trials. Producers start before the baseline and remain
+alive until after the final total-allocation snapshot; their self-measured deltas
+must be included in that total. The worker pool also remains alive. This avoids
+the exiting-thread accounting gap identified in the JDK 21 implementation.
+
+The final medians pass the agreed gate: throughput 96.2–101.0% of main, delivery
+p99 102.8–109.5% and allocation 106.4–106.8%. Isolated p99 is close to the boundary.
+These are shared-machine three-trial observations; no confidence interval is
+claimed. The new `allocationBoundary` field prevents mixed-protocol comparisons,
+and `check-gate.mjs` requires it for acceptance. Historical numeric-only gate
+reports are retained without retroactive rewriting.

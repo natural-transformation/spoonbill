@@ -21,12 +21,18 @@ const rows = records.map(value => {
   assert.equal(value.admission.count, value.completed, name);
   assert.equal(value.delivery.overflow, 0, name);
   assert.equal(value.admission.overflow, 0, name);
+  if (value.allocationBoundary === 'producers-alive-through-sample') {
+    assert.ok(Number.isFinite(value.producerAllocatedBytes) && value.producerAllocatedBytes >= 0, name);
+    assert.ok(value.allocatedBytes >= value.producerAllocatedBytes, `${name}: missing producer allocation`);
+  }
   for (const field of ['notificationsPerSecond', 'bytesPerNotification', 'allocatedBytesPerSecond', 'gcPauseTotalMs', 'gcPauseMaxMs']) {
     assert.ok(Number.isFinite(value[field]) && value[field] >= 0, `${name}: ${field}`);
   }
   return value;
 });
 assert.equal(rows.length, scenarios.length * variants.length * repetitions, 'Missing or extra trial');
+const allocationBoundary = rows[0].allocationBoundary;
+assert.ok(rows.every(row => row.allocationBoundary === allocationBoundary), 'Mixed allocation sample boundaries');
 const median = values => {
   const sorted = values.toSorted((a, b) => a - b);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
@@ -50,7 +56,7 @@ const results = scenarios.map(scenario => {
       const selected = rows.filter(row => row.label === `${scenario}-${version}-${index + 1}`);
       assert.equal(selected.length, 1);
       for (const key of ['views', 'writers', 'extensions', 'windowPerView', 'callbackNanos', 'workers',
-        'seconds', 'warmupSeconds', 'java', 'processors', 'maxHeapBytes']) {
+        'seconds', 'warmupSeconds', 'java', 'processors', 'maxHeapBytes', 'allocationBoundary']) {
         assert.equal(selected[0][key], reference[key], `Incomparable ${key} in ${selected[0].label}`);
       }
       return selected[0];
@@ -63,6 +69,7 @@ const results = scenarios.map(scenario => {
     : Object.fromEntries(variants.slice(1).map(version => [version, ratiosFor(version)]))};
 });
 const result = {repetitions, trials: rows.length, ...(variants.length > 2 ? {variants} : {}),
+  ...(allocationBoundary ? {allocationBoundary} : {}),
   statistics: 'median and range of independent JVM trials; no confidence interval', results};
 writeFileSync(join(directory, 'summary.json'), JSON.stringify(result, null, 2) + '\n');
 console.log(JSON.stringify(result, null, 2));

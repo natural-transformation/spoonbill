@@ -27,6 +27,8 @@ const rows = summary.results.map(row => {
     passed: throughputRatio >= gate.throughputMin && p99Ratio <= gate.deliveryP99Max && allocationRatio <= gate.allocationMax,
     main: metrics('baseline'), candidate: metrics(candidate)};
 });
-const passed = rows.every(row => row.passed);
-console.log(JSON.stringify({passed, gate, rows}, null, 2));
+const numericalGatePassed = rows.every(row => row.passed);
+const allocationBoundaryVerified = summary.allocationBoundary === 'producers-alive-through-sample';
+const passed = numericalGatePassed && allocationBoundaryVerified;
+console.log(JSON.stringify({passed, numericalGatePassed, allocationBoundaryVerified, gate, rows}, null, 2));
 if (!passed) process.exitCode = 1;
