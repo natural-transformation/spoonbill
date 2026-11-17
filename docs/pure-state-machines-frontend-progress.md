@@ -28,8 +28,8 @@ Validation via the repository Nix environment:
   that independent Hub fix is owned by the effect-module work and not changed
   here. It did not fail a frontend assertion.
 
-This commit fixes ownership and error handling only. The connection/publication,
-outgoing variants, registries and close-command model remain the next refactor.
+That checkpoint fixes ownership and error handling only. The connection/publication,
+outgoing variants, registries and close-command model follow below.
 
 ### Close-publication race found in review
 
@@ -69,6 +69,7 @@ the frontend/sensitive focused matrix passed 70 cases, including three direct
 model laws for strict acknowledgement boundaries, independent emission/retirement/
 completion and bounded region ownership after close. New model/tests were formatted
 with explicit-file `scalafmtOnly`; existing runtime edits remain surgical.
+
 ## Sensitive metadata boundary repair
 
 `SensitivePresentation` and its existing metadata types now reside in
@@ -97,3 +98,47 @@ Validation through `nix develop --no-write-lock-file --command`:
 - `node scripts/check-core-purity.mjs`: 12 core files and 35 machines, no violations.
 - `sbt --batch --supershell=false -Dsbt.server.autostart=false 'core/test'
   'spoonbill/testOnly *Sensitive*Spec'`: 40 core and 64 sensitive tests pass.
+
+## Connection, publication, outgoing variants and pending ownership
+
+`FrontendConnectionMachine` owns connection status, publication revision and the
+three independent navigation/departure counters. The interpreter retains the
+publication monitor; independent counter updates remain CAS operations rather
+than gaining a new monitor dependency. The closed-and-replacing state preserves
+the original independent replacement claim if closure wins between openness
+validation and replacement reservation.
+
+Publication validation and the queue offer keep their original positions after
+authority checks. A successful offer commits the view against the latest state:
+an inline consumer may close or recursively publish before that offer returns.
+The new `FrontendPublicationReentrySpec` passes on the old implementation and on
+the model, pinning that an inline output consumer cannot reopen a closed frontend.
+The release/admission effect chain has not been converted into deferred commands.
+
+Outgoing values are distinct message, sensitive-ID and replacement variants;
+the sensitive/replacement cases no longer carry dummy empty messages. DOM mutation
+classification comes from the procedure or render producer, not string prefixes.
+All variants retain redacted `toString`. The close machine emits its twelve ordered
+commands once after every caller publishes the output fence. Pending user actions
+and downloads use the shared pending-registry decisions; callbacks/stream handles
+are detached under a monitor and invoked afterward. Existing queue limits remain
+the admission/backpressure contract.
+
+Baseline validation at `1f06cd3a` passed 62 frontend/security cases (including the
+new public reentry characterization), and the candidate passed 67 with five new
+connection/close/registry model cases. After the independent sensitive extraction,
+the combined matrix passed 70. Exact commands are the `spoonbill/testOnly` matrix:
+`*FrontendCloseSpec *FrontendConnectionMachineSpec *FrontendPublicationReentrySpec
+*BrowserRpcLifecycleSpec *PublishedViewAdmissionSpec *ViewRecoveryProtocolSpec
+*ReplacementOutputSpec *SensitiveDepartureAdmissionSpec *SensitiveDepartureBarrierSpec
+*SensitiveRuntimeSpec *SensitiveRuntimeConcurrencySpec *SensitiveRuntimeMachineSpec`.
+Baseline omits the two new model suites. New models/tests were formatted and
+recompiled; `git diff --check` passed.
+
+The [matched public-path cost gate](../misc/transport-state-machines/evidence/frontend-v2/summary.json)
+passes all four workloads. Median throughput is 97.32%, 95.70%, 100.09%, and 99.90%
+of baseline; allocation is at most 103.05%, sampled p99 at most 108.93%. All 24 rows,
+fixture versions and [exact source hashes](../misc/transport-state-machines/evidence/transport-v2-source/provenance.json)
+are retained. These are uncontended Future-interpreter observations, with no
+network/browser timing or confidence interval; they establish the specified
+synthetic cost guide, not a universal performance bound.
