@@ -185,3 +185,12 @@ Connection transport selection, long polling and backoff need behavior coverage
 before representation changes. Existing private callback seams that establish
 ordering can remain, but assertions on incidental flag layouts must become
 assertions about emitted frames, DOM effects and lifecycle events first.
+
+`misc/connection-lifecycle-tests.mjs` adds four public-behavior characterizations
+against the unchanged client: legacy long-poll subscribe/renew/publish requests,
+guarded refusal of long polling, websocket reopen lifecycle events, and capped
+guarded reconnect backoff with readiness/reset behavior. The fixture drives
+public `connect`, `send`, `disconnect`, `applicationReady` and transport events;
+it does not read or call private connection members. Nix Node validation passes
+all four. Private-field assertions in the older client suites remain to migrate
+before their represented state is changed.
