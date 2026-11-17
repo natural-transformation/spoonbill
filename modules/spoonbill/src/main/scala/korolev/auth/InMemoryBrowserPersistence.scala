@@ -10,7 +10,6 @@ import spoonbill.Qsid
 import spoonbill.effect.{DrainGateMachine, Effect}
 import spoonbill.security.Identifiers.{ConnectionId, ViewOwnerId}
 import spoonbill.security.Versions.ViewOwnershipEpoch
-import spoonbill.security.ViewFence
 import spoonbill.security.transaction.{Direct, OperationError, OperationProtocolException, TransactionFailure}
 import spoonbill.server.BrowserSessionToken
 
@@ -87,47 +86,13 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       durable = false,
       ownership = BrowserOwnership.ExclusiveScope
     )
-  private type Key  = Vector[Byte]
-  private type Slot = BrowserReplacementSlot
+  import MemoryBrowserRecordMachine.{Key, ReplacementView, Replacement, Session, Completion, View}
+  private type State = MemoryBrowserRecordMachine.Records[H, BrowserSessionToken]
   private val Slot = BrowserReplacementSlot
   // Retained attempts contain ownership metadata, never a BrowserView whose
   // identity would keep the revoked predecessor's raw transport cookie alive.
-  private case class ReplacementView(qsid: Qsid, fence: ViewFence, connectionId: ConnectionId)
   private def replacementView(view: BrowserView[P]): ReplacementView =
     ReplacementView(view.qsid, view.fence, view.connectionId)
-  private case class Replacement(
-    predecessor: BrowserReplacementPredecessor,
-    view: ReplacementView,
-    reservation: Option[BrowserReplacementReservation] = None
-  )
-  private case class Session(
-    id: UUID,
-    binding: Key,
-    credential: Key,
-    generation: Long,
-    expires: Instant,
-    completion: UUID,
-    activeGeneration: Option[Long] = None
-  )
-  private case class Completion(
-    sessionId: UUID,
-    hostCompletionId: UUID,
-    expires: Instant,
-    material: Option[BrowserSessionToken],
-    deliveries: Int = 0
-  )
-  private case class View(binding: Key, owner: Option[UUID], epoch: Long, connectionId: ConnectionId, touchedAt: Instant)
-  private case class State(
-    host: H,
-    slots: Map[Key, Slot] = Map.empty,
-    sessions: Map[UUID, Session] = Map.empty,
-    credentials: Map[Key, UUID] = Map.empty,
-    completions: Map[UUID, Completion] = Map.empty,
-    ceremonies: Map[CeremonyId, BrowserCeremonyRecord] = Map.empty,
-    views: Map[Qsid, View] = Map.empty,
-    replacements: Map[CeremonyId, Replacement] = Map.empty,
-    bindingActivity: Map[Key, Instant] = Map.empty
-  )
   private final class Refused(val failure: BrowserFailure) extends RuntimeException("Browser operation refused")
   private val monitor           = new Object
   private val admission         = new Object
@@ -136,32 +101,27 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private val issuer            = new BrowserCapabilityScope[P]
   private val issuancePrefix = BrowserIssuance.newPrefix()
   private val issuanceKey = BrowserIssuance.newKey()
-  private var issuanceSequence = 0L
-  private var bindingGenerationFloor = 0L
-  private var viewEpochFloor = 1L
   private val inTransaction = new ThreadLocal[Boolean] {
     override def initialValue(): Boolean = false
   }
-  private var currentState                                                 = Option(State(initialHost))
-  private var observed                                                     = Instant.MIN
+  private var store = MemoryBrowserStoreMachine.initial(MemoryBrowserRecordMachine.Records[H, BrowserSessionToken](initialHost))
   // Capabilities that publish under this provider's fences learn of reclaimed
   // views inside the sweep that removes them, under the same monitor.
   private var reclaimListeners = List.empty[(Set[Qsid], Instant) => Unit]
-  private def state: State                                                 = currentState.getOrElse(deny(BrowserFailure.Closed))
-  private def save(value: State): Unit                                     = currentState = Some(value)
+  private def state: State                                                 = store.records.getOrElse(deny(BrowserFailure.Closed))
+  private def save(value: State): Unit                                     = store = MemoryBrowserStoreMachine.publish(store, value)
   private def deny(error: BrowserFailure = BrowserFailure.Denied): Nothing = throw new Refused(error)
   private def now(): Instant = {
     val time = clock()
-    if (time.isAfter(observed)) observed = time
-    observed
+    store = MemoryBrowserStoreMachine.observe(store, time)
+    store.observed
   }
   private def digest(value: String): Key              = MessageDigest.getInstance("SHA-256").digest(value.getBytes(UTF_8)).toVector
   private def validCredential(value: String): Boolean = value != null && value.matches("[A-Za-z0-9_-]{43}")
   private def next(value: Long): Long                 = if (value == Long.MaxValue) deny(BrowserFailure.Capacity) else value + 1
   private def nextIdentifier(): UUID = {
-    if (issuanceSequence >= BrowserIssuance.MaxSequence) deny(BrowserFailure.Capacity)
-    issuanceSequence += 1
-    BrowserIssuance.identifier(issuancePrefix, issuanceSequence)
+    store = MemoryBrowserStoreMachine.issue(store, BrowserIssuance.MaxSequence).getOrElse(deny(BrowserFailure.Capacity))
+    BrowserIssuance.identifier(issuancePrefix, store.issuanceSequence)
   }
 
   private def elapsed(since: Instant, seconds: Long, time: Instant): Boolean =
@@ -171,57 +131,11 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   private def reap(): Unit = {
     val time = now()
     val before = state
-    val expiredCurrent = before.slots.iterator.collect {
-      case (key, slot) if slot.replacement.isEmpty && slot.current.exists(id => before.sessions.get(id).exists(s => !time.isBefore(s.expires))) ||
-        slot.replacement.exists(id => before.replacements.get(id).flatMap(_.reservation)
-          .exists(r => !time.isBefore(r.successor.expiresAt))) => key
-    }.toSet
-    // An expired committed replacement never restores its predecessor.
-    val slots = before.slots.map { case (key, slot) =>
-      key -> (if (expiredCurrent(key)) Slot(next(slot.generation), None) else slot)
-    }
-    val sessions = before.sessions.filterNot { case (_, session) =>
-      elapsed(session.expires, limits.retention.historySeconds, time)
-    }
-    val completions = before.completions.collect {
-      case (id, completion) if sessions.contains(completion.sessionId) =>
-        id -> (if (!time.isBefore(completion.expires)) completion.copy(material = None) else completion)
-    }
-    val ceremonies = before.ceremonies.filter { case (_, record) =>
-      !elapsed(record.expiresAt, limits.retention.historySeconds, time) || completions.contains(record.completionId)
-    }
-    val replacements = before.replacements.filter { case (id, _) => ceremonies.contains(id) }
-    val retiredViews = before.views.map { case (id, view) =>
-      val expired = expiredCurrent(view.binding) || elapsed(view.touchedAt, limits.retention.idleViewSeconds, time)
-      id -> (if (view.owner.nonEmpty && expired) view.copy(owner = None) else view)
-    }
-    val removedViews = retiredViews.filter { case (_, view) =>
-      view.owner.isEmpty && elapsed(view.touchedAt, limits.retention.idleViewSeconds, time)
-    }
-    val views = retiredViews -- removedViews.keySet
-    val activity = before.bindingActivity ++ expiredCurrent.iterator.map(_ -> time)
-    val referencedBindings = sessions.valuesIterator.map(_.binding).toSet ++
-      ceremonies.valuesIterator.map(_.bindingKey) ++ views.valuesIterator.map(_.binding)
-    val removedBindings = slots.filter { case (key, slot) =>
-      slot.current.isEmpty && slot.replacement.isEmpty && !referencedBindings(key) &&
-        activity.get(key).exists(elapsed(_, limits.retention.idleBindingSeconds, time))
-    }
-    val nextBindingFloor = removedBindings.valuesIterator.map(slot => next(slot.generation))
-      .foldLeft(bindingGenerationFloor)(math.max)
-    val nextViewFloor = removedViews.valuesIterator.map(view => next(view.epoch)).foldLeft(viewEpochFloor)(math.max)
-    bindingGenerationFloor = nextBindingFloor
-    viewEpochFloor = nextViewFloor
-    save(before.copy(
-      slots = slots -- removedBindings.keySet,
-      sessions = sessions,
-      credentials = before.credentials.filter { case (_, id) => sessions.contains(id) },
-      completions = completions,
-      ceremonies = ceremonies,
-      replacements = replacements,
-      views = views,
-      bindingActivity = activity -- removedBindings.keySet
-    ))
-    if (removedViews.nonEmpty) reclaimListeners.foreach(_(removedViews.keySet, time))
+    val reclaimed = MemoryBrowserRecordMachine.reap(before, time, limits, store.bindingGenerationFloor, store.viewEpochFloor)
+      .fold(deny, identity)
+    store = MemoryBrowserStoreMachine.reclaim(store, reclaimed.bindingFloor, reclaimed.viewFloor)
+    save(reclaimed.records)
+    if (reclaimed.removedViews.nonEmpty) reclaimListeners.foreach(_(reclaimed.removedViews, time))
   }
 
   /**
@@ -394,13 +308,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     if (!validCredential(binding) || token.exists(value => !validCredential(value))) deny()
     reap()
     val key    = digest(binding)
-    var staged = state
-    if (!staged.slots.contains(key)) {
-      if (token.nonEmpty) deny()
-      if (staged.slots.size >= limits.retainedBindings) deny(BrowserFailure.Capacity)
-      if (staged.slots.valuesIterator.count(_.current.isEmpty) >= limits.anonymousBindings) deny(BrowserFailure.Capacity)
-      staged = staged.copy(slots = staged.slots.updated(key, Slot(bindingGenerationFloor, None)))
-    }
+    var staged = MemoryBrowserRecordMachine.captureBinding(state, key, token.nonEmpty, limits, store.bindingGenerationFloor)
+      .fold(deny, identity)
     if (activate) token.foreach { raw =>
       val session = staged.credentials.get(digest(raw)).flatMap(staged.sessions.get).getOrElse(deny())
       val slot    = staged.slots(key)
@@ -457,17 +366,8 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     val authorized = authorizeIdentity(state, value)
     if (qsid.deviceId.isEmpty || qsid.sessionId.isEmpty || BrowserView.key(qsid).length > 192) deny()
     val binding  = digest(authorized.binding)
-    val previous = state.views.get(qsid)
-    if (existingOnly && previous.isEmpty) deny(BrowserFailure.Missing)
-    if (previous.exists(_.binding != binding)) deny()
-    if (previous.isEmpty && state.views.size >= limits.retainedViews) deny(BrowserFailure.Capacity)
-    if (
-      !previous.exists(_.owner.nonEmpty) &&
-      state.views.valuesIterator.count(v => v.binding == binding && v.owner.nonEmpty) >= limits.activeViewsPerBinding
-    )
-      deny(BrowserFailure.Capacity)
-    if (state.views.valuesIterator.exists(v => v.owner.nonEmpty && v.connectionId == connectionId)) deny()
-    val epoch = previous.fold(viewEpochFloor)(row => next(row.epoch))
+    val epoch = MemoryBrowserRecordMachine.claimEpoch(state, qsid, binding, connectionId, existingOnly, limits, store.viewEpochFloor)
+      .fold(deny, identity)
     val owner = newId()
     save(state.copy(views = state.views.updated(qsid, View(binding, Some(owner), epoch, connectionId, now())),
       bindingActivity = state.bindingActivity.updated(binding, now())))
@@ -1046,12 +946,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
       state.copy(completions =
         state.completions.updated(
           completionId,
-          completion.copy(
-            deliveries = completion.deliveries + 1,
-            material =
-              if (slot.replacement.nonEmpty && completion.deliveries + 1 >= limits.maxDeliveries) None
-              else completion.material
-          )
+          MemoryBrowserRecordMachine.delivered(completion, slot.replacement.nonEmpty, limits.maxDeliveries)
         )
       )
     )
@@ -1063,27 +958,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     // A fresh non-durable instance has no old authority to revoke. A confirmed
     // absence is a successful no-op, allowing transport to clear a stale cookie.
     // Never allocate a slot or reset retained generation/replay history here.
-    state.slots.get(key).foreach { slot =>
-      val replacementOwners = slot.replacement.nonEmpty || state.replacements.valuesIterator
-        .exists(_.reservation.exists(value => slot.current.contains(value.successor.sessionId)))
-      save(
-        state.copy(
-          slots = state.slots.updated(key, Slot(next(slot.generation), None)),
-          completions = state.completions.map { case (id, completion) =>
-            id -> (if (state.sessions(completion.sessionId).binding == key) completion.copy(material = None)
-                   else completion)
-          },
-          // Reset also retires an activated replacement's owners if activation
-          // won the race with logout. Ordinary session logout is unchanged.
-          views =
-            if (!replacementOwners) state.views
-            else
-              state.views.map { case (id, view) =>
-                id -> (if (view.binding == key) view.copy(owner = None) else view)
-              }
-        )
-      )
-    }
+    MemoryBrowserRecordMachine.logout(state, key).fold(deny, _.foreach(save))
   }
   def maintenance(): F[Unit] = F.delay {
     monitor.synchronized {
@@ -1094,9 +969,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
         save(
           state.copy(
             host = host.maintenance(state.host, time),
-            completions = state.completions.map { case (id, completion) =>
-              id -> (if (!time.isBefore(completion.expires)) completion.copy(material = None) else completion)
-            }
+            completions = MemoryBrowserRecordMachine.expireMaterial(state.completions, time)
           )
         )
       }
@@ -1130,7 +1003,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
   }
   def resources: F[Resources] = F.delay {
     monitor.synchronized {
-      currentState.fold(Resources(0, 0, 0, 0, 0, 0)) { s =>
+      store.records.fold(Resources(0, 0, 0, 0, 0, 0)) { s =>
         Resources(
           s.slots.size,
           s.views.size,
@@ -1151,7 +1024,7 @@ final class InMemoryBrowserPersistence[F[_], H, P](
     monitor.synchronized {
       issuer.close()
       java.util.Arrays.fill(issuanceKey, 0.toByte)
-      currentState = None
+      store = MemoryBrowserStoreMachine.close(store)
     }
   }
 }
