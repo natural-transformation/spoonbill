@@ -253,3 +253,10 @@ The new case failed on the unchanged client. Pending attempts are now canceled
 for legacy and guarded connections alike; transport selection and ordinary
 reconnect behavior are unchanged. All 72 connection, redesign, sensitive,
 protocol and replacement-bootstrap Node tests pass through Nix.
+
+An old websocket's delayed Blob decoder could clear the new socket's shared
+processing marker. A later frame then overtook the new socket's first decoding
+frame. The public-event regression failed with that exact order. Processing is
+now owned by each physical socket; only that owner clears its current shared
+close-wait marker, and stale socket messages cannot start a new drain. All 73
+browser lifecycle, redesign, sensitive, protocol and bootstrap tests pass.

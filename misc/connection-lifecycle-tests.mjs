@@ -146,3 +146,35 @@ test('permanent disconnect cancels a legacy connection attempt that has not star
   assert.equal(env.sockets.length, 0);
   assert.equal(env.requests.length, 0);
 }));
+
+test('an old socket decoder cannot let later frames overtake a new socket decoder', () => environment(async env => {
+  const deferredBlob = () => {
+    let complete;
+    const pending = new Promise(resolve => { complete = resolve; });
+    return {blob: new class extends Blob { text() { return pending; } }(), complete};
+  };
+  const old = deferredBlob(), first = deferredBlob();
+  const connection = env.create();
+  const received = [];
+  connection.dispatcher.addEventListener('message', event => received.push(event.data));
+  try {
+    connection.connect(); env.nextTimer(); env.sockets[0].open();
+    env.sockets[0].message(old.blob);
+    await env.flush();
+    connection.connect(); env.nextTimer(); env.sockets[1].open();
+    env.sockets[1].message(first.blob);
+    await env.flush();
+    old.complete('stale');
+    await env.flush();
+    env.sockets[0].message('stale-late');
+    await env.flush();
+    env.sockets[1].message('second');
+    await env.flush();
+    assert.deepEqual(received, []);
+    first.complete('first');
+    await env.flush();
+    assert.deepEqual(received, ['first', 'second']);
+  } finally {
+    old.complete('stale'); first.complete('first'); await env.flush();
+  }
+}));

@@ -277,23 +277,26 @@ export class Connection {
       }
     }
 
+    let processing = null;
     let tryProcessMessage = async () => {
-      if (this._processing || messages.length == 0) {
+      if (processing || messages.length == 0) {
         return false;
       }
 
-      this._processing = new Promise(async (resolve) => {
+      processing = this._processing = new Promise(async (resolve) => {
         while (messages.length > 0) {
           const message = messages.shift();
           await processMessage(message);
         }
 
-        this._processing = null;
+        if (this._processing === processing) this._processing = null;
+        processing = null;
         resolve()
       });
     }
 
     this._webSocket.addEventListener('message', (event) => {
+      if (sendingSocket !== this._webSocket) return;
       messages.push(event.data);
       tryProcessMessage();
     });
