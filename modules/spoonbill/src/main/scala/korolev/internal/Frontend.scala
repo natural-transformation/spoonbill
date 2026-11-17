@@ -68,6 +68,7 @@ final class Frontend[F[_]: Effect](
 
   private val actionConnectionId               = connectionId.getOrElse(ConnectionId.fromUuid(UUID.randomUUID()))
   private val outputClosed                     = new AtomicBoolean(false)
+  private val cleanupStarted                   = new AtomicBoolean(false)
   private val replacementPending               = new AtomicBoolean(false)
   private[spoonbill] def guarded: Boolean      = authorize.nonEmpty
   private[spoonbill] def recoversView: Boolean = viewRecoveryEpoch.nonEmpty
@@ -241,26 +242,53 @@ final class Frontend[F[_]: Effect](
       .flatMap(_ => sendRaw(s"[24,$counter]", protectedOutput = false, rejectIfFull = true))
       .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
 
-  private[spoonbill] def close(): F[Unit] =
-    Effect[F].delay {
-      renderPublication.synchronized(outputClosed.set(true))
-      val waiting = pendingUserActions.values.toList
-      pendingUserActions.clear()
-      waiting.foreach(_.apply())
-      val downloads = downloadFiles.values.toList
-      downloadFiles.clear()
-      downloads.foreach(meta => Effect[F].delayAsync(meta.stream.cancel()).runAsyncForget)
+  private def cleanup(steps: List[() => F[Unit]], firstError: Option[Throwable] = None): F[Unit] =
+    steps match {
+      case Nil => firstError.fold(Effect[F].unit)(Effect[F].fail[Unit])
+      case step :: rest =>
+        Effect[F].delayAsync(step()).map(_ => Option.empty[Throwable])
+          .recover { case NonFatal(error) => Some(error) }
+          .flatMap(error => cleanup(rest, firstError.orElse(error)))
     }
-      .flatMap(_ => stringRequests.close())
-      .flatMap(_ => formRequests.close())
-      .flatMap(_ => fileRequests.close())
-      .flatMap(_ => fileNameRequests.close())
-      .flatMap(_ => Effect[F].delay(sensitiveOutcomes.close()))
-      .flatMap(_ => sensitiveRuntime.close())
-      .flatMap(_ => outgoingQueue.stream.cancel())
-      .flatMap(_ => userActions.stream.cancel())
-      .flatMap(_ => guardedRacks.toList.flatten.map(_.close()).sequence.unit)
-      .flatMap(_ => incomingMessages.cancel())
+
+  private[spoonbill] def close(): F[Unit] = Effect[F].uncancelable {
+    Effect[F].delayAsync {
+      // Every caller must publish the fence before returning, including a
+      // competing close while the teardown owner waits for publication.
+      renderPublication.synchronized(outputClosed.set(true))
+      // Claim before callbacks: a callback or input cancellation may close this
+      // frontend recursively, and must not wait for its own cleanup to finish.
+      if (!cleanupStarted.compareAndSet(false, true)) Effect[F].unit
+      else {
+        cleanup(List(
+          () => Effect[F].delay {
+            val waiting = pendingUserActions.values.toList
+            pendingUserActions.clear()
+            waiting
+          }.flatMap(waiting => cleanup(waiting.map(callback => () => Effect[F].delay(callback())))),
+          () => Effect[F].delay {
+            val downloads = downloadFiles.values.toList
+            downloadFiles.clear()
+            downloads
+          }.flatMap(downloads => cleanup(downloads.map(meta => () => Effect[F].delay {
+            // A download finalizer may await its consumer: retain nonjoining
+            // cancellation while still isolating a synchronous launch failure.
+            Effect[F].delayAsync(meta.stream.cancel()).runAsyncForget
+          }))),
+          () => stringRequests.close(),
+          () => formRequests.close(),
+          () => fileRequests.close(),
+          () => fileNameRequests.close(),
+          () => Effect[F].delay(sensitiveOutcomes.close()),
+          () => sensitiveRuntime.close(),
+          () => outgoingQueue.stream.cancel(),
+          () => userActions.stream.cancel(),
+          () => cleanup(guardedRacks.toList.flatten.map(queue => () => queue.close())),
+          () => incomingMessages.cancel()
+        ))
+      }
+    }
+  }
 
   /**
    * One admission/execution queue for DOM, history and user callbacks. Browser
