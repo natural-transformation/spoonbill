@@ -1,0 +1,89 @@
+{
+  "trials": 12,
+  "repetitions": 3,
+  "scope": "direct coupled input only, sampled p99, no confidence interval",
+  "results": [
+    {
+      "sources": 1,
+      "baseline": {
+        "pullsPerSecond": {
+          "median": 695478598.6697717,
+          "min": 691129051.4595462,
+          "max": 701994184.9918354
+        },
+        "bytesPerPull": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "model": {
+        "pullsPerSecond": {
+          "median": 667700783.0767416,
+          "min": 667024924.1235534,
+          "max": 674593391.7135803
+        },
+        "bytesPerPull": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 0.9600594243357593,
+      "p99Ratio": 1,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    },
+    {
+      "sources": 128,
+      "baseline": {
+        "pullsPerSecond": {
+          "median": 689817431.5877519,
+          "min": 679107858.1335753,
+          "max": 691636594.7236332
+        },
+        "bytesPerPull": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "model": {
+        "pullsPerSecond": {
+          "median": 663309766.395743,
+          "min": 627961809.563309,
+          "max": 663458759.734912
+        },
+        "bytesPerPull": {
+          "median": 0,
+          "min": 0,
+          "max": 0
+        },
+        "p99Nanos": {
+          "median": 42,
+          "min": 42,
+          "max": 42
+        }
+      },
+      "throughputRatio": 0.9615729264321485,
+      "p99Ratio": 1,
+      "allocationWithinGuide": true,
+      "withinGuide": true
+    }
+  ]
+}

@@ -272,6 +272,19 @@ without retry. The input, handoff, and cleanup effect order otherwise stays inta
 passed all 26 tests after correction, including a terminal-predicate failure case.
 The phase extraction remains a separate unit following this fix.
 
+That subsequent unit is `SetupInputMachine`: Setup/Coupled/Released are explicit
+immutable phases with pure pull, coupling and end-notification decisions. The
+original waiter monitor, direct coupled read, callback table, and once-only
+end callback remain with the interpreter. No effect continuation or event object
+was inserted into a coupled pull. The full standalone suite passed all 55 tests
+and the purity guard passed before measurement.
+
+The [coupled-input comparison](../misc/transport-state-machines/README.md#coupled-standalone-input)
+retains twelve valid trials plus the earlier failed fixture attempt and diagnostic.
+One/128-source median throughput is 96.01/96.16% of baseline, with zero allocation
+per pull in both versions and identical quantized sampled p99. The small throughput
+cost is within the guide; this is not an end-to-end transport performance claim.
+
 ## Standalone setup deadline: retain its distinct explicit protocol
 
 `SetupDeadline` already publishes Pending(release?), Attached(release),

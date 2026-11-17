@@ -79,3 +79,39 @@ To use that version's original sampling capacity, pass its archived
 `TextAccumulatorBenchmark.scala` as the third argument to `prepare-text.sh` for
 both checkouts. The source bytes and measurement rows did not change when the
 patches were regenerated.
+
+## Coupled standalone input
+
+`SetupInputPullBenchmark` isolates the direct coupled-input branch using one or
+128 escaped handoffs and a shared completed upstream future. The wrapper must
+return that exact future. This excludes transport, effect execution, and setup
+cost; it tests whether the pure phase decision adds work to steady pulls.
+
+The [retained input evidence](evidence/input-handoff/) contains twelve fresh JVM
+trials with two-second warmup/measurement and the same heap/GC/processor settings
+as above. One pull in 1,024 is timed; the main thread's allocation counter remains
+live throughout. Both versions measured zero bytes per pull. The model's median
+throughput was 96.01% of baseline for one source and 96.16% for 128, with sampled
+p99 42 ns in both versions. Both meet the 95/110/110 guide, but show a small
+throughput cost and no timing confidence interval; tiny p99 remains quantized.
+
+The first baseline attempt exceeded sample capacity and produced no valid row.
+Its source, stderr and a separate diagnostic are retained in `failed-fixture/`.
+A non-timed check confirmed direct future identity; a one-second diagnostic then
+observed about 636 million pulls/s and 2.485 million samples, explaining why a
+two-second run exhausted four million slots at stride 256. Sampling changed to
+1,024 for both versions, and counter-storage initialization moved before the
+allocation window. Neither failed nor diagnostic timing enters acceptance.
+
+Prepare separate checkouts using `prepare-input.sh` (same arguments as the text
+preparer), using the pre-extraction `f3d9d5a0` source as baseline. Then run:
+
+```sh
+nix develop --no-write-lock-file --command bash misc/transport-state-machines/run-input.sh \
+  /tmp/input/baseline.cp /tmp/input/model.cp /tmp/input/comparison
+nix develop --no-write-lock-file --command node misc/transport-state-machines/analyze-input.mjs \
+  /tmp/input/comparison
+```
+
+The analyzer requires all twelve rows and identical source-count, duration and
+sampling settings. No production source changed during the accepted comparison.
