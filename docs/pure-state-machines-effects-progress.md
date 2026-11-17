@@ -338,3 +338,14 @@ The drain now observes decoding failure, closes the affected current transport
 through the ordinary error/reconnect lifecycle, and always releases its waiter.
 Legacy FileReader completion, error and abort are awaited by the same drain.
 Both permanent public-event regressions and all 75 browser tests pass under Nix.
+
+The lifecycle-field test prerequisite is now migrated separately from production
+representation changes. Node tests observe constructed sockets, readiness and
+recovery requests, actual suspended Blob decoding, callback frames and heartbeat
+reload behavior. Native tests observe physical socket construction, DOM changes
+and server-visible action/barrier behavior. Redundant assertions on Connection
+and Bridge lifecycle flags/counters are removed; callback seams and engine-owned
+DOM/event-cache checks remain. The unchanged production client passes all 75
+Node cases and the three native fixtures in both Chromium and WebKit through the
+repository's pinned browser shell. No private lifecycle field rewrite is part
+of this prerequisite commit.

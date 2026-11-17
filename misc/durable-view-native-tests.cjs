@@ -95,8 +95,6 @@ const origin = 'http://127.0.0.1:18987';
           deliver([21, true]);
           window.Spoonbill.invokeCallback('counter', 'old-controller-ready');
           const oldController = {
-            finalRevision: bridge._viewRevision, applyingView: bridge._applyingView,
-            recovering: bridge._viewRecovering, terminal: bridge._sensitive.terminal,
             remainingCounters: document.querySelectorAll('durable-counter').length,
             sent: sent.slice()};
           // Mirror launcher's close/open lifecycle: only a fresh authorized
@@ -112,8 +110,7 @@ const origin = 'http://127.0.0.1:18987';
           const afterReady = sent.slice();
           window.Spoonbill.invokeCallback('counter', 'after-rebind');
           return {sent, afterAttribute, afterRemoval, lifecycle, disconnects, errors, displayedCount,
-            oldController, beforeReady, afterReady,
-            replacementRevision: bridge._viewRevision, applyingView: bridge._applyingView};
+            oldController, beforeReady, afterReady};
         } finally { bridge.destroy(); window.removeEventListener('error', onError); }
       });
       const mountCases = await page.evaluate(async () => {
@@ -178,12 +175,6 @@ const origin = 'http://127.0.0.1:18987';
     assert.deepEqual(result.lifecycle, ['connected', 'attribute', 'disconnected']);
     assert.equal(result.displayedCount, '1');
     assert.equal(result.oldController.remainingCounters, 0);
-    assert.equal(result.oldController.finalRevision, '2');
-    assert.equal(result.oldController.applyingView, false);
-    assert.equal(result.oldController.recovering, true);
-    assert.equal(result.oldController.terminal, true);
-    assert.equal(result.replacementRevision, '0');
-    assert.equal(result.applyingView, false);
     assert.deepEqual(result.afterAttribute, controlFrames, `${result.engine}: partial-view action was emitted or replayed`);
     assert.deepEqual(result.afterRemoval, controlFrames, `${result.engine}: removed-node action was retagged or replayed`);
     assert.deepEqual(result.oldController.sent, controlFrames, `${result.engine}: old-controller readiness reopened a fenced action`);
