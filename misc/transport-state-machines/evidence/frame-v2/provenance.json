@@ -1,0 +1,17 @@
+{
+  "baselineCommit": "1f06cd3a",
+  "description": "Exact source snapshots and copied class directories",
+  "variants": {
+    "baseline": {
+      "interop/zio-http-runtime/src/main/scala/zio/http/netty/WebSocketFrameDeadline.scala": "dc218502df2dbc5d6ca05f7b0812be3fe5987dd6932324854cbb0ba01c36af29"
+    },
+    "model": {
+      "interop/zio-http-runtime/src/main/scala/zio/http/netty/WebSocketFrameDeadline.scala": "d9b68ff68e9c15cb7fb40d2d651d04a97255c9e2107751cde5ccb8e2ddd29fbd",
+      "interop/zio-http-runtime/src/main/scala/zio/http/netty/WebSocketFrameScan.scala": "613b1f6e10bae2f555b6eadc39e9ca1fa37c3c8607ac6f97145bc29e6e9ce06e",
+      "interop/zio-http-runtime/src/main/scala/zio/http/netty/WebSocketFrameTimer.scala": "d33609a3a0803c639bccf56831584ad58c98a0238fa5057a412ae64b7f51f14c"
+    }
+  },
+  "WebSocketFrameDeadlineBenchmark.scala": "820a08b3c22f786e03b0f17147e6e9712407902ed14a29192fd67f38456cdb64",
+  "run-frame.sh": "14e4e0df67c0cb794adecf3914388d2f27f52c79e0f4ea9bea219fc75a3272c1",
+  "analyze-cost.mjs": "b266a24f377b5ee6360964c9fddf439604fa4a46b9e3a1acad2c6bdbdef13b4b"
+}

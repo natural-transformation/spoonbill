@@ -1,0 +1,179 @@
+{
+  "trials": 24,
+  "repetitions": 3,
+  "scope": "chunked: single-thread public-path synthetic workload; live-thread allocation; sampled operation p99; no confidence interval",
+  "results": [
+    {
+      "scenario": "small",
+      "baseline": {
+        "messagesPerSecond": {
+          "median": 3028581.1955532166,
+          "min": 3018525.8529262887,
+          "max": 3088520.664519514
+        },
+        "bytesPerMessage": {
+          "median": 1800,
+          "min": 1800,
+          "max": 1800
+        },
+        "p99Nanos": {
+          "median": 500,
+          "min": 500,
+          "max": 500
+        }
+      },
+      "model": {
+        "messagesPerSecond": {
+          "median": 2546410.47190547,
+          "min": 2530748.2013013186,
+          "max": 2572991.568727772
+        },
+        "bytesPerMessage": {
+          "median": 1872,
+          "min": 1872,
+          "max": 1872
+        },
+        "p99Nanos": {
+          "median": 584,
+          "min": 584,
+          "max": 584
+        }
+      },
+      "ratios": {
+        "messagesPerSecond": 0.8407931990214742,
+        "bytesPerMessage": 1.04,
+        "p99Nanos": 1.168
+      },
+      "withinGuide": false
+    },
+    {
+      "scenario": "large",
+      "baseline": {
+        "messagesPerSecond": {
+          "median": 1672714.6728879206,
+          "min": 1652962.7971062635,
+          "max": 1710204.9407987136
+        },
+        "bytesPerMessage": {
+          "median": 9984,
+          "min": 9984,
+          "max": 9984
+        },
+        "p99Nanos": {
+          "median": 958,
+          "min": 917,
+          "max": 958
+        }
+      },
+      "model": {
+        "messagesPerSecond": {
+          "median": 1579266.7702480506,
+          "min": 1563883.0502226593,
+          "max": 1595224.053196872
+        },
+        "bytesPerMessage": {
+          "median": 10056,
+          "min": 10056,
+          "max": 10056
+        },
+        "p99Nanos": {
+          "median": 1000,
+          "min": 1000,
+          "max": 1000
+        }
+      },
+      "ratios": {
+        "messagesPerSecond": 0.9441339852190491,
+        "bytesPerMessage": 1.0072115384615385,
+        "p99Nanos": 1.0438413361169103
+      },
+      "withinGuide": false
+    },
+    {
+      "scenario": "fragmented",
+      "baseline": {
+        "messagesPerSecond": {
+          "median": 95129.69565993892,
+          "min": 94565.33848488091,
+          "max": 95672.6591325374
+        },
+        "bytesPerMessage": {
+          "median": 66408,
+          "min": 66408,
+          "max": 66408
+        },
+        "p99Nanos": {
+          "median": 13208,
+          "min": 12750,
+          "max": 15292
+        }
+      },
+      "model": {
+        "messagesPerSecond": {
+          "median": 82427.5695181384,
+          "min": 81358.51979658763,
+          "max": 89275.50645129604
+        },
+        "bytesPerMessage": {
+          "median": 77464,
+          "min": 75256,
+          "max": 77464
+        },
+        "p99Nanos": {
+          "median": 14917,
+          "min": 14291,
+          "max": 15750
+        }
+      },
+      "ratios": {
+        "messagesPerSecond": 0.8664756987428307,
+        "bytesPerMessage": 1.1664859655463198,
+        "p99Nanos": 1.1293912780133253
+      },
+      "withinGuide": false
+    },
+    {
+      "scenario": "trailers",
+      "baseline": {
+        "messagesPerSecond": {
+          "median": 754751.8287033015,
+          "min": 749353.4103667678,
+          "max": 755630.5419119596
+        },
+        "bytesPerMessage": {
+          "median": 5616,
+          "min": 5616,
+          "max": 5616
+        },
+        "p99Nanos": {
+          "median": 1791,
+          "min": 1750,
+          "max": 1792
+        }
+      },
+      "model": {
+        "messagesPerSecond": {
+          "median": 752573.8989952018,
+          "min": 684241.3456031013,
+          "max": 761825.6062056147
+        },
+        "bytesPerMessage": {
+          "median": 5016,
+          "min": 5016,
+          "max": 5088
+        },
+        "p99Nanos": {
+          "median": 1791,
+          "min": 1709,
+          "max": 1875
+        }
+      },
+      "ratios": {
+        "messagesPerSecond": 0.9971143763747595,
+        "bytesPerMessage": 0.8931623931623932,
+        "p99Nanos": 1
+      },
+      "withinGuide": true
+    }
+  ]
+}

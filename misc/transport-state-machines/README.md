@@ -195,3 +195,28 @@ cannot replace the measured implementation. `prepare-frame.sh`, `run-frame.sh`
 and `analyze-cost.mjs OUTPUT frame` use the same Nix-only and exclusive-window
 workflow described above. `freeze-frame.mjs` freezes both directories and local
 target jars; downloaded immutable dependencies keep their cache paths.
+
+The [second frame design](evidence/frame-v2/) keeps event-loop-owned scalar
+storage and invokes the same pure scan inline. Immutable model input/results do
+not escape the scan boundary; no per-byte event or packed/narrowed counter is
+introduced. The checked timer state and scalar timer decision share their
+absolute-deadline predicate. All four cells meet the guide:
+
+| Workload | Throughput / baseline | Allocation / baseline | Sampled p99 / baseline |
+| --- | ---: | ---: | ---: |
+| small | 114.52% | 100.00% | 83.60% |
+| large | 136.35% | 100.00% | 71.58% |
+| fragmented | 95.07% | 100.00% | 100.09% |
+| coalesced | 136.88% | 100.00% | 73.33% |
+
+The fragmented throughput margin is narrow (95.0677% against the 95% guide),
+and there is no timing confidence interval. All three trials are retained. The
+allocation counts are exactly the same medians as baseline: 144, 144, 656 and
+2,624 bytes per fixture operation. This supports the measured synthetic gate,
+not an allocation claim about a different JVM, downstream decoder or network.
+
+The analogous [third chunk design](evidence/chunked-v3/) remains rejected. Its
+generic input/result snapshot path still allocates on fragmented payload slices
+and loses throughput: 84.08%, 94.41%, 86.65% and 99.71% across its four workloads.
+Fragmented allocation is 116.65% of baseline. This unsuccessful comparison and
+all exact sources remain available alongside the earlier chunk attempts.
