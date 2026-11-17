@@ -1,0 +1,1 @@
+{"label":"unicode-scanner-1","scenario":"unicode","seconds":2,"chunks":1,"characters":384,"messages":2963712,"elapsedSeconds":2.000029834,"messagesPerSecond":1481833.8954837811,"bytesPerMessage":2024.0,"p99Nanos":833,"samples":11577,"sampleStride":256,"sampleCapacity":4194304,"correct":true}

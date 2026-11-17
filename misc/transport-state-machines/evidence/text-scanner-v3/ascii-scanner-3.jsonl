@@ -1,0 +1,1 @@
+{"label":"ascii-scanner-3","scenario":"ascii","seconds":2,"chunks":1,"characters":1024,"messages":11431424,"elapsedSeconds":2.000069709,"messagesPerSecond":5715512.788659508,"bytesPerMessage":2136.0,"p99Nanos":292,"samples":44654,"sampleStride":256,"sampleCapacity":4194304,"correct":true}

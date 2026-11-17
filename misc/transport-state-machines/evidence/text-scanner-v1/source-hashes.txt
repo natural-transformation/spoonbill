@@ -1,0 +1,3 @@
+53c6613c8c192613d6f2d99b62cdadaefda9eb05881fe55fe3783002c09a413c  modules/web/src/main/scala/korolev/web/WebSocketLimits.scala
+b8f57e79853ddea3b6af839600bc714d0dd917d511750aa67350ec11311b9fcd  modules/web/src/main/scala/korolev/web/WebSocketTextMachine.scala
+2085eb468c31809217ae2274932f0e28ff671a74b846ecb695d0bcb965ff9346  misc/transport-state-machines/TextAccumulatorBenchmark.scala

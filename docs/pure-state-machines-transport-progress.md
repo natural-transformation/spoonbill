@@ -207,5 +207,33 @@ monitor rules. After extraction, `sbt 'http/test'` passed all 167 tests and the
 purity guard passed. No request-write, response-publication, cleanup, or TLS effect
 was reordered.
 
+## WebSocket text limits
+
+`WebSocketTextMachine` now owns pure per-chunk UTF-16 validation and UTF-8 byte
+accounting. The StringBuilder stays in the interpreter. Five old-code
+characterizations pin split surrogates, exact budgets, incomplete results,
+oversized chunks, and the existing consumed-prefix state after rejected input.
+Generated comparisons prove compact paths agree with the checked model.
+
+The first four measured implementations were rejected, not silently retained:
+stored snapshots added allocation; scalar storage still missed short-input
+throughput; an ASCII fast path still missed Unicode throughput; direct
+`codePointAt` iteration regressed Unicode sharply. The selected fifth version
+keeps thread-confined scalar storage, pure compact ASCII/complete-UTF-16 counters,
+and the immutable checked fallback for partial/error states. A low surrogate's
+budget is already reserved and checked by its high half. No per-character event
+or state object is allocated, and no `Long` range is narrowed.
+
+The [fixture, all 120 rows, failed patches and source hashes](../misc/transport-state-machines/README.md)
+record the full experiment. Final three-trial median ratios for short / ASCII /
+Unicode / fragmented input are: throughput 101.0 / 201.8 / 101.0 / 181.3%, allocation
+100.0 / 100.0 / 97.3 / 97.8%, and sampled p99 100.0 / 54.5 / 100.0 / 53.4% of the
+paired baseline. All four meet the 95/110/110 guide. Tiny p99 samples are limited
+by timer granularity; this is not an application-wide performance guarantee.
+
+Before measurement, `web/test` passed 54 tests and both complete adapter suites
+passed 53 Pekko and 45 Akka tests. The purity guard passed. The selected production
+sources were unchanged between those checks and their benchmark collection.
+
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.

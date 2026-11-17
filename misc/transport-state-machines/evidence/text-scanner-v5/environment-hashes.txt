@@ -1,0 +1,4 @@
+91cbfc15f544ab3e1b9a9a8101043811ef232a58dbe8c9b0136a36767fa55f90  flake.nix
+76b66faedcba7922a095a732ecf8bf03e53d179170441b1d93c931afef2af3e4  flake.lock
+29b8fe336d4e6b6d76b306dced34f3cf636bec755b9759355d16ca925b933271  misc/transport-state-machines/run-text.sh
+b47f3b91bf792bdadb7f31ab633346e0bc9cf7211e0c33814ef1423c515dd326  misc/transport-state-machines/analyze-text.mjs
