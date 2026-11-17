@@ -621,6 +621,30 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     f.close()
   }
 
+  it should "retain the published DOM baseline after obsolete-binding cleanup fails" in {
+    val cleanupFailure = new IllegalStateException("Synthetic cancellation failure after publication")
+    val binding = ctx.timer.after(ctx.timerId("accepted-baseline"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val legacy = ctx.delay(1.second)(_ => Future.unit)
+    val f = new App(state => Html(body(span(if (state == 0) "old" else "accepted"), if (state == 0) legacy else binding)))
+    var frames = Vector.empty[String]
+    result(Effect[Future].start(f.frontend.outgoingMessages.foreach(frame => Effect[Future].delay { frames :+= frame }))(f.worker))
+    f.start()
+    frames = Vector.empty
+    try {
+      f.clock.onCancel = () => throw cleanupFailure
+      f.change(1)
+      f.clock.onCancel = () => ()
+      frames should have size 1
+      frames.head should include("accepted")
+      f.reports.errors.map(_._2) shouldBe Vector(cleanupFailure)
+      frames = Vector.empty
+      f.change(2)
+      // The identical accepted document is already the browser's baseline.
+      frames shouldBe Vector("[4 ]")
+      f.reports.errors.map(_._2) shouldBe Vector(cleanupFailure)
+    } finally { f.clock.onCancel = () => (); f.close() }
+  }
+
   it should "keep established content visible when a parameter reload completes across a paused snapshot" in {
     import ctx.*
     val reload       = Promise[Int]()

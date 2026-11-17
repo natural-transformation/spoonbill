@@ -38,3 +38,33 @@ develop --no-write-lock-file --command sbt --batch --supershell=false
 `/tmp/spoonbill-application-lifecycle-after.log` and
 `/tmp/spoonbill-rollout-integration-10.log`. This is the defect fix; pure lifecycle
 extraction and the final render-cycle disposition are the next unit.
+
+## Pure startup decisions and retained render cycle
+
+`ApplicationLifecycleMachine` now owns the five startup states and pure decisions
+to start, join, reject, publish completion or remain stopped. `StateCell` commits
+those decisions; the interpreter still owns the shared result and per-caller
+execution claim, with callbacks and application effects outside state updates.
+The unchanged startup, rendering, timer and session selection passed 49 tests,
+and the native IO cancellation case passed again. The log is
+`/tmp/spoonbill-application-model-after.log`; the source-purity guard passes.
+
+The render cycle is **retained** under rule 7. Its accepted-candidate fact is
+already one boolean in one place, and initialization/state renders are serialized.
+The startup fix restores that serialization for repeated initialization. Existing
+`RenderLifecycleSpec` cases reject losing the accepted DOM after a partial render
+failure in both ordinary and recovery modes. `TimerApplicationSpec` pins rejected
+publication and accepted timer retention after cleanup failure. A new frame-level
+case also verifies that, after publication succeeds and obsolete-binding cleanup
+throws, rendering the same document produces an empty patch against the accepted
+baseline. All 28 timer/application cases passed in
+`/tmp/spoonbill-render-retain-after.log`. No confirmed defect remains in that
+two-state render protocol; no extra state object or per-render event allocation
+was introduced for it.
+
+Browser input streams remain frontend-owned. Both guarded and legacy session
+teardown close the frontend before destroying the application; the application
+owns its state queue and component cleanup. The separate frontend close and Hub
+terminal-propagation work must preserve that shutdown chain. These two
+ApplicationInstance inventory rows are complete; the remaining Frontend,
+ComponentInstance and SensitiveRuntime rows are separate work.

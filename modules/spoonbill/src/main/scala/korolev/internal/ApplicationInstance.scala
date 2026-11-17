@@ -20,7 +20,7 @@ import spoonbill.*
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import spoonbill.*
 import spoonbill.Context.*
-import spoonbill.effect.{Effect, Queue, Reporter, Scheduler}
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, StateCell}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.Frontend.DomEventMessage
 import spoonbill.state.StateDeserializer
@@ -76,14 +76,11 @@ final class ApplicationInstance[
     captureProducedAuthorization.fold(() => authorizeProduced.fold(frontend.authorizeInteraction())(check => check(state)))(_(state))
 
   private val devMode       = new DevMode.ForRenderContext(sessionId.toString)
-  private enum Lifecycle { case Fresh, Starting, Started, Failed, Destroyed }
-  private val lifecycle = new AtomicReference(Lifecycle.Fresh)
+  private val lifecycle = new StateCell(ApplicationLifecycleMachine.initial)
   private val initialized = scala.concurrent.Promise[Unit]()
 
-  private def ensureActive(): Unit = lifecycle.get() match {
-    case Lifecycle.Starting | Lifecycle.Started => ()
-    case _ => throw new spoonbill.server.SessionAccessDenied
-  }
+  private def ensureActive(): Unit =
+    if (!ApplicationLifecycleMachine.active(lifecycle.get)) throw new spoonbill.server.SessionAccessDenied
 
   private def initializationResult: F[Unit] = Effect[F].promise { callback =>
     initialized.future.onComplete(result => callback(result.toEither))(ExecutionContext.parasitic)
@@ -318,7 +315,7 @@ final class ApplicationInstance[
 
   def destroy(): F[Unit] = for {
     _ <- Effect[F].delay {
-           lifecycle.set(Lifecycle.Destroyed)
+           lifecycle.modify(ApplicationLifecycleMachine.destroy)
            initialized.tryFailure(new spoonbill.server.SessionAccessDenied)
            ()
          }
@@ -350,25 +347,27 @@ final class ApplicationInstance[
   def initialize()(implicit ec: ExecutionContext): F[Unit] = Effect[F].delayAsync {
     val ownsStart = new AtomicBoolean(false)
     Effect[F].guarantee(Effect[F].delayAsync {
-      if (lifecycle.compareAndSet(Lifecycle.Fresh, Lifecycle.Starting)) {
-        ownsStart.set(true)
-        Effect[F].delayAsync(initializeOnce()).flatMap { _ =>
-          if (!lifecycle.compareAndSet(Lifecycle.Starting, Lifecycle.Started))
-            throw new spoonbill.server.SessionAccessDenied
-          initialized.trySuccess(())
-          initializationResult
-        }.recoverF { case error =>
-          lifecycle.compareAndSet(Lifecycle.Starting, Lifecycle.Failed)
-          initialized.tryFailure(error)
-          initializationResult
-        }
-      } else if (lifecycle.get() == Lifecycle.Destroyed) Effect[F].fail(new spoonbill.server.SessionAccessDenied)
-      else initializationResult
+      lifecycle.modify(ApplicationLifecycleMachine.initialize) match {
+        case ApplicationLifecycleMachine.Initialization.Start =>
+          ownsStart.set(true)
+          Effect[F].delayAsync(initializeOnce()).flatMap { _ =>
+            if (!lifecycle.modify(ApplicationLifecycleMachine.started))
+              throw new spoonbill.server.SessionAccessDenied
+            initialized.trySuccess(())
+            initializationResult
+          }.recoverF { case error =>
+            lifecycle.modify(ApplicationLifecycleMachine.failed)
+            initialized.tryFailure(error)
+            initializationResult
+          }
+        case ApplicationLifecycleMachine.Initialization.Reject => Effect[F].fail(new spoonbill.server.SessionAccessDenied)
+        case ApplicationLifecycleMachine.Initialization.Join => initializationResult
+      }
     })(Effect[F].delay {
-        // Native cancellation must also release callers joining startup.
-        if (ownsStart.get() && lifecycle.compareAndSet(Lifecycle.Starting, Lifecycle.Failed))
-          initialized.tryFailure(new spoonbill.server.SessionAccessDenied)
-        ()
+      // Native cancellation must also release callers joining startup.
+      if (ownsStart.get() && lifecycle.modify(ApplicationLifecycleMachine.failed))
+        initialized.tryFailure(new spoonbill.server.SessionAccessDenied)
+      ()
     })
   }
 
