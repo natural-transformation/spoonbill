@@ -220,3 +220,31 @@ allocation gates in all five cells; ratios and broad ranges are documented in
 the pack. This is a synthetic three-trial median result, not server latency or
 a confidence interval. Pending runtime work remains timer-render transitions,
 coordinator admission, bounded presentation ownership, and session lifetimes.
+
+## Guard acquisition cancellation leak (separate bug fix)
+
+A native-IO regression demonstrated that canceling guarded attachment while
+`SessionAccessControl.open` was pending completed teardown with no guard. A later
+successful acquisition then won the bounded-wait result but had no remaining
+caller to install or release it. The original test failed waiting for close.
+
+Guard ownership now registers inside the detached open/resume operation before
+result publication. Shared `LateHandleMachine` decisions atomically pair the
+guard with Waiting/Installed/Finished. Teardown takes or seals that cell at the
+existing guard-close step, after component drain/destruction and before extension
+destruction. A guard arriving after that step closes asynchronously exactly once;
+the generic bounded wait's separate late hook is removed for this acquisition.
+Other required-operation arbitration and cleanup ordering remain unchanged.
+
+Validation through Nix passed 16 CE3 cases (including canceled open, canceled
+resume, and timed-out open followed by late delivery) and 161 runtime cases:
+
+```
+ce3/testOnly *GuardedOpenCancellationSpec *Extension*Spec *Session*Spec
+spoonbill/testOnly *SessionsServiceSpec *SessionsRequiredSpec *Guarded*Spec *Extension*Spec
+```
+
+The standard sbt flags above apply. Formatting uses exact file paths; an initial
+glob was rejected by scalafmtOnly, then corrected. Unrelated existing-file
+formatting was excluded and whitespace checks passed. This fixes acquisition
+ownership; the broader guarded/legacy lifetime extraction is still pending.

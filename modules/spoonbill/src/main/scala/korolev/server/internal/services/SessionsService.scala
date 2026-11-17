@@ -18,10 +18,11 @@ package spoonbill.server.internal.services
 
 import java.util.UUID
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import scala.annotation.tailrec
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.*
 import spoonbill.Qsid
-import spoonbill.effect.{AsyncTable, Effect, Hub, Scheduler, Stream, Var}
+import spoonbill.effect.{AsyncTable, Effect, Hub, LateHandleMachine, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, DevMode, ExtensionRuntime, Frontend, SensitiveAuthorization}
 import spoonbill.security.Identifiers.ConnectionId
@@ -214,13 +215,36 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     val terminal          = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
     val terminalSignalled = new AtomicBoolean(false)
     val ready             = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
-    val guardRef          = new AtomicReference(Option.empty[SessionGuard[F, S]])
-    val appRef            = new AtomicReference(Option.empty[App])
-    val frontendRef       = new AtomicReference(Option.empty[Frontend[F]])
-    val managerRef        = new AtomicReference(Option.empty[GuardedStateManager[F, S]])
-    val rawStateAcquired  = new AtomicBoolean(false)
-    val extensionsRef     = new AtomicReference(Option.empty[Extensions])
-    val idleTimer         = new AtomicReference(Option.empty[Scheduler.JobHandler[F, Unit]])
+    final case class HeldGuard(state: LateHandleMachine.State, value: Option[SessionGuard[F, S]])
+    val guardRef         = new AtomicReference(HeldGuard(LateHandleMachine.State.Waiting, None))
+    val appRef           = new AtomicReference(Option.empty[App])
+    val frontendRef      = new AtomicReference(Option.empty[Frontend[F]])
+    val managerRef       = new AtomicReference(Option.empty[GuardedStateManager[F, S]])
+    val rawStateAcquired = new AtomicBoolean(false)
+    val extensionsRef    = new AtomicReference(Option.empty[Extensions])
+    val idleTimer        = new AtomicReference(Option.empty[Scheduler.JobHandler[F, Unit]])
+
+    // Register inside the detached acquisition, before required publishes its
+    // result. A canceled waiter can finish teardown while open/resume is pending.
+    // The late guard then closes here rather than being handed to that waiter.
+    def registerGuard(guard: SessionGuard[F, S]): F[SessionGuard[F, S]] = Effect[F].delay {
+      @tailrec def install(): Boolean = {
+        val before          = guardRef.get()
+        val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Install)
+        if (command == LateHandleMachine.Command.CancelIncoming) false
+        else if (guardRef.compareAndSet(before, HeldGuard(next, Some(guard)))) true
+        else install()
+      }
+      if (!install()) Effect[F].delayAsync(guard.close()).runAsyncForget
+      guard
+    }
+    @tailrec def takeGuard(): Option[SessionGuard[F, S]] = {
+      val before          = guardRef.get()
+      val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Finish)
+      if (command == LateHandleMachine.Command.Ignore) None
+      else if (guardRef.compareAndSet(before, HeldGuard(next, None))) before.value
+      else takeGuard()
+    }
 
     def requireLive(): F[Unit] = Effect[F].delay(if (!live.get()) throw new SessionAccessDenied)
     def signal(): F[Unit] =
@@ -323,7 +347,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         // Do not time out this barrier and then allow an unsafe local takeover.
         _ <- managerRef.get().fold(Effect[F].unit)(_.closeAndDrain())
         _ <- attempt(appRef.get().fold(Effect[F].unit)(_.destroy()))
-        _ <- attempt(guardRef.get().fold(Effect[F].unit)(guard => required(guard.close())))
+        _ <- attempt(Effect[F].delay(takeGuard()).flatMap(_.fold(Effect[F].unit)(guard => required(guard.close()))))
         // The view is closed by now, so the access fails inside onDestroy.
         _ <- attempt(extensionsRef.get().fold(Effect[F].unit)(_.destroy()))
         _ <- if (rawStateAcquired.get()) {
@@ -340,11 +364,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     def create(): F[SessionStart[F]] = for {
       localExists <- stateStorage.exists(qsid.deviceId, qsid.sessionId)
       guard <- required(
-                 if (localExists) control.open(qsid, rh, connectionId)
-                 else control.resume(qsid, rh, connectionId).getOrElse(Effect[F].fail(MissingLocalView)),
-                 Some((value: SessionGuard[F, S]) => value.close())
+                 (if (localExists) control.open(qsid, rh, connectionId)
+                  else control.resume(qsid, rh, connectionId).getOrElse(Effect[F].fail(MissingLocalView)))
+                   .flatMap(registerGuard)
                )
-      _             <- Effect[F].delay(guardRef.set(Some(guard)))
       snapshots      = guard.viewSnapshots
       initialization = guard.applicationStateInitialization
       initializeApplication = initialization match {
