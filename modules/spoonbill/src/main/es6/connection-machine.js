@@ -11,6 +11,7 @@ export function initialConnection() {
     transport: ConnectionType.LONG_POLLING,
     selected: null,
     epoch: null,
+    scheduleEpoch: null,
     reconnect: true,
     presence: 'active',
     authentication: null,
@@ -23,6 +24,7 @@ export function initialConnection() {
 export const connectionOpened = state => state.phase === 'opened' || state.phase === 'ready';
 export const connectionReady = state => state.phase === 'ready' || state.phase === 'ready-before-open';
 export const currentTransport = (state, epoch) => state.epoch === epoch;
+export const currentSchedule = (state, epoch) => state.scheduleEpoch === epoch;
 export const authenticationPending = state => state.authentication !== null;
 
 export function nextTransport(state, guarded) {
@@ -59,7 +61,8 @@ export function connectionStep(state, event) {
     case 'close':
       return currentTransport(state, event.epoch) ? {...state, phase: 'dormant'} : state;
     case 'disconnect':
-      return {...state, reconnect: event.reconnect};
+      return {...state, reconnect: event.reconnect,
+        scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch};
     case 'advance-backoff':
       return {...state, reconnectDelay: Math.min(state.reconnectDelay * 2, MAX_RECONNECT_TIMEOUT)};
     case 'before-unload':
@@ -67,7 +70,7 @@ export function connectionStep(state, event) {
     case 'interaction':
       return event.trusted && event.visible && state.presence !== 'departed' ? {...state, presence: 'active'} : state;
     case 'hide':
-      return {...state, presence: 'departed'};
+      return {...state, presence: 'departed', scheduleEpoch: event.scheduleEpoch};
     case 'show':
       return {...state, presence: 'active'};
     case 'reset-lifecycle':

@@ -149,6 +149,37 @@ test('permanent disconnect cancels a legacy connection attempt that has not star
   assert.equal(env.requests.length, 0);
 }));
 
+test('permanent disconnect invalidates every previously scheduled connection attempt', () => environment(async env => {
+  const connection = env.create();
+  connection.connect();
+  connection.connect();
+  await connection.disconnect(false);
+  while (env.timers.size) env.nextTimer();
+  assert.equal(env.sockets.length, 0);
+  assert.equal(env.requests.length, 0);
+}));
+
+test('an explicit connect after permanent disconnect still starts a new attempt', () => environment(async env => {
+  const connection = env.create();
+  connection.connect();
+  await connection.disconnect(false);
+  connection.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 1);
+}));
+
+test('document departure invalidates old attempts and restoration schedules a fresh one', () => environment(async env => {
+  const connection = env.create({auth: true, replacement: true});
+  connection.connect(); connection.connect();
+  window.dispatchEvent(new Event('pagehide'));
+  while (env.timers.size) env.nextTimer();
+  assert.equal(env.sockets.length, 0);
+  const restored = new Event('pageshow');
+  Object.defineProperty(restored, 'persisted', {value: true});
+  window.dispatchEvent(restored);
+  env.nextTimer();
+  assert.equal(env.sockets.length, 1);
+}));
+
 test('an old socket decoder cannot let later frames overtake a new socket decoder', () => environment(async env => {
   const deferredBlob = () => {
     let complete;

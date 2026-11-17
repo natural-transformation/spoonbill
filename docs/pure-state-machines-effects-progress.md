@@ -402,3 +402,13 @@ modes across Chromium/WebKit via `scripts/test-sensitive-acknowledgement.sh`.
 Direct forbidden-API checks pass both JS models; central JS discovery/CI remains
 the coordinator's owned integration step. These complete the browser extraction
 units, subject to independent review and separately identified follow-up defects.
+
+A final public timer regression found that two `connect()` calls followed by
+`disconnect(false)` canceled only the latest timer, leaving the older attempt
+able to open a socket. A pure schedule generation now invalidates all attempts
+created before permanent stop or document departure. An explicit later connect
+still starts normally, and BFCache restoration schedules a fresh generation;
+the existing multiple-attempt policy itself is unchanged. The failing case,
+explicit-restart characterization and departure/restoration case pass. Final
+validation passes 94 Node cases, all three native fixtures in both engines, and
+the optimized-bundle real-service acknowledgement checks in both engines.

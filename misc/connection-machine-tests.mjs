@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connection-machine.js', import.meta.url), 'utf8');
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
-  currentTransport, authenticationPending, nextTransport, socketSenderStep} = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+  currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep} = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
   const first = {}, second = {};
@@ -40,7 +40,7 @@ test('fallback, backoff and explicit stop remain separate decisions', () => {
   assert.equal(nextTransport(state, true), ConnectionType.WEB_SOCKET);
   for (let i = 0; i < 100; i++) state = step(state, {type: 'advance-backoff'});
   assert.equal(state.reconnectDelay, 5000);
-  state = step(step(state, {type: 'disconnect', reconnect: false}), {type: 'open', epoch: state.epoch});
+  state = step(step(state, {type: 'disconnect', reconnect: false, scheduleEpoch: {}}), {type: 'open', epoch: state.epoch});
   assert.equal(state.reconnectDelay, 200);
   assert.equal(state.reconnect, false);
 });
@@ -62,7 +62,7 @@ test('only readiness replenishes recovery and successful delivery fences its own
 });
 
 test('departure and authentication cannot be reopened by unrelated lifecycle events', () => {
-  let state = step(initialConnection(), {type: 'hide'});
+  let state = step(initialConnection(), {type: 'hide', scheduleEpoch: {}});
   state = step(state, {type: 'ready', epoch: null});
   assert.equal(state.presence, 'departed');
   assert.equal(step(state, {type: 'interaction', trusted: true, visible: true}), state);
@@ -83,4 +83,14 @@ test('a closed socket sender cannot be reopened by its old drain finishing', () 
   const closed = socketSenderStep(active, 'close');
   assert.equal(socketSenderStep(closed, 'finish'), 'closed');
   assert.equal(socketSenderStep(closed, 'start'), 'closed');
+});
+
+test('stop and document departure invalidate old schedules without forbidding a later explicit start', () => {
+  const initial = initialConnection();
+  const stopped = step(initial, {type: 'disconnect', reconnect: false, scheduleEpoch: {}});
+  assert.equal(currentSchedule(stopped, initial.scheduleEpoch), false);
+  assert.equal(currentSchedule(stopped, stopped.scheduleEpoch), true);
+  const departed = step(stopped, {type: 'hide', scheduleEpoch: {}});
+  assert.equal(currentSchedule(departed, stopped.scheduleEpoch), false);
+  assert.equal(currentSchedule(step(departed, {type: 'show'}), departed.scheduleEpoch), true);
 });

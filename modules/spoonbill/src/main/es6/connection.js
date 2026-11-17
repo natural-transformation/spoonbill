@@ -1,5 +1,5 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
-  currentTransport, authenticationPending, nextTransport, socketSenderStep} from './connection-machine.js';
+  currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
@@ -48,7 +48,7 @@ export class Connection {
       window.addEventListener('pointerdown', resumeAfterCanceledDeparture, true);
       window.addEventListener('keydown', resumeAfterCanceledDeparture, true);
       window.addEventListener('pagehide', () => {
-        this._lifecycle = connectionStep(this._lifecycle, {type: 'hide'});
+        this._lifecycle = connectionStep(this._lifecycle, {type: 'hide', scheduleEpoch: {}});
         if (this._replacementAbort) this._replacementAbort.abort();
         if (this._reconnectTimer !== null) {
           clearTimeout(this._reconnectTimer);
@@ -547,7 +547,7 @@ export class Connection {
    * @param {boolean} reconnect
    */
   async disconnect(reconnect = true) {
-    this._lifecycle = connectionStep(this._lifecycle, {type: 'disconnect', reconnect});
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'disconnect', reconnect, scheduleEpoch: {}});
     if (!reconnect && this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -561,7 +561,9 @@ export class Connection {
   }
 
   _scheduleConnection(connectionType) {
+    const scheduleEpoch = this._lifecycle.scheduleEpoch;
     this._reconnectTimer = setTimeout(() => {
+      if (!currentSchedule(this._lifecycle, scheduleEpoch)) return;
       this._reconnectTimer = null;
       if (!(this._lifecycle.presence === 'departed')) this._connectUsingConnectionType(connectionType);
     }, this._lifecycle.reconnectDelay);
