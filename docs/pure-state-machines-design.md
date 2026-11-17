@@ -930,7 +930,7 @@ whole phase is complete.
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
 | 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
-| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated, but the first stream implementation fails its compatibility cost screen. A compact interpreter is under evaluation; performance acceptance remains open |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. The compact interpreter improves all three measured paths; Hub/buffer meet the short-screen guide, but sort throughput still misses. Final performance acceptance remains open |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
@@ -998,6 +998,18 @@ interpreter/model/container copies. A compact design keeps pure scalar ownership
 decisions while moving ordinary FIFO and callback storage into the interpreter;
 native effects retain a persistent reader and Future uses a callback-driven
 owner. This candidate is not accepted until its correctness and cost checks pass.
+
+The first compact candidate is integrated as an intermediate improvement, with
+its sort gap explicitly open. Its fresh 18-row screen observes throughput ratios
+2.62547 (Hub), 0.56834 (sort) and 1.06081 (buffer), and allocation ratios 0.31786,
+0.88917 and 0.64797. All delivery/thread/counter/teardown controls pass. Integrated
+validation passed 132 effect, nine selected IO, four ZIO, three legacy overflow
+and four fanout cases; purity remained at zero violations. Both production files
+match the frozen measured sources. The logs are
+`/tmp/spoonbill-stream-compact-root-check.log` and
+`/tmp/spoonbill-compact-purity.json`. Separate CPU profiles identify additional
+dispatch/registration work in sort; absence of blocking events does not make
+uncontended monitor work free. A sort-focused follow-up is being evaluated.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
