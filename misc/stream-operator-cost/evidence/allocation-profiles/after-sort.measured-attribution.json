@@ -1,0 +1,926 @@
+{
+  "scope": "Diagnostic JFR main Work.run ancestry with main call-site line 217; not a byte census or acceptance timing",
+  "coverage": {
+    "allEvents": 1560,
+    "mainSamples": 1557,
+    "selectedSamples": 901,
+    "mainWeight": 24856574464,
+    "selectedWeight": 15338840408,
+    "excludedMainWeight": 9517734056,
+    "truncatedMainWeight": 0,
+    "truncatedWithoutWorkWeight": 0,
+    "maxExportedDepth": 92,
+    "allRoundWeight": 24818034200,
+    "excludedRoundWeight": 9479193792,
+    "missingMainFrameWeight": 0,
+    "mainCallSiteLine": 217
+  },
+  "objectCategories": [
+    {
+      "category": "Future promise/transform/link",
+      "weight": 4634794496,
+      "fraction": 0.30216068312326366
+    },
+    {
+      "category": "Interpreter Held copies",
+      "weight": 3143715648,
+      "fraction": 0.20495132385368514
+    },
+    {
+      "category": "Effect implementation closures",
+      "weight": 2347323232,
+      "fraction": 0.15303133545712813
+    },
+    {
+      "category": "Option/result wrappers",
+      "weight": 1719231944,
+      "fraction": 0.11208356683229662
+    },
+    {
+      "category": "Pure routing model objects",
+      "weight": 1574997624,
+      "fraction": 0.10268035797403284
+    },
+    {
+      "category": "Routing interpreter closures",
+      "weight": 1042325144,
+      "fraction": 0.06795332086879093
+    },
+    {
+      "category": "Collections/backing arrays",
+      "weight": 554650592,
+      "fraction": 0.036159877620913314
+    },
+    {
+      "category": "Tuple records",
+      "weight": 321801728,
+      "fraction": 0.02097953426988938
+    }
+  ],
+  "nearestDomainOrigin": [
+    {
+      "category": "Routing interpreter",
+      "weight": 7376935560,
+      "fraction": 0.4809317630133596
+    },
+    {
+      "category": "Routing model",
+      "weight": 3485740912,
+      "fraction": 0.22724931085285988
+    },
+    {
+      "category": "Fixture",
+      "weight": 2525467752,
+      "fraction": 0.16464528509487833
+    },
+    {
+      "category": "Protect scope",
+      "weight": 1950696184,
+      "fraction": 0.1271736410389022
+    }
+  ],
+  "topSites": [
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime$Held.copy:25",
+      "weight": 3143715648,
+      "fraction": 0.20495132385368514
+    },
+    {
+      "category": "spoonbill.effect.StreamOperatorBenchmark$Work.expect:101",
+      "weight": 2162328536,
+      "fraction": 0.14097079560670267
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime$.protect$$anonfun$2:240",
+      "weight": 1406510688,
+      "fraction": 0.09169602463993509
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingMachine$Step$.apply:28",
+      "weight": 1287730144,
+      "fraction": 0.08395224865423216
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.awaitRead:117",
+      "weight": 1209242912,
+      "fraction": 0.0788353539012843
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingMachine$.overflow:66",
+      "weight": 1119581032,
+      "fraction": 0.0729899394100274
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.loop$$anonfun$1:155",
+      "weight": 575580160,
+      "fraction": 0.037524359383764444
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.wakeReader$$anonfun$1$$anonfun$2:56",
+      "weight": 556743600,
+      "fraction": 0.03629632913513002
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingMachine$.$anonfun$3:78",
+      "weight": 453662424,
+      "fraction": 0.029576057376761774
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.publish$$anonfun$1$$anonfun$1$$anonfun$1:44",
+      "weight": 430724208,
+      "fraction": 0.02808062386354545
+    },
+    {
+      "category": "spoonbill.effect.StreamOperatorBenchmark$Input.pull:57",
+      "weight": 363139216,
+      "fraction": 0.023674489488175656
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime$.protect:241",
+      "weight": 338022656,
+      "fraction": 0.02203704106757012
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.loop$$anonfun$1$$anonfun$5:157",
+      "weight": 299302328,
+      "fraction": 0.019512708916633512
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingMachine$.received:72",
+      "weight": 287267480,
+      "fraction": 0.018728109319800675
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingMachine$.pull:56",
+      "weight": 286220904,
+      "fraction": 0.01865987886872602
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.drainCommands:76",
+      "weight": 270522816,
+      "fraction": 0.01763645808968117
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime$$anon$8.pull:197",
+      "weight": 268430080,
+      "fraction": 0.017500024308226052
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.loop$$anonfun$1:149",
+      "weight": 208255728,
+      "fraction": 0.013577019022336516
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.loop:158",
+      "weight": 208255712,
+      "fraction": 0.013577017979232893
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime$.protect$$anonfun$2:232",
+      "weight": 206162840,
+      "fraction": 0.01344057533139698
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingRuntime.publish$$anonfun$1$$anonfun$1:44",
+      "weight": 206162368,
+      "fraction": 0.013440544559840107
+    },
+    {
+      "category": "spoonbill.effect.StreamRoutingMachine$.$anonfun$3:77",
+      "weight": 51278928,
+      "fraction": 0.003343077223311834
+    }
+  ],
+  "representativeStacks": {
+    "Future promise/transform/link": {
+      "allocatedClass": "scala.concurrent.impl.Promise$Transformation",
+      "frames": [
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "flatMap",
+          "line": 176
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "flatMap",
+          "line": 112
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "flatMap",
+          "line": 112
+        },
+        {
+          "type": "spoonbill.effect.syntax$EffectOps$",
+          "method": "flatMap$extension",
+          "line": 36
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$",
+          "method": "protect",
+          "line": 241
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull",
+          "line": 197
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 127
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1
+        }
+      ]
+    },
+    "Effect implementation closures": {
+      "allocatedClass": "spoonbill.effect.Effect$$Lambda",
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501
+        },
+        {
+          "type": "java.lang.invoke.DirectMethodHandle$Holder",
+          "method": "newInvokeSpecial",
+          "line": -1
+        },
+        {
+          "type": "java.lang.invoke.Invokers$Holder",
+          "method": "linkToTargetMethod",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect",
+          "method": "guarantee",
+          "line": 46
+        },
+        {
+          "type": "spoonbill.effect.Effect",
+          "method": "guarantee$",
+          "line": 30
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "guarantee",
+          "line": 90
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$",
+          "method": "protect$$anonfun$2",
+          "line": 240
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 503
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "dispatchOrAddCallbacks",
+          "line": 322
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "flatMap",
+          "line": 176
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "flatMap",
+          "line": 112
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "flatMap",
+          "line": 112
+        },
+        {
+          "type": "spoonbill.effect.syntax$EffectOps$",
+          "method": "flatMap$extension",
+          "line": 36
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$",
+          "method": "protect",
+          "line": 241
+        }
+      ]
+    },
+    "Option/result wrappers": {
+      "allocatedClass": "scala.util.Right",
+      "frames": [
+        {
+          "type": "scala.util.Right$",
+          "method": "apply",
+          "line": 479
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingMachine$",
+          "method": "$anonfun$3",
+          "line": 78
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingMachine$$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "scala.collection.IterableOnceOps",
+          "method": "foldLeft",
+          "line": 738
+        },
+        {
+          "type": "scala.collection.IterableOnceOps",
+          "method": "foldLeft$",
+          "line": 732
+        },
+        {
+          "type": "scala.collection.AbstractIterator",
+          "method": "foldLeft",
+          "line": 1313
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingMachine$",
+          "method": "received",
+          "line": 72
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept$$anonfun$1$$anonfun$2",
+          "line": 140
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "commit",
+          "line": 60
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "spoonbill$effect$StreamRoutingRuntime$$change",
+          "line": 66
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept$$anonfun$1",
+          "line": 141
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 104
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 102
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept",
+          "line": 143
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "loop$$anonfun$1$$anonfun$3",
+          "line": 152
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        }
+      ]
+    },
+    "Interpreter Held copies": {
+      "allocatedClass": "spoonbill.effect.StreamRoutingRuntime$Held",
+      "frames": [
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$Held",
+          "method": "copy",
+          "line": 25
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "commit",
+          "line": 62
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "spoonbill$effect$StreamRoutingRuntime$$change",
+          "line": 66
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept$$anonfun$1",
+          "line": 141
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 104
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 102
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept",
+          "line": 143
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "loop$$anonfun$1$$anonfun$3",
+          "line": 152
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 503
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 537
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        }
+      ]
+    },
+    "Routing interpreter closures": {
+      "allocatedClass": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501
+        },
+        {
+          "type": "java.lang.invoke.DirectMethodHandle$Holder",
+          "method": "newInvokeSpecial",
+          "line": -1
+        },
+        {
+          "type": "java.lang.invoke.Invokers$Holder",
+          "method": "linkToTargetMethod",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "loop$$anonfun$1$$anonfun$5",
+          "line": 157
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 503
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "linkRootOf",
+          "line": 380
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 504
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "linkRootOf",
+          "line": 380
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 504
+        }
+      ]
+    },
+    "Pure routing model objects": {
+      "allocatedClass": "spoonbill.effect.StreamRoutingMachine$$$Lambda",
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501
+        },
+        {
+          "type": "java.lang.invoke.DirectMethodHandle$Holder",
+          "method": "newInvokeSpecial",
+          "line": -1
+        },
+        {
+          "type": "java.lang.invoke.Invokers$Holder",
+          "method": "linkToTargetMethod",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingMachine$",
+          "method": "received",
+          "line": 72
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept$$anonfun$1$$anonfun$2",
+          "line": 140
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "commit",
+          "line": 60
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "spoonbill$effect$StreamRoutingRuntime$$change",
+          "line": 66
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept$$anonfun$1",
+          "line": 141
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 104
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 102
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "accept",
+          "line": 143
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "loop$$anonfun$1$$anonfun$3",
+          "line": 152
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 503
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        }
+      ]
+    },
+    "Collections/backing arrays": {
+      "allocatedClass": "scala.collection.immutable.Map$Map2",
+      "frames": [
+        {
+          "type": "scala.collection.immutable.Map$Map2",
+          "method": "updated",
+          "line": 353
+        },
+        {
+          "type": "scala.collection.immutable.Map$Map2",
+          "method": "updated",
+          "line": 309
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingMachine$",
+          "method": "pull",
+          "line": 56
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull$$anonfun$1$$anonfun$1$$anonfun$1",
+          "line": 193
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull$$anonfun$1$$anonfun$1$$anonfun$adapted$1",
+          "line": 195
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "commit",
+          "line": 60
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "spoonbill$effect$StreamRoutingRuntime$$change",
+          "line": 66
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull$$anonfun$1$$anonfun$1",
+          "line": 195
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8$$Lambda",
+          "method": "applyVoid",
+          "line": -1
+        },
+        {
+          "type": "scala.runtime.function.JProcedure1",
+          "method": "apply",
+          "line": 15
+        },
+        {
+          "type": "scala.runtime.function.JProcedure1",
+          "method": "apply",
+          "line": 10
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promise",
+          "line": 153
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promise",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull$$anonfun$1",
+          "line": 189
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 104
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 102
+        }
+      ]
+    },
+    "Tuple records": {
+      "allocatedClass": "scala.Tuple2",
+      "frames": [
+        {
+          "type": "scala.collection.immutable.Queue",
+          "method": "dequeue",
+          "line": 172
+        },
+        {
+          "type": "scala.collection.immutable.Queue",
+          "method": "dequeueOption",
+          "line": 182
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "drainCommands",
+          "line": 76
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime",
+          "method": "spoonbill$effect$StreamRoutingRuntime$$change",
+          "line": 67
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull$$anonfun$1$$anonfun$1",
+          "line": 195
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8$$Lambda",
+          "method": "applyVoid",
+          "line": -1
+        },
+        {
+          "type": "scala.runtime.function.JProcedure1",
+          "method": "apply",
+          "line": 15
+        },
+        {
+          "type": "scala.runtime.function.JProcedure1",
+          "method": "apply",
+          "line": 10
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promise",
+          "line": 153
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promise",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8",
+          "method": "pull$$anonfun$1",
+          "line": 189
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$$anon$8$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 104
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delay",
+          "line": 102
+        },
+        {
+          "type": "spoonbill.effect.Effect",
+          "method": "delayAsync",
+          "line": 49
+        },
+        {
+          "type": "spoonbill.effect.Effect",
+          "method": "delayAsync$",
+          "line": 30
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "delayAsync",
+          "line": 90
+        },
+        {
+          "type": "spoonbill.effect.StreamRoutingRuntime$",
+          "method": "protect$$anonfun$2",
+          "line": 232
+        }
+      ]
+    }
+  }
+}

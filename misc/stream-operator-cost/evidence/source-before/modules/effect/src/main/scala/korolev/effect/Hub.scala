@@ -1,0 +1,121 @@
+/*
+ * Copyright 2017-2020 Aleksey Fomkin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package spoonbill.effect
+
+import java.util.concurrent.atomic.AtomicBoolean
+import scala.collection.concurrent.TrieMap
+import spoonbill.effect.syntax._
+
+/**
+ * A function which returns new streams which contains same elements as the
+ * parent stream. This is helpful when you want to consume content of the stream
+ * in few different places.
+ */
+final class Hub[F[_]: Effect, T](upstream: Stream[F, T], bufferSize: Int) {
+
+  @volatile private var closed = false
+
+  private val queues     = TrieMap.empty[Queue[F, T], Unit]
+  private val inProgress = new AtomicBoolean(false)
+
+  private def terminate(error: Option[Throwable]): Unit = {
+    val subscribers = synchronized {
+      closed = true
+      queues.keysIterator.toList
+    }
+    subscribers.foreach { queue =>
+      error.foreach(queue.failUnsafe)
+      queue.unsafeClose()
+    }
+  }
+
+  private final class StreamOnePullAtTime(thisQueue: Queue[F, T]) extends Stream[F, T] {
+
+    private def begin(): F[Boolean] =
+      Effect[F].delay(!closed && inProgress.compareAndSet(false, true))
+
+    private def end(): F[Unit] =
+      Effect[F].delay {
+        val end = inProgress.compareAndSet(true, false)
+        if (end == false) throw new IllegalStateException("Can't be false")
+      }
+
+    private def pullUpstream(): F[Option[T]] = Effect[F]
+      .delayAsync(upstream.pull())
+      .recoverF { case error =>
+        Effect[F].delay(terminate(Some(error))).flatMap(_ => Effect[F].fail(error))
+      }
+      .map { maybeItem =>
+        maybeItem match {
+          case Some(item) =>
+            queues.keysIterator.foreach { queue =>
+              if (queue != thisQueue)
+                queue.offerUnsafe(item)
+            }
+          case None =>
+            terminate(None)
+        }
+        maybeItem
+      }
+
+    def pull(): F[Option[T]] =
+      for {
+        began <- begin()
+        result <- if (began)
+                    for {
+                      size <- thisQueue.size()
+                      result <- if (size > 0) end() *> thisQueue.stream.pull()
+                                else
+                                  pullUpstream().recoverF { case error => end().flatMap(_ => Effect[F].fail(error)) }
+                                    .flatMap(value => end().as(value))
+                    } yield result
+                  else thisQueue.stream.pull()
+      } yield result
+
+    def cancel(): F[Unit] = thisQueue.close()
+  }
+
+  private final class QueueRemoveFromHubOnClose extends Queue[F, T](bufferSize) {
+    override def unsafeClose(): Unit = {
+      queues.remove(this)
+      super.unsafeClose()
+    }
+  }
+
+  def newStreamUnsafe(): Stream[F, T] = synchronized {
+    if (closed)
+      throw new IllegalStateException("Hub is closed")
+    val queue  = new QueueRemoveFromHubOnClose()
+    val stream = new StreamOnePullAtTime(queue)
+    queues.put(queue, ())
+    stream
+  }
+
+  def newStream(): F[Stream[F, T]] = Effect[F].delay {
+    newStreamUnsafe()
+  }
+}
+
+object Hub {
+
+  /**
+   * @see
+   *   Hub
+   */
+  def apply[F[_]: Effect, T](stream: Stream[F, T], bufferSize: Int = Int.MaxValue): Hub[F, T] =
+    new Hub(stream, bufferSize)
+}

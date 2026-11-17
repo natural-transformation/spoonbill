@@ -1,0 +1,441 @@
+{
+  "scope": "Diagnostic JFR main Work.run ancestry with main call-site line 217; not a byte census or acceptance timing",
+  "coverage": {
+    "allEvents": 1560,
+    "mainSamples": 1558,
+    "selectedSamples": 900,
+    "mainWeight": 35083987536,
+    "selectedWeight": 22768021872,
+    "excludedMainWeight": 12315965664,
+    "truncatedMainWeight": 0,
+    "truncatedWithoutWorkWeight": 0,
+    "maxExportedDepth": 73,
+    "allRoundWeight": 35046937496,
+    "excludedRoundWeight": 12278915624,
+    "missingMainFrameWeight": 0,
+    "mainCallSiteLine": 217
+  },
+  "objectCategories": [
+    {
+      "category": "Long value boxing",
+      "weight": 7636440144,
+      "fraction": 0.33540200316617125
+    },
+    {
+      "category": "Option/result wrappers",
+      "weight": 6969846432,
+      "fraction": 0.3061243735263397
+    },
+    {
+      "category": "Future promise/transform/link",
+      "weight": 2985170104,
+      "fraction": 0.13111240496791454
+    },
+    {
+      "category": "Effect implementation closures",
+      "weight": 2958486472,
+      "fraction": 0.1299404264732516
+    },
+    {
+      "category": "Fixture closures",
+      "weight": 2218078720,
+      "fraction": 0.09742079186632292
+    }
+  ],
+  "nearestDomainOrigin": [
+    {
+      "category": "Fixture",
+      "weight": 16730178432,
+      "fraction": 0.7348103636783084
+    },
+    {
+      "category": "Previous operator/queue",
+      "weight": 6037843440,
+      "fraction": 0.2651896363216916
+    }
+  ],
+  "topSites": [
+    {
+      "category": "spoonbill.effect.StreamOperatorBenchmark$Input.publish:71",
+      "weight": 9045851768,
+      "fraction": 0.39730512465488027
+    },
+    {
+      "category": "spoonbill.effect.Stream$$anon$9.pull:275",
+      "weight": 3683717440,
+      "fraction": 0.16179347774301892
+    },
+    {
+      "category": "spoonbill.effect.StreamOperatorBenchmark$Work.expect:101",
+      "weight": 2882089008,
+      "fraction": 0.12658495429259836
+    },
+    {
+      "category": "spoonbill.effect.StreamOperatorBenchmark$Work.expect$$anonfun$1:103",
+      "weight": 2713840240,
+      "fraction": 0.11919525794805508
+    },
+    {
+      "category": "spoonbill.effect.StreamOperatorBenchmark$Input.pull:58",
+      "weight": 2088397416,
+      "fraction": 0.0917250267827747
+    },
+    {
+      "category": "spoonbill.effect.Stream$$anon$9.pull$$anonfun$7:290",
+      "weight": 1595928848,
+      "fraction": 0.07009519127187178
+    },
+    {
+      "category": "spoonbill.effect.Stream$$anon$9.pull$$anonfun$7$$anonfun$3:297",
+      "weight": 758197152,
+      "fraction": 0.033300967306800905
+    }
+  ],
+  "representativeStacks": {
+    "Future promise/transform/link": {
+      "allocatedClass": "scala.concurrent.impl.Promise$Transformation",
+      "frames": [
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "map",
+          "line": 182
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "map",
+          "line": 113
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "map",
+          "line": 113
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull$$anonfun$7",
+          "line": 290
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9$$Lambda",
+          "method": "apply",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 163
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 160
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull",
+          "line": 275
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 127
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1
+        }
+      ]
+    },
+    "Option/result wrappers": {
+      "allocatedClass": "scala.util.Success",
+      "frames": [
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "success",
+          "line": 91
+        },
+        {
+          "type": "scala.concurrent.Promise",
+          "method": "success$",
+          "line": 91
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "success",
+          "line": 104
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Input",
+          "method": "publish",
+          "line": 71
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 128
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1
+        }
+      ]
+    },
+    "Long value boxing": {
+      "allocatedClass": "java.lang.Long",
+      "frames": [
+        {
+          "type": "java.lang.Long",
+          "method": "valueOf",
+          "line": 1207
+        },
+        {
+          "type": "scala.runtime.BoxesRunTime",
+          "method": "boxToLong",
+          "line": 67
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "expect$$anonfun$1",
+          "line": 103
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "applyVoid",
+          "line": -1
+        },
+        {
+          "type": "scala.runtime.function.JProcedure1",
+          "method": "apply",
+          "line": 15
+        },
+        {
+          "type": "scala.runtime.function.JProcedure1",
+          "method": "apply",
+          "line": 10
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 500
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "linkRootOf",
+          "line": 380
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 504
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect$$anon$2",
+          "method": "execute",
+          "line": 94
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "submitWithValue",
+          "line": 462
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "submitWithValue",
+          "line": 371
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$DefaultPromise",
+          "method": "tryComplete0",
+          "line": 295
+        },
+        {
+          "type": "scala.concurrent.impl.Promise$Transformation",
+          "method": "run",
+          "line": 537
+        }
+      ]
+    },
+    "Effect implementation closures": {
+      "allocatedClass": "spoonbill.effect.Effect$FutureEffect$$Lambda",
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501
+        },
+        {
+          "type": "java.lang.invoke.DirectMethodHandle$Holder",
+          "method": "newInvokeSpecial",
+          "line": -1
+        },
+        {
+          "type": "java.lang.invoke.Invokers$Holder",
+          "method": "linkToTargetMethod",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 163
+        },
+        {
+          "type": "spoonbill.effect.Effect$FutureEffect",
+          "method": "promiseF",
+          "line": 160
+        },
+        {
+          "type": "spoonbill.effect.Stream$$anon$9",
+          "method": "pull",
+          "line": 275
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 131
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1
+        }
+      ]
+    },
+    "Fixture closures": {
+      "allocatedClass": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+      "frames": [
+        {
+          "type": "java.lang.invoke.DirectMethodHandle",
+          "method": "allocateInstance",
+          "line": 501
+        },
+        {
+          "type": "java.lang.invoke.LambdaForm$DMH+0x000000700114c400.434398524",
+          "method": "newInvokeSpecial",
+          "line": -1
+        },
+        {
+          "type": "java.lang.invoke.LambdaForm$MH+0x000000700114c800.2035616217",
+          "method": "linkToTargetMethod",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "expect",
+          "line": 101
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "$init$$$anonfun$4",
+          "line": 131
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work$$Lambda",
+          "method": "apply$mcV$sp",
+          "line": -1
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$Work",
+          "method": "run",
+          "line": 150
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "measure",
+          "line": 180
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark$",
+          "method": "main",
+          "line": 217
+        },
+        {
+          "type": "spoonbill.effect.StreamOperatorBenchmark",
+          "method": "main",
+          "line": -1
+        }
+      ]
+    }
+  }
+}

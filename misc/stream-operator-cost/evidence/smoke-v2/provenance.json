@@ -1,0 +1,16 @@
+{
+  "status": "Valid deterministic control;3cells x64rounds per variant; not timed evidence",
+  "fixtureSha256": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+  "productionRevisions": {
+    "before": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+    "after": "3fa0f4966d6d1a9542edf9cf539aa1519e60dbcb"
+  },
+  "checks": [
+    "exact delivery count and order",
+    "source and delivery on owner thread",
+    "all checked Effect continuations on owner thread",
+    "Hub EOF through live subscribers",
+    "source/started-fiber teardown complete",
+    "escaping16MiBallocation control"
+  ]
+}

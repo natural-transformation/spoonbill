@@ -1,0 +1,8 @@
+{
+  "status": "Superseded control: delivery checks passed but Hub teardown did not drive owned-reader EOF",
+  "fixtureSha256": "32b22f6b97ecfd0b56f1f47d7703df85c34a24430043c3c7adbcc28197c93924",
+  "productionRevisions": {
+    "before": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+    "after": "3fa0f4966d6d1a9542edf9cf539aa1519e60dbcb"
+  }
+}
