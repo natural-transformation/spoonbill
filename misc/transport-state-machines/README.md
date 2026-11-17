@@ -253,3 +253,11 @@ sides. The analyzer verifies sampler identity and seed alongside workload settin
 The independent [trailer profile](diagnostics/trailers-v6/) identifies rebuilt
 framing snapshots and builder work. All original fixed-offset rows and both
 diagnostics remain unchanged; new source/measurement results are separate.
+
+The [seventh comparison](evidence/chunked-v7/) is the first full matched run of
+that predeclared stratified protocol. Small, large and trailer cells pass, but
+fragmented sampled p99 is 110.677% of baseline (throughput 96.93%, allocation
+102.08%). It is rejected, not rounded into a pass. Every row remains. The next
+source change avoids constructing/copying a framing builder when a lone CR or LF
+can only inspect/retire an already immutable prefix; ordinary metadata keeps the
+stable builder that the profile motivated.

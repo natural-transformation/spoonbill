@@ -1,0 +1,1 @@
+{"label":"fragmented-baseline-3","scenario":"fragmented","seconds":2,"chunks":75,"payloadBytes":64,"messages":190656,"elapsedSeconds":2.000504291,"messagesPerSecond":95303.96953295013,"bytesPerMessage":65224.0,"p99Nanos":17917,"samples":2979,"sampler":"xorshift32-highbits-stratified-v2","sampleSeed":1831565813,"sampleStride":64,"sampleCapacity":1048576,"correct":true}

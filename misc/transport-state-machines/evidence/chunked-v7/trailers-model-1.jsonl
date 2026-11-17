@@ -1,0 +1,1 @@
+{"label":"trailers-model-1","scenario":"trailers","seconds":2,"chunks":5,"payloadBytes":16,"messages":1553472,"elapsedSeconds":2.000085583,"messagesPerSecond":776702.7637236861,"bytesPerMessage":4784.0,"p99Nanos":1750,"samples":24273,"sampler":"xorshift32-highbits-stratified-v2","sampleSeed":1831565813,"sampleStride":64,"sampleCapacity":1048576,"correct":true}
