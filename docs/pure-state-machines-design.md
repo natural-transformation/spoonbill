@@ -928,7 +928,7 @@ whole phase is complete.
 | 2 | Shared deadline, setup ownership, drain admission, completion latch, pending membership and late-handle ownership integrated. Idle-timer comparison closes the remaining deadline disposition: distinct session idle policies are retained with deterministic tests and a separate late-install fix |
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
-| 7 | Transport and adapter work integrated except chunked-body extraction, whose rejected designs remain documented while the next candidate undergoes its matched gate |
+| 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
 | 8 | Table, scheduler, queue and pool dispositions complete. Approved Hub, sort and buffer contracts are under implementation and independent cancellation/cleanup review |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
@@ -958,12 +958,22 @@ guard/snapshot cases. Its five-cell comparison passed with snapshot throughput
 99.7% of baseline and equal allocation; all failed designs and 100 trial rows are
 retained. These are local incremental checks, not the final aggregate gate.
 
-Remaining completion work is the chunk parser gate, the three stream operators,
-their combined correctness/CI validation, final inventory reconciliation and a
+Remaining completion work is the three stream operators, their combined
+correctness/CI validation, final inventory reconciliation and a
 fresh original four-workload pilot gate against the final aggregate sources.
 The PR remains draft for the owner's final review. The following integration
 paragraphs are historical checkpoints; their then-pending items do not supersede
 the current table above.
+
+The subsequent checkpoint `9046ad9f` passed both full CI jobs (run 135), including
+the native browser and authentication integrations. Chunk parser design 8 then
+passed all four matched cells: minimum throughput 99.73%, maximum allocation
+101.03%, maximum sampled p99 106.93% of baseline. Its packaged summary reproduces
+unchanged, and both integrated production files match the measured source
+snapshots byte-for-byte. All 192 parser trial rows remain available, including
+the rejected designs and earlier sampling protocol.
+The integrated `http/test` and `standalone/test` commands passed all 182 and 59
+tests through Nix (`/tmp/spoonbill-rollout-chunk-integration-15.log`).
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key
