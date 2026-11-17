@@ -1,0 +1,65 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "stream-compat-v2",
+  "scope": "Same short compatibility-path screen; not whole-semantics equivalence or acceptance",
+  "beforeRevision": "570d3678b2647d054f6e5fd8363db7fc057f0686",
+  "afterBaseRevision": "3ce16c4b45cd6de16b1c9926295b5f2b710147e0",
+  "afterSourceHashes": {
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98ae3e7ef5996dcb4fa83e3e65c56183843d5eee67ee1b5883aeaba97446c26d",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "393302e954c131830ab1d860dae67f2735d95af789a3bb32bafadee10a0516df"
+  },
+  "unchangedEffectProduction": "Base 3ce16c4b is the retained compact2 production source; only Runtime changes in this candidate, Machine hash unchanged",
+  "fixtureHashes": {
+    "StreamOperatorBenchmark.scala": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+    "prepare.sh": "c4ebe92420652ee8fef0bdb6b7db35177bcddff186c993f7e018990fed4fcbb3",
+    "run.sh": "857c7994a13fccf81e5f4189e2477803f22aad08fbaf3b9fe3fd6f84b6a986ef",
+    "analyze.mjs": "13a9df35259e7da46702dad943df48a4cfe7e4398e8420ac92306442b3d0cf80"
+  },
+  "beforeClassManifest": "../screen-v2/before.classes.json",
+  "beforeClassManifestSha256": "d30b88d5a3a4d536d1ca5f6ac8d5478ba7a7437b3bd40c668a7ac2557c73ff42",
+  "afterClassManifestSha256": "d766552a41d0852bfa7b3a5d3fbb556d165d6684524ed0ec7c1d2a2cb9272ae7",
+  "classpathHashes": {
+    "before": "3f453234c31204ab53a8dc979538cd6b5ee181e5c6670060a1bed1b229dd3677",
+    "after": "591fed2dda6af39f0be067b39de113b9bdd3d7ead2cee86f845f9cf46227991a"
+  },
+  "rawSha256": "4b86a7f258b29356793514b469e2e5bfc6889a7dc1727fdb39f015b76bff6728",
+  "collection": "No build or profiling ran during collection; 18 independent JVMs; 3 alternating pairs/cell; 2s warmup + 2s measurement",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "checks": [
+    "exact same fixture",
+    "original baseline bytecode unchanged",
+    "released candidate source hashes exact",
+    "valid deterministic continuation/thread/EOF-teardown smoke",
+    "escaping allocation control",
+    "all timed assertions and stderr clean",
+    "132 effect, ten IO, four ZIO and seven caller cases on this exact source"
+  ],
+  "ratios": {
+    "hub": {
+      "throughput": 2.7490475401145735,
+      "allocation": 0.34905167831785044
+    },
+    "sort": {
+      "throughput": 0.8479771936386628,
+      "allocation": 0.7874196052228492
+    },
+    "buffer": {
+      "throughput": 1.1629607303228837,
+      "allocation": 0.5908290657561147
+    }
+  },
+  "outcome": "Sort throughput ratio still misses the 0.95 guide; Hub and buffer satisfy observed throughput/allocation thresholds. Not complete-candidate acceptance.",
+  "afterPatch": "../../variants/compact5-routing.patch",
+  "afterPatchSha256": "7a6fbce0fc0aacfd361b2107e6ba28f57678ba689c38de0398b42f6d592ba219"
+}

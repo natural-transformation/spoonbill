@@ -73,7 +73,9 @@ for a later retry, and an abandoned late child cannot execute cleanup twice.
 Terminal publication pauses notification draining until cleanup has been
 dispatched. This prevents synchronous Future continuations waiting for cleanup
 entry from starving that very startup. Notifications execute outside ownership
-locks. Buffer batch selection reserves its entire FIFO suffix before admitting a
+locks. One thread at a time owns their dispatch; a notification or read that
+arrives meanwhile follows the running one in FIFO order, also from another
+thread. Buffer batch selection reserves its entire FIFO suffix before admitting a
 successor, then returns eager-producer credit before notifying the completed batch.
 Timer installation after cancellation immediately cancels the late handle.
 
@@ -161,17 +163,57 @@ raw rows and profiles are retained by the experiment workstream.
 
 ## Retained implementation after experiment stop
 
-The owner requested no further rounds after compact4 completed. The retained
-production choice is compact2: fixed lane references and first-command
-reservation under the existing monitor, preserving the original phase checks.
-Its three-cell screen reports throughput/allocation ratios of 2.71018/0.31786
-(Hub), 0.64402/0.88917 (sort), and 0.99523/0.64787 (zero-duration buffer).
-Its exact sources passed 132 effect, ten IO, four ZIO and seven caller cases.
+The owner requested no further rounds after compact4 completed. The production
+choice retained at that stop was compact2: fixed lane references and
+first-command reservation under the existing monitor, preserving the original
+phase checks. Its three-cell screen reports throughput/allocation ratios of
+2.71018/0.31786 (Hub), 0.64402/0.88917 (sort), and 0.99523/0.64787
+(zero-duration buffer). Its exact sources passed 132 effect, ten IO, four ZIO
+and seven caller cases.
 
-Sort still misses the throughput guide. Compact3 and compact4 did not close the
-gap and also regressed buffer throughput; neither is retained as production.
-All 90 measured rows and earlier controls remain in
-[the cost evidence](../misc/stream-operator-cost/README.md). The unmeasured
-single-callback-storage prototype is excluded. The original four-workload gate
-has not been rerun on this final aggregate. Functional implementation coverage
-does not mean that the full performance objective is complete.
+Sort missed the throughput guide. Compact3 and compact4 did not close the gap
+and also regressed buffer throughput; neither was retained as production. The
+unmeasured single-callback-storage prototype was excluded.
+
+## Accepted implementation
+
+The owner later asked for the sort gap to be closed. Production commit
+`74fed761` (compact6) keeps every contract above and changes what the
+interpreter pays for it:
+
+- One notification or read is its thread's own first command. Dispatch still
+  has one owner at a time, runs outside the ownership monitor and stays paused
+  until cleanup has been dispatched. Its owner releases without the monitor and
+  keeps ownership for a backlog. A command that arrives during a release is
+  taken by exactly one of the two threads.
+- Reader, cleanup and dispatch ownership are scalar interpreter fields. The
+  claim rule is the pure `dispatchClaimable`; Phase remains the only published
+  terminal authority, and the immutable routing model remains the oracle.
+- A FutureEffect that keeps its own `promise`, `runAsync` and `fail` is served
+  by a plain Promise and a same-thread `onComplete`, with Try outcomes. A
+  subclass that overrides one of them, and every native effect, keeps its
+  Either callbacks, so an instrumented effect still sees every call.
+
+Its three-cell screen reports throughput/allocation ratios of 3.74903/0.26071
+(Hub), 1.10111/0.64454 (sort) and 1.57257/0.47734 (zero-duration buffer). All
+three satisfy the 0.95 throughput and 1.10 allocation guides. The interpreter-only
+step before it, compact5, reached 0.84798 for sort and was rejected. All 126
+measured rows and earlier controls remain in
+[the cost evidence](../misc/stream-operator-cost/README.md).
+
+The measured source passed the complete CI test command: 2,180 ScalaTest and 41
+ZIO cases without a failure. Generated histories compare the interpreter with
+the immutable model for FutureEffect's own callbacks and for overridden ones.
+New cases pin what the release must keep: a queued notification and then the
+read reserved after it follow a running notification, a cleanup pause holds
+back an owner that finishes during it, and a command that arrives at a release
+is not left behind. Concurrent Future and IO consumers of Hub, sort and buffer
+receive every value once and in order, and the Future cases never observe two
+threads inside dispatch.
+These dispatch cases also pass the compact2 source, so they describe retained
+behavior. Each of nine single-rule mutations of the ownership protocol fails at
+least one case (`/tmp/spoonbill-stream-compact6-mutations.txt`).
+
+The original four-workload gate has not been rerun on this final aggregate.
+A short screen's three-pair medians are observations, not a whole-application
+latency guarantee.

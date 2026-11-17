@@ -1,7 +1,9 @@
 # Pure state machines: design and plan
 
 Status: implementation present; performance acceptance incomplete. The owner
-requested stopping experiments after the current round on 2026-11-17.
+requested stopping experiments after the current round on 2026-11-17, and later
+asked for the sort throughput gap to be closed. It is closed; the final
+four-workload aggregate gate has not been rerun.
 The proposal below retains the original before/after descriptions;
 [the pilot checkpoint](#pilot-implementation-checkpoint) records the implementation
 and validation. The latest extension candidate separates ownership and uses
@@ -931,7 +933,7 @@ whole phase is complete.
 | 3–4 | Owner/drain, timer-render, coordinator and presentation models pass their matched gates; guarded/legacy sessions and registries integrated. Existing explicit snapshot/lane protocols retained with evidence |
 | 5–6 | Application, Frontend, component baseline/loader, sensitive, browser-view, memory-record, JDBC clock/construction, one-use lease, invocation and reference work integrated; specified effect/security boundaries preserved |
 | 7 | Transport and adapter dispositions complete. Chunked-body design 8 passes all four matched workloads; rejected designs, profiling and sampling diagnostics remain documented |
-| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. The retained compact2 variant meets the Hub/buffer cost screen but sort throughput is 64.4% of baseline. Further experiments stopped at the owner's request; final performance acceptance remains open |
+| 8 | Table, scheduler, queue and pool dispositions complete. Approved stream contracts, native ownership proofs and caller fixes are integrated. Compact6 (`74fed761`) meets the cost screen in all three cells: Hub 374.9%, sort 110.1% and buffer 157.3% of baseline throughput. The final four-workload aggregate gate remains open |
 | 9 | Connection and Bridge/Sensitive models integrated, with public behavior coverage, native Chromium/WebKit checks, optimized-bundle checks and JS purity enforcement |
 | 10 | Recovery gate and payload-slot models integrated, with the stale-gate defect fixed separately |
 
@@ -960,11 +962,11 @@ guard/snapshot cases. Its five-cell comparison passed with snapshot throughput
 99.7% of baseline and equal allocation; all failed designs and 100 trial rows are
 retained. These are local incremental checks, not the final aggregate gate.
 
-Outstanding acceptance work is the sort throughput requirement and a fresh
-original four-workload pilot gate against the final aggregate sources. The owner
-requested no further experiment rounds after compact4 completed; no new round is
-scheduled. The functional implementation is present, but the full performance
-objective has not been achieved.
+Outstanding acceptance work is a fresh original four-workload pilot gate against
+the final aggregate sources. The owner requested no further experiment rounds
+after compact4 completed, and later asked for the sort gap to be closed; compact6
+meets the sort throughput requirement. The functional implementation is
+present, but the aggregate performance gate has not been rerun.
 The PR remains draft for the owner's final review. The following integration
 paragraphs are historical checkpoints; their then-pending items do not supersede
 the current table above.
@@ -1037,6 +1039,47 @@ The preceding published checkpoint `d9f383ca` passed both CI jobs (run 139).
 The selected compact2 source has the focused validation above; the closeout
 push starts normal CI. The original pilot's previously passed gate remains
 historical evidence, not a final aggregate performance pass.
+
+### Sort gap closed at the owner's later request
+
+The owner later asked for the sort gap to be closed. Two further rounds were
+measured with the unchanged fixture and baseline bytecode.
+
+Compact5 kept `F.promise` and `F.runAsync` and changed only the interpreter: a
+staged first command, one callback slot per rack and a published open latch.
+Its screen observes sort throughput 0.84798, so it was rejected.
+
+Compact6 is production commit `74fed761`. Its screen observes
+throughput/allocation ratios 3.74903/0.26071 (Hub), 1.10111/0.64454 (sort) and
+1.57257/0.47734 (zero-duration buffer); all three satisfy the guide. Sort
+allocation is 232.01 bytes per delivery against the baseline's 359.96. Three
+things changed, and the stream contracts did not:
+
+- One notification or read is its thread's own first command. The dispatch
+  owner releases without the monitor: it clears `running` and rereads `backlog`,
+  while a thread that leaves it a command publishes `backlog` and rereads
+  `running`. An owner with a backlog keeps ownership for it. A sort delivery
+  takes the routing monitor twice instead of six times.
+- Reader, cleanup and dispatch ownership are scalar interpreter fields. The
+  pure machine keeps the decisions; `dispatchClaimable` replaces the four-state
+  dispatch enum, whose two facts now have different writers.
+- A FutureEffect that keeps its own `promise`, `runAsync` and `fail` is served
+  by a plain Promise and a same-thread `onComplete`. A subclass that overrides
+  one of them, and every native effect, keeps its Either callbacks.
+
+The measured source passed the complete CI test command locally: 2,180 ScalaTest
+and 41 ZIO cases without a failure, with the six existing basis-specific
+cancellations (`/tmp/spoonbill-stream-compact6-full-ci.log`). The purity guard
+found 45 machine files and zero violations. An independent read-only review of
+the ownership protocol found no defect; its two robustness remarks were applied.
+The new dispatch and concurrency cases also pass the compact2 source
+(`/tmp/spoonbill-stream-compact2-dispatch-characterization.log`), so they
+describe retained behavior. Both rounds, their controls and all 36 rows are in
+the [stream evidence](../misc/stream-operator-cost/README.md).
+
+This closes the sort throughput requirement on the short screen. It is not a
+confidence interval or a whole-application guarantee, and the original
+four-workload gate has still not been rerun on the final aggregate.
 
 The first combined integration check exposed an AsyncTable interaction: a factory
 that had already published its failure was re-published and masked by a duplicate-key

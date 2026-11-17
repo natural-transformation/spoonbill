@@ -323,3 +323,87 @@ All controls, exact sources/class manifests, 18 rows and full ranges are retaine
 all correctness, thread, EOF/cleanup and stderr checks passed. This remains a
 rejected complete candidate, without claiming a causal explanation for differences
 between independently collected candidate screens.
+
+## Staged first command candidate
+
+The owner later asked for the sort gap to be closed. Compact 5 is the retained
+compact2 base `3ce16c4b` plus `variants/compact5-routing.patch`. Only the Runtime
+changes. The first command of an idle dispatcher is staged in fields instead of
+the command queue, a rack keeps its usual single waiting pull in one slot with a
+FIFO for overlapping pulls, fixed lanes are an array, and a published open latch
+replaces the two read-only phase monitors. It still calls `F.promise` and
+`F.runAsync` for every delivery and takes the monitor again to release dispatch.
+Its exact source passed 132 effect, ten IO, four ZIO and seven caller cases
+(`/tmp/spoonbill-stream-compact5-correctness.log`) before timing.
+
+The unchanged-fixture fresh 18-row screen in `evidence/compact5-v2` observed:
+
+| Cell | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: |
+| Hub | 2.7490475401145735 | 0.34905167831785044 |
+| Sort | **0.8479771936386628** | 0.7874196052228492 |
+| Zero-duration buffer | 1.1629607303228837 | 0.5908290657561147 |
+
+Sort median is 21,371,819.3997 → 18,122,815.4375 deliveries/s (candidate
+17,890,769.7792–18,206,575.3046), at 375.95 → 296.03 bytes per delivery. Sort
+still misses the 0.95 guide, so this candidate is rejected. Its Hub allocation,
+268.08 bytes per delivery, is also above compact2's 244.12. All 18 rows passed
+count/order/thread/teardown and stderr checks.
+
+## Owner-released dispatch and plain Future callbacks
+
+Compact 6 is production commit `74fed761`. `variants/compact6-routing.patch` is
+its difference from the compact2 base in Effect, StreamRoutingMachine and
+StreamRoutingRuntime; the frozen sources equal that commit byte for byte. The
+operators' public contracts are unchanged. It removes three costs that every
+delivery of the earlier candidates paid:
+
+- **Monitor acquisitions.** Compact2 took the routing monitor six times per sort
+  delivery; a pull and a value now take it once each. One notification or read
+  is its thread's own first command, held in locals. Its owner then releases
+  without the monitor: it clears `running` and rereads `backlog`, while a thread
+  that leaves it a command publishes `backlog` and rereads `running`. An owner
+  that already has a backlog keeps ownership and takes it under the monitor.
+- **Reference stores into the long-lived runtime.** Reader, cleanup and dispatch
+  ownership are scalar fields. Phase remains the sole published terminal
+  authority, and the pure Control values remain the view that the lifecycle
+  decisions read and write. The claim rule is the pure `dispatchClaimable`.
+- **Callback conversions.** A FutureEffect whose `promise`, `runAsync` and `fail`
+  are not overridden is served by their plain equivalents. A pull's Promise is
+  its own handle, completed with the Try that the upstream read produced, and
+  the read is observed by `onComplete` in that effect's same-thread context. A
+  subclass that overrides one of the three, and every native effect, keeps its
+  Either callbacks. The fixture's effect overrides only `start`.
+
+The unchanged-fixture fresh 18-row screen in `evidence/compact6-v2` observed:
+
+| Cell | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: |
+| Hub | 3.7490293990027093 | 0.2607131062015659 |
+| Sort | 1.1011066358726416 | 0.6445392036142357 |
+| Zero-duration buffer | 1.572567261790118 | 0.47733673864269655 |
+
+All three cells satisfy the 0.95 throughput and 1.10 allocation guides. Sort
+median is 23,052,024.3121 → 25,382,736.9404 deliveries/s. Its candidate trials
+range 23,260,625.0019–25,494,053.1774 and its baseline trials
+22,993,812.2165–23,395,634.5020, so the slowest candidate trial is 99.4% of the
+fastest baseline trial. Allocation is 359.96 → 232.01 bytes per delivery. Hub is
+7,809,020.5836 → 29,276,247.7452 deliveries/s at 752.02 → 196.06 bytes, and
+buffer 10,490,848.0868 → 16,497,564.2498 at 704.12 → 336.10 bytes.
+
+The measured source passed the complete CI test command before timing: 2,180
+ScalaTest and 41 ZIO cases without a failure, with the six existing
+basis-specific cancellations (`/tmp/spoonbill-stream-compact6-full-ci.log`). An
+independent read-only review of the ownership protocol found no defect. Its two
+robustness remarks were applied, and the gaps it named in the tests for
+exclusion, pause races, delayed batches, shared lanes and native failure were
+closed before the freeze. Each of nine single-rule mutations of the protocol
+fails at least one effect test (`/tmp/spoonbill-stream-compact6-mutations.txt`).
+The fixture, the original baseline bytecode, the smoke/thread/EOF/cleanup checks
+and the escaping controls were verified unchanged, and both packaged summaries
+reproduce from their rows.
+
+These remain three-pair medians of a short screen: observations, not confidence
+intervals, and not a whole-application latency guarantee or a claim that the old
+dropping and overwriting contracts are equivalent. Seven candidate screens and
+all 126 timed rows are retained.

@@ -1,0 +1,17 @@
+{
+  "scope": "Deterministic control only; no timing inference",
+  "fixtureSha256": "852f2d14be95f5c9101f2ada8942c6926160782cf3f6af78fc6066810faa2690",
+  "sourceHashes": {
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingMachine.scala": "98ae3e7ef5996dcb4fa83e3e65c56183843d5eee67ee1b5883aeaba97446c26d",
+    "modules/effect/src/main/scala/korolev/effect/StreamRoutingRuntime.scala": "393302e954c131830ab1d860dae67f2735d95af789a3bb32bafadee10a0516df"
+  },
+  "checks": [
+    "64 rounds per cell",
+    "exact counts/order",
+    "all checked continuations on main",
+    "source/delivery owner-thread checks",
+    "Hub EOF before detach",
+    "source/started-fiber cleanup awaited",
+    "escaping allocation control"
+  ]
+}
