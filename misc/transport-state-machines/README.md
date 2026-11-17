@@ -115,3 +115,55 @@ nix develop --no-write-lock-file --command node misc/transport-state-machines/an
 
 The analyzer requires all twelve rows and identical source-count, duration and
 sampling settings. No production source changed during the accepted comparison.
+
+## Frontend frames and chunked bodies
+
+The [source checkpoint](evidence/transport-v2-source/provenance.json) records exact
+baseline (`1f06cd3a`) and candidate source hashes. Its `baseline-source` and
+`model-source` directories contain complete source files, including new models.
+Copy the selected directory over an isolated checkout at that baseline to recover
+the corresponding candidate. No dependencies or build settings differed. Runtime
+class directories were copied before collection and were not rebuilt during it.
+
+`FrontendFrameBenchmark` measures real guarded-frontend send-to-pull paths:
+ordinary focus output, a property patch with a view revision, a render patch with
+a producer guard, and an admitted user action producing output. The runtime uses
+the existing synchronous Future interpreter. Each result is drained and checked;
+the guarded consumer queues are live. This measures an uncontended path, not
+network transport, multi-client contention, or browser rendering.
+
+All [24 frontend rows](evidence/frontend-v2/) pass the guide:
+
+| Workload | Throughput / baseline | Allocation / baseline | Sampled p99 / baseline |
+| --- | ---: | ---: | ---: |
+| control | 97.32% | 100.33% | 108.93% |
+| property | 95.70% | 102.26% | 106.15% |
+| patch | 100.09% | 103.05% | 108.40% |
+| action | 99.90% | 99.61% | 105.18% |
+
+`ChunkedBodyBenchmark` uses the actual `Http11.decodeChunkedBody` stream. It
+consumes payload slices without joining them, checks size and boundary bytes,
+and includes the decoder/Future overhead. Its workloads are a one-byte payload,
+an 8 KiB payload, bytewise input for a 64-byte payload, and split extensions and
+trailers. The [first 24 chunked rows](evidence/chunked-v1/) are rejected evidence:
+fragmented throughput was 94.67%; trailers reached 84.35% throughput, 110.26%
+allocation and 115.93% sampled p99. No trial was discarded or replaced.
+
+Both fixtures use three fresh JVM trials per variant/workload, alternating order,
+two-second warmup and measurement, 256 MiB heap, G1 and eight active processors.
+The allocating thread stays alive throughout its own allocation snapshots.
+Frontend samples one operation in 256; chunked samples one in 64. These synthetic
+results have no confidence interval, and their small p99 values remain quantized.
+`analyze-cost.mjs` checks all 24 rows, matching settings, positive live allocation
+and correctness before computing medians/ranges and the 95/110/110 guide.
+
+Use `prepare-frontend.sh` or `prepare-chunked.sh` with the checkout, output
+classpath and archived fixture path. Run each preparer through that checkout's
+flake. Then, with every other build/test/benchmark stopped, run the corresponding
+`run-frontend.sh` or `run-chunked.sh` through Nix with baseline classpath, candidate
+classpath and a new output directory. Analyze through Nix with
+`node analyze-cost.mjs OUTPUT frontend` or `node analyze-cost.mjs OUTPUT chunked`.
+Set `env -u JAVA_HOME SBT_NATIVE_CLIENT=false` for each Nix invocation, as in the
+project validation commands. The archived scripts and analyzer are the versions
+used for these rows. The first unmeasured frontend draft was superseded during
+review before collection; it produced no rows.

@@ -1,0 +1,1 @@
+{"label":"patch-baseline-3","scenario":"patch","seconds":2,"messages":5892864,"elapsedSeconds":2.000096125,"messagesPerSecond":2946290.3939179424,"bytesPerMessage":2360.0,"p99Nanos":500,"samples":23019,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

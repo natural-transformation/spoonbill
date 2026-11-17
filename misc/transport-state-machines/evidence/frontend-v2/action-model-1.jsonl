@@ -1,0 +1,1 @@
+{"label":"action-model-1","scenario":"action","seconds":2,"messages":3545344,"elapsedSeconds":2.000125625,"messagesPerSecond":1772560.661033479,"bytesPerMessage":4056.0,"p99Nanos":833,"samples":13849,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

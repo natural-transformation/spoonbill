@@ -1,0 +1,1 @@
+{"label":"control-baseline-1","scenario":"control","seconds":2,"messages":6401536,"elapsedSeconds":2.000076625,"messagesPerSecond":3200645.3752740594,"bytesPerMessage":2408.0,"p99Nanos":458,"samples":25006,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

@@ -1,0 +1,1 @@
+{"label":"patch-model-1","scenario":"patch","seconds":2,"messages":5800192,"elapsedSeconds":2.000081958,"messagesPerSecond":2899977.161835885,"bytesPerMessage":2432.0,"p99Nanos":542,"samples":22657,"sampleStride":256,"sampleCapacity":1048576,"correct":true}
