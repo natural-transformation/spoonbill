@@ -1,5 +1,7 @@
 package spoonbill.effect
 
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicBoolean
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, Future, Promise}
@@ -21,10 +23,65 @@ class SchedulerJobSpec extends AnyFlatSpec with Matchers {
     val first  = job.result
     val second = job.result
     completion.success(7)
+    // A published result is delivered to waiters separately. Await each one;
+    // another callback can still be pending when this thread resumes.
     await(second) shouldBe 7
-    first.isCompleted shouldBe true
     await(first) shouldBe 7
     await(job.result) shouldBe 7
+  }
+
+  it should "replay a published result while a notification is blocked and then reach every waiter" in {
+    val notified              = new CountDownLatch(1)
+    val release               = new CountDownLatch(1)
+    val holdFirstNotification = new AtomicBoolean(true)
+    given Effect[Future] = new Effect.FutureEffect {
+      override def promise[A](register: (Either[Throwable, A] => Unit) => Unit): Future[A] =
+        super.promise { complete =>
+          register { result =>
+            complete(result)
+            if (holdFirstNotification.compareAndSet(true, false)) {
+              notified.countDown()
+              release.await()
+              ()
+            }
+          }
+        }
+    }
+    val scheduler  = new Scheduler[Future]
+    val entered    = Promise[Unit]()
+    val completion = Promise[Int]()
+    val job = scheduler.unsafeScheduleOnce(Duration.Zero) {
+      entered.success(())
+      completion.future
+    }
+    await(entered.future)
+    val first      = job.result
+    val second     = job.result
+    val publishing = new Thread(() => { completion.success(7); () })
+    val replayed   = Promise[Int]()
+    // Construct the replay in its own thread: a regression which invokes
+    // callbacks under the publication monitor must time out, not block this
+    // test before Await can enforce its bound.
+    val reading = new Thread(() => { replayed.completeWith(job.result); () })
+    try {
+      publishing.start()
+      notified.await(3, TimeUnit.SECONDS) shouldBe true
+      // Publication and individual callback delivery are distinct. This
+      // observation diagnoses the CI race without requiring callback order.
+      info(
+        s"All registered waiters complete while one notification is held: ${first.isCompleted && second.isCompleted}"
+      )
+      reading.start()
+      await(replayed.future) shouldBe 7
+    } finally {
+      release.countDown()
+      publishing.join(3000)
+      if (reading.getState != Thread.State.NEW) reading.join(3000)
+    }
+    publishing.isAlive shouldBe false
+    reading.isAlive shouldBe false
+    await(first) shouldBe 7
+    await(second) shouldBe 7
   }
 
   it should "publish asynchronous failures to current and later readers" in {
