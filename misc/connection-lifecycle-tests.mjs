@@ -7,6 +7,8 @@ import {pathToFileURL} from 'node:url';
 
 const directory = mkdtempSync(join(tmpdir(), 'spoonbill-connection-lifecycle-'));
 const moduleFile = join(directory, 'connection.mjs');
+writeFileSync(join(directory, 'package.json'), '{"type":"module"}');
+writeFileSync(join(directory, 'connection-machine.js'), readFileSync(new URL('../modules/spoonbill/src/main/es6/connection-machine.js', import.meta.url)));
 writeFileSync(moduleFile, readFileSync(new URL('../modules/spoonbill/src/main/es6/connection.js', import.meta.url)));
 const {Connection} = await import(pathToFileURL(moduleFile));
 after(() => rmSync(directory, {recursive: true, force: true}));

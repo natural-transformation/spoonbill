@@ -145,7 +145,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
   const directory = await mkdtemp(join(tmpdir(), 'spoonbill-client-regressions-'));
   try {
     await writeFile(join(directory, 'package.json'), '{"type":"module"}\n');
-    for (const name of ['spoonbill.js', 'utils.js', 'connection.js', 'bridge.js', 'sensitive.js', 'protocol.js']) {
+    for (const name of ['spoonbill.js', 'utils.js', 'connection.js', 'connection-machine.js', 'bridge.js', 'sensitive.js', 'protocol.js']) {
       await copyFile(new URL(`../modules/spoonbill/src/main/es6/${name}`, import.meta.url), join(directory, name));
     }
     browser(); // bridge.js reads localStorage when its module is initialized.

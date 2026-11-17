@@ -1,13 +1,8 @@
-const MIN_RECONNECT_TIMEOUT = 200;
-const MAX_RECONNECT_TIMEOUT = 5000;
-const MAX_PENDING_SENDS = 128;
-const MAX_REPLACEMENT_RECOVERY_ATTEMPTS = 3;
+import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
+  currentTransport, authenticationPending, nextTransport, socketSenderStep} from './connection-machine.js';
+export {ConnectionType} from './connection-machine.js';
 
-/** @enum {number} */
-export const ConnectionType = {
-  WEB_SOCKET: 0,
-  LONG_POLLING: 1
-};
+const MAX_PENDING_SENDS = 128;
 
 /**
  * Reconnectable WebSocket connection
@@ -22,7 +17,7 @@ export class Connection {
    * @param {Object} [options]
    */
   constructor(sessionId, serverRootPath, location, options) {
-    this._reconnect = true;
+    this._lifecycle = initialConnection();
     this._sessionId = sessionId;
     this._serverRootPath = serverRootPath;
 
@@ -30,11 +25,9 @@ export class Connection {
     this._useSSL = location.protocol === "https:";
     this._location = location;
 
-    this._reconnectTimeout = MIN_RECONNECT_TIMEOUT;
     this._reconnectTimer = null;
     /** @type {?WebSocket} */
     this._webSocket = null;
-    this._transportEpoch = null;
     /** @type {?TextEncoder} */
     this._textEncoder = null;
     const wsEnabled = !(options && options['ws'] === false);
@@ -42,25 +35,20 @@ export class Connection {
     this._webSocketCompressionEnabled = options && options['wsc'] === true;
     this._guarded = options && options['auth'] === true;
     this._replacementEnabled = this._guarded && options['replacement'] === true;
-    this._committingAuthentication = false;
-    this._authenticationDeliveredSocket = null;
-    this._replacementRecoveryAttempts = 0;
-    this._replacementDeparted = false;
-    this._replacementNavigationPending = false;
     this._replacementAbort = null;
     if (this._replacementEnabled) {
       // WebKit can close a socket and disallow new fetches before pagehide.
       // This hint blocks only discovery; ordinary reconnect remains available
       // if a canceled departure leaves this document alive.
-      window.addEventListener('beforeunload', () => { this._replacementNavigationPending = true; });
+      window.addEventListener('beforeunload', () => { this._lifecycle = connectionStep(this._lifecycle, {type: 'before-unload'}); });
       const resumeAfterCanceledDeparture = event => {
-        if (event.isTrusted === true && !this._replacementDeparted && document.visibilityState !== 'hidden')
-          this._replacementNavigationPending = false;
+        if (event.isTrusted === true && !(this._lifecycle.presence === 'departed') && document.visibilityState !== 'hidden')
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'interaction', trusted: true, visible: true});
       };
       window.addEventListener('pointerdown', resumeAfterCanceledDeparture, true);
       window.addEventListener('keydown', resumeAfterCanceledDeparture, true);
       window.addEventListener('pagehide', () => {
-        this._replacementDeparted = true;
+        this._lifecycle = connectionStep(this._lifecycle, {type: 'hide'});
         if (this._replacementAbort) this._replacementAbort.abort();
         if (this._reconnectTimer !== null) {
           clearTimeout(this._reconnectTimer);
@@ -68,10 +56,9 @@ export class Connection {
         }
       });
       window.addEventListener('pageshow', event => {
-        const departed = this._replacementDeparted;
-        this._replacementDeparted = false;
-        this._replacementNavigationPending = false;
-        if (event.persisted && departed && this._reconnect && this._reconnectTimer === null) {
+        const departed = (this._lifecycle.presence === 'departed');
+        this._lifecycle = connectionStep(this._lifecycle, {type: 'show'});
+        if (event.persisted && departed && this._lifecycle.reconnect && this._reconnectTimer === null) {
           if (this._webSocket && this._webSocket.readyState !== WebSocket.CLOSED) {
             // pagehide made the old Bridge terminal. Retire a restored live
             // transport before opening another; its close handler owns cleanup
@@ -82,22 +69,14 @@ export class Connection {
             }
             return;
           }
-          const needsClose = this._wasConnected || this._wasReady;
-          this._wasConnected = false;
-          this._wasReady = false;
+          const needsClose = connectionOpened(this._lifecycle) || connectionReady(this._lifecycle);
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'reset-lifecycle'});
           if (needsClose) this._dispatcher.dispatchEvent(this._createEvent('close'));
           this.connect();
         }
       });
     }
     this._webSocketsSupported = wsEnabled && window.WebSocket !== undefined;
-    this._connectionType = ConnectionType.LONG_POLLING;
-    this._wasConnected = false;
-    this._wasReady = false;
-
-    /** @type {?ConnectionType} */
-    this._selectedConnectionType = null;
-
     /** @type {?function(string)} */
     this._send = null;
     this._clearPendingSends = () => {};
@@ -105,7 +84,7 @@ export class Connection {
   }
 
   get dispatcher() { return this._dispatcher }
-  get authenticationPending() { return this._committingAuthentication }
+  get authenticationPending() { return authenticationPending(this._lifecycle) }
 
   /**
    * @param {string} type
@@ -181,30 +160,28 @@ export class Connection {
     this._processing = null;
     this._textEncoder = new TextEncoder();
     this._webSocket = protocols ? new WebSocket(uri, protocols) : new WebSocket(uri);
-    this._authenticationDeliveredSocket = null;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'clear-delivery'});
     this._webSocket.binaryType = 'blob';
     // Cache typed reference; protocol is negotiated once per connection.
     const webSocketWithProtocol = /** @type {{protocol: string}} */ (this._webSocket);
     const sendingSocket = this._webSocket;
     const epoch = {};
-    this._transportEpoch = epoch;
-    const isCurrent = () => this._transportEpoch === epoch && sendingSocket === this._webSocket;
+    const isCurrent = () => currentTransport(this._lifecycle, epoch) && sendingSocket === this._webSocket;
     // Compression must preserve callback order: an older user action cannot
     // cross a departure/revalidation request. Each physical socket owns a
     // bounded, releasable queue; a replacement never waits for its compressor.
     const pendingSends = [];
-    let sending = false;
-    let sendsClosed = false;
+    let senderPhase = 'idle';
     const clearPendingSends = () => {
-      sendsClosed = true;
+      senderPhase = socketSenderStep(senderPhase, 'close');
       for (const item of pendingSends.splice(0)) { item.message = null; item.resolve(); }
     };
     this._clearPendingSends = clearPendingSends;
-    const canSend = () => !sendsClosed && !this._committingAuthentication &&
+    const canSend = () => senderPhase !== 'closed' && !authenticationPending(this._lifecycle) &&
       isCurrent() && sendingSocket.readyState === WebSocket.OPEN;
     const drainSends = async () => {
-      if (sending) return;
-      sending = true;
+      if (senderPhase !== 'idle') return;
+      senderPhase = socketSenderStep(senderPhase, 'start');
       try {
         while (pendingSends.length && canSend()) {
           const item = pendingSends.shift();
@@ -223,7 +200,7 @@ export class Connection {
       } catch (_) {
         clearPendingSends();
         sendingSocket.close();
-      } finally { sending = false; }
+      } finally { senderPhase = socketSenderStep(senderPhase, 'finish'); }
     };
     this._send = message => {
       if (!canSend()) return Promise.resolve();
@@ -237,7 +214,7 @@ export class Connection {
         drainSends();
       });
     };
-    this._connectionType = ConnectionType.WEB_SOCKET;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch});
 
     this._webSocket.addEventListener('open', (event) => {
       if (isCurrent()) this._onOpen();
@@ -322,9 +299,8 @@ export class Connection {
 
     this._clearPendingSends();
     const epoch = {};
-    this._transportEpoch = epoch;
     this._processing = null;
-    const isCurrent = () => this._transportEpoch === epoch;
+    const isCurrent = () => currentTransport(this._lifecycle, epoch);
 
     let url = (this._useSSL ? "https://" : "http://") + this._hostPort;
     let path = this._serverRootPath + `bridge/long-polling/${this._sessionId}/`;
@@ -387,7 +363,7 @@ export class Connection {
       request.send(data);
     }
 
-    this._connectionType = ConnectionType.LONG_POLLING;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
 
     subscribe(true);
@@ -400,15 +376,13 @@ export class Connection {
   /** @private */
   _onOpen() {
     console.log("Connection opened");
-    if (this._wasConnected) {
+    if (connectionOpened(this._lifecycle)) {
       return;
     }
     let event = this._createEvent('open');
-    this._wasConnected = true;
-    this._reconnectTimeout = MIN_RECONNECT_TIMEOUT;
-    this._selectedConnectionType = this._connectionType;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'open', epoch: this._lifecycle.epoch});
     this._dispatcher.dispatchEvent(event);
-    if (this._connectionType !== ConnectionType.LONG_POLLING && !this._guarded) {
+    if (this._lifecycle.transport !== ConnectionType.LONG_POLLING && !this._guarded) {
       this._onReady();
     }
   }
@@ -420,13 +394,11 @@ export class Connection {
 
   /** @private */
   _onReady() {
-    if (this._wasReady) {
+    if (connectionReady(this._lifecycle)) {
       return;
     }
     let event = this._createEvent('ready');
-    this._wasReady = true;
-    this._replacementRecoveryAttempts = 0;
-    this._replacementNavigationPending = false;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'ready', epoch: this._lifecycle.epoch});
     this._dispatcher.dispatchEvent(event);
   }
 
@@ -440,40 +412,38 @@ export class Connection {
   /** @private */
   async _onClose() {
     const disconnectedSocket = this._webSocket;
-    const disconnectedEpoch = this._transportEpoch;
+    const disconnectedEpoch = this._lifecycle.epoch;
     console.log('Connection closed');
     if (this._processing) {
       console.log('Await processing last message')
       await this._processing;
     }
-    if (this._webSocket !== disconnectedSocket || this._transportEpoch !== disconnectedEpoch) return;
+    if (this._webSocket !== disconnectedSocket || this._lifecycle.epoch !== disconnectedEpoch) return;
 
     // Allow reconnect to re-emit open and reinitialize the bridge.
-    this._wasConnected = false;
-    this._wasReady = false;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'close', epoch: disconnectedEpoch});
     let event = this._createEvent('close');
     this._dispatcher.dispatchEvent(event);
-    if (this._reconnect) {
+    if (this._lifecycle.reconnect) {
       // A replacement can commit before its fixed completion command arrives.
       // Use a bounded number of probes across the existing reconnect backoff:
       // a lost first response must not strand recovery after node failover.
       // Never replay the submitting application action.
-      if (this._replacementEnabled && !this._replacementDeparted && !this._replacementNavigationPending &&
-          !this._committingAuthentication &&
-          (!this._authenticationDeliveredSocket || this._authenticationDeliveredSocket !== disconnectedSocket) &&
-          this._replacementRecoveryAttempts < MAX_REPLACEMENT_RECOVERY_ATTEMPTS) {
-        this._replacementRecoveryAttempts++;
+      const recovering = connectionStep(this._lifecycle, {type: 'claim-recovery',
+        enabled: this._replacementEnabled, epoch: disconnectedEpoch});
+      if (recovering !== this._lifecycle) {
+        this._lifecycle = recovering;
         await this._recoverReplacement();
       }
-      if (this._reconnect && !this._replacementDeparted && this._webSocket === disconnectedSocket &&
-          this._transportEpoch === disconnectedEpoch &&
+      if (this._lifecycle.reconnect && !(this._lifecycle.presence === 'departed') && this._webSocket === disconnectedSocket &&
+          this._lifecycle.epoch === disconnectedEpoch &&
           (!this._replacementEnabled || this._reconnectTimer === null)) this.connect();
     }
   }
 
   /** Bounded discovery; cookies remain HttpOnly and no proof is retained. */
   _recoverReplacement() {
-    if (this._replacementDeparted || this._replacementNavigationPending) return Promise.resolve(false);
+    if ((this._lifecycle.presence === 'departed') || (this._lifecycle.presence === 'navigating')) return Promise.resolve(false);
     let controller;
     let timeout;
     const cleanup = () => {
@@ -516,7 +486,7 @@ export class Connection {
    * @param {string} data
    */
   send(data) {
-    if (!this._committingAuthentication && this._send) this._send(data);
+    if (!authenticationPending(this._lifecycle) && this._send) this._send(data);
   }
 
   /** Deliver only an opaque completion handle over HTTP, then rebind the same view. */
@@ -526,15 +496,16 @@ export class Connection {
   }
 
   async commitAuthentication(completionId, recovery = false) {
-    if (!this._guarded || this._connectionType !== ConnectionType.WEB_SOCKET ||
+    if (!this._guarded || this._lifecycle.transport !== ConnectionType.WEB_SOCKET ||
         typeof completionId !== 'string' ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(completionId)) {
       throw new Error('Authentication handoff unavailable');
     }
-    if (this._committingAuthentication) return;
-    this._committingAuthentication = true;
+    if (authenticationPending(this._lifecycle)) return;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'begin-authentication'});
     this._clearPendingSends();
     const socket = this._webSocket;
+    const epoch = this._lifecycle.epoch;
     try {
       const origin = (this._useSSL ? 'https://' : 'http://') + this._hostPort;
       const endpoint = new URL(this._serverRootPath + (recovery ? 'auth/recover' : 'auth/complete'), origin);
@@ -561,14 +532,14 @@ export class Connection {
         if (response.status !== 204) throw new Error('Authentication delivery rejected');
         delivered = true;
       }
-      if (socket !== this._webSocket) throw new Error('Authentication connection changed');
+      if (socket !== this._webSocket || !currentTransport(this._lifecycle, epoch)) throw new Error('Authentication connection changed');
       // close is asynchronous, and final message processing can delay its
       // handler further. Preserve this exact socket's successful HTTP delivery
       // beyond the in-flight flag; its intentional rebind needs no discovery.
-      this._authenticationDeliveredSocket = socket;
+      this._lifecycle = connectionStep(this._lifecycle, {type: 'authentication-delivered', epoch});
       await this.disconnect(true);
     } finally {
-      this._committingAuthentication = false;
+      this._lifecycle = connectionStep(this._lifecycle, {type: 'finish-authentication', epoch});
     }
   }
 
@@ -576,7 +547,7 @@ export class Connection {
    * @param {boolean} reconnect
    */
   async disconnect(reconnect = true) {
-    this._reconnect = reconnect;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'disconnect', reconnect});
     if (!reconnect && this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -592,30 +563,17 @@ export class Connection {
   _scheduleConnection(connectionType) {
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
-      if (!this._replacementDeparted) this._connectUsingConnectionType(connectionType);
-    }, this._reconnectTimeout);
+      if (!(this._lifecycle.presence === 'departed')) this._connectUsingConnectionType(connectionType);
+    }, this._lifecycle.reconnectDelay);
   }
 
   connect() {
 
-    if (this._wasConnected)
+    if (connectionOpened(this._lifecycle))
       console.log('Reconnecting...');
 
-    if (this._selectedConnectionType !== null) {
-      let ct = this._selectedConnectionType;
-      this._scheduleConnection(ct);
-    } else {
-      switch (this._connectionType) {
-        case ConnectionType.WEB_SOCKET:
-          this._scheduleConnection(this._guarded ? ConnectionType.WEB_SOCKET : ConnectionType.LONG_POLLING);
-          break;
-        case ConnectionType.LONG_POLLING:
-          this._scheduleConnection(ConnectionType.WEB_SOCKET);
-          break;
-      }
-    }
-
-    this._reconnectTimeout = Math.min(this._reconnectTimeout * 2, MAX_RECONNECT_TIMEOUT);
+    this._scheduleConnection(nextTransport(this._lifecycle, this._guarded));
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'advance-backoff'});
   }
 
 }

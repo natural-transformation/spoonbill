@@ -358,3 +358,21 @@ long-poll subscribe/publish responses. Suspended close handling also checks that
 epoch before reconnecting. Both permanent public regressions failed the old
 client; all 77 Node cases and all three native fixtures in Chromium and WebKit
 pass after this separate bug fix. Pure connection-model extraction follows it.
+
+`connection-machine.js` now owns the Connection lifecycle: explicit notification
+phase (including supported readiness before open), selected/current transport and
+opaque epoch, reconnect policy/backoff, document presence, authentication owner,
+successful-delivery fence and recovery budget. Per-socket sender ownership is
+`idle`/`sending`/`closed`; a late drain cannot reopen a closed sender. The runtime
+retains websocket/XHR/timer/abort handles, message buffers and decoding promises.
+It keeps the same effect order around notification, compression, HTTP handoff,
+close and retry. Frame processing checks epoch identity without allocating a
+transition; transitions run at lifecycle/drain edges.
+
+The unchanged 77 behavior cases and six pure table cases pass. All three native
+fixtures pass in Chromium and WebKit. The actual production resource generator,
+`spoonbill/Compile/managedResources`, assembles the client with zero Closure
+errors or warnings. Direct application of the existing forbidden-API checker to
+the new JS model reports no violations; permanent JS-machine discovery and CI
+wiring are owned by the coordinator. The fixture-only changes in this unit copy
+the new imported module, without changing behavioral assertions.
