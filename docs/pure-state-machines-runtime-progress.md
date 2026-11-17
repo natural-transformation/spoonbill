@@ -248,3 +248,36 @@ The standard sbt flags above apply. Formatting uses exact file paths; an initial
 glob was rejected by scalafmtOnly, then corrected. Unrelated existing-file
 formatting was excluded and whitespace checks passed. This fixes acquisition
 ownership; the broader guarded/legacy lifetime extraction is still pending.
+
+## Guarded lifetime and teardown
+
+After the separate acquisition bug fix, `GuardedSessionMachine` now owns attachment
+claim/publication, admission, terminal signalling, storage acquisition and cleanup
+progress in one atomic model state. Pure decisions emit the next teardown stage.
+The interpreter retains physical resources and executes one stage before asking
+for its successor. Hot authorization/idle-touch checks only read admission; no
+model wrapper is allocated per check.
+
+The once-only cleanup claim does not itself deny admission: stopping extension
+delivery and component admission still precede denying access and canceling idle
+work. A stalled admitted-write drain keeps its stage and the local attachment;
+it is never timed out. Guard close remains before extension destruction, storage
+removal and registry/attachment release. A second cleanup request returns without
+joining; an unisolated failure is terminal and cannot retry cleanup. Handles are
+read at their existing execution stages, rather than frozen in an early snapshot.
+
+Two interpreter characterizations passed before extraction, covering stalled
+write/guard close, rejected replacement attachment, nonjoining repeat cleanup and
+guard → extension → storage order. The extraction passed 166 runtime cases and
+16 CE3 cases through the standard Nix invocation:
+
+```
+spoonbill/testOnly *GuardedSessionMachineSpec *SessionLifetimeSpec *SessionsServiceSpec *SessionsRequiredSpec *Guarded*Spec *Extension*Spec
+ce3/testOnly *GuardedOpenCancellationSpec *Extension*Spec *Session*Spec
+```
+
+The first compile identified a mixed `F[Command]`/`F[Unit]` conditional; returning
+Unit explicitly corrected it, and the full second run passed. Pure laws cover
+out-of-order completion, repeated cleanup, failure, signal and admission ordering.
+Legacy retirement and session registry decisions remain separate pending units;
+the native late-acquisition regression remains part of this validation matrix.
