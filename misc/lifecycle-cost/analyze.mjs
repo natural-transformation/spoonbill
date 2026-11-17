@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {existsSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
-const [directory, repeatsArg = '3', cellArgs] = process.argv.slice(2);
+const [directory, repeatsArg = '3', cellArgs, scopeArg] = process.argv.slice(2);
 const repeats = Number(repeatsArg);
 assert.ok(Number.isInteger(repeats) && repeats > 0);
 const combined = join(directory, 'trials.jsonl');
@@ -62,7 +62,7 @@ const results = cells.map(([scenario, writers]) => {
     allocationDeltaBytes: versions.after.bytesPerOperation.median - versions.before.bytesPerOperation.median,
   };
 });
-const summary = {protocol: protocols[0], scope: cellArgs ? 'targeted screen, not full acceptance' : 'full eight-cell comparison', repeats, trials: rows.length,
+const summary = {protocol: protocols[0], scope: scopeArg ?? (cellArgs ? 'targeted screen, not full acceptance' : 'full eight-cell comparison'), repeats, trials: rows.length,
   allocationStatus: verified ? 'verified while all producers were alive; self-counter cross-check passed'
     : 'provisional: global counter sampled after producer exit; do not use allocation for acceptance',
   statistics: 'median/range of independent JVM trials; no confidence interval',

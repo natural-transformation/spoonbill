@@ -392,3 +392,51 @@ and the three native late-guard acquisition cases passed through the repository
 Nix environment (`spoonbill/testOnly *GuardedSessionMachineSpec
 *GuardedRestoreCleanupSpec *SessionsServiceSpec *ViewSnapshotSessionSpec`, then
 `ce3/testOnly *GuardedOpenCancellationSpec`).
+
+The final disposition for `SessionsService.required` is **retain**, after the
+deterministic seam/laws above: its decision is already one atomic first-winner
+permit. The timer handle and detached operation are interpreter resources, not
+additional lifecycle phases. The five deterministic cases establish success,
+failure, expiry, stale timeout, late success/failure, inline expiry and scheduling
+failure behavior. It is not the absolute-time assembly-deadline protocol, and
+adding a model enum around the same two-state CAS would not strengthen the
+contract. The separately fixed guard acquisition handoff addresses native waiter
+cancellation at the resource-owning caller. Thus the prerequisite section's
+possible later extraction is resolved by this retain decision.
+
+## Coordinator decisions and measured acceptance
+
+`BrowserCoordinatorGateMachine` now owns ordinary/reserved/closing admission,
+key ownership, capacity-versus-key blocking and the writer scan barrier. The
+interpreter retains its original monitor, callback-bearing pending vector and
+scan cursor. Every scan step follows a pure Grant/Blocked/Stop decision; effects
+still execute in their caller fibers after grant callbacks run outside the lock.
+Close phase, result and joining callbacks publish together in one interpreter
+HeldClose value. Queued-key wait metrics and close-result replay retain their
+original order.
+
+Two measured candidates were rejected before the accepted design. The first
+duplicated callback IDs in a map and published whole scheduling state/command
+vectors; the second removed those but retained read-occupancy and completion
+wrappers. The accepted occupancy is a cached Idle/Writing tag or the immutable
+key Set itself. Removing the final key returns Idle, and completion avoids a
+temporary tuple. No new object is allocated for a write occupancy transition.
+
+The unchanged coordinator/authentication tests plus four pure admission/key laws
+passed 55 runtime cases; all three native IO context/cancellation cases passed:
+
+```
+spoonbill/testOnly *BrowserCoordinatorGate*Spec *BrowserAuthentication*Spec *BrowserCoordinator*Spec
+ce3/testOnly *BrowserCoordinatorGate*Spec
+```
+
+After the final empty-set insertion matched the baseline operation, the four
+pure laws and non-comparative fixture/counter checks passed again. Formatting and
+the purity guard passed (16 models, zero violations). The complete fresh 24-row
+gate passed all four observed throughput/allocation median thresholds. Ratios,+ranges, source hashes, known-allocation controls, every rejected matrix and both
+targeted/non-comparative screens are in `misc/lifecycle-cost`.
+
+This completes the coordinator item and all phase-three items assigned here.
+BoundedPresentationStore remains owned by the aggregate rollout; its source
+review confirmed order preservation, with its own cost check still required.
+Component baseline/loader work is the next separately assigned phase-five unit.

@@ -64,3 +64,38 @@ base. The two changes affect separate cells; the accepted source commit adopts
 only timer render state. Full ranges and absolute allocation remain in the JSON
 summary; no failed cell is replaced by its smoke result. Both known-allocation
 controls report 16,842,752 producer bytes for 16,777,216 payload bytes.
+
+## Coordinator refinements
+
+The second design kept callback-bearing queue entries in the interpreter and
+published pure occupancy/admission decisions. Its complete 24-row comparison is
+retained in `evidence/2026-11-17-coordinator-compact`: write cells passed, but
+read-one throughput was 0.913× and read-four throughput/allocation were
+0.911×/1.104×. That failed gate remains rejected.
+
+The third design uses cached Idle/Writing tags or the immutable read-key Set
+directly as occupancy, and matches completion without an intermediate tuple.
+After a passing 12-row read screen, a fresh complete 24-row coordinator comparison
+in `evidence/2026-11-17-coordinator-readset` observed:
+
+| Cell | Producers | Throughput ratio | Allocation ratio |
+| --- | ---: | ---: | ---: |
+| Coordinator write | 1 | 0.992× | 0.958× |
+| Coordinator write | 4 | 1.008× | 0.953× |
+| Coordinator same-key read | 1 | 1.102× | 0.937× |
+| Coordinator same-key read | 4 | 0.985× | 0.980× |
+
+All four observed median gates pass. Candidate read-four throughput ranged from
+3.444 to 3.766 million operations/second; the full summary retains all ranges and
+absolute bytes. Every row passes the warmup/measured live-worker counter checks.
+The unchanged timer source was accepted by the earlier eight-cell comparison;
+this complete coordinator gate does not substitute its earlier targeted screen.
+
+Select coordinator-only runs with the optional seventh argument `"write read"`
+after repeat/warmup/measurement durations. Analyze them with arguments
+`3 write:1,write:4,read:1,read:4 "full four-cell coordinator gate"`; a read-only
+screen uses `3 read:1,read:4` and retains the default screen label. The initial
+pack's provenance names its original tooling revision because these optional
+selectors were added later. Every production variant remains reproducible from
+its recorded base and zero-context patch; no frozen classpath was rebuilt during
+measurement.

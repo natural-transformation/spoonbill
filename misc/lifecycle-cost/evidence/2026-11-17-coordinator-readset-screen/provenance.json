@@ -1,0 +1,22 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "lifecycle-cost-v1",
+  "baseRevision": "97679c6937e3669a08e4506df3928e34101af0ca",
+  "candidatePatch": "variants/coordinator-readset.patch",
+  "candidatePatchSha256": "9271f9f4ec004a74643b78af08575fd24aa6f0b179e5a28434a2d84229c23d39",
+  "afterSourceHashes": {
+    "modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGate.scala": "499d8ebd18fb922c7a4a7ecc5f6bd3172fbfa784b1aa6940de030d469d080285",
+    "modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGateMachine.scala": "897227b17cda7f6709576d136a840218f48293540c2cc8c8401f58f4c0612b5c"
+  },
+  "fixtureHashes": {
+    "LifecycleBenchmark.scala": "22b1322636cbf1e0ed29aa4ba92c0ccd5067e502a70251b080500048375c6b0d",
+    "prepare.sh": "9cb6440b9527ff94c315356683a6d2e11df51fea234bd3698dd46ab1132eb03b",
+    "run.sh": "1e1c026b672c6a8633fae40e84050db4dffe390107f509ec790e5927ca631971",
+    "analyze.mjs": "feddb3006860b4d1c9e33db09fb81afa9a45029b0945f9ebaac09eaa313f759d"
+  },
+  "concurrency": "Exclusive coordinated measurement window, all other builds/probes paused",
+  "statistics": "Three independent JVM trials per cell/variant, medians/ranges, no confidence interval",
+  "scope": "Targeted read1/read4 screen; not full coordinator acceptance",
+  "rawSha256": "fc4fa0412fb6e4aeeac03a807b2d3d4d69d383104e1f24a42bb1f37136060ff9",
+  "outcome": "Both screened cells passed observed throughput/allocation median gates; full four-cell gate still required"
+}

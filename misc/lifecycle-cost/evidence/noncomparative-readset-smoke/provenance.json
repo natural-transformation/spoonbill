@@ -1,0 +1,12 @@
+{
+  "protocol": "lifecycle-cost-v1",
+  "status": "Correctness/counter checks only; concurrent builds allowed. Do not use timings/ratios for acceptance.",
+  "rows": 4,
+  "warmupSeconds": 1,
+  "seconds": 1,
+  "baseRevision": "97679c6937e3669a08e4506df3928e34101af0ca",
+  "candidatePatch": "../../variants/coordinator-readset.patch",
+  "candidatePatchSha256": "9271f9f4ec004a74643b78af08575fd24aa6f0b179e5a28434a2d84229c23d39",
+  "fixtureSha256": "22b1322636cbf1e0ed29aa4ba92c0ccd5067e502a70251b080500048375c6b0d",
+  "rawSha256": "c766a8653b09bf71bcb64922a267ea8aa8a4246f3e325a17fab8d9e20c8169bd"
+}

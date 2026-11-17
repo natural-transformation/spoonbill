@@ -1,0 +1,206 @@
+diff --git a/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGate.scala b/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGate.scala
+index 2dc86042..2674b2d4 100644
+--- a/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGate.scala
++++ b/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGate.scala
+@@ -18,2 +18,2 @@ import spoonbill.effect.Effect
+- * context. Cancellation cannot abandon an admitted operation or its cleanup.
+- * A turn requested inside another turn waits for it forever: reentry is not
++ * context. Cancellation cannot abandon an admitted operation or its cleanup. A
++ * turn requested inside another turn waits for it forever: reentry is not
+@@ -25,5 +25,7 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-  private enum Admission {
+-    case Ordinary, Cleanup, Close
+-    case Read(key: Any)
+-  }
+-  /** A queued turn-grant callback. A read turn remembers whether its key made it wait. */
++  private val Model = BrowserCoordinatorGateMachine
++  import BrowserCoordinatorGateMachine.{Admission, Closure, Decision, Occupancy, ReaderDecision, Turn, WriterDecision}
++
++  /**
++   * A queued turn-grant callback. A read turn remembers whether its key made it
++   * wait.
++   */
+@@ -34,13 +36,9 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-  /** What a running turn holds, released when it finishes. */
+-  private enum Turn {
+-    case Write
+-    case Read(key: Any)
+-  }
+-  private val lock            = new Object
+-  private var pending         = Vector.empty[Entry]
+-  private var writing         = false
+-  private var reads           = 0
+-  private var active          = Set.empty[Any]
+-  private var closing         = false
+-  private var closeResult     = Option.empty[Either[Throwable, Unit]]
+-  private var closeWaiters    = List.empty[Effect.Promise[Boolean]]
++  private val lock      = new Object
++  private var pending   = Vector.empty[Entry]
++  private var occupancy = Occupancy.Idle: Occupancy
++  private final case class HeldClose(
++    phase: Closure,
++    result: Option[Either[Throwable, Unit]],
++    waiters: List[Effect.Promise[Boolean]]
++  )
++  private var closing         = HeldClose(Closure.Open, None, Nil)
+@@ -54 +52 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-  def isClosing: Boolean = lock.synchronized(closing)
++  def isClosing: Boolean = lock.synchronized(Model.isClosing(closing.phase))
+@@ -56 +54,4 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-  /** A snapshot of the counters, for sizing the read cap and diagnosing overload. */
++  /**
++   * A snapshot of the counters, for sizing the read cap and diagnosing
++   * overload.
++   */
+@@ -59 +60 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-      runningReads = reads,
++      runningReads = Model.runningReads(occupancy),
+@@ -72,4 +72,0 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-    val rejectable = kind match {
+-      case Admission.Ordinary | Admission.Read(_) => true
+-      case _                                      => false
+-    }
+@@ -77,15 +74,16 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-      if (rejectable && (closing || pending.size >= capacity)) {
+-        rejections += 1
+-        (Some(Left(reject)), Nil)
+-      } else if (!rejectable && closing) {
+-        closeResult match {
+-          case Some(result) => (Some(result.map(_ => false)), Nil)
+-          case None         => closeWaiters = callback :: closeWaiters; (None, Nil)
+-        }
+-      } else {
+-        if (kind == Admission.Close) closing = true
+-        pending = pending :+ (kind match {
+-          case Admission.Read(key) => Entry.Reader(callback, key, waited = false)
+-          case _                   => Entry.Writer(callback, System.nanoTime())
+-        })
+-        (None, dispatch())
++      Model.admission(closing.phase, pending.size, kind, capacity) match {
++        case Decision.Reject =>
++          rejections += 1
++          (Some(Left(reject)), Nil)
++        case Decision.ReplayClose => (Some(closing.result.get.map(_ => false)), Nil)
++        case Decision.JoinClose =>
++          closing = closing.copy(waiters = callback :: closing.waiters)
++          (None, Nil)
++        case Decision.Enqueue =>
++          val next = Model.requested(closing.phase, kind)
++          if (next != closing.phase) closing = closing.copy(phase = next)
++          pending = pending :+ (kind match {
++            case Admission.Read(key) => Entry.Reader(callback, key, waited = false)
++            case _                   => Entry.Writer(callback, System.nanoTime())
++          })
++          (None, dispatch())
+@@ -112,2 +110,2 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-          if (!writing && reads == 0 && blocked.isEmpty) {
+-            writing = true
++          if (Model.writerDecision(occupancy, blocked.isEmpty) == WriterDecision.GrantAndStop) {
++            occupancy = Model.writerStarted
+@@ -120,10 +118,10 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-          if (writing || reads >= readCapacity) scanning = false
+-          else if (active(key)) {
+-            blocked = blocked :+ Entry.Reader(callback, key, waited = true)
+-            index += 1
+-          } else {
+-            reads += 1
+-            active += key
+-            if (waited) bindingWaits += 1
+-            grants += callback
+-            index += 1
++          Model.readerDecision(occupancy, key, readCapacity) match {
++            case ReaderDecision.Stop => scanning = false
++            case ReaderDecision.Blocked =>
++              blocked = blocked :+ Entry.Reader(callback, key, waited = true)
++              index += 1
++            case ReaderDecision.Grant =>
++              occupancy = Model.readerStarted(occupancy, key)
++              if (waited) bindingWaits += 1
++              grants += callback
++              index += 1
+@@ -140,3 +138,2 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-        closeResult = Some(result)
+-        val all = closeWaiters
+-        closeWaiters = Nil
++        val all = closing.waiters
++        closing = HeldClose(Model.completed(closing.phase), Some(result), Nil)
+@@ -145,4 +142 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
+-      turn match {
+-        case Turn.Write     => writing = false
+-        case Turn.Read(key) => reads -= 1; active -= key
+-      }
++      occupancy = Model.finished(occupancy, turn)
+diff --git a/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGateMachine.scala b/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGateMachine.scala
+new file mode 100644
+index 00000000..77200798
+--- /dev/null
++++ b/modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGateMachine.scala
+@@ -0,0 +1,68 @@
++package spoonbill.auth
++
++/**
++ * Pure admission, key ownership and queue-scan decisions. Callback envelopes,
++ * queue storage/cursor, metrics and close results belong to the interpreter.
++ * These decisions are evaluated under the same monitor as those resources.
++ */
++private[auth] object BrowserCoordinatorGateMachine {
++  enum Admission {
++    case Ordinary, Cleanup, Close
++    case Read(key: Any)
++  }
++  enum Turn {
++    case Write
++    case Read(key: Any)
++  }
++  enum Occupancy {
++    case Idle, Writing
++    case Reading(keys: Set[Any])
++  }
++  enum Closure        { case Open, Closing, Closed                   }
++  enum Decision       { case Reject, ReplayClose, JoinClose, Enqueue }
++  enum ReaderDecision { case Stop, Blocked, Grant                    }
++  enum WriterDecision { case Stop, GrantAndStop                      }
++
++  def isClosing(closure: Closure): Boolean = closure != Closure.Open
++  def runningReads(occupancy: Occupancy): Int = occupancy match {
++    case Occupancy.Reading(keys) => keys.size
++    case _                       => 0
++  }
++  def admission(closure: Closure, queued: Int, kind: Admission, capacity: Int): Decision = {
++    val rejectable = kind match {
++      case Admission.Ordinary | Admission.Read(_) => true
++      case _                                      => false
++    }
++    if (rejectable && (isClosing(closure) || queued >= capacity)) Decision.Reject
++    else if (!rejectable && closure == Closure.Closed) Decision.ReplayClose
++    else if (!rejectable && closure == Closure.Closing) Decision.JoinClose
++    else Decision.Enqueue
++  }
++  def requested(closure: Closure, kind: Admission): Closure =
++    if (kind == Admission.Close && closure == Closure.Open) Closure.Closing else closure
++  def completed(closure: Closure): Closure = closure match {
++    case Closure.Closing => Closure.Closed
++    case other           => other
++  }
++  def writerDecision(occupancy: Occupancy, noBlockedReads: Boolean): WriterDecision =
++    if (noBlockedReads && occupancy != Occupancy.Writing && runningReads(occupancy) == 0) WriterDecision.GrantAndStop
++    else WriterDecision.Stop
++  def readerDecision(occupancy: Occupancy, key: Any, capacity: Int): ReaderDecision = occupancy match {
++    case Occupancy.Writing                                => ReaderDecision.Stop
++    case Occupancy.Reading(keys) if keys.size >= capacity => ReaderDecision.Stop
++    case Occupancy.Reading(keys) if keys(key)             => ReaderDecision.Blocked
++    case _                                                => ReaderDecision.Grant
++  }
++  def writerStarted: Occupancy = Occupancy.Writing
++  def readerStarted(occupancy: Occupancy, key: Any): Occupancy = occupancy match {
++    case Occupancy.Reading(keys) => Occupancy.Reading(keys + key)
++    case _                       => Occupancy.Reading(Set(key))
++  }
++  def finished(occupancy: Occupancy, turn: Turn): Occupancy = (occupancy, turn) match {
++    case (Occupancy.Writing, Turn.Write) => Occupancy.Idle
++    case (Occupancy.Reading(keys), Turn.Read(key)) if keys(key) =>
++      val remaining = keys - key
++      if (remaining.isEmpty) Occupancy.Idle else Occupancy.Reading(remaining)
++    case _ => occupancy
++  }
++}
