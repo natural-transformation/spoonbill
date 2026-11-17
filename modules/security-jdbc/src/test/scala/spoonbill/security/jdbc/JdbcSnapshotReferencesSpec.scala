@@ -81,6 +81,25 @@ class JdbcSnapshotReferencesSpec extends AnyFlatSpec with Matchers {
       snapshotRow(db, view) shouldBe ((1L, true, 0))
   }
 
+  it should "retain the original reader's pin when a successor tries to finish it" in withFixture { db =>
+    val original = await(db.open())
+    val first = accepted(await(db.store(original).save(initial, RecoveryCounter(1))))
+    val policy = SnapshotSchemaPolicy.of(JdbcRecoveryFixture.format)
+    val before = db.references.bind(original.view, policy).get
+    val pin = await(before.acquireRead()) match {
+      case ReferenceLoad.Pinned(value, _, _) => value
+      case other => fail(s"Expected pinned read, got $other")
+    }
+    val successor = await(db.takeOver(original))
+    accepted(await(db.store(successor).save(first, RecoveryCounter(2))))
+    val after = db.references.bind(successor.view, policy).get
+    await(after.finishRead(pin)) shouldBe Left(ViewSnapshotError.StaleOwner)
+    await(db.observe(original)).openPins shouldBe 1
+    await(db.references.maintenance.claimGarbage(1)) shouldBe empty
+    await(before.releaseRead(pin))
+    await(db.references.maintenance.claimGarbage(1)).size shouldBe 1
+  }
+
   it should "reconcile a reservation or publication whose commit acknowledgement was lost through status" in withFixture {
     db =>
       val view  = await(db.open())

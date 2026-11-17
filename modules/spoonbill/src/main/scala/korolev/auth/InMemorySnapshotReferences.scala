@@ -193,7 +193,7 @@ final class InMemorySnapshotReferences[F[_], H, P](
 
     def finishRead(pin: ReadPin): F[Either[ViewSnapshotError, Unit]] = fenced { now =>
       val found = pins.get(pin.id)
-      pins -= pin.id
+      if (found.exists(held => held.owner == owner && held.epoch == epoch)) pins -= pin.id
       found match {
         case Some(held)
             if held.owner == owner && held.epoch == epoch && held.operation == pin.operation &&
