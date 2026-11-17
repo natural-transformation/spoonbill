@@ -78,6 +78,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     recycleAfterBody: Boolean = true
   ): F[Response[Stream[F, B]]] = Effect[F].delayAsync {
     val connection = borrow.value
+    val owner = new HttpClientConnectionMachine.Owner
     val writer = Promise[Unit]()
     val failure = new AtomicReference[Throwable]()
     val settled = new AtomicBoolean()
@@ -127,7 +128,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
                     // settles. A failed writer retires rather than recycles.
                     Effect[F].start {
                       writerDone.flatMap { _ =>
-                        if (connection.finish(cleanup)) borrow.give()
+                        if (connection.finish(owner)) borrow.give()
                         else { discard(); Effect[F].unit }
                       }.recover { case NonFatal(error) => failed(error) }
                     }.as(None)
@@ -157,7 +158,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         } else result.left.foreach(failed)
       }
       try {
-        connection.begin(cleanup)
+        connection.begin(owner, cleanup)
         deadline.start()
         deadlineStarted = true
         Effect[F].start {
@@ -283,17 +284,24 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   /** The slot belongs to the physical connection, including its finalizers. */
   private class ClientConnection(val raw: RawDataSocket[F, B], val reservation: SocketCloseDispatcher.Reservation) {
     var socket: DataSocket[F, B] = raw
-    private var closed = false
-    private var active: Option[() => F[Unit]] = None
-    def begin(cleanup: () => F[Unit]): Unit = synchronized {
-      require(!closed && active.isEmpty, "HTTP connection is closed or already in use")
-      active = Some(cleanup)
+    private case class Held(state: HttpClientConnectionMachine.State, cleanup: Option[() => F[Unit]])
+    private var held = Held(HttpClientConnectionMachine.initial, None)
+    def begin(owner: HttpClientConnectionMachine.Owner, cleanup: () => F[Unit]): Unit = synchronized {
+      require(HttpClientConnectionMachine.canBegin(held.state), "HTTP connection is closed or already in use")
+      held = Held(HttpClientConnectionMachine.begin(held.state, owner), Some(cleanup))
     }
-    def finish(cleanup: () => F[Unit]): Boolean = synchronized {
-      if (!closed && active.contains(cleanup)) { active = None; true } else false
+    def finish(owner: HttpClientConnectionMachine.Owner): Boolean = synchronized {
+      if (HttpClientConnectionMachine.canFinish(held.state, owner)) {
+        held = Held(HttpClientConnectionMachine.finish(held.state, owner), None)
+        true
+      } else false
     }
     def onPhysicalClose(): F[Unit] = Effect[F].delayAsync {
-      val cleanup = synchronized { closed = true; val previous = active; active = None; previous }
+      val cleanup = synchronized {
+        val previous = held.cleanup
+        held = Held(HttpClientConnectionMachine.close(held.state), None)
+        previous
+      }
       cleanup.fold(Effect[F].unit)(_.apply())
     }
     def abort(): Unit = raw.shutdownFromDeadline()

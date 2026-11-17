@@ -151,5 +151,29 @@ After extraction, `sbt 'http/test'` passed all 165 HTTP tests, including the two
 new model cases and four raw-read characterizations. The machine purity guard
 also passed. No transport effect was moved across a security decision.
 
+## HTTP client exchange ownership
+
+`HttpClientConnectionMachine` makes the physical connection's Ready, Borrowed(owner)
+and Closed states explicit. The exchange supplies an opaque owner independently
+of its cleanup thunk. The original monitor still publishes state and cleanup
+together; physical close takes cleanup before invoking it, and only the matching
+live exchange may return the connection for reuse. A late completion cannot clear
+a newer exchange or reopen a physically closed connection.
+
+The surrounding exchange intentionally keeps distinct one-shot facts: publishing
+the response once, retaining its first input failure, claiming borrowed-resource
+retirement once, and finishing its response body once. Their lifetimes differ:
+response headers can be published before upload settlement, while cleanup may
+still hold pool capacity. The byte count is data owned by sequential body reads;
+writer completion is already one promise. Setup/header deadlines use the shared
+deadline model. These are not merged into one global state or a new per-chunk CAS.
+
+The existing early-response, bodyless-response, response-safety, setup-deadline,
+WebSocket-cleanup and TLS suites passed before this extraction. Two model cases
+add stale-owner/terminal-close checks and generated comparisons with the previous
+monitor rules. After extraction, `sbt 'http/test'` passed all 167 tests and the
+purity guard passed. No request-write, response-publication, cleanup, or TLS effect
+was reordered.
+
 Other phase-7 items remain under audit; no unreviewed item is marked retained or
 complete here.
