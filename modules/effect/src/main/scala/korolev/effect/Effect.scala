@@ -89,11 +89,7 @@ object Effect {
 
   class FutureEffect extends Effect[Future] {
     def uncancelable[A](task: => Future[A]): Future[A] = task
-    private implicit val immediateEc: ExecutionContext = new ExecutionContext {
-      // Run on the same thread
-      def execute(runnable: Runnable): Unit     = runnable.run()
-      def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
-    }
+    private implicit val immediateEc: ExecutionContext = FutureEffect.immediate
     val unit: Future[Unit]                   = Future.unit
     def never[T]: Future[T]                  = Future.never
     def toFuture[A](m: Future[A]): Future[A] = m
@@ -166,6 +162,41 @@ object Effect {
     }
     def blocking[T](f: => T)(implicit ec: ExecutionContext): Future[T] =
       Future(futureBlocking(f))(ec)
+  }
+
+  object FutureEffect {
+
+    /** Every FutureEffect runs its continuations on the completing thread. */
+    private[effect] val immediate: ExecutionContext = new ExecutionContext {
+      // Run on the same thread
+      def execute(runnable: Runnable): Unit     = runnable.run()
+      def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
+    }
+    private val inherited = new ClassValue[java.lang.Boolean] {
+      protected def computeValue(kind: Class[?]): java.lang.Boolean = {
+        def own(name: String, parameters: Class[?]*): Boolean =
+          kind.getMethod(name, parameters*).getDeclaringClass eq classOf[FutureEffect]
+        // Whatever keeps reflection from answering leaves the virtual calls.
+        try
+          own("promise", classOf[Function1[?, ?]]) &&
+            own("runAsync", classOf[Future[?]], classOf[Function1[?, ?]]) &&
+            own("fail", classOf[Throwable])
+        catch { case error: Throwable if !error.isInstanceOf[VirtualMachineError] => false }
+      }
+    }
+
+    /**
+     * True when `effect` settles and observes callbacks exactly as FutureEffect
+     * itself does: `promise`, `runAsync` and `fail` are not overridden. Its
+     * `promise` is then a plain Promise completed with the callback's result,
+     * and its `runAsync` an `onComplete` in [[immediate]]. An internal pump may
+     * use those directly, without the Either and the closure of each call. A
+     * subclass that replaces any of them keeps the virtual calls.
+     */
+    private[effect] def keepsCallbacks(effect: Effect[?]): Boolean = effect match {
+      case future: FutureEffect => inherited.get(future.getClass).booleanValue
+      case _                    => false
+    }
   }
 
   implicit val futureEffect: Effect[Future] =

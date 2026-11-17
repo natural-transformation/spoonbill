@@ -14,9 +14,8 @@ private[effect] object StreamRoutingMachine {
     case Open, Ended, Canceled
     case Failed(error: Throwable)
   }
-  enum Reader    { case Waiting, Reading                         }
-  enum Recipient { case Deliver, Store, Overflow                 }
-  enum Dispatch  { case Idle, Running, PausedIdle, PausedRunning }
+  enum Reader    { case Waiting, Reading         }
+  enum Recipient { case Deliver, Store, Overflow }
   final case class Control(phase: Phase, reader: Reader, cleanupClaimed: Boolean)
   val idleControl: Control    = Control(Phase.Open, Reader.Waiting, false)
   val readingControl: Control = Control(Phase.Open, Reader.Reading, false)
@@ -51,23 +50,14 @@ private[effect] object StreamRoutingMachine {
   }
   def cancelControl(control: Control, mode: Mode): Control =
     Control(canceledPhase(mode, control.phase), control.reader, true)
-  def claimDispatch(state: Dispatch, pending: Boolean): Dispatch =
-    if (state == Dispatch.Idle && pending) Dispatch.Running else state
-  def pauseDispatch(state: Dispatch): Dispatch = state match {
-    case Dispatch.Idle    => Dispatch.PausedIdle
-    case Dispatch.Running => Dispatch.PausedRunning
-    case _                => state
-  }
-  def resumeDispatch(state: Dispatch): Dispatch = state match {
-    case Dispatch.PausedIdle    => Dispatch.Idle
-    case Dispatch.PausedRunning => Dispatch.Running
-    case _                      => state
-  }
-  def releaseDispatch(state: Dispatch): Dispatch = state match {
-    case Dispatch.PausedRunning => Dispatch.PausedIdle
-    case _                      => Dispatch.Idle
-  }
-  def dispatchPaused(state: Dispatch): Boolean = state == Dispatch.PausedIdle || state == Dispatch.PausedRunning
+
+  /**
+   * Notification dispatch has one owner at a time; a cleanup pause is an
+   * independent fact. Only an idle, unpaused dispatcher is claimed, and only
+   * for a pending command. Its owner alone releases it.
+   */
+  def dispatchClaimable(running: Boolean, paused: Boolean, pending: Boolean): Boolean =
+    !running && !paused && pending
   final case class Endpoint[A](values: Queue[A] = Queue.empty[A], pulls: Vector[Pull] = Vector.empty)
   final case class State[A](
     mode: Mode,

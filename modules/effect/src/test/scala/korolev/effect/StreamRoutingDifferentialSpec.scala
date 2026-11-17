@@ -10,9 +10,14 @@ import scala.util.Random
 /**
  * The retained immutable routing model is an oracle for the compact data store.
  */
-class StreamRoutingDifferentialSpec extends AnyFlatSpec with Matchers {
+class StreamRoutingDifferentialSpec extends StreamRoutingDifferentialCases(Effect.futureEffect)
+
+/** Overridden callbacks are called, not replaced by their plain equivalents. */
+class StreamRoutingOverriddenCallbacksSpec extends StreamRoutingDifferentialCases(new OverriddenFutureCallbacks)
+
+abstract class StreamRoutingDifferentialCases(effect: Effect[Future]) extends AnyFlatSpec with Matchers {
   import StreamRoutingMachine.*
-  private given Effect[Future]              = Effect.futureEffect
+  private given Effect[Future]              = effect
   private def await[A](value: Future[A]): A = Await.result(value, 3.seconds)
 
   for (mode <- List(Mode.Fanout, Mode.Partition, Mode.Buffered)) {
@@ -95,6 +100,10 @@ class StreamRoutingDifferentialSpec extends AnyFlatSpec with Matchers {
           physical.removeHead().success(None)
         }
         verify()
+      }
+      effect match {
+        case overridden: OverriddenFutureCallbacks => overridden.calls.get() should be > 0
+        case _                                     => Effect.FutureEffect.keepsCallbacks(effect) shouldBe true
       }
     }
   }

@@ -3,7 +3,8 @@ package spoonbill.effect
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.collection.mutable
-import scala.concurrent.ExecutionContext
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
 import spoonbill.effect.syntax.*
 
@@ -23,10 +24,30 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
   import StreamRoutingMachine.*
   require(capacity > 0, "Stream buffer capacity must be positive")
   private type Callback = Effect.Promise[Option[A]]
+  private type Settled  = scala.concurrent.Promise[Option[A]]
+
+  /** A waiting pull and its result, in the form its effect settles directly. */
+  private type Pull    = Callback | Settled
+  private type Outcome = Either[Throwable, Option[A]] | Try[Option[A]]
   private enum CleanupStart { case Waiting, Running, Abandoned }
   private final class LaneData {
     val values = mutable.ArrayDeque.empty[A]
-    val pulls  = mutable.ArrayDeque.empty[Callback]
+    // Keep the usual single waiter directly; overlapping pulls retain FIFO.
+    private var firstPull: Pull                      = null
+    private var laterPulls: mutable.ArrayDeque[Pull] = null
+    def hasPull: Boolean                             = firstPull != null
+    def appendPull(pull: Pull): Unit =
+      if (firstPull == null) firstPull = pull
+      else {
+        if (laterPulls == null) laterPulls = mutable.ArrayDeque.empty[Pull]
+        laterPulls.append(pull)
+      }
+    def removePull(): Pull = {
+      val pull = firstPull
+      if (pull == null) throw new NoSuchElementException("No pending stream pull")
+      firstPull = if (laterPulls != null && laterPulls.nonEmpty) laterPulls.removeHead() else null
+      pull
+    }
   }
 
   /**
@@ -40,27 +61,78 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
     var single: LaneData      = if (lanes.size == 1) lanes.valuesIterator.next() else null
     def refreshSingle(): Unit = single = if (lanes.size == 1) lanes.valuesIterator.next() else null
   }
-  private val monitor                                              = new Object
-  private val storage                                              = new Storage
-  private val fixedData                                            = fixed.map(storage.lanes)
-  private var control                                              = idleControl
-  private var dispatch                                             = Dispatch.Idle
-  private var reader: Effect.Promise[Boolean]                      = null
+  private val monitor                    = new Object
+  private val storage                    = new Storage
+  private val fixedData: Array[LaneData] = fixed.map(storage.lanes).toArray
+  private val router: A => Int           = route.orNull
+  private val futureSemantics            = F.isInstanceOf[Effect.FutureEffect]
+  // A FutureEffect that keeps its own callbacks is served by their plain
+  // equivalents: a pull's Promise is its own handle and a read is observed as
+  // a Try. Outcomes are then Try values; every other effect uses Either.
+  private val plain = Effect.FutureEffect.keepsCallbacks(F)
+
+  // Phase is the sole published terminal authority, written under monitor.
+  // Reader and cleanup ownership are read and written only under monitor.
+  @volatile private var phase: Phase = Phase.Open
+  private var reading                = false
+  private var cleanupClaimed         = false
+  private def control: Control = {
+    val current = phase
+    if ((current eq Phase.Open) && !cleanupClaimed) { if (reading) readingControl else idleControl }
+    else Control(current, if (reading) Reader.Reading else Reader.Waiting, cleanupClaimed)
+  }
+  private def control_=(next: Control): Unit = {
+    reading = next.reader eq Reader.Reading
+    cleanupClaimed = next.cleanupClaimed
+    if (!(phase eq next.phase)) phase = next.phase
+  }
+
+  // One owner at a time runs commands outside monitor. `running` is set under
+  // monitor by the thread that takes ownership and cleared only by that owner.
+  // The FIFO is one staged read, then `commands`; `backlog` republishes that it
+  // is not empty, so that an owner can release without taking monitor.
+  private val running                                              = new AtomicBoolean(false)
+  private var paused                                               = false
+  @volatile private var backlog                                    = false
+  private var stagedRead                                           = false
   private val commands                                             = mutable.ArrayDeque.empty[() => Unit]
-  private val endToken: Either[Throwable, Option[A]]               = Right(None)
-  private val futureSemantics                                      = F.isInstanceOf[Effect.FutureEffect]
+  private var reader: Effect.Promise[Boolean]                      = null
+  private val endToken: Outcome                                    = if (plain) Success(None) else Right(None)
   private val readCommand: () => Unit                              = () => readFuture()
   private val futureReceiver: Either[Throwable, Option[A]] => Unit = completeFuture
+  private val plainReceiver: Try[Option[A]] => Unit                = completePlain
 
   private def report(error: Throwable): Unit =
     Reporter.PrintReporter.error("Stream operator background work failed", error)
-  private def enqueue(callback: Callback, result: Either[Throwable, Option[A]]): Unit =
-    commands.append(() => callback(result))
+  private def valued(value: A): Outcome         = if (plain) Success(Some(value)) else Right(Some(value))
+  private def failed(error: Throwable): Outcome = if (plain) Failure(error) else Left(error)
+  private def settle(pull: Pull, outcome: Outcome): Unit =
+    if (plain) pull.asInstanceOf[Settled].complete(outcome.asInstanceOf[Try[Option[A]]])
+    else pull.asInstanceOf[Callback](outcome.asInstanceOf[Either[Throwable, Option[A]]])
+  private def notify(pull: Pull, outcome: Outcome): Unit =
+    try settle(pull, outcome)
+    catch { case NonFatal(error) => report(error) }
+
+  private def hasCommands: Boolean = stagedRead || commands.nonEmpty
+  private def publishBacklog(): Unit = {
+    val pending = hasCommands
+    if (backlog != pending) backlog = pending
+  }
+  private def enqueue(pull: Pull, outcome: Outcome): Unit = commands.append(() => settle(pull, outcome))
+  private def enqueueRead(): Unit =
+    if (!stagedRead && commands.isEmpty) stagedRead = true else commands.append(readCommand)
   private def canReadNow: Boolean =
-    readAllowed(mode, control.phase, control.reader, storage.lanes.nonEmpty, storage.demanding > 0, storage.full == 0)
+    readAllowed(
+      mode,
+      phase,
+      if (reading) Reader.Reading else Reader.Waiting,
+      storage.lanes.nonEmpty,
+      storage.demanding > 0,
+      storage.full == 0
+    )
   private def wakeReader(): Unit =
     if (futureSemantics) {
-      if (canReadNow) { control = readingControl; commands.append(readCommand) }
+      if (canReadNow) { control = readingControl; enqueueRead() }
     } else if (reader != null) {
       if (control.phase != Phase.Open) {
         val callback = reader; reader = null
@@ -68,108 +140,184 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
       } else if (canReadNow) {
         control = readingControl
         val callback = reader; reader = null
-        commands.append(() => callback(Right(monitor.synchronized(control.phase == Phase.Open))))
+        commands.append(() => callback(Right(phase eq Phase.Open)))
       }
     }
-  private def claimDrainer(): Boolean = {
-    val next    = claimDispatch(dispatch, commands.nonEmpty)
-    val claimed = next != dispatch
-    dispatch = next
-    claimed
+
+  /** Called only while owning monitor, by the thread that takes ownership. */
+  private def takeHead(): () => Unit = {
+    val staged = stagedRead
+    if (staged) stagedRead = false
+    val head = if (staged) readCommand else commands.removeHead()
+    publishBacklog()
+    head
+  }
+
+  /**
+   * Called only while owning monitor. Reservation invokes no effect. A running
+   * owner is told about the FIFO before its ownership is read again: either its
+   * release observes `backlog`, or this caller observes the release.
+   */
+  private def claimFirst(): () => Unit = {
+    val pending = hasCommands
+    if (running.get()) {
+      if (!pending) return null
+      if (!backlog) backlog = true
+      if (running.get()) return null
+    }
+    if (dispatchClaimable(running = false, paused, pending)) { running.lazySet(true); takeHead() }
+    else null
+  }
+
+  /**
+   * Called only while owning monitor. A notification that would be the whole
+   * FIFO of an idle dispatcher needs no entry in it: its thread owns dispatch
+   * for it. The claim itself is the last step of that monitor section.
+   */
+  private def directAllowed: Boolean = !hasCommands && dispatchClaimable(running.get(), paused, pending = true)
+  private def claimDirect(): Unit    = { publishBacklog(); running.lazySet(true) }
+
+  /**
+   * Called only by the owner, outside monitor. An owner with a backlog keeps
+   * ownership for it. Otherwise it releases with a volatile write that precedes
+   * its reread of `backlog`; `running` is otherwise read only under monitor.
+   */
+  private def next(): () => Unit = {
+    val owned = backlog
+    if (!owned) {
+      running.set(false)
+      if (!backlog) return null
+    }
+    monitor.synchronized(takeNext(owned))
+  }
+
+  /**
+   * Called only while owning monitor. An owner continues or releases; a
+   * released owner claims again unless another thread did.
+   */
+  private def takeNext(owned: Boolean): () => Unit =
+    if (dispatchClaimable(!owned && running.get(), paused, hasCommands)) {
+      if (!owned) running.lazySet(true)
+      takeHead()
+    } else {
+      if (owned) running.set(false)
+      null
+    }
+  private def drain(first: () => Unit): Unit = {
+    var action = first
+    while (action != null) {
+      try action()
+      catch { case NonFatal(error) => report(error) }
+      action = next()
+    }
   }
   private inline def change[B](inline body: B): B = {
     var first: () => Unit = null
     val result = monitor.synchronized {
       val value = body
-      if (claimDrainer()) first = takeCommand()
+      first = claimFirst()
       value
     }
-    if (first != null) drainCommands(first)
+    if (first != null) drain(first)
     result
-  }
-
-  /** Called only while owning monitor. Reservation invokes no effect. */
-  private def takeCommand(): () => Unit =
-    if (dispatchPaused(dispatch) || commands.isEmpty) { dispatch = releaseDispatch(dispatch); null }
-    else commands.removeHead()
-
-  private def drainCommands(first: () => Unit): Unit = {
-    var action = first
-    while (action != null) {
-      try action()
-      catch { case NonFatal(error) => report(error) }
-      action = monitor.synchronized(takeCommand())
-    }
   }
   private def discardValues(data: LaneData): Unit = {
     if (data.values.size == capacity) storage.full -= 1
     data.values.clear()
   }
-  private def completePulls(data: LaneData, result: Either[Throwable, Option[A]]): Unit = {
-    if (data.pulls.nonEmpty) storage.demanding -= 1
-    while (data.pulls.nonEmpty) enqueue(data.pulls.removeHead(), result)
+  private def completePulls(data: LaneData, outcome: Outcome): Unit = {
+    if (data.hasPull) storage.demanding -= 1
+    while (data.hasPull) enqueue(data.removePull(), outcome)
   }
-  private def deliver(data: LaneData, value: A, result: Either[Throwable, Option[A]]): Unit =
-    recipient(data.pulls.nonEmpty, data.values.size, capacity) match {
-      case Recipient.Deliver =>
-        val callback = data.pulls.removeHead()
-        if (data.pulls.isEmpty) storage.demanding -= 1
-        enqueue(callback, result)
-      case Recipient.Store =>
-        data.values.append(value)
-        if (data.values.size == capacity) storage.full += 1
-      case Recipient.Overflow => throw new IllegalStateException("Stream read credit was exceeded")
-    }
+  private def decide(data: LaneData): Recipient = recipient(data.hasPull, data.values.size, capacity)
+  private def takePull(data: LaneData): Pull = {
+    val pull = data.removePull()
+    if (!data.hasPull) storage.demanding -= 1
+    pull
+  }
+  private def store(data: LaneData, decision: Recipient, value: A): Unit =
+    if (decision eq Recipient.Store) {
+      data.values.append(value)
+      if (data.values.size == capacity) storage.full += 1
+    } else throw new IllegalStateException("Stream read credit was exceeded")
   private def fail(error: Throwable): Boolean = {
-    val open    = control.phase == Phase.Open
+    val wasOpen = control.phase == Phase.Open
     val cleanup = failureCleanup(mode, control.phase, control.cleanupClaimed)
     control = failControl(control, mode, error)
-    if (cleanup) dispatch = pauseDispatch(dispatch)
-    if (open) {
-      val result: Either[Throwable, Option[A]] = Left(error)
+    if (cleanup) paused = true
+    if (wasOpen) {
+      val outcome = failed(error)
       storage.lanes.valuesIterator.foreach { data =>
         if (mode != Mode.Buffered) discardValues(data)
-        completePulls(data, result)
+        completePulls(data, outcome)
       }
     }
     wakeReader()
     cleanup
   }
   private def end(): Boolean = {
-    val open = control.phase == Phase.Open
+    val wasOpen = control.phase == Phase.Open
     control = endControl(control)
-    if (open) storage.lanes.valuesIterator.foreach(completePulls(_, endToken))
+    if (wasOpen) storage.lanes.valuesIterator.foreach(completePulls(_, endToken))
     wakeReader()
     false
   }
-  private def complete(result: Either[Throwable, Option[A]]): Boolean = result match {
-    case Right(Some(value)) =>
-      if (!monitor.synchronized(control.phase == Phase.Open)) change { control = settleControl(control); false }
-      else {
-        val index = route.fold(-1)(_(value))
-        if (route.nonEmpty && (index < 0 || index >= fixedData.size))
-          throw new IllegalArgumentException(s"Invalid stream rack index: $index")
-        change {
-          if (control.phase != Phase.Open) { control = settleControl(control); false }
-          else if (
-            index >= 0 && recipient(
-              fixedData(index).pulls.nonEmpty,
-              fixedData(index).values.size,
-              capacity
-            ) == Recipient.Overflow
-          ) fail(StreamSortOverflowException(index, capacity))
-          else {
+  private def settleLate(): Boolean = change { control = settleControl(control); false }
+
+  /**
+   * Routes one value. Its only waiting pull is settled as this thread's own
+   * first command when dispatch is idle; every other shape uses the FIFO.
+   */
+  private def completeValue(value: A, outcome: Outcome): Boolean =
+    if (!(phase eq Phase.Open)) settleLate()
+    else {
+      val index = if (router == null) -1 else router(value)
+      if (router != null && (index < 0 || index >= fixedData.length))
+        throw new IllegalArgumentException(s"Invalid stream rack index: $index")
+      var direct: Pull      = null
+      var first: () => Unit = null
+      val needsCleanup = monitor.synchronized {
+        var cleanup = false
+        if (!(phase eq Phase.Open)) control = settleControl(control)
+        else {
+          val target = if (index >= 0) fixedData(index) else storage.single
+          if (target == null) {
             control = settleControl(control)
-            if (index >= 0) deliver(fixedData(index), value, result)
-            else if (storage.single != null) deliver(storage.single, value, result)
-            else storage.lanes.valuesIterator.foreach(deliver(_, value, result))
+            storage.lanes.valuesIterator.foreach { data =>
+              val decision = decide(data)
+              if (decision eq Recipient.Deliver) enqueue(takePull(data), outcome) else store(data, decision, value)
+            }
             wakeReader()
-            false
+          } else {
+            val decision = decide(target)
+            if (index >= 0 && (decision eq Recipient.Overflow))
+              cleanup = fail(StreamSortOverflowException(index, capacity))
+            else {
+              control = settleControl(control)
+              if (decision eq Recipient.Deliver) {
+                val pull = takePull(target)
+                if (directAllowed) direct = pull else enqueue(pull, outcome)
+              } else store(target, decision, value)
+              wakeReader()
+            }
           }
         }
+        if (direct == null) first = claimFirst() else claimDirect()
+        cleanup
       }
-    case Right(None) => change(end())
-    case Left(error) => change(fail(error))
+      if (direct != null) { notify(direct, outcome); first = next() }
+      if (first != null) drain(first)
+      needsCleanup
+    }
+  private def complete(result: Either[Throwable, Option[A]]): Boolean = result match {
+    case Right(Some(value)) => completeValue(value, result)
+    case Right(None)        => change(end())
+    case Left(error)        => change(fail(error))
+  }
+  private def completeTry(result: Try[Option[A]]): Boolean = result match {
+    case Success(Some(value)) => completeValue(value, result)
+    case Success(None)        => change(end())
+    case Failure(error)       => change(fail(error))
   }
   private def completeFuture(result: Either[Throwable, Option[A]]): Unit = {
     val needsCleanup =
@@ -182,19 +330,37 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
           F.runAsync(F.fail[Option[A]](error))(futureReceiver)
           false
       }
-    if (needsCleanup) {
-      try F.runAsync(cleanup())(_ => ())
-      catch { case NonFatal(error) => report(error) }
-    }
+    if (needsCleanup) startCleanup()
   }
+  private def completePlain(result: Try[Option[A]]): Unit = {
+    val needsCleanup =
+      try completeTry(result)
+      catch {
+        case error: Throwable =>
+          if (result.isFailure) throw error
+          Future.failed[Option[A]](error).onComplete(plainReceiver)(Effect.FutureEffect.immediate)
+          false
+      }
+    if (needsCleanup) startCleanup()
+  }
+  private def startCleanup(): Unit =
+    try F.runAsync(cleanup())(_ => ())
+    catch { case NonFatal(error) => report(error) }
   private def readFuture(): Unit =
-    if (monitor.synchronized(control.phase == Phase.Open)) {
+    if (!(phase eq Phase.Open)) settleLate()
+    else if (plain) {
+      val read =
+        try upstream.pull().asInstanceOf[Future[Option[A]]]
+        catch { case error: Throwable => Future.failed[Option[A]](error) }
+      try read.onComplete(plainReceiver)(Effect.FutureEffect.immediate)
+      catch { case NonFatal(error) => completePlain(Failure(error)) }
+    } else {
       val read =
         try upstream.pull()
         catch { case error: Throwable => F.fail[Option[A]](error) }
       try F.runAsync(read)(futureReceiver)
       catch { case NonFatal(error) => completeFuture(Left(error)) }
-    } else change { control = settleControl(control) }
+    }
 
   private def cleanup(): F[Unit] = {
     val start = new AtomicReference(CleanupStart.Waiting)
@@ -212,17 +378,17 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
           .flatMap(_ => F.fail(error))
       }
     F.guarantee(launched)(F.delay(change {
-      // Claim reset and dispatch release are atomic, so an old failure cannot
-      // unpause a newer cleanup attempt.
+      // Claim reset and dispatch resumption are atomic, so an old failure
+      // cannot unpause a newer cleanup attempt.
       if (start.get() == CleanupStart.Abandoned) control = control.copy(cleanupClaimed = false)
-      dispatch = resumeDispatch(dispatch)
+      paused = false
     }))
   }
   private def awaitRead(): F[Boolean] = F.promise(callback => change { reader = callback; wakeReader() })
   private def loop(): F[Unit] = awaitRead().flatMap {
     case false => F.unit
     case true =>
-      F.delayAsync(if (monitor.synchronized(control.phase == Phase.Open)) upstream.pull() else F.none[A])
+      F.delayAsync(if (phase eq Phase.Open) upstream.pull() else F.none[A])
         .map[Either[Throwable, Option[A]]](Right(_))
         .recover { case error => Left(error) }
         .flatMap(result => F.delay(complete(result)).recover { case error => change(fail(error)) })
@@ -242,8 +408,8 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
         F.delay(change(fail(error))).flatMap(needsCleanup => if (needsCleanup) cleanup() else F.unit)
       }
       F.runAsync(F.guarantee(program)(readerExited())) {
-        case Left(error) if monitor.synchronized(control.phase == Phase.Open) => report(error)
-        case _                                                                => ()
+        case Left(error) if phase eq Phase.Open => report(error)
+        case _                                  => ()
       }
     }
   launchReader()
@@ -255,31 +421,53 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
     storage.refreshSingle()
     lane
   }
+
+  /**
+   * Queued data or a terminal phase settles a pull at once, as this thread's
+   * own first command when dispatch is idle. Otherwise it waits in its lane.
+   */
+  private def register(stable: LaneData, lane: Lane, pull: Pull): Unit = {
+    var direct: Outcome   = null
+    var first: () => Unit = null
+    monitor.synchronized {
+      val data           = if (stable != null) stable else storage.lanes.getOrElse(lane, null)
+      var ready: Outcome = null
+      if (data == null) ready = endToken
+      else if (data.values.nonEmpty) {
+        if (data.values.size == capacity) storage.full -= 1
+        ready = valued(data.values.removeHead())
+      } else {
+        val current = phase
+        if (current eq Phase.Open) {
+          if (!data.hasPull) storage.demanding += 1
+          data.appendPull(pull)
+        } else
+          ready = current match {
+            case Phase.Failed(error) => failed(error)
+            case _                   => endToken
+          }
+      }
+      if (ready != null) { if (directAllowed) direct = ready else enqueue(pull, ready) }
+      wakeReader()
+      if (direct == null) first = claimFirst() else claimDirect()
+    }
+    if (direct != null) { notify(pull, direct); first = next() }
+    if (first != null) drain(first)
+  }
   def stream(lane: Lane): Stream[F, A] = {
     // Partition/buffer lanes are never removed. Hub membership remains dynamic.
     val stable = if (mode == Mode.Fanout) null else monitor.synchronized(storage.lanes.getOrElse(lane, null))
     new Stream[F, A] {
-      def pull(): F[Option[A]] = StreamRoutingRuntime.protect {
-        F.promise[Option[A]] { callback =>
-          change {
-            val data = if (stable != null) stable else storage.lanes.getOrElse(lane, null)
-            if (data == null) enqueue(callback, endToken)
-            else if (data.values.nonEmpty) {
-              if (data.values.size == capacity) storage.full -= 1
-              enqueue(callback, Right(Some(data.values.removeHead())))
-            } else {
-              control.phase match {
-                case Phase.Open =>
-                  if (data.pulls.isEmpty) storage.demanding += 1
-                  data.pulls.append(callback)
-                case Phase.Failed(error) => enqueue(callback, Left(error))
-                case _                   => enqueue(callback, endToken)
-              }
-            }
-            wakeReader()
-          }
-        }
-      }(cancel())
+      private val registration: Callback => Unit = callback => register(stable, lane, callback)
+      def pull(): F[Option[A]] =
+        if (plain) {
+          val promise = scala.concurrent.Promise[Option[A]]()
+          try { register(stable, lane, promise); promise.future.asInstanceOf[F[Option[A]]] }
+          catch { case error: Throwable => F.fail(error) }
+        } else if (futureSemantics) {
+          try F.promise[Option[A]](registration)
+          catch { case error: Throwable => F.fail(error) }
+        } else StreamRoutingRuntime.protect(F.promise[Option[A]](registration))(cancel())
       def cancel(): F[Unit] = cancelLane(Some(lane))
     }
   }
@@ -294,10 +482,10 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
       } else {
         val start = !control.cleanupClaimed
         control = cancelControl(control, mode)
-        if (start) dispatch = pauseDispatch(dispatch)
-        val result = control.phase match { case Phase.Failed(error) => Left(error); case _ => endToken }
+        if (start) paused = true
+        val outcome = control.phase match { case Phase.Failed(error) => failed(error); case _ => endToken }
         storage.lanes.valuesIterator.foreach { data =>
-          discardValues(data); completePulls(data, result)
+          discardValues(data); completePulls(data, outcome)
         }
         start
       }
@@ -315,10 +503,10 @@ private[effect] final class StreamRoutingRuntime[F[_], A](
         values
       }
       wakeReader()
-      if (claimDrainer()) first = takeCommand()
+      first = claimFirst()
       values
     }
-    (values, () => if (first != null) drainCommands(first))
+    (values, () => if (first != null) drain(first))
   }
 }
 
