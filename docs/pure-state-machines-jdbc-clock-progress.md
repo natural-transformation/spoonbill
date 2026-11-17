@@ -47,3 +47,28 @@ This ran with the same Nix/disposable-PostgreSQL wrapper above; the log is
 `http/testOnly *HttpClient*Spec` selection passed 56 tests. `javap -public` through
 the Nix JDK confirmed the existing six-argument constructor and default-argument
 signature. Package access is enforced by Scala, as it was for the old setter.
+
+## Pure clock decisions with preserved publication boundaries
+
+`JdbcClockMachine` owns observation monotonicity, acknowledged-checkpoint
+advancement and coverage, the inclusive renew-ahead boundary, external checkpoint
+advancement and the failure fence for a caller that waited. Time values and the
+renewal window are explicit inputs. Model tests cover a backward-clock trace,
+unacknowledged expiry after failure, future restart floors, boundary equality and
+signed monotonic-counter wrap.
+
+The interpreter still owns two separate monotone frontiers: sampling can advance
+the observation before persistence fails, while only acknowledged durable state
+authorizes reuse. Combining them into a fresh aggregate on every observation
+would change publication boundaries and add a hot-path allocation. The current
+atomic references, renewal lock, demand signal and lock-confined failure stamp
+therefore remain; only their pure decision rules moved. Every clock read, SQL
+transaction, lock operation, failure update and atomic publication stays in its
+original order. The existing failure/uncertain-commit and concurrency tests pass
+unchanged.
+
+The 146-test JDBC and 56-test HTTP selections above passed after extraction. The
+Nix `node scripts/check-core-purity.mjs` check and all five
+`node --test misc/core-purity-tests.mjs` cases passed, recorded in
+`/tmp/spoonbill-rollout-jdbc-purity.log`. This closes the clock inventory item and
+managed-construction cleanup; the other phase-6 items remain separate work.
