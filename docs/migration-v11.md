@@ -1,19 +1,37 @@
-# Migrating to Spoonbill 11: the extension contract
+# Migrating to Spoonbill 11
 
-Spoonbill **11.0** gives extensions one contract for legacy and guarded
-sessions. It changes two signatures and several behaviours. Only applications
-that register extensions are affected. An application with an empty
-`SpoonbillServiceConfig.extensions` needs no change.
-
-The contract and its reasons are in the
-[extension contract design](extension-contract-design.md). This guide lists
-what to change.
+Spoonbill **11.0** changes Future effect instances, stream behavior, and the
+extension contract for legacy and guarded sessions.
 
 Update every Spoonbill module together and recompile all consumers. Upgrades
 from before 10 must follow the [10.0 migration guide](migration-v10.md) first.
 There is no database migration in this release.
 
-## What changes
+## Future instances and stream consumers
+
+- Replace `new Effect.FutureEffect` with `Effect.futureEffect`. For startup
+  or continuation instrumentation use `Effect.future`. If your subclass
+  changes effect semantics, supply a composed `Effect[Future]` instance.
+  Clients referencing the removed class must migrate and recompile.
+  [Future instance examples](effect-future-instances.md)
+- A slow subscriber now backpressures a bounded `Hub`. Give each subscriber
+  demand or cancel it when leaving. Akka and Pekko fanout publishers use
+  128 slots per subscriber. The generic Hub default remains `Int.MaxValue`.
+- Size `stream.sort(numRacks, capacityPerRack)(route)` for the largest expected
+  backlog in one rack. The default is 128. Overflow fails the partition with
+  `StreamSortOverflowException`, including racks waiting for other inputs.
+  Capacities must be positive.
+- Explicit or native cancellation detaches a single Hub subscriber. Canceling
+  a sort rack or buffered pull stops the whole operator. Consumers that drain
+  `buffer` to completion see accepted values before EOF or an upstream error.
+  [Stream ownership and cancellation](adr/0002-stream-routing-and-effect-instances.md)
+- Use `AsyncResourcePool.use` for scoped work. A failed or canceled callback
+  releases the managed loan. A caller using `borrow` owns its return or discard.
+
+## Extension changes
+
+These changes apply to applications that register extensions.
+[Extension contract design](extension-contract-design.md)
 
 | Change | Who is affected | What to do |
 | --- | --- | --- |

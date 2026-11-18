@@ -18,7 +18,7 @@ import spoonbill.state.{StateDeserializer, StateSerializer}
 import spoonbill.web.{PathAndQuery, Request}
 
 class MemoryBrowserSecuritySpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private case class Page(protectedPage: Boolean = false, name: Option[String] = None, count: Int = 0)
   private given StateSerializer[Page]                = (page: Page) => Array.emptyByteArray
   private given StateDeserializer[Page]              = (_: Array[Byte]) => None
@@ -234,9 +234,14 @@ class MemoryBrowserSecuritySpec extends AnyFlatSpec with Matchers {
 
   it should "reject an acquisition delayed across logout instead of capturing the replacement generation" in {
     val beforeContinuation = new AtomicReference[() => Unit](() => ())
-    val effect = new Effect.FutureEffect {
+    val effect = new Effect[Future] {
+      export Effect.futureEffect.{
+        pure, delay, uncancelable, fail, unit, never, fromTry,
+        promise, promiseF, map, recover, recoverF, start, blocking,
+        fork, sequence, runAsync, run, toFuture
+      }
       override def flatMap[A, B](value: Future[A])(run: A => Future[B]): Future[B] =
-        super.flatMap(value) { result =>
+        Effect.futureEffect.flatMap(value) { result =>
           beforeContinuation.getAndSet(() => ())(); run(result)
         }
     }

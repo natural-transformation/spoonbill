@@ -36,12 +36,17 @@ import spoonbill.effect.Effect
 private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
   handle: A => F[Unit],
   failed: (A, Throwable) => Unit = (_: A, _: Throwable) => (),
-  rejected: Throwable => Unit = (_: Throwable) => ()
+  rejected: Throwable => Unit = (_: Throwable) => (),
+  source: Option[SerialLane.Source[A]] = None
 )(implicit ec: ExecutionContext) {
 
   import SerialLane.*
 
   private val queue = new ConcurrentLinkedQueue[A]()
+  private val items = source.getOrElse(new Source[A] {
+    def poll(): Option[A] = Option(queue.poll())
+    def isEmpty: Boolean  = queue.isEmpty
+  })
   // Who owns the lane. See the states in the companion.
   private val state = new AtomicInteger(Idle)
   // The callers of `idle`. None once the lane is closed and no handler runs.
@@ -57,7 +62,7 @@ private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
 
   /** Starts the loop on the execution context, unless it runs already. */
   def wake(): Unit =
-    if (!queue.isEmpty && state.compareAndSet(Idle, Scheduled)) schedule()
+    if (!items.isEmpty && state.compareAndSet(Idle, Scheduled)) schedule()
 
   def offer(item: A): Unit = {
     enqueue(item)
@@ -111,7 +116,7 @@ private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
   private def loop(): Unit = {
     var continue = true
     while (continue) {
-      val item = if (state.get() == Running) queue.poll() else null.asInstanceOf[A]
+      val item = if (state.get() == Running) items.poll().getOrElse(null.asInstanceOf[A]) else null.asInstanceOf[A]
       if (item == null) continue = release()
       else {
         val step = new AtomicInteger(Started)
@@ -140,7 +145,7 @@ private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
    * because an item arrived between the last poll and the release.
    */
   private def release(): Boolean =
-    if (state.compareAndSet(Running, Idle)) !queue.isEmpty && state.compareAndSet(Idle, Running)
+    if (state.compareAndSet(Running, Idle)) !items.isEmpty && state.compareAndSet(Idle, Running)
     else {
       finish()
       false
@@ -148,7 +153,7 @@ private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
 
   /** Called by the thread that settled a handler after the loop returned. */
   private def resume(): Unit =
-    if (queue.isEmpty) {
+    if (items.isEmpty) {
       if (state.compareAndSet(Running, Idle)) wake() else finish()
     } else if (state.compareAndSet(Running, Scheduled)) schedule()
     else finish()
@@ -168,6 +173,17 @@ private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
 }
 
 private[internal] object SerialLane {
+
+  /**
+   * An external owner supplies waiting items. Both reads must be thread-safe
+   * and observe completed adds. The owner wakes the lane after adding, and
+   * makes the source permanently empty before closing the lane. `enqueue`,
+   * `offer` and `size` still refer only to the lane's own queue.
+   */
+  trait Source[A] {
+    def poll(): Option[A]
+    def isEmpty: Boolean
+  }
 
   // The lane: nobody owns it, a loop is submitted, a loop owns it, it was
   // closed while a loop owned it, and closed for good. Only the owner leaves

@@ -1,0 +1,77 @@
+{
+  "recordedOn": "2026-11-17",
+  "baselineRevision": "3d8c68538f50003b1c7225465bf75d642f3c0aa8",
+  "selectedSourceRevision": "61b92e313f61a41816ce9d2323f444814abbfabc",
+  "allocationBoundary": "producers-alive-through-sample",
+  "counterAudit": "JDK21 total allocation can omit threads in the exit/accounting interval. All producers now start before baseline, remain alive through final sampling, and publish self-measured allocation deltas. Total must include the producer sum. Worker pool remains alive through sampling.",
+  "source": "https://raw.githubusercontent.com/openjdk/jdk21u/jdk-21.0.8%2B9/src/hotspot/share/services/management.cpp",
+  "sourceHashes": {
+    "baseline": {
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": "4c10760f7a7fb60b99acad43bd13f87bf0cdd71b8d191a3b872914edf5831f6d",
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala": null,
+      "modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala": "a0b3b8937efa9673dae57b3458061fb3d0e59c713e0c2764cd78b09c875fd83f",
+      "modules/effect/src/main/scala/korolev/effect/Effect.scala": "0815398f2c212de37ea15e785aeb2a5a60020f8e1ed921be0e71f5d516124db7"
+    },
+    "selected": {
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": "75b6028cef5e7040d1abda9c8401e787922c02cfe551665147804ec0956c8126",
+      "modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala": "62efe037bfb0c0a43debe09f3cedb24b92e7e121bae253899487823ca5458c11",
+      "modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala": "46908dfd3369b220391a186635fd8ac06b06ffdfd3f5b62895c00c67fef17540",
+      "modules/effect/src/main/scala/korolev/effect/Effect.scala": "0815398f2c212de37ea15e785aeb2a5a60020f8e1ed921be0e71f5d516124db7"
+    }
+  },
+  "fixtureHashes": {
+    "ExtensionRuntimeBenchmark.scala": "afdaa6b4fb2ab0ac9e1e7e13d4c09a15fecb6212019c5dc5fb375f284bab511b",
+    "prepare.sh": "1555de0c805d5f8d1c2df83ab9317e2a1d7f3681e381d0fca169233e3eeb2e03",
+    "run.sh": "8faaf233949d95de7b0a199db6ef09da74246b8490e975c68080226886759e44",
+    "analyze.mjs": "9d706ff51143a25caca4b5f75ba6fe701f07d5f7333ff81cd4d1fbcaaf0a32f1",
+    "check-gate.mjs": "b2443613c7385149f569055abaa11d17fee4ddfeb9e16022cec8ef2e1e99d004"
+  },
+  "flakeSha256": "91cbfc15f544ab3e1b9a9a8101043811ef232a58dbe8c9b0136a36767fa55f90",
+  "flakeLockSha256": "76b66faedcba7922a095a732ecf8bf03e53d179170441b1d93c931afef2af3e4",
+  "javaVersion": "openjdk version \"21.0.8\" 2025-07-15 LTS\nOpenJDK Runtime Environment Zulu21.44+17-CA (build 21.0.8+9-LTS)\nOpenJDK 64-Bit Server VM Zulu21.44+17-CA (build 21.0.8+9-LTS, mixed mode, sharing)",
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "repetitions": 3,
+  "warmupSeconds": 5,
+  "measurementSeconds": 5,
+  "rawDirectory": "/tmp/spoonbill-pilot-counter-v2-comparison",
+  "smokeDirectory": "/tmp/spoonbill-pilot-counter-v2-smoke",
+  "jfrHashes": {
+    "backlog-baseline-1.jfr": "5520201a67ffc12371dbba5593dc0df6b1a171edbcbda55898227dfd18f3f8be",
+    "backlog-baseline-2.jfr": "af87489476d75afc440c88325f5fdc2964b357becaa93634a285dead40ba4d97",
+    "backlog-baseline-3.jfr": "6b41e004eeed87b7b38e5afdd8c28187ec8f1be9d8531dab5b6ae89454ebb5d4",
+    "backlog-pilot-1.jfr": "77c65fc2a9b00d4f626fae6a9145209ddc082c0b7dc5199c428be50dd22501d0",
+    "backlog-pilot-2.jfr": "8a3cad4dee09b6f6b430496fadd7574687c2c9c936bd2b9696559d673695ba0b",
+    "backlog-pilot-3.jfr": "73cdf5ad524682e658e812a5bdc30836610128424c1620ed7c60ffcc3e15bda3",
+    "contended-baseline-1.jfr": "a169572a3a12d615bc8e1071994bd449b9b362616cbec3931ce247343e98d8da",
+    "contended-baseline-2.jfr": "09268a4c5099bcbd7d48b0bbed0f870c54c79549341d3277009b226cbd0670c5",
+    "contended-baseline-3.jfr": "ffc33c48999c33bea1e97946eb6c4cdd2f72cfb44573c59b2505d6b2e5f30d6f",
+    "contended-pilot-1.jfr": "fe4d285db19967b46b4620df5a8ab2dd3260a732eb396555c1bef849aa7f9ff9",
+    "contended-pilot-2.jfr": "abe262fb22313d7db66d0bba0789a7bc3bdae665f1b4d4b9c53e4a50d5c71958",
+    "contended-pilot-3.jfr": "9239e2571e921a23c224bdb5a2a9a4ca7032732db98b46da9e93af55a826a268",
+    "extensions-baseline-1.jfr": "37dc5f92bc3b96442a5efbe323f5a24ace62a54aa85c1af66ea70720b51b3851",
+    "extensions-baseline-2.jfr": "4f0ffcc9c561d1d03a0cd231a1bdd03dbceca88129b5be775a35b7d91501ecff",
+    "extensions-baseline-3.jfr": "aa4a197572c73283b3abe006962a7c7e6091dfb969fca0a453e330bc2a4b940f",
+    "extensions-pilot-1.jfr": "38c7a1ec9838d5be016bc402de17288139e43e0060630af517e1222f4ed719b5",
+    "extensions-pilot-2.jfr": "6d47b014c3fb40adbcdc17e5abab0ad5017e92a40191b4a3c1d4b87a4c95fb0c",
+    "extensions-pilot-3.jfr": "e4adf582bd1274b8e1890fb55a2d51c25208a6fe3139210fdb9d7ff8a69e6eb4",
+    "isolated-baseline-1.jfr": "d39f046fc467815da983f895411465fc245d711bd36dc1ae798696e8e7a1aa14",
+    "isolated-baseline-2.jfr": "1be96c540a5e568b78ad62dfd129b5c0b89061d9cc218a4db67a84ce436a1032",
+    "isolated-baseline-3.jfr": "66770b83375c85a8be408f4f794cfd2e25a5466cc9d414d0d0305d45592b4f98",
+    "isolated-pilot-1.jfr": "1b4763657bd5802ce30fded59d7e2b3fdaa7b1abcc2fd621bac3b668a0835de5",
+    "isolated-pilot-2.jfr": "0601dae25865a4d94adcc5cf6f976fd52e83aed5d4fcdd7ec5ae5d2b4fa0232a",
+    "isolated-pilot-3.jfr": "329aa483ff447fd16da0bd097ce433ff364b3c3c63e1e67b9edd72f5add00db2"
+  },
+  "historicalRows": "Retained unchanged. Their allocation values used post-join totals and are provisional; throughput, delivery checks and latency are separate observations.",
+  "limitations": [
+    "synthetic runtime workloads",
+    "shared developer machine, no CPU affinity",
+    "three trials, no confidence interval",
+    "total allocation includes fixture and JVM overhead",
+    "producer self-measurements are a lower-bound cross-check, not an allocation-site profile"
+  ]
+}

@@ -18,26 +18,37 @@ object WebSocketLimits {
   final class TextAccumulator(maximum: Int) {
     require(maximum > 0, "maximum must be positive")
     private val text        = new java.lang.StringBuilder
+    // This accumulator has one caller at a time. Store its pure model as
+    // scalars so temporary input/output snapshots need not escape each append.
     private var bytes       = 0L
     private var pendingHigh = false
 
-    def append(chunk: String): TextAccumulator = {
-      var i = 0
-      while (i < chunk.length) {
-        val char = chunk.charAt(i)
-        if (pendingHigh) {
-          require(Character.isLowSurrogate(char), "Invalid UTF-16 in WebSocket text")
-          pendingHigh = false
-        } else if (Character.isHighSurrogate(char)) {
-          pendingHigh = true
-          bytes += 4
-        } else {
-          require(!Character.isLowSurrogate(char), "Invalid UTF-16 in WebSocket text")
-          bytes += (if (char < 0x80) 1 else if (char < 0x800) 2 else 3)
-        }
-        check(bytes, maximum)
-        i += 1
+    private def applyMeasurement(measurement: WebSocketTextMachine.State): Unit = {
+      bytes = measurement.bytes
+      pendingHigh = measurement.pendingHigh
+      measurement.outcome match {
+        case WebSocketTextMachine.Outcome.Accepted => ()
+        case WebSocketTextMachine.Outcome.InvalidUtf16 =>
+          throw new IllegalArgumentException("requirement failed: Invalid UTF-16 in WebSocket text")
+        case WebSocketTextMachine.Outcome.Exceeded => throw new Exceeded
       }
+    }
+
+    private def completeOrChecked(chunk: String): Unit = {
+      if (WebSocketTextMachine.completeEligible(bytes, pendingHigh, chunk, maximum)) {
+        val counted = WebSocketTextMachine.completeBytes(bytes, chunk, maximum)
+        if (counted != WebSocketTextMachine.CheckedScanRequired) bytes = counted
+        else applyMeasurement(WebSocketTextMachine.scan(bytes, pendingHigh, chunk, maximum))
+      } else applyMeasurement(WebSocketTextMachine.scan(bytes, pendingHigh, chunk, maximum))
+    }
+
+    def append(chunk: String): TextAccumulator = {
+      if (WebSocketTextMachine.asciiEligible(bytes, pendingHigh, chunk, maximum)) {
+        val prefix = WebSocketTextMachine.asciiPrefix(chunk)
+        val counted = WebSocketTextMachine.countedAscii(bytes, prefix)
+        if (prefix == chunk.length) bytes = counted
+        else applyMeasurement(WebSocketTextMachine.scanFrom(counted, false, chunk, prefix, maximum))
+      } else completeOrChecked(chunk)
       text.append(chunk)
       this
     }

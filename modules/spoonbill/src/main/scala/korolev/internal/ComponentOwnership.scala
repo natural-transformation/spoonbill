@@ -4,7 +4,7 @@ import avocet.Id
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
-import spoonbill.effect.{Effect, Reporter}
+import spoonbill.effect.{CompletionLatchMachine, Effect, Reporter}
 import spoonbill.effect.syntax.*
 import spoonbill.state.{StateDeserializer, StateManager}
 
@@ -14,14 +14,13 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
   reporter: Reporter,
   executionContext: ExecutionContext
 ) {
+  private val Model = ComponentOwnershipMachine
+  import ComponentOwnershipMachine.Baseline
   private val lock            = new Object
   private val tails           = mutable.Map.empty[Id, Owner]
   private val live            = mutable.Set.empty[Owner]
-  private var closed          = false
-  private var nextIncarnation = 0L
-  private var baselineVersion = new Object
-
-  private case class Baseline(incarnation: Long, revision: Long)
+  private var registry = Model.Registry(new Model.Version)
+  private def closed: Boolean = Model.closed(registry)
   private final class Snapshot(
     val version: AnyRef,
     val baselines: Map[Id, Baseline],
@@ -37,30 +36,33 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
    */
   def snapshot: F[StateManager.Snapshot] = Effect[F]
     .delay(lock.synchronized {
-      (baselineVersion, tails.iterator.map { case (address, owner) => address -> owner.baseline }.toMap)
+      (registry.version, tails.iterator.map { case (address, owner) => address -> owner.baseline }.toMap)
     })
     .flatMap { case (version, baselines) =>
       storage.snapshot.map(value => new Snapshot(version, baselines, value))
     }
 
-  def closeAdmission(): Unit = lock.synchronized { closed = true }
+  def closeAdmission(): Unit = lock.synchronized { registry = Model.close(registry) }
 
   private final class Signal[A] {
-    private var result  = Option.empty[Either[Throwable, A]]
-    private var waiters = List.empty[Effect.Promise[A]]
+    private final case class Held(state: CompletionLatchMachine.State, result: Option[Either[Throwable, A]],
+      waiters: List[Effect.Promise[A]])
+    private var held = Held(CompletionLatchMachine.State.Pending, None, Nil)
     def await: F[A] = Effect[F].promise { cb =>
       val ready = synchronized {
-        result match {
-          case None => waiters ::= cb; None
-          case some => some
+        val (next, command) = CompletionLatchMachine.step(held.state, CompletionLatchMachine.Event.Observe)
+        command match {
+          case CompletionLatchMachine.Command.Register => held = held.copy(state = next, waiters = cb :: held.waiters); None
+          case _ => held.result
         }
       }
       ready.foreach(cb)
     }
     def complete(value: Either[Throwable, A]): Unit = {
       val callbacks = synchronized {
-        if (result.nonEmpty) Nil
-        else { result = Some(value); val xs = waiters; waiters = Nil; xs }
+        val (next, command) = CompletionLatchMachine.step(held.state, CompletionLatchMachine.Event.Complete)
+        if (command != CompletionLatchMachine.Command.Publish) Nil
+        else { val xs = held.waiters; held = Held(next, Some(value), Nil); xs }
       }
       callbacks.reverse.foreach(_(value))
     }
@@ -68,13 +70,18 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
 
   def bind(address: Id, deleteOnRetire: Boolean): Owner = {
     val (owner, previous) = lock.synchronized {
-      if (closed) throw new spoonbill.server.SessionAccessDenied
-      nextIncarnation = Math.addExact(nextIncarnation, 1L)
-      val previous = tails.get(address)
-      val owner    = new Owner(address, nextIncarnation, previous.isDefined, deleteOnRetire)
-      tails.put(address, owner)
-      live += owner
-      (owner, previous)
+      val (next, binding) = Model.bind(registry, address)
+      binding match {
+        case Model.Binding.Closed => throw new spoonbill.server.SessionAccessDenied
+        case Model.Binding.Exhausted => throw new ArithmeticException("long overflow")
+        case Model.Binding.Assigned(incarnation, predecessor) =>
+          val previous = tails.get(address)
+          val owner = new Owner(address, incarnation, predecessor.isDefined, deleteOnRetire)
+          registry = next
+          tails.put(address, owner)
+          live += owner
+          (owner, previous)
+      }
     }
     previous match {
       case None => owner.open(Right(()))
@@ -89,7 +96,7 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
    * Includes retired components no longer reachable through the rendered tree.
    */
   def closeAndDrain(): F[Unit] = Effect[F].delay {
-    val owners = lock.synchronized { closed = true; live.toList }
+    val owners = lock.synchronized { registry = Model.close(registry); live.toList }
     owners.foreach(_.retire())
     owners
   }.flatMap { owners =>
@@ -109,29 +116,18 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
   ) {
     private val ready                    = new Signal[Boolean]
     private[ComponentOwnership] val done = new Signal[Unit]
-    private var active                   = true
-    private var opened                   = false
-    private var predecessorSettled       = false
-    private var admitted                 = 0
-    private var cleanupStarted           = false
+    private var lifecycle                = Model.OwnerState()
     private var predecessorError         = Option.empty[Throwable]
-    private var baselineRevision         = 0L
-    private var baselineEstablished      = false
-
-    private[ComponentOwnership] def baseline: Baseline = Baseline(incarnation, baselineRevision)
+    private[ComponentOwnership] def baseline: Baseline = Baseline(incarnation, Model.baselineRevision(lifecycle))
 
     /**
      * Validate every traversal, including snapshots suspended across handoff.
      */
     def snapshotIsCurrent(snapshot: StateManager.Snapshot): Boolean = lock.synchronized {
       snapshot match {
-        case value: Snapshot if (value.source eq ComponentOwnership.this) && !closed && active && opened =>
-          value.baselines.get(address) match {
-            case Some(captured) => captured == baseline
-            // An address not yet owned at capture can use its pre-rendered
-            // state only if no intervening deletion made that baseline unknown.
-            case None => !reused && baselineRevision == 0L && (value.version eq baselineVersion)
-          }
+        case value: Snapshot if value.source eq ComponentOwnership.this =>
+          Model.acceptsSnapshot(lifecycle, incarnation, closed, reused, value.baselines.get(address),
+            value.version eq registry.version)
         case _ => false
       }
     }
@@ -141,21 +137,11 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
      * refreshes of this same owner do not invalidate its established snapshots.
      */
     def establishBaseline(): Unit = lock.synchronized {
-      if (!baselineEstablished) {
-        try {
-          baselineRevision = Math.addExact(baselineRevision, 1L)
-          baselineEstablished = true
-        } catch {
-          case error: ArithmeticException =>
-            active = false
-            opened = false
-            throw error
-        }
-      }
+      lifecycle = Model.establishBaseline(lifecycle)
     }
 
-    def isOpen: Boolean       = lock.synchronized(!closed && active && opened)
-    def isActive: Boolean     = lock.synchronized(!closed && active)
+    def isOpen: Boolean       = lock.synchronized(Model.canAdmit(lifecycle, closed))
+    def isActive: Boolean     = lock.synchronized(!closed && Model.active(lifecycle))
     def awaitOpen: F[Boolean] = ready.await
     def awaitRetired: F[Unit] = done.await
 
@@ -170,11 +156,9 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
 
     private[ComponentOwnership] def open(result: Either[Throwable, Unit]): Unit = {
       val available = lock.synchronized {
-        predecessorSettled = true
         predecessorError = result.left.toOption
-        if (result.isRight && reused) baselineRevision = 1L
-        opened = result.isRight && active
-        opened
+        lifecycle = Model.predecessorCompleted(lifecycle, result.isRight, reused)
+        Model.open(lifecycle)
       }
       ready.complete(result.map(_ => available))
       cleanIfDrained()
@@ -184,15 +168,17 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
      * Reserve through write AND notification; no application code under lock.
      */
     def admit(): Option[Lease] = lock.synchronized {
-      if (closed || !active || !opened) None
-      else { admitted += 1; Some(new Lease) }
+      val before = lifecycle
+      val next = Model.reserve(before, closed)
+      if (!Model.changed(before, next)) None
+      else { lifecycle = next; Some(new Lease) }
     }
 
     final class Lease private[Owner] () {
       private var settled = false
       def release(): Unit = {
         lock.synchronized {
-          if (!settled) { settled = true; admitted -= 1 }
+          if (!settled) { settled = true; lifecycle = Model.released(lifecycle) }
         }
         cleanIfDrained()
       }
@@ -211,22 +197,25 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
 
     /** Immediate retirement; drain/deletion never awaits its own render. */
     def retire(): Unit = {
-      lock.synchronized { active = false; opened = false }
+      lock.synchronized { lifecycle = Model.retire(lifecycle) }
       ready.complete(Right(false))
       cleanIfDrained()
     }
 
     private def cleanIfDrained(): Unit = {
       val start = lock.synchronized {
-        if (!active && predecessorSettled && admitted == 0 && !cleanupStarted) {
-          cleanupStarted = true
-          true
-        } else false
+        val before = lifecycle
+        val next = Model.claimCleanup(before)
+        val start = Model.changed(before, next)
+        if (start) lifecycle = next
+        start
       }
       if (start) {
         def completed(result: Either[Throwable, Unit]): Unit = {
           lock.synchronized {
-            if (result.isRight && deleteOnRetire) baselineVersion = new Object
+            lifecycle = Model.completed(lifecycle, result.isRight)
+            val version = if (result.isRight && deleteOnRetire) new Model.Version else registry.version
+            registry = Model.retired(registry, address, incarnation, result.isRight, deleteOnRetire, version)
             if (result.isRight && tails.get(address).contains(this)) tails.remove(address)
             if (result.isRight) live -= this
           }
@@ -236,13 +225,13 @@ private[spoonbill] final class ComponentOwnership[F[_]: Effect](
         try
           Effect[F]
             .fork(Effect[F].delayAsync {
-              predecessorError match {
-                case Some(error) => Effect[F].fail[Unit](error)
+              lock.synchronized(Model.cleanup(lifecycle, closed, deleteOnRetire)) match {
+                case Model.Cleanup.PropagateFailure => Effect[F].fail[Unit](predecessorError.get)
                 // Whole-view storage removal follows the drain. A closed
                 // guarded manager rejects per-node deletes, and no successor
                 // can bind here once application admission is closed.
-                case None if deleteOnRetire && lock.synchronized(!closed) => storage.delete(address)
-                case None                                                 => Effect[F].unit
+                case Model.Cleanup.DeleteNode => storage.delete(address)
+                case Model.Cleanup.SkipDelete => Effect[F].unit
               }
             })(executionContext)
             .runAsync(completed)

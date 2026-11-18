@@ -91,7 +91,7 @@ final class JdbcBrowserClock(
       try
         acknowledged.get().exists { checkpoint =>
           val wall = clock()
-          !wall.isBefore(checkpoint.minus(JdbcBrowserClock.RenewAheadWindow)) && { renew(wall); true }
+          JdbcClockMachine.renewAhead(checkpoint, wall, JdbcBrowserClock.RenewAheadWindow) && { renew(wall); true }
         }
       catch {
         case _: JdbcAuthException =>
@@ -110,7 +110,7 @@ final class JdbcBrowserClock(
     if (!renewal.tryLock(JdbcBrowserClock.RenewalWait.toNanos, TimeUnit.NANOSECONDS))
       throw new JdbcAuthException(JdbcAuthError.StorageFailure)
     try {
-      if (failedAt.exists(time => time - waiting > 0)) throw new JdbcAuthException(JdbcAuthError.StorageFailure)
+      if (JdbcClockMachine.failedWhileWaiting(failedAt, waiting)) throw new JdbcAuthException(JdbcAuthError.StorageFailure)
       try step
       catch {
         case error: JdbcAuthException =>
@@ -124,25 +124,25 @@ final class JdbcBrowserClock(
   private def renew(current: Instant): Instant = {
     val target    = current.plus(JdbcBrowserClock.ExclusiveCheckpointLease)
     val persisted = persist(target)
-    acknowledged.updateAndGet(previous => Some(previous.filter(_.isAfter(persisted)).getOrElse(persisted)))
+    acknowledged.updateAndGet(previous => JdbcClockMachine.acknowledge(previous, persisted))
     // Checkpoints are serialized here, so only another writer can store a
     // later time; observe it as before.
-    if (persisted.isAfter(target)) adopt(persisted) else current
+    if (JdbcClockMachine.externallyAdvanced(target, persisted)) adopt(persisted) else current
   }
 
   private def sample(): Instant = {
     val sampled = clock()
-    observed.updateAndGet(previous => if (sampled.isAfter(previous)) sampled else previous)
+    observed.updateAndGet(previous => JdbcClockMachine.observe(previous, sampled))
   }
 
   /** The observation itself when an acknowledged durable checkpoint covers it. */
   private def covered(candidate: Instant): Option[Instant] =
-    acknowledged.get().filter(checkpoint => !candidate.isAfter(checkpoint)).map(_ => candidate)
+    JdbcClockMachine.covered(acknowledged.get(), candidate)
 
   /** Observe the stored maximum: later calls never return an earlier time. */
   private def adopt(persisted: Instant): Instant = {
-    observed.updateAndGet(previous => if (persisted.isAfter(previous)) persisted else previous)
-    acknowledged.updateAndGet(previous => Some(previous.filter(_.isAfter(persisted)).getOrElse(persisted))).get
+    observed.updateAndGet(previous => JdbcClockMachine.observe(previous, persisted))
+    acknowledged.updateAndGet(previous => JdbcClockMachine.acknowledge(previous, persisted)).get
   }
 
   /** Commit a checkpoint of at least `candidate`; returns the stored maximum. */

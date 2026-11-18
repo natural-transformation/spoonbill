@@ -39,6 +39,31 @@ final class ServerSocketLifecycleSpec extends AnyFlatSpec with Matchers {
     tracker.retainedState shouldBe (0 -> 1)
   }
 
+  it should "keep the accept failure while draining and ignore later stop failures after completion" in {
+    val tracker = new ServerSocket.ActiveConnections
+    val first = new IllegalStateException("Accept failed")
+    tracker.started()
+    tracker.stopped(Some(first))
+    val result = tracker.awaitFinished[Future]()
+    result.isCompleted shouldBe false
+    tracker.finished(Some(new IllegalArgumentException("Handler failed later")))
+    intercept[IllegalStateException](await(result)) should be theSameInstanceAs first
+    tracker.stopped(Some(new IllegalArgumentException("Repeated stop")))
+    intercept[IllegalStateException](await(tracker.awaitFinished[Future]())) should be theSameInstanceAs first
+  }
+
+  it should "publish success only after acceptance stops and retain it across a repeated stop" in {
+    val tracker = new ServerSocket.ActiveConnections
+    val result = tracker.awaitFinished[Future]()
+    tracker.started()
+    tracker.finished(None)
+    result.isCompleted shouldBe false
+    tracker.stopped(None)
+    await(result) shouldBe ()
+    tracker.stopped(Some(new IllegalStateException("Too late")))
+    await(tracker.awaitFinished[Future]()) shouldBe ()
+  }
+
   it should "wait for the remaining live socket before propagating an earlier handler failure" in {
     val count = new AtomicInteger()
     val entered = Promise[Unit]()
@@ -107,10 +132,15 @@ final class ServerSocketLifecycleSpec extends AnyFlatSpec with Matchers {
     "Connection startup" should s"close and settle a failed launch when handler construction throws=$constructionFailure" in {
       val expected = new IllegalStateException("Synthetic startup failure")
       val refuse = new AtomicBoolean(!constructionFailure)
-      given Effect[Future] = new Effect.FutureEffect {
+      given Effect[Future] = new Effect[Future] {
+        export Effect.futureEffect.{
+          pure, delay, uncancelable, fail, unit, never, fromTry,
+          promise, promiseF, flatMap, map, recover, recoverF, start,
+          blocking, fork, sequence, run, toFuture
+        }
         override def runAsync[A](value: Future[A])(callback: Either[Throwable, A] => Unit): Unit =
           if (refuse.compareAndSet(true, false)) throw expected
-          else super.runAsync(value)(callback)
+          else Effect.futureEffect.runAsync(value)(callback)
       }
       val server = await(ServerSocket.accept[Future, Bytes](new InetSocketAddress("127.0.0.1", 0), gracefulShutdown = true) { _ =>
         if (constructionFailure) throw expected else Future.unit
@@ -130,10 +160,15 @@ final class ServerSocketLifecycleSpec extends AnyFlatSpec with Matchers {
   it should "release an installed reservation only after a failed launch and asynchronous close observers settle" in {
     val expected = new IllegalStateException("Runtime refused handler ownership")
     val unstarted: Future[Unit] = Future.never
-    given Effect[Future] = new Effect.FutureEffect {
+    given Effect[Future] = new Effect[Future] {
+      export Effect.futureEffect.{
+        pure, delay, uncancelable, fail, unit, never, fromTry,
+        promise, promiseF, flatMap, map, recover, recoverF, start,
+        blocking, fork, sequence, run, toFuture
+      }
       override def runAsync[A](value: Future[A])(callback: Either[Throwable, A] => Unit): Unit =
         if (value.asInstanceOf[AnyRef] eq unstarted.asInstanceOf[AnyRef]) throw expected
-        else super.runAsync(value)(callback)
+        else Effect.futureEffect.runAsync(value)(callback)
     }
     val dispatcher = new SocketCloseDispatcher(1, 1)
     val installed = Promise[SocketCloseDispatcher.Reservation]()

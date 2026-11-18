@@ -11,7 +11,7 @@ import spoonbill.action.*
 import spoonbill.effect.Effect
 
 final class ActionFormsSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private type Binding = Context.Binding[Future, Int, Unit]
 
   "A typed form binding" should "place its descriptor on the form even after child arguments" in {

@@ -1,7 +1,8 @@
 package spoonbill.auth
 
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import scala.annotation.tailrec
 import spoonbill.Qsid
 import spoonbill.action.*
 import spoonbill.effect.Effect
@@ -70,10 +71,36 @@ final class BrowserAuthentication[F[_], S, P](
   private val store = new BoundedPresentationStore[F, S](storageLimits, clock)
   private final class Attached(val view: BrowserView[P]) {
     var lease = Option.empty[store.Lease]
-    // Only ever goes from false to true. A read turn may set it while other
-    // read turns run, so it is atomic; every turn denies a retiring view on entry.
-    val retiring = new AtomicBoolean()
+    private val lifecycle = new AtomicReference(BrowserViewMachine.initial)
+    def ownsResource: Boolean = BrowserViewMachine.owns(lifecycle.get())
+    def live: Boolean = BrowserViewMachine.live(lifecycle.get())
+    def retiring: Boolean = BrowserViewMachine.retiring(lifecycle.get())
+    def retainOnGuardClose: Boolean = BrowserViewMachine.retainOnGuardClose(lifecycle.get())
+
+    @tailrec private def advance(change: BrowserViewMachine.State => BrowserViewMachine.State): Unit = {
+      val before = lifecycle.get()
+      val next = change(before)
+      if ((next ne before) && !lifecycle.compareAndSet(before, next)) advance(change)
+    }
+    @tailrec private def claim(change: BrowserViewMachine.State => (BrowserViewMachine.State, Boolean)): Boolean = {
+      val before = lifecycle.get()
+      val (next, won) = change(before)
+      if ((next eq before) || lifecycle.compareAndSet(before, next)) won else claim(change)
+    }
+
+    def prepare(reconstructed: Boolean): Unit = advance(BrowserViewMachine.prepare(_, reconstructed))
+    def publish(): Unit = advance(BrowserViewMachine.publish)
+    def initialized(): Unit = advance(BrowserViewMachine.initialized)
+    // Read turns only claim retirement; local fencing is a later write turn.
+    def markRetiring(reason: BrowserViewMachine.Retirement): Boolean = claim(BrowserViewMachine.retire(_, reason))
+    def detach(reason: BrowserViewMachine.Retirement): Unit = advance(BrowserViewMachine.detach(_, reason))
+    def releaseAcknowledged(): Unit = advance(BrowserViewMachine.releaseAcknowledged)
+    def claimGuardClose(): Boolean = claim(BrowserViewMachine.claimGuardClose)
+    def retryGuardClose(): Unit = advance(BrowserViewMachine.retryGuardClose)
   }
+  // Resource indexes retain their existing traversal order and reference-identity
+  // checks. The per-view machine records their membership lifecycle; neither
+  // credentials nor lease handles enter that pure state.
   // Mutated only in write turns; read turns read them concurrently.
   @volatile private var attached = Map.empty[ConnectionId, Attached]
   // Claims stay owned until acknowledged cleanup, including failed setup and
@@ -128,10 +155,11 @@ final class BrowserAuthentication[F[_], S, P](
   private[auth] def localHistoryUsage: F[(Int, Int)] = gate {
     store.resources.map(resources => resources.history -> previous.size)
   }
-  private def detach(value: Attached, retain: Boolean = false): F[Unit] =
-    if (!owned.get(value.view.connectionId).contains(value)) F.unit
+  private def detach(value: Attached, retain: Boolean = false,
+    reason: BrowserViewMachine.Retirement = BrowserViewMachine.Retirement.Release): F[Unit] =
+    if (!owned.get(value.view.connectionId).contains(value) || !value.ownsResource) F.unit
     else {
-      value.retiring.set(true)
+      value.detach(reason)
       if (attached.get(value.view.connectionId).contains(value)) attached -= value.view.connectionId
       // Fence local managers before waiting for SQL. If settlement fails, discard
       // retained presentation but keep the owned resource available for retry.
@@ -139,6 +167,7 @@ final class BrowserAuthentication[F[_], S, P](
       local
         .flatMap(_ => persistence.release(value.view))
         .map { _ =>
+          value.releaseAcknowledged()
           if (owned.get(value.view.connectionId).contains(value)) owned -= value.view.connectionId
         }
         .recoverF { case error =>
@@ -157,9 +186,10 @@ final class BrowserAuthentication[F[_], S, P](
     var scheduled = false
     def fail[A](error: Throwable): F[A] =
       if (read) {
-        if (value.retiring.compareAndSet(false, true)) scheduled = true
+        if (value.markRetiring(BrowserViewMachine.Retirement.AuthorityDenied)) scheduled = true
         F.fail(error)
-      } else detach(value).recover { case _ => () }.flatMap(_ => F.fail(error))
+      } else detach(value, reason = BrowserViewMachine.Retirement.AuthorityDenied)
+        .recover { case _ => () }.flatMap(_ => F.fail(error))
     def deny[A]: F[A] = fail(new SessionAccessDenied)
     def authority: F[BrowserIdentity[P]] =
       persistence.authorize(value.view).recoverF { case error => fail(error) }.flatMap {
@@ -170,7 +200,7 @@ final class BrowserAuthentication[F[_], S, P](
   private def check(value: Attached): F[BrowserIdentity[P]] = new Observation(value, read = false).authority
   private def withView[A](id: ConnectionId)(run: Attached => F[A]): F[A] = gate {
     attached.get(id) match {
-      case Some(value) if !value.retiring.get() => run(value)
+      case Some(value) if value.live => run(value)
       case _                                    => denied
     }
   }
@@ -191,7 +221,7 @@ final class BrowserAuthentication[F[_], S, P](
           val observation = new Observation(value, read = true)
           val turn = gate.read(value.view.identity.binding) {
             attached.get(id) match {
-              case Some(current) if (current eq value) && !value.retiring.get() => run(observation)
+              case Some(current) if (current eq value) && value.live => run(observation)
               case _                                                             => denied
             }
           }
@@ -216,7 +246,7 @@ final class BrowserAuthentication[F[_], S, P](
         gate {
           F.delay {
             val valid = attached.get(binding.connectionId).exists { actual =>
-              !actual.retiring.get() && (handoff.issuer eq actual.view.issuer) &&
+              actual.live && (handoff.issuer eq actual.view.issuer) &&
               (handoff.invocationKey eq binding.replacementIdentity) &&
               handoff.connectionId == binding.connectionId && handoff.fence == actual.view.fence &&
               handoff.authority == actual.view.identity.authorityStamp && clock().isBefore(handoff.expiresAt)
@@ -275,7 +305,7 @@ final class BrowserAuthentication[F[_], S, P](
   ): F[SessionGuard[F, S]] = gate {
     val origins = request.headers.collect { case (name, value) if name.equalsIgnoreCase("Origin") => value }
     if (origins.size != 1 || !configuration.allowedOrigins.contains(origins.head)) denied
-    else if (owned.contains(owner) || owned.size.toLong >= storageLimits.active.toLong + storageLimits.pending.toLong)
+    else if (!BrowserViewMachine.canClaim(owned.contains(owner), owned.size, storageLimits.active, storageLimits.pending))
       denied
     else
       reclaimLocalHistory().flatMap(_ => capture(request, activate = true)).flatMap { identity =>
@@ -287,7 +317,7 @@ final class BrowserAuthentication[F[_], S, P](
           val changed = prior.exists(_._1 != identity.authorityStamp)
           // A denied predecessor whose deferred detach has not run yet must not
           // hand its presentation to the successor: discard it like a changed identity.
-          val discard = changed || old.exists(_.retiring.get())
+          val discard = changed || old.exists(_.retiring)
           // Same-identity takeover transfers the node map directly in claim; it
           // must not round-trip through the independently bounded disconnect cache.
           val retire = if (discard) old.fold(F.unit)(previous => detach(previous)) else F.unit
@@ -305,7 +335,7 @@ final class BrowserAuthentication[F[_], S, P](
           prepare
             .flatMap(reconstructed => store.claim(qsid, view.fence).map(lease => (reconstructed, lease)))
             .flatMap { case (reconstructed, lease) =>
-              val applicationInitialized = new AtomicBoolean(!reconstructed)
+              value.prepare(reconstructed)
               value.lease = Some(lease)
               old
                 .fold(F.unit)(previous => detach(previous))
@@ -319,12 +349,12 @@ final class BrowserAuthentication[F[_], S, P](
                     val applicationStateInitialization =
                       if (reconstructed)
                         ApplicationStateInitialization
-                          .Reconstructed(() => F.delay { applicationInitialized.set(true); () })
+                          .Reconstructed(() => F.delay { value.initialized(); () })
                       else ApplicationStateInitialization.Retained[F]()
                     override private[spoonbill] val replacementCompletion = replacementSupport.map {
                       provider => (handoff: CommittedReplacement, binding: InvocationBinding) =>
                         withView(owner) { actual =>
-                          if (binding.connectionId != owner || actual.retiring.get()) denied[BrowserReplacementControl]
+                          if (binding.connectionId != owner || !actual.live) denied[BrowserReplacementControl]
                           else
                             provider
                               .admitReplacementCompletion(
@@ -333,12 +363,11 @@ final class BrowserAuthentication[F[_], S, P](
                               )
                               .flatMap(requireResult)
                               .map { control =>
-                                actual.retiring.set(true)
+                                actual.markRetiring(BrowserViewMachine.Retirement.ReplacementCompleted)
                                 control
                               }
                         }
                     }
-                    private val released                                         = new AtomicBoolean()
                     override val actionAuthority: Option[SessionAuthority[F, ?]] = Some(authority)
                     override val sensitive: Option[SensitiveAccess[F, S]] = sensitiveAccess(view).map { policy =>
                       new SensitiveAccess[F, S] {
@@ -388,18 +417,19 @@ final class BrowserAuthentication[F[_], S, P](
                       }
                     }
                     def close(): F[Unit] = F.delayAsync {
-                      if (!released.compareAndSet(false, true) || stopped.get()) F.unit
+                      if (!value.claimGuardClose() || stopped.get()) F.unit
                       else
                         gate.cleanup {
                           owned.get(owner) match {
                             case Some(current) if current eq value =>
-                              detach(value, retain = !value.retiring.get() && applicationInitialized.get())
+                              detach(value, retain = value.retainOnGuardClose)
                             case _ => F.unit
                           }
-                        }.recoverF { case error => F.delay(released.set(false)).flatMap(_ => F.fail(error)) }
+                        }.recoverF { case error => F.delay(value.retryGuardClose()).flatMap(_ => F.fail(error)) }
                     }
                   }
                   previous += qsid  -> (identity.authorityStamp -> view.fence)
+                  value.publish()
                   attached += owner -> value
                   guard
                 }
@@ -633,7 +663,7 @@ final class BrowserAuthentication[F[_], S, P](
    */
   def maintenance(): F[Unit] =
     gate {
-      val retiring = owned.valuesIterator.filter(_.retiring.get()).toVector
+      val retiring = owned.valuesIterator.filter(_.retiring).toVector
       retiring
         .foldLeft(F.unit)((done, value) => done.flatMap(_ => detach(value)))
         .flatMap(_ => persistence.maintenance())
@@ -647,7 +677,7 @@ final class BrowserAuthentication[F[_], S, P](
     if (gate.isClosing) F.unit
     else {
       val id = value.view.connectionId
-      def live = !value.retiring.get() && owned.get(id).contains(value) && attached.get(id).contains(value)
+      def live = value.live && owned.get(id).contains(value) && attached.get(id).contains(value)
       if (concurrency.isEmpty)
         gate(if (live) check(value).map(_ => ()).recover { case _: SessionAccessDenied => () } else F.unit)
       else if (!live) F.unit

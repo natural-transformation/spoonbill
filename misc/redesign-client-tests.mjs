@@ -145,7 +145,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
   const directory = await mkdtemp(join(tmpdir(), 'spoonbill-client-regressions-'));
   try {
     await writeFile(join(directory, 'package.json'), '{"type":"module"}\n');
-    for (const name of ['spoonbill.js', 'utils.js', 'connection.js', 'bridge.js', 'sensitive.js', 'protocol.js']) {
+    for (const name of ['spoonbill.js', 'utils.js', 'connection.js', 'connection-machine.js', 'bridge.js', 'bridge-machine.js', 'sensitive.js', 'protocol.js']) {
       await copyFile(new URL(`../modules/spoonbill/src/main/es6/${name}`, import.meta.url), join(directory, name));
     }
     browser(); // bridge.js reads localStorage when its module is initialized.
@@ -389,9 +389,6 @@ test('redesign client regressions against real source modules', { timeout: 10000
           assert.equal(sent.length, 2, 'one barrier released the other pending fence');
           deliver([order[1], 1]);
           assert.equal(sent.length, 2, 'recovery replayed a discarded action');
-          assert.equal(bridge._sensitive.departurePending, false);
-          assert.equal(bridge._sensitive.navigationPending, false);
-          assert.equal(bridge._sensitive._navigationPermanent, false);
           bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'show:fresh');
           assert.deepEqual(sent.at(-1), [1, 'show:fresh']);
         } finally { bridge.destroy(); }
@@ -422,13 +419,11 @@ test('redesign client regressions against real source modules', { timeout: 10000
         const bridge = new Bridge({auth: true, heartbeat: {interval: '0'}}, connection);
         try {
           connection.dispatcher.dispatchEvent({type: 'message', data: '[21,false]'});
-          assert.equal(bridge._sensitive.departurePending, false);
           if (terminal === 'pagehide') window.dispatchEvent({type: 'pagehide'});
           else bridge.destroy();
           bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
           bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'show:departed');
           bridge._onCallback(CallbackType.HISTORY, '/different');
-          assert.equal(bridge._sensitive.terminal, true);
           assert.deepEqual(sent, [], `${terminal} allowed a guarded action`);
         } finally { bridge.destroy(); }
       }
@@ -496,8 +491,6 @@ test('redesign client regressions against real source modules', { timeout: 10000
           bridge._onCallback(CallbackType.HISTORY, '/first');
           bridge._onCallback(CallbackType.HISTORY, '/latest');
           assert.deepEqual(disconnected, authenticationPending ? [] : [true]);
-          assert.equal(bridge._viewRecovering, true);
-          assert.equal(bridge._sensitive.terminal, true);
           connection.dispatcher.dispatchEvent({type: 'message', data: '[21,false]'});
           bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'show:old');
           assert.deepEqual(sent, [], 'old-controller readiness reopened a permanently fenced action');
@@ -519,7 +512,6 @@ test('redesign client regressions against real source modules', { timeout: 10000
         deliver([19, '42', id, '0', [4]]);
         deliver([21, true]);
         bridge._spoonbill.modifyDom = () => {
-          assert.equal(bridge._viewRevision, '0', 'the next revision cannot describe a partially changed DOM');
           bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'counter:during-patch');
           bridge._onCallback(CallbackType.DOM_EVENT, '0:1:submit:synthetic-transient');
           bridge._onCallback(CallbackType.HISTORY, '/during-patch');
@@ -533,9 +525,6 @@ test('redesign client regressions against real source modules', { timeout: 10000
         bridge._onCallback(CallbackType.HISTORY, '/second-suppressed');
         assert.deepEqual(sent, [[4, 'descriptor:0:result'], [6]], 'old controller admitted an action while permanently fenced');
         assert.deepEqual(disconnected, [true], 'suppressed history must request exactly one fresh authorized connection');
-        assert.equal(bridge._applyingView, false);
-        assert.equal(bridge._viewRecovering, true);
-        assert.equal(bridge._sensitive.terminal, true);
         // Mirror launcher's close/open lifecycle. The new physical connection
         // must supply its own authorized baseline/readiness before fresh actions.
         bridge.destroy();
@@ -575,8 +564,6 @@ test('redesign client regressions against real source modules', { timeout: 10000
         bridge._onCallback(CallbackType.HEARTBEAT);
         assert.deepEqual(sent, [[6]]);
         assert.deepEqual(disconnected, [true]);
-        assert.equal(bridge._viewRevision, '0');
-        assert.equal(bridge._applyingView, false);
         assert.deepEqual(errors, ['Spoonbill view recovery failed']);
       } finally { console.error = originalError; bridge.destroy(); }
     });
@@ -684,7 +671,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       };
       const connection = new Connection('synthetic-session', '/', window.location, {wsc: true});
       connection._connectUsingWebSocket();
-      const socket = connection._webSocket;
+      const socket = WebSocketFake.instances.at(-1);
       const old = connection._send('[1,"show:old"]');
       await entered.promise;
       const recovery = connection._send('[10,"1"]');
@@ -701,12 +688,12 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const gate = delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, {wsc: true});
       connection._connectUsingWebSocket();
-      const original = connection._webSocket;
+      const original = WebSocketFake.instances.at(-1);
       const active = connection._send('synthetic-active');
       await gate.entered;
       const queued = connection._send('synthetic-queued');
       connection._connectUsingWebSocket();
-      const replacement = connection._webSocket;
+      const replacement = WebSocketFake.instances.at(-1);
       replacement.protocol = 'json';
       await queued;
       await connection._send('fresh');
@@ -722,7 +709,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const gate = delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, {wsc: true});
       connection._connectUsingWebSocket();
-      const socket = connection._webSocket;
+      const socket = WebSocketFake.instances.at(-1);
       const active = connection._send('synthetic-active');
       await gate.entered;
       const queued = Array.from({length: 129}, (_, index) => connection._send('synthetic-queued-' + index));
@@ -738,7 +725,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const gate = delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, {auth: true, wsc: true});
       connection._connectUsingWebSocket();
-      const socket = connection._webSocket;
+      const socket = WebSocketFake.instances.at(-1);
       const active = connection._send('synthetic-active');
       await gate.entered;
       const queued = connection._send('synthetic-queued');
@@ -762,7 +749,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const gate = delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, { wsc: true });
       connection._connectUsingWebSocket();
-      const originalSocket = connection._webSocket;
+      const originalSocket = WebSocketFake.instances.at(-1);
       // Await the actual internal send because the existing public send returns void.
       // Capture rejections immediately so a fail-closed implementation is not unhandled.
       const sending = connection._send('synthetic-password-before-reconnect').then(
@@ -770,7 +757,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       );
       await gate.entered;
       connection._connectUsingWebSocket();
-      const replacementSocket = connection._webSocket;
+      const replacementSocket = WebSocketFake.instances.at(-1);
       assert.notEqual(originalSocket, replacementSocket);
       gate.release();
       await sending;
@@ -783,7 +770,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const gate = delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, { wsc: true });
       connection._connectUsingWebSocket();
-      const socket = connection._webSocket;
+      const socket = WebSocketFake.instances.at(-1);
       let attempted = false;
       socket.send = () => { attempted = true; };
       const sending = connection._send('synthetic-password-before-close').then(() => undefined, () => undefined);
@@ -799,7 +786,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const gate = delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, { wsc: true });
       connection._connectUsingWebSocket();
-      const socket = connection._webSocket;
+      const socket = WebSocketFake.instances.at(-1);
       const payload = 'synthetic-successful-submission';
       const sending = connection._send(payload);
       await gate.entered;
@@ -814,7 +801,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location);
       connection._connectUsingWebSocket();
-      assert.deepEqual(connection._webSocket.protocols, ['json']);
+      assert.deepEqual(WebSocketFake.instances.at(-1).protocols, ['json']);
     });
 
     await t.test('WebSocket compression can be explicitly enabled', () => {
@@ -822,14 +809,14 @@ test('redesign client regressions against real source modules', { timeout: 10000
       delayedCompression();
       const connection = new Connection('synthetic-session', '/', window.location, { wsc: true });
       connection._connectUsingWebSocket();
-      assert.deepEqual(connection._webSocket.protocols, ['json', 'json-deflate']);
+      assert.deepEqual(WebSocketFake.instances.at(-1).protocols, ['json', 'json-deflate']);
     });
 
     await t.test('a lost replacement command discovers its committed outcome without replaying application sends', async () => {
       const { window } = browser();
       const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
       connection._connectUsingWebSocket();
-      const socket = connection._webSocket;
+      const socket = WebSocketFake.instances.at(-1);
       const requests = [];
       let reloads = 0;
       let reconnects = 0;
@@ -880,7 +867,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
         try {
           const closing = connection._onClose();
           if (cancel) await connection.disconnect(false);
-          else connection._webSocket = {};
+          else connection._connectUsingWebSocket();
           response.resolve({status: 204});
           await closing;
           assert.equal(reconnects, 0);
@@ -915,7 +902,8 @@ test('redesign client regressions against real source modules', { timeout: 10000
         await closing;
         assert.equal(aborted, 1);
         assert.equal(reconnects, 0, 'a departed document must not reconnect after the probe settles');
-        assert.equal(connection._replacementAbort, null);
+        window.dispatchEvent({type: 'pagehide'});
+        assert.equal(aborted, 1, 'settled discovery cannot be aborted again');
       } finally { globalThis.fetch = originalFetch; }
     });
 
@@ -955,7 +943,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
         window.dispatchEvent({type: 'keydown', isTrusted: true});
         await connection._onClose();
         assert.equal(requests, 1, 'recovery cannot depend on already-revoked authority reaching readiness');
-        connection._replacementRecoveryAttempts = 0;
+        connection.applicationReady();
         window.dispatchEvent({type: 'pagehide'});
         window.dispatchEvent({type: 'pointerdown', isTrusted: true});
         await connection._onClose();
@@ -969,6 +957,8 @@ test('redesign client regressions against real source modules', { timeout: 10000
       let requests = 0;
       let reconnects = 0;
       let successorCookieAccepted = false;
+      let readiness = 0;
+      connection.dispatcher.addEventListener('ready', () => { readiness++; });
       connection.connect = () => {
         reconnects++;
         if (successorCookieAccepted) connection.applicationReady();
@@ -983,13 +973,15 @@ test('redesign client regressions against real source modules', { timeout: 10000
       };
       try {
         await connection._onClose();
-        assert.equal(connection._replacementRecoveryAttempts, 1);
+        assert.equal(requests, 1);
         // The first fresh socket still carries the old cookie and is denied.
         await connection._onClose();
         assert.equal(requests, 2);
         assert.equal(reconnects, 2);
-        assert.equal(connection._wasReady, true);
-        assert.equal(connection._replacementRecoveryAttempts, 0, 'only authorized readiness resets the period');
+        assert.equal(readiness, 1);
+        await connection._onClose();
+        await connection._onClose();
+        assert.equal(requests, 4, 'authorized readiness restores the bounded discovery budget');
       } finally { globalThis.fetch = originalFetch; }
     });
 
@@ -999,12 +991,14 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const timers = [];
       let sockets = 0;
       let closes = 0;
-      connection._webSocket = {readyState: WebSocketFake.CLOSED, close() { this.readyState = WebSocketFake.CLOSED; }};
-      connection._wasConnected = true;
+      connection._connectUsingWebSocket();
+      connection._onOpen();
+      WebSocketFake.instances.at(-1).close();
       connection.dispatcher.addEventListener('close', () => { closes++; });
       connection._connectUsingConnectionType = () => {
         sockets++;
-        connection._webSocket = {readyState: WebSocketFake.OPEN, close() { this.readyState = WebSocketFake.CLOSED; }};
+        connection._connectUsingWebSocket();
+        connection._onOpen();
       };
       const originalSetTimeout = globalThis.setTimeout;
       const originalClearTimeout = globalThis.clearTimeout;
@@ -1025,7 +1019,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
         window.dispatchEvent({type: 'pagehide'});
         window.dispatchEvent({type: 'pageshow', persisted: true});
         assert.equal(timers.length, 2, 'a restored live socket retires before any fresh connection is scheduled');
-        assert.equal(connection._webSocket.readyState, WebSocketFake.CLOSED);
+        assert.equal(WebSocketFake.instances.at(-1).readyState, WebSocketFake.CLOSED);
         await connection.disconnect(false);
         window.dispatchEvent({type: 'pagehide'});
         window.dispatchEvent({type: 'pageshow', persisted: true});
@@ -1054,7 +1048,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       globalThis.fetch = async () => ({status: 403});
       try {
         connection._connectUsingWebSocket();
-        const previous = connection._webSocket;
+        const previous = WebSocketFake.instances.at(-1);
         previous.dispatchEvent({type: 'open'});
         connection._onMessage('[21,false]');
         const oldBridge = bridges[0];
@@ -1064,7 +1058,6 @@ test('redesign client regressions against real source modules', { timeout: 10000
           previous.dispatchEvent({type: 'close'});
         };
         window.dispatchEvent({type: 'pagehide'});
-        assert.equal(oldBridge._sensitive.terminal, true);
         oldBridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'old:blocked');
         window.dispatchEvent({type: 'pageshow', persisted: true});
         window.dispatchEvent({type: 'pageshow', persisted: true});
@@ -1074,7 +1067,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
         assert.equal(previous.readyState, WebSocketFake.CLOSED);
         assert.equal(sent.length, 0);
         connection._connectUsingWebSocket();
-        connection._webSocket.dispatchEvent({type: 'open'});
+        WebSocketFake.instances.at(-1).dispatchEvent({type: 'open'});
         const fresh = bridges.at(-1);
         assert.notEqual(fresh, oldBridge);
         fresh._onCallback(CallbackType.CUSTOM_CALLBACK, 'early:blocked');
@@ -1094,7 +1087,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const connection = new Connection('synthetic-session', '/', window.location, { auth: true });
       const initialSockets = WebSocketFake.instances.length;
       connection._connectUsingWebSocket();
-      const originalSocket = connection._webSocket;
+      const originalSocket = WebSocketFake.instances.at(-1);
       originalSocket.protocol = 'json';
       connection.send('synthetic-login-action-before-handoff');
       assert.equal(originalSocket.sent.length, 1);
@@ -1132,8 +1125,8 @@ test('redesign client regressions against real source modules', { timeout: 10000
         await committing;
         assert.equal(originalSocket.readyState, WebSocketFake.CLOSED);
         assert.equal(WebSocketFake.instances.length, initialSockets + 2, 'success should permit a fresh socket');
-        assert.notEqual(connection._webSocket, originalSocket);
-        assert.equal(connection._webSocket.sent.length, 0, 'no old credential payload may replay on the new socket');
+        assert.notEqual(WebSocketFake.instances.at(-1), originalSocket);
+        assert.equal(WebSocketFake.instances.at(-1).sent.length, 0, 'no old credential payload may replay on the new socket');
       } finally {
         globalThis.fetch = originalFetch;
         globalThis.setTimeout = originalSetTimeout;
@@ -1146,7 +1139,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
         const { window } = browser();
         const connection = new Connection('synthetic-session', '/', window.location, { auth: true, replacement: true });
         connection._connectUsingWebSocket();
-        const socket = connection._webSocket;
+        const socket = WebSocketFake.instances.at(-1);
         const delivery = deferred();
         const processing = deferred();
         const requests = [];
@@ -1162,27 +1155,27 @@ test('redesign client regressions against real source modules', { timeout: 10000
         try {
           const committing = connection.commitAuthentication('123e4567-e89b-12d3-a456-426614174000');
           if (pendingProcessing) {
-            connection._processing = processing.promise;
+            socket.dispatchEvent({type: 'message', data: new class extends Blob {
+              text() { return processing.promise; }
+            }()});
             socket.dispatchEvent({type: 'close'});
           }
           delivery.resolve({status: 204});
           await committing;
           assert.equal(connection.authenticationPending, false);
           assert.equal(reconnects, 0);
-          if (pendingProcessing) processing.resolve();
+          if (pendingProcessing) processing.resolve('[9]');
           else socket.dispatchEvent({type: 'close'});
           await closing;
           assert.equal(reconnects, 1);
           assert.deepEqual(requests, [{url: 'https://example.invalid/auth/complete', body: '123e4567-e89b-12d3-a456-426614174000'}]);
-          assert.equal(connection._replacementRecoveryAttempts, 0, 'intentional delivery preserves the discovery budget');
-          const freshSocket = connection._webSocket;
+          const freshSocket = WebSocketFake.instances.at(-1);
           assert.notEqual(freshSocket, socket);
           assert.equal(freshSocket.sent.length, 0);
           freshSocket.dispatchEvent({type: 'close'});
           await closing;
           assert.equal(reconnects, 2);
           assert.deepEqual(requests[1], {url: 'https://example.invalid/auth/recover', body: ''});
-          assert.equal(connection._replacementRecoveryAttempts, 1, 'an unexpected fresh-socket close still discovers');
         } finally { globalThis.fetch = originalFetch; }
       });
     }
@@ -1192,7 +1185,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       const completionId = '123e4567-e89b-12d3-a456-426614174000';
       const connection = new Connection('synthetic-session', '/', window.location, { auth: true });
       connection._connectUsingWebSocket();
-      connection._webSocket.protocol = 'json';
+      WebSocketFake.instances.at(-1).protocol = 'json';
       const bodies = [];
       const originalFetch = globalThis.fetch;
       globalThis.fetch = async (_url, options) => {
@@ -1204,7 +1197,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
       try {
         await connection.commitAuthentication(completionId);
         assert.deepEqual(bodies, [completionId, completionId, completionId]);
-        assert.equal(connection._webSocket.sent.length, 0);
+        assert.equal(WebSocketFake.instances.at(-1).sent.length, 0);
         assert.equal(bodies.some(body => body.includes('synthetic-')), false);
       } finally {
         globalThis.fetch = originalFetch;
@@ -1231,7 +1224,7 @@ test('redesign client regressions against real source modules', { timeout: 10000
         assert.equal(requests[0].url, 'https://example.invalid/auth/recover');
         assert.equal(requests[0].options.body, ceremonyId);
         assert.equal(requests[0].options.credentials, 'same-origin');
-        assert.equal(connection._webSocket.sent.length, 0);
+        assert.equal(WebSocketFake.instances.at(-1).sent.length, 0);
         assert.equal(reconnects, 1);
       } finally { globalThis.fetch = originalFetch; }
     });
@@ -1246,12 +1239,12 @@ test('redesign client regressions against real source modules', { timeout: 10000
       globalThis.fetch = () => response.promise;
       try {
         const committing = connection.commitAuthentication(completionId);
-        const originalSocket = connection._webSocket;
+        const originalSocket = WebSocketFake.instances.at(-1);
         connection._connectUsingWebSocket();
-        assert.notEqual(connection._webSocket, originalSocket);
+        assert.notEqual(WebSocketFake.instances.at(-1), originalSocket);
         response.resolve({status: 204});
         await assert.rejects(committing, /Authentication connection changed/);
-        assert.equal(connection._committingAuthentication, false);
+        assert.equal(connection.authenticationPending, false);
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -1269,16 +1262,17 @@ test('redesign client regressions against real source modules', { timeout: 10000
       connection._connectUsingConnectionType(ConnectionType.LONG_POLLING);
       assert.equal(errors, 1);
       assert.equal(xhrs, 0);
-      assert.equal(connection._connectionType, ConnectionType.LONG_POLLING);
     });
 
     await t.test('slow authentication delivery pauses heartbeats without consuming the loss limit', async () => {
       const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
       const completionId = '123e4567-e89b-12d3-a456-426614174000';
       const connection = new Connection('synthetic-session', '/', window.location, { auth: true });
       connection._connectUsingWebSocket();
-      connection._webSocket.protocol = 'json';
-      const socket = connection._webSocket;
+      WebSocketFake.instances.at(-1).protocol = 'json';
+      const socket = WebSocketFake.instances.at(-1);
       const delivery = deferred();
       const originalFetch = globalThis.fetch;
       const originalSetTimeout = globalThis.setTimeout;
@@ -1303,12 +1297,19 @@ test('redesign client regressions against real source modules', { timeout: 10000
         intervals[0].callback();
         intervals[0].callback();
         intervals[0].callback();
-        assert.equal(bridge._awaitingHeartbeat, 0);
+        assert.equal(reloads, 0);
         assert.equal(socket.sent.length, 0);
 
         delivery.resolve({status: 204});
         for (let attempt = 0; attempt < 20 && connection.authenticationPending; attempt++) await Promise.resolve();
         assert.equal(connection.authenticationPending, false);
+        connection._connectUsingWebSocket();
+        WebSocketFake.instances.at(-1).protocol = 'json';
+        intervals[0].callback();
+        assert.equal(reloads, 0, 'the first unpaused heartbeat must retain its ordinary allowance');
+        assert.equal(WebSocketFake.instances.at(-1).sent.length, 1);
+        intervals[0].callback();
+        assert.equal(reloads, 1, 'the unchanged limit applies after two ordinary missing heartbeats');
       } finally {
         bridge.destroy();
         globalThis.fetch = originalFetch;

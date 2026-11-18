@@ -15,7 +15,7 @@ import spoonbill.sensitive.*
 import spoonbill.server.SessionAccessDenied
 
 class SensitiveDisclosureScopeSpec extends AsyncFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private def accepted[A](result: Either[SensitiveError, A]): A = result.fold(error => fail(error.toString), identity)
   private def payload = accepted(SensitivePayload.textList(Vector("synthetic-code")))
   private val region = accepted(RegionId.parse("recovery"))
@@ -128,6 +128,24 @@ class SensitiveDisclosureScopeSpec extends AsyncFlatSpec with Matchers {
     scope.pendingCount shouldBe 0
     cancelled.get() shouldBe 1
     intercept[SessionAccessDenied](scope.create(payload, owner))
+    succeed
+  }
+
+  it should "preserve a late cancellation failure after close has already discarded the holder" in {
+    val scopeRef = new AtomicReference(Option.empty[SensitiveDisclosureScope])
+    val cancellations = new AtomicInteger(0)
+    val failure = new IllegalStateException("late cancellation failed")
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
+        scopeRef.get().foreach(_.close())
+        () => { cancellations.incrementAndGet(); throw failure }
+      }
+    }
+    val scope = new SensitiveDisclosureScope(deadlines)
+    scopeRef.set(Some(scope))
+    intercept[IllegalStateException](scope.create(payload, owner)) should be theSameInstanceAs failure
+    scope.pendingCount shouldBe 0
+    cancellations.get() shouldBe 1
     succeed
   }
 

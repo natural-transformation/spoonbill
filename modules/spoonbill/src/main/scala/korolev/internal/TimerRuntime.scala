@@ -42,27 +42,14 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   import TimerRuntime.*
 
   private case class Description(target: Target[F], config: Configuration, update: Any => Option[Any])
-  private case class Issues(
-    invalid: Int = 0,
-    duplicate: Int = 0,
-    overflow: Int = 0,
-    samples: Vector[String] = Vector.empty
-  )
   private val lock                 = new Object
   private var state                = State()
   private var descriptions         = Map.empty[Identity, Description]
   private val handles              = mutable.Map.empty[(Identity, Arm), () => Unit]
   private val records              = mutable.Map.empty[Execution, Record]
   private val candidates           = mutable.LinkedHashMap.empty[Identity, Option[Description]]
-  private var issues               = Map.empty[Owner, Issues]
   private var staged               = Option.empty[Vector[(Identity, Description)]]
-  private var pendingCommands      = Vector.empty[Command]
-  private var pendingReports       = Vector.empty[String]
-  private var suppression          = Map.empty[Owner, (Issues, Long)]
-  private var enabled              = false
-  private var exhausted            = false
-  private var deferredWakes        = Map.empty[Identity, Event.Wake]
-  private var retiringReservations = Set.empty[Identity]
+  private var rendering            = TimerRenderMachine.initial
 
   private final class Record(
     val id: Identity,
@@ -71,8 +58,12 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
     initialTarget: Target[F]
   ) {
     private var recipient = Some(initialTarget): Option[Target[F]]
-    def detach(): Unit    = recipient = None // lock held; queued dispatch retains metadata only
-    var offered           = false            // protected by lock; dispatch also owns a retained entry before offer
+    private var offerState = TimerRenderMachine.Offer.Pending
+    def detach(): Unit = {
+      recipient = None // lock held; queued dispatch retains metadata only
+      offerState = TimerRenderMachine.detached(offerState)
+    }
+    def unoffered: Boolean = TimerRenderMachine.unoffered(offerState)
     val entry             = new ComponentLaneEntry[F](() => run(), () => settle(this, failed = false))
     def run(): F[Unit] = {
       advance(Event.Start(id, execution))
@@ -101,7 +92,7 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
               if (!records.get(execution).contains(this)) None
               else
                 recipient.filter(_.active).map { value =>
-                  offered = true; value
+                  offerState = TimerRenderMachine.offered(offerState); value
                 }
             }
             if (!target.exists(_.offer(entry))) entry.discard()
@@ -125,21 +116,11 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   }
 
   private def stepLocked(event: Event): Vector[Command] = {
-    if (exhausted && event.isInstanceOf[Event.Accept]) { descriptions = Map.empty; return Vector.empty }
-    val (next, commands) =
-      try TimerMachine.step(state, event, clock())
-      catch {
-        case _: ArithmeticException =>
-          exhausted = true
-          pendingReports :+= "Render timer token space exhausted; timers remain stopped until remount."
-          val cancel = state.slots.toVector.flatMap { case (id, slot) => slot.arm.map(Command.Cancel(id, _)) }
-          val failed = state.copy(slots = state.slots.map { case (id, slot) =>
-            id -> slot.copy(phase = Phase.Failed, arm = None)
-          })
-          (failed, cancel)
-      }
+    val (next, commands) = TimerMachine.step(state, event, clock())
     state = next
     commands.foreach {
+      case Command.Exhausted =>
+        rendering = TimerRenderMachine.report(rendering, "Render timer token space exhausted; timers remain stopped until remount.")
       case Command.Dispatch(id, generation, execution) =>
         descriptions.get(id).foreach { description =>
           records.put(execution, new Record(id, generation, execution, description.target))
@@ -148,7 +129,7 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
     }
     // Completed/failed markers retain identity/configuration, never application closures.
     val changed =
-      if (exhausted) descriptions.keysIterator.toVector
+      if (state.exhausted) descriptions.keysIterator.toVector
       else
         event match {
           case Event.Accept(_)        => descriptions.keysIterator.toVector
@@ -159,7 +140,9 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
         }
     changed.foreach { id =>
       if (
-        !state.slots
+        // A queued execution can Start after exhaustion. Its execution marker
+        // must never let a later accepted render reinstall application reducers.
+        state.exhausted || !state.slots
           .get(id)
           .exists(slot => slot.config.nonEmpty && slot.phase != Phase.Completed && slot.phase != Phase.Failed)
       ) descriptions -= id
@@ -172,8 +155,8 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
       event match {
         // Reserve a retiring idle slot for its selected replacement. Its due
         // wake waits for commit/abort, without changing the installed machine.
-        case wake: Event.Wake if retiringReservations(wake.id) =>
-          deferredWakes = deferredWakes.updated(wake.id, wake)
+        case wake: Event.Wake if TimerRenderMachine.reserved(rendering, wake.id) =>
+          rendering = TimerRenderMachine.defer(rendering, wake)
           Vector.empty
         case _ => stepLocked(event)
       }
@@ -194,6 +177,7 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   }
 
   private def execute(commands: Vector[Command]): Unit = commands.foreach {
+    case Command.Exhausted => () // Queued for flush together with render diagnostics.
     case Command.Cancel(id, token) =>
       val cancel = lock.synchronized(handles.remove(id -> token))
       cancel.foreach { run =>
@@ -220,9 +204,9 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
   }
 
   def beginRender(): Unit = lock.synchronized {
-    require(staged.isEmpty, "Previous timer render has not settled")
+    require(TimerRenderMachine.canBegin(rendering), "Previous timer render has not settled")
     candidates.clear()
-    issues = Map.empty
+    rendering = TimerRenderMachine.begun(rendering)
     staged = None
   }
 
@@ -235,39 +219,33 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
     update: S => Option[S]
   ): Unit = lock.synchronized {
     val identity = Identity(target.owner, id)
-    if (candidates.contains(identity)) {
-      if (candidates(identity).nonEmpty) {
-        val previous = issues.getOrElse(target.owner, Issues())
-        issues = issues.updated(
-          target.owner,
-          previous.copy(
-            duplicate = previous.duplicate + 1,
-            samples = (previous.samples :+ TimerId.diagnostic(id)).take(4)
-          )
-        )
-      }
-      candidates.put(identity, None)
-    } else if (!TimerId.valid(id) || !RestartKey.valid(key)) {
-      val previous = issues.getOrElse(target.owner, Issues())
-      issues = issues.updated(target.owner, previous.copy(invalid = previous.invalid + 1))
-      candidates.put(identity, None)
-    } else
-      candidates.put(
-        identity,
-        Some(Description(target, Configuration(nanos, periodic, key), update.asInstanceOf[Any => Option[Any]]))
-      )
+    val previous = candidates.get(identity) match {
+      case None => TimerRenderMachine.Declaration.Missing
+      case Some(Some(_)) => TimerRenderMachine.Declaration.Valid
+      case Some(None) => TimerRenderMachine.Declaration.Omitted
+    }
+    val valid = previous != TimerRenderMachine.Declaration.Missing || (TimerId.valid(id) && RestartKey.valid(key))
+    TimerRenderMachine.collection(previous, valid) match {
+      case TimerRenderMachine.Collection.Accept =>
+        candidates.put(identity, Some(Description(target, Configuration(nanos, periodic, key), update.asInstanceOf[Any => Option[Any]])))
+      case TimerRenderMachine.Collection.Invalid =>
+        rendering = TimerRenderMachine.invalid(rendering, target.owner)
+        candidates.put(identity, None)
+      case TimerRenderMachine.Collection.Conflict =>
+        rendering = TimerRenderMachine.conflict(rendering, target.owner, TimerId.diagnostic(id))
+        candidates.put(identity, None)
+      case TimerRenderMachine.Collection.Omit => candidates.put(identity, None)
+    }
   }
 
   private def select(values: Vector[(Identity, Description)]): Vector[(Identity, Description)] = {
     val eligible  = values.filter(_._2.target.active)
     val present   = eligible.iterator.map(_._1).toSet
     val existing  = eligible.filter(x => state.slots.contains(x._1))
-    val retired   = state.slots.count { case (id, slot) => !present(id) && slot.entry.nonEmpty }
-    val remaining = math.max(0, settings.maxRetained - existing.size - retired)
+    val remaining = TimerRenderMachine.freshBudget(state, present, existing.size, settings.maxRetained)
     val fresh     = eligible.filterNot(x => state.slots.contains(x._1))
     fresh.drop(remaining).foreach { case (id, _) =>
-      val previous = issues.getOrElse(id.owner, Issues())
-      issues = issues.updated(id.owner, previous.copy(overflow = previous.overflow + 1))
+      rendering = TimerRenderMachine.overflow(rendering, id.owner)
     }
     existing ++ fresh.take(remaining)
   }
@@ -277,7 +255,7 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
     val selected = select(candidates.iterator.collect { case (id, Some(value)) => id -> value }.toVector)
     staged = Some(selected)
     val present = selected.iterator.map(_._1).toSet
-    retiringReservations = state.slots.keySet -- present
+    rendering = TimerRenderMachine.reserve(rendering, state.slots.keySet -- present)
     candidates.clear()
   }
 
@@ -287,39 +265,29 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
       val selected = select(values)
       descriptions = selected.toMap
       val commands = stepLocked(Event.Accept(selected.map { case (id, value) => id -> value.config }))
-      if (enabled) pendingCommands ++= commands
-      else {
-        // Startup can accept several snapshots before consumers are ready.
-        // No handles exist yet; keep only the latest bounded set of arms.
-        pendingCommands = state.slots.toVector.flatMap { case (id, slot) =>
-          slot.arm.map(token => Command.Schedule(id, slot.generation, token, slot.deadline))
-        }
-      }
+      rendering = TimerRenderMachine.accepted(rendering, state, commands)
       val now = clock()
-      suppression = suppression.filter { case (owner, _) => issues.contains(owner) }
-      issues.foreach { case (owner, issue) =>
-        if (suppression.get(owner).forall { case (previous, time) => previous != issue && now - time >= 1000000000L }) {
+      rendering = TimerRenderMachine.retainCurrentSuppression(rendering)
+      rendering.issues.foreach { case (owner, issue) =>
+        if (TimerRenderMachine.reportDue(rendering, owner, issue, now)) {
           val retired = state.slots.count { case (_, slot) => slot.config.isEmpty && slot.entry.nonEmpty }
-          pendingReports :+= s"Timer omissions owner=${owner.value}: invalid=${issue.invalid}, conflicts=${issue.duplicate}, " +
+          val report = s"Timer omissions owner=${owner.value}: invalid=${issue.invalid}, conflicts=${issue.duplicate}, " +
             s"overflow=${issue.overflow}, capacity=${settings.maxRetained}, retained=${state.slots.size}, " +
             s"retired-unsettled=$retired, admitted=${selected.size}, samples=${issue.samples.mkString(",")}. " +
             "Omitted timers require a later accepted render to retry."
-          suppression = suppression.updated(owner, issue -> now)
+          rendering = TimerRenderMachine.reported(rendering, owner, issue, now, report)
         }
       }
     }
     staged = None
-    issues = Map.empty
-    retiringReservations = Set.empty
-    deferredWakes = Map.empty
+    rendering = TimerRenderMachine.finishedRender(rendering)
   }
 
   def abortRender(): Unit = {
     val wakes = lock.synchronized {
-      candidates.clear(); staged = None; issues = Map.empty
-      retiringReservations = Set.empty
-      val wakes = deferredWakes.values.toVector
-      deferredWakes = Map.empty
+      candidates.clear(); staged = None
+      val wakes = TimerRenderMachine.deferred(rendering)
+      rendering = TimerRenderMachine.finishedRender(rendering)
       wakes
     }
     wakes.foreach(advance)
@@ -330,26 +298,23 @@ private[spoonbill] final class TimerRuntime[F[_]: Effect](
    */
   def flush(): Unit = {
     val (commands, reports) = lock.synchronized {
-      val commands = if (enabled) { val xs = pendingCommands; pendingCommands = Vector.empty; xs }
-      else Vector.empty
-      val reports = pendingReports
-      pendingReports = Vector.empty
+      val commands = TimerRenderMachine.commandsToRun(rendering)
+      val reports = rendering.reports
+      rendering = TimerRenderMachine.flushed(rendering)
       (commands, reports)
     }
     reports.foreach(reporter.warning)
     execute(commands)
   }
-  def start(): Unit = { lock.synchronized { enabled = true }; flush() }
+  def start(): Unit = { lock.synchronized { rendering = TimerRenderMachine.started(rendering) }; flush() }
 
   def close(owner: Owner): Unit = {
     val (commands, unoffered) = lock.synchronized {
-      suppression -= owner
+      rendering = TimerRenderMachine.ownerClosed(rendering, owner)
       staged = staged.map(_.filterNot(_._1.owner == owner))
       candidates.keysIterator.filter(_.owner == owner).toVector.foreach(candidates.remove)
-      retiringReservations = retiringReservations.filterNot(_.owner == owner)
-      deferredWakes = deferredWakes.filterNot(_._1.owner == owner)
       val commands = stepLocked(Event.Close(owner))
-      (commands, records.values.filter(r => r.id.owner == owner && !r.offered).toVector)
+      (commands, records.values.filter(r => r.id.owner == owner && r.unoffered).toVector)
     }
     execute(commands)
     unoffered.foreach(_.entry.discard())

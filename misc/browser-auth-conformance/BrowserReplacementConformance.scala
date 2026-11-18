@@ -32,7 +32,7 @@ trait BrowserReplacementConformance extends BrowserPersistenceConformance {
   import BrowserReplacementConformance.Fixture
   override protected def fixture(): Fixture
   private given ExecutionContext            = ExecutionContext.parasitic
-  private given Effect[Future]              = new Effect.FutureEffect
+  private given Effect[Future]              = Effect.futureEffect
   private def await[A](value: Future[A]): A = Await.result(value, 10.seconds)
   private def accepted[E, A](value: Either[E, A]): A =
     value.fold(error => fail(s"Unexpected replacement rejection: $error"), identity)

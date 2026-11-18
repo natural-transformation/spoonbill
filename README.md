@@ -61,10 +61,12 @@ the managed IO application.
 
 * [Docs](https://natural-transformation.com/open-source/spoonbill/overview)
 * [User guide](docs/user-guide.adoc)
+* [Runtime architecture decisions](docs/adr/README.md)
+* [Future effect instances and migration](docs/effect-future-instances.md)
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
 * [Qualifying a payload adapter](docs/recovery-adapter-qualification.md) — portable UI recovery for external snapshot storage
-* [Migrating to 11.0: the extension contract](docs/migration-v11.md)
+* [Migrating to 11.0: extensions, Future instances and streams](docs/migration-v11.md)
 * [Migrating to 10.0: Avocet 2 and portable UI recovery](docs/migration-v10.md)
 * [Migrating to 8.0: bounded resources and retention](docs/migration-v8.md)
 * [Migrating to 7.0: explicit state updates](docs/migration-v7.md)

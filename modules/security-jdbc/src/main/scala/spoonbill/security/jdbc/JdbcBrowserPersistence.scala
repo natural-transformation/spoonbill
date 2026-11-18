@@ -14,7 +14,7 @@ import scala.util.Using
 import scala.util.control.NonFatal
 import spoonbill.Qsid
 import spoonbill.auth.*
-import spoonbill.effect.Effect
+import spoonbill.effect.{DrainGateMachine, Effect}
 import spoonbill.security.Identifiers.{ConnectionId, ViewOwnerId, ViewSessionId}
 import spoonbill.security.Versions.ViewOwnershipEpoch
 import spoonbill.security.ViewFence
@@ -149,14 +149,18 @@ final class JdbcBrowserPersistence[F[_], P](
   /** True while the background clock renewal runs. */
   private[jdbc] def renewingInBackground: Boolean = renewalTask.exists(task => !task.isShutdown)
   private val lifecycle        = new Object
-  private var stopped          = false
-  private var activeOperations = 0
-  private var cleanupPending   = 0
-  private var activeChecks     = 0
+  private final case class AdmissionLanes(
+    ordinary: DrainGateMachine.State,
+    cleanup: DrainGateMachine.State,
+    checks: DrainGateMachine.State
+  )
+  private var lanes = AdmissionLanes(DrainGateMachine.initial, DrainGateMachine.initial, DrainGateMachine.initial)
   // With concurrent checks, checks have their own admission lane, so they never
   // make ungated host calls fail with capacity errors. The lane matches the
   // coordinator's read cap: the setting's cap plus one for maintenance.
   private val checkBudget = concurrentChecks.fold(limits.pendingJobs)(_.maxConcurrentChecks + 1)
+  private val ordinaryAdmissionBudget = Some(limits.pendingJobs)
+  private val checkAdmissionBudget = Some(checkBudget)
   // Set only when a transaction observes the retention row already present.
   private val enrolled = new AtomicBoolean()
   private val realmKey = s"spoonbill-auth:${realm.length}:$realm$namespace"
@@ -219,14 +223,27 @@ final class JdbcBrowserPersistence[F[_], P](
 
   /** Admission lanes: cleanup is reserved, and checks have their own budget when concurrent. */
   private enum Lane { case Ordinary, Cleanup, Check }
+  private def laneState(lane: Lane): DrainGateMachine.State = lane match {
+    case Lane.Ordinary => lanes.ordinary
+    case Lane.Cleanup  => lanes.cleanup
+    case Lane.Check    => lanes.checks
+  }
+  /** The caller holds lifecycle, so all lane closure and waiter ownership remain atomic. */
+  private def updateLane(lane: Lane, state: DrainGateMachine.State): Unit = {
+    lanes = lane match {
+      case Lane.Ordinary => lanes.copy(ordinary = state)
+      case Lane.Cleanup  => lanes.copy(cleanup = state)
+      case Lane.Check    => lanes.copy(checks = state)
+    }
+  }
+  private def allDrained: Boolean =
+    DrainGateMachine.drained(lanes.ordinary) && DrainGateMachine.drained(lanes.cleanup) &&
+      DrainGateMachine.drained(lanes.checks)
+
   private def finish(lane: Lane): Unit = {
     val waiters = lifecycle.synchronized {
-      lane match {
-        case Lane.Ordinary => activeOperations -= 1
-        case Lane.Cleanup  => cleanupPending -= 1
-        case Lane.Check    => activeChecks -= 1
-      }
-      if (stopped && activeOperations == 0 && cleanupPending == 0 && activeChecks == 0) {
+      updateLane(lane, DrainGateMachine.finished(laneState(lane)))
+      if (allDrained) {
         val result = closeWaiters; closeWaiters = Nil; result
       } else Nil
     }
@@ -237,20 +254,17 @@ final class JdbcBrowserPersistence[F[_], P](
   )(body: => F[Either[TransactionFailure, A]]): F[Either[TransactionFailure, A]] =
     F.uncancelable {
       F.flatMap(F.delay(lifecycle.synchronized {
-        val (active, budget) = lane match {
-          case Lane.Ordinary => (activeOperations, limits.pendingJobs)
-          case Lane.Cleanup  => (cleanupPending, limits.pendingJobs)
-          case Lane.Check    => (activeChecks, checkBudget)
+        val before = laneState(lane)
+        val budget = lane match {
+          case Lane.Ordinary | Lane.Cleanup => ordinaryAdmissionBudget
+          case Lane.Check                  => checkAdmissionBudget
         }
-        if (stopped) Some(OperationError.ScopeClosed)
-        else if (active >= budget) Some(OperationError.CapacityExceeded)
-        else {
-          lane match {
-            case Lane.Ordinary => activeOperations += 1
-            case Lane.Cleanup  => cleanupPending += 1
-            case Lane.Check    => activeChecks += 1
-          }
-          None
+        DrainGateMachine.admission(before, budget) match {
+          case DrainGateMachine.Admission.Closed => Some(OperationError.ScopeClosed)
+          case DrainGateMachine.Admission.AtCapacity => Some(OperationError.CapacityExceeded)
+          case DrainGateMachine.Admission.Accepted =>
+            updateLane(lane, DrainGateMachine.entered(before))
+            None
         }
       })) {
         case Some(error) => F.pure(Left(TransactionFailure.Rejected(error)))
@@ -366,8 +380,7 @@ final class JdbcBrowserPersistence[F[_], P](
     }
   }
   private val browser =
-    new JdbcBrowserSessions(source, realm, namespace, () => now(), hooks, limits.activeViewsPerBinding)
-  browser.useManagedLifecycle()
+    new JdbcBrowserSessions(source, realm, namespace, () => now(), hooks, limits.activeViewsPerBinding, managedLifecycle = true)
 
   /** Explicit deployment migration; never run implicitly from a request. */
   def initialize(connection: Connection): Unit = {
@@ -1868,8 +1881,9 @@ final class JdbcBrowserPersistence[F[_], P](
     renewalTask.foreach(_.shutdownNow())
     val drained = F.promise[Unit] { callback =>
       val finished = lifecycle.synchronized {
-        stopped = true
-        if (activeOperations == 0 && cleanupPending == 0 && activeChecks == 0) true
+        lanes = AdmissionLanes(DrainGateMachine.close(lanes.ordinary), DrainGateMachine.close(lanes.cleanup),
+          DrainGateMachine.close(lanes.checks))
+        if (allDrained) true
         else { closeWaiters = callback :: closeWaiters; false }
       }
       if (finished) callback(Right(()))

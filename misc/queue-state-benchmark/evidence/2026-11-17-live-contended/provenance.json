@@ -1,0 +1,95 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "live-owned-threads-with-self-allocation-control-v2",
+  "baselineRevision": "57d7a8b4d436786b1e228f0738d786f571a86a59",
+  "baselineIntegratedRevision": "364dd708593c3fdd9b0fcdab97f7e33565be7fcb",
+  "candidateIntegratedQueueRevision": "ad87db3dbbe73af648cf0da7b2116e3b21517d1e",
+  "integratedRevisionNote": "All recorded Queue/QueueMachine/Effect/CompletionLatchMachine source hashes match these integrated revisions, allowing reproduction without the isolated worktree commit history.",
+  "candidateQueueNote": "Queue sources include the separately validated cancellation replay fix; that edge is not exercised by this workload. Exact source hashes identify the measured implementation.",
+  "baselineSources": {
+    "modules/effect/src/main/scala/korolev/effect/Queue.scala": "a0aa447e9d93e1502770a78693b143a404f96af9029531a08d7c5153bfc49b3b",
+    "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": null,
+    "modules/effect/src/main/scala/korolev/effect/Effect.scala": "0815398f2c212de37ea15e785aeb2a5a60020f8e1ed921be0e71f5d516124db7",
+    "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0"
+  },
+  "candidateSources": {
+    "modules/effect/src/main/scala/korolev/effect/Queue.scala": "3f3f012351bcd3b82ba494f38eec5087aa514bdea2ee4f8d71d4676426a794b4",
+    "modules/effect/src/main/scala/korolev/effect/QueueMachine.scala": "3db76a6cc96070cd22e9c7cfb878c74376bda34280f7417b893ef6a95978913d",
+    "modules/effect/src/main/scala/korolev/effect/Effect.scala": "0815398f2c212de37ea15e785aeb2a5a60020f8e1ed921be0e71f5d516124db7",
+    "modules/effect/src/main/scala/korolev/effect/CompletionLatchMachine.scala": "7b01b8ac08c12c70cd8e3572afd3646fe2ed0caf9fec217651c476cac74e4de0"
+  },
+  "fixtureHashes": {
+    "QueueLiveAllocationBenchmark.scala": "4f606c4694dfef2c300b7358780a8ca064f1e20f6b7e3ae4d8920ef89daf6b45",
+    "prepare.sh": "092c9bef2ef366d31674525a88af0c194b2aafa37b728d83f272de3060334756",
+    "run.sh": "adade30b308ac84fffacc15c61c39e87e21e5e9c0418b1b7783b85c4183962a0",
+    "analyze.mjs": "397361a1cd7e5357aaa52cb3a49f6a161a3d03f167805e425e7e0463d870e7aa",
+    "analyze-tests.mjs": "6968a8bdb46a684b29e7fc4554dad02f76b8f1adb0f898d8064ea4157dc48601"
+  },
+  "runnerAtCollectionSha256": "7b5366a6fcfef8c8e6fb60eb97a46fb4a87f424ed45bad40224b880f690415e0",
+  "runnerValidationNote": "Duplicate/empty workload rejection was added after collection; the retained collection runner and unique contended invocation are unchanged.",
+  "flakeSha256": "91cbfc15f544ab3e1b9a9a8101043811ef232a58dbe8c9b0136a36767fa55f90",
+  "flakeLockSha256": "76b66faedcba7922a095a732ecf8bf03e53d179170441b1d93c931afef2af3e4",
+  "repetitions": 3,
+  "warmupSeconds": 3,
+  "measurementSeconds": 3,
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "javaVersion": "openjdk version \"21.0.8\" 2025-07-15 LTS\nOpenJDK Runtime Environment Zulu21.44+17-CA (build 21.0.8+9-LTS)\nOpenJDK 64-Bit Server VM Zulu21.44+17-CA (build 21.0.8+9-LTS, mixed mode, sharing)",
+  "runOrder": [
+    "contended-baseline-1",
+    "contended-candidate-1",
+    "contended-candidate-2",
+    "contended-baseline-2",
+    "contended-baseline-3",
+    "contended-candidate-3"
+  ],
+  "counterBoundary": "All five warmup and five measured worker threads remain alive through both final snapshots; release and joins happen afterward.",
+  "crossCheck": "Global delta must cover main plus all measured worker self deltas; every measured thread also allocates an escaping 65536-byte control array.",
+  "globalMinusSelfBytes": [
+    {
+      "label": "contended-baseline-1",
+      "bytes": 232
+    },
+    {
+      "label": "contended-baseline-2",
+      "bytes": 232
+    },
+    {
+      "label": "contended-baseline-3",
+      "bytes": 264
+    },
+    {
+      "label": "contended-candidate-1",
+      "bytes": 232
+    },
+    {
+      "label": "contended-candidate-2",
+      "bytes": 232
+    },
+    {
+      "label": "contended-candidate-3",
+      "bytes": 232
+    }
+  ],
+  "rawDirectory": "/tmp/spoonbill-queue-model-evidence/comparison-live-contended",
+  "rawTrialHashes": {
+    "contended-baseline-1.jsonl": "5d86b1ac4c03bfe93693272c6a8dbdc185b3b4ee454a0f1ffd2b003595acab70",
+    "contended-baseline-2.jsonl": "b7005a9f70196fabb803a98d5740d0be9a1988d002b0214b9790f3f26b958e04",
+    "contended-baseline-3.jsonl": "7697cfb4af90bc546f0b9ec5638c1d60a1ecd95111be788cf48288f68ec1fc03",
+    "contended-candidate-1.jsonl": "2b859fd6b53290468459422fb78cf939de087098aceefaa48a75cf6c1a9e6f27",
+    "contended-candidate-2.jsonl": "00dc1b1c07396fbcc84789f19a7d7a65f2100f5e700765b42fc4ea39477043ee",
+    "contended-candidate-3.jsonl": "0b8abbfcf92c29464e4a6713be2081bb77c487177378525e70ce2c723d2cbcd1"
+  },
+  "supersedes": "../2026-11-17/ contended allocation only; all original rows retained",
+  "limitations": [
+    "synthetic Queue workload, no application-level throughput claim",
+    "shared developer machine, no CPU affinity",
+    "JVM-wide allocation includes fixture/control overhead",
+    "three trials and overlapping ranges, no confidence interval",
+    "warmup/measurement threads are released after the measured drain; thread-exit time is excluded in both variants"
+  ]
+}

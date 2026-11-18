@@ -269,12 +269,23 @@ package object pekko {
     input: Stream[F, Bytes],
     setupTimeout: FiniteDuration
   )(implicit materializer: Materializer, ec: ExecutionContext) {
-    private sealed trait State
-    private case object Waiting extends State
-    private final case class Prepared(release: () => F[Unit]) extends State
-    private case object Attached extends State
-    private case object Abandoned extends State
-    private var state: State = Waiting
+    import spoonbill.internal.SetupOwnershipMachine
+    import SetupOwnershipMachine.{Command, Event, State}
+    private type Release = () => F[Unit]
+    private final case class Held(state: State, prepared: Option[Release])
+    private var held = Held(State.Waiting, None)
+
+    /** Called under this ownership monitor; response handles follow the pure transition. */
+    private def advance(event: Event, incoming: Option[Release] = None): (Vector[Command], Option[Release]) = {
+      val before = held
+      val (next, commands) = SetupOwnershipMachine.step(before.state, event)
+      val prepared =
+        if (commands.contains(Command.RetainPrepared)) incoming
+        else if (next == State.Prepared) before.prepared
+        else None
+      held = Held(next, prepared)
+      (commands, before.prepared)
+    }
     private var cancelTimer: () => Unit = () => ()
     private val releaseInput = SpoonbillWebSocketResponse.releaseOnce[F](() => input.cancel())
     private val deadline: FiniteDuration = request.header[`Timeout-Access`].map(_.timeoutAccess.timeout) match {
@@ -285,25 +296,25 @@ package object pekko {
       def run(): Unit = Effect[F].runAsync(abort())(_ => ())
     })
     synchronized {
-      if (state == Abandoned) scheduled.cancel()
+      if (held.state == State.Abandoned) scheduled.cancel()
       else cancelTimer = () => { scheduled.cancel(); () }
     }
 
     def attached(): Unit = synchronized {
-      state match {
-        case Prepared(_) => state = Attached; cancelTimer()
-        case _ => throw new TimeoutException("WebSocket setup ended before materialization")
-      }
+      if (advance(Event.Attach)._1.contains(Command.Transfer)) cancelTimer()
+      else throw new TimeoutException("WebSocket setup ended before materialization")
     }
 
     def abort(): F[Unit] = Effect[F].delay {
       synchronized {
-        val cleanup = state match {
-          case Waiting => releaseInput
-          case Prepared(release) => () => releaseInput() *> Effect[F].delayAsync(release()).recover { case NonFatal(_) => () }
+        val (commands, prepared) = advance(Event.Abandon)
+        val cleanup = commands.headOption match {
+          case Some(Command.ReleaseInput) => releaseInput
+          case Some(Command.ReleasePrepared) =>
+            val release = prepared.get
+            () => releaseInput() *> Effect[F].delayAsync(release()).recover { case NonFatal(_) => () }
           case _ => () => Effect[F].unit
         }
-        if (state != Attached) state = Abandoned
         cancelTimer()
         cleanup
       }
@@ -311,10 +322,7 @@ package object pekko {
 
     def finish(response: SpoonbillWebSocketResponse[F])(http: => Future[HttpResponse]): Future[HttpResponse] = {
       val accepted = synchronized {
-        state match {
-          case Waiting => state = Prepared(response.release); true
-          case _ => false
-        }
+        advance(Event.Prepare, Some(response.release))._1.contains(Command.RetainPrepared)
       }
       if (!accepted)
         Effect[F].toFuture(Effect[F].delayAsync(response.release()).recover { case NonFatal(_) => () })

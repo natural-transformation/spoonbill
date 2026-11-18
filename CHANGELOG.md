@@ -2,11 +2,24 @@
 
 ## Unreleased
 
-Extensions get one contract for legacy and guarded sessions. This changes two
-signatures and several behaviours, so the next release is a major one. Only
-applications that register extensions are affected. See the
-[extension contract design](docs/extension-contract-design.md) and the
-[migration guide](docs/migration-v11.md).
+The next major release changes the extension contract, Future effect instances
+and stream behavior. See the [migration guide](docs/migration-v11.md).
+
+- **Breaking:** Replace direct construction or subclassing of `Effect.FutureEffect`
+  with a built-in instance or a composed `Effect[Future]`, and recompile the
+  consumer. See [Future effect instances](docs/effect-future-instances.md).
+- `Hub` applies lossless backpressure at its configured capacity. Akka and
+  Pekko fanout publishers buffer up to 128 elements per subscriber.
+- `Stream.sort` preserves FIFO order up to the per-rack capacity (default 128).
+  Overflow fails all racks with `StreamSortOverflowException`. `Stream.buffer`
+  drains accepted data before reporting upstream completion or failure.
+- `AsyncResourcePool.use` returns a managed loan when the callback fails or
+  is canceled.
+- Graceful `Queue.stop()` releases blocked producers and drains accepted values.
+  A late fanout subscriber in Akka or Pekko receives `onSubscribe` followed by
+  `onError` when registration is refused.
+- Idle pool cleanup retains failed close attempts for retry. Canceling the
+  cleanup caller leaves any close already in progress owned by the pool.
 
 - **Breaking:** `Extension.Handlers.onDestroy` takes the last state:
   `onDestroy(lastState)`. The view is closed before it runs, so the access

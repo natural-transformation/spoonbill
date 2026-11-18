@@ -1,8 +1,8 @@
 import { ModifyDomProcedure, domOperandWidths } from './protocol.js';
+import {initialSensitive, sensitiveStep, sensitiveTerminal, sensitiveBlocked, departurePending,
+  navigationPending, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable} from './bridge-machine.js';
 
 const REGION_ATTRIBUTE = 'data-sb-region';
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const NAME_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
 // A reconnect may reuse an empty marker. Closed roots cannot be attached twice;
 // keep only weak DOM ownership, and clear contents on every instance's destroy.
 const REGION_ROOTS = new WeakMap();
@@ -16,28 +16,23 @@ export class SensitiveRegions {
     this._acknowledge = acknowledge;
     this._retired = retired;
     this._resolveElement = resolveElement;
-    this._connection = null;
+    this._lifecycle = initialSensitive();
     this._active = new Map();
     this._roots = REGION_ROOTS;
-    this._seen = new Set();
-    this._closed = false;
-    this._navigationBarrier = null;
-    this._navigationPermanent = false;
-    this._departureBarrier = null;
-    this._departureCounter = 0;
     this._navigation = () => this.blockNavigation();
     this._departure = () => {
-      if (this._closed || this._navigationPermanent) return;
-      if (this._departureCounter >= Number.MAX_SAFE_INTEGER) { this.blockNavigation(); return; }
-      this._departureBarrier = ++this._departureCounter;
+      const previous = this._lifecycle;
+      const next = sensitiveStep(previous, {type: 'departure'});
+      if (next === previous) return;
+      this._lifecycle = next;
       this.clearAll();
-      recoverDeparture(this._departureBarrier);
+      if (next.navigation.phase !== 'permanent') recoverDeparture(this._lifecycle.departure.pending);
     };
-    // Spoonbill's history callback runs first and establishes the counter. If
-    // it was suppressed, no matching server barrier can arrive on this Bridge.
+    // The Bridge's history callback establishes its counter before this guard.
+    // Suppressed history has no matching server barrier and remains fenced.
     this._history = () => {
-      if (this._navigationBarrier === null) this.blockNavigation();
-      else this.clearAll();
+      this._lifecycle = sensitiveStep(this._lifecycle, {type: 'history'});
+      this.clearAll();
     };
     this._visibility = () => this.reconcile();
     window.addEventListener('pagehide', this._navigation);
@@ -61,27 +56,22 @@ export class SensitiveRegions {
   }
 
   show(connection, presentation, region, purpose, remainingMillis, payload, expiresAtMillis) {
-    const validBinding = typeof connection === 'string' && UUID_PATTERN.test(connection) &&
-      typeof presentation === 'string' && UUID_PATTERN.test(presentation) &&
-      typeof region === 'string' && NAME_PATTERN.test(region);
+    const validBinding = validSensitiveBinding(connection, presentation, region);
     if (!validBinding) return;
     const binding = `${connection}:${presentation}:${region}`;
     try {
-      if (this._navigationPermanent || this._navigationBarrier !== null || this._departureBarrier !== null) {
-        if (this._seen.size < 256) this._seen.add(presentation);
+      if (sensitiveBlocked(this._lifecycle)) {
+        this._lifecycle = sensitiveStep(this._lifecycle, {type: 'rejected-presentation', presentation});
         throw new Error('Sensitive navigation pending');
       }
       const now = Date.now();
-      if (this._closed || (this._connection !== null && this._connection !== connection) ||
-          typeof purpose !== 'string' || !NAME_PATTERN.test(purpose) ||
-          !Number.isInteger(remainingMillis) || remainingMillis <= 0 || remainingMillis > 300000 ||
-          !Number.isSafeInteger(expiresAtMillis) || expiresAtMillis <= now ||
-          this._seen.has(presentation) || this._seen.size >= 256)
+      if (!sensitivePresentationAllowed(this._lifecycle, connection, presentation, purpose,
+          remainingMillis, expiresAtMillis, now))
         throw new Error('Sensitive presentation rejected');
       this._validatePayload(payload);
       const hosts = document.querySelectorAll(`sb-secret[${REGION_ATTRIBUTE}="${region}"]`);
       if (hosts.length !== 1 || hosts[0].childNodes.length !== 0 ||
-          (!this._active.has(region) && this._active.size >= 4))
+          !regionCapacityAvailable(this._active.has(region), this._active.size))
         throw new Error('Sensitive region unavailable');
       const host = hosts[0];
       const old = this._active.get(region);
@@ -91,8 +81,7 @@ export class SensitiveRegions {
         root = host.attachShadow({mode: 'closed'});
         this._roots.set(host, root);
       }
-      this._connection = connection;
-      this._seen.add(presentation);
+      this._lifecycle = sensitiveStep(this._lifecycle, {type: 'installed-presentation', connection, presentation});
       const record = {connection, presentation, region, host, root,
         deadline: Math.min(now + remainingMillis, expiresAtMillis), timer: null};
       this._active.set(region, record);
@@ -206,7 +195,7 @@ export class SensitiveRegions {
   }
 
   clear(connection, presentation, region) {
-    if (connection !== this._connection) return;
+    if (connection !== this._lifecycle.connection) return;
     if (presentation === '' && region === '') { this.clearAll(false); return; }
     const record = this._active.get(region);
     if (record && record.presentation === presentation) this._clearRecord(record, false);
@@ -216,26 +205,27 @@ export class SensitiveRegions {
     for (const record of this._active.values()) this._clearRecord(record, notify);
   }
 
+  get lifecycle() { return this._lifecycle; }
+
   beginNavigation(counter) {
-    if (!this._navigationPermanent) this._navigationBarrier = counter;
+    this._lifecycle = sensitiveStep(this._lifecycle, {type: 'begin-navigation', counter});
     this.clearAll();
   }
 
   completeNavigation(counter) {
-    if (!this._navigationPermanent && this._navigationBarrier === counter) this._navigationBarrier = null;
+    this._lifecycle = sensitiveStep(this._lifecycle, {type: 'complete-navigation', counter});
   }
 
-  get departurePending() { return this._departureBarrier !== null; }
-  get navigationPending() { return this._navigationBarrier !== null; }
-  get terminal() { return this._closed || this._navigationPermanent; }
+  get departurePending() { return departurePending(this._lifecycle); }
+  get navigationPending() { return navigationPending(this._lifecycle); }
+  get terminal() { return sensitiveTerminal(this._lifecycle); }
 
   completeDeparture(counter) {
-    if (!this._closed && !this._navigationPermanent && this._departureBarrier === counter)
-      this._departureBarrier = null;
+    this._lifecycle = sensitiveStep(this._lifecycle, {type: 'complete-departure', counter});
   }
 
   blockNavigation() {
-    this._navigationPermanent = true;
+    this._lifecycle = sensitiveStep(this._lifecycle, {type: 'block-navigation'});
     this.clearAll();
   }
 
@@ -271,7 +261,7 @@ export class SensitiveRegions {
   }
 
   destroy() {
-    this._closed = true;
+    this._lifecycle = sensitiveStep(this._lifecycle, {type: 'close'});
     this.clearAll(false);
     if (this._observer) this._observer.disconnect();
     this._observing = false;
@@ -279,6 +269,6 @@ export class SensitiveRegions {
     window.removeEventListener('beforeunload', this._departure);
     window.removeEventListener('popstate', this._history);
     document.removeEventListener('visibilitychange', this._visibility);
-    this._seen.clear();
+    this._lifecycle = sensitiveStep(this._lifecycle, {type: 'forget'});
   }
 }

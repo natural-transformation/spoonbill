@@ -108,6 +108,31 @@ class GuardsSpec extends AnyFlatSpec with Matchers {
     await(drained)
   }
 
+  it should "settle every concurrent drain when an admitted write fails and keep admission closed" in {
+    val settled = Promise[Unit]()
+    val initial = GuardState(1, permitted = true)
+    val underlying = new StateManager[Future] {
+      private val delegate = StateManager.cached[Future](Map(Id.TopLevel -> initial))
+      def snapshot: Future[StateManager.Snapshot] = delegate.snapshot
+      def read[T: StateDeserializer](nodeId: Id): Future[Option[T]] = delegate.read[T](nodeId)
+      def write[T: StateSerializer](nodeId: Id, value: T): Future[Unit] = settled.future
+      def delete(nodeId: Id): Future[Unit] = Future.unit
+    }
+    val guarded = new GuardedStateManager[Future, GuardState](underlying, _ => Future.unit)
+    val write = guarded.write(Id.TopLevel, initial)
+    val first = guarded.closeAndDrain()
+    val second = guarded.closeAndDrain()
+    first.isCompleted shouldBe false
+    second.isCompleted shouldBe false
+    val failed = new IllegalStateException("synthetic admitted write failure")
+    settled.failure(failed)
+    await(write.failed) shouldBe failed
+    await(first)
+    await(second)
+    await(guarded.closeAndDrain())
+    intercept[SessionAccessDenied](await(guarded.delete(Id.TopLevel)))
+  }
+
   it should "check a top-level write's current and candidate presentation with one observation" in {
     val current    = new AtomicBoolean(true)
     val single     = new AtomicInteger(0)

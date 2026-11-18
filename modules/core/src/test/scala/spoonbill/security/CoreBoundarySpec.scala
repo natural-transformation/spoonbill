@@ -9,7 +9,13 @@ class CoreBoundarySpec extends AnyFlatSpec with Matchers {
     typeChecks("val runtime: spoonbill.effect.Effect[Option] = null") shouldBe false
     typeChecks("val runtime: spoonbill.server.BrowserSessionToken = null") shouldBe false
     typeChecks("val runtime: spoonbill.auth.BrowserCapabilityScope[String] = null") shouldBe false
+    typeChecks("val runtime: spoonbill.sensitive.SensitivePayload = null") shouldBe false
     typeChecks("val runtime: spoonbill.security.jdbc.JdbcBrowserSessions = null") shouldBe false
     typeChecks("val runtime: org.apache.pekko.actor.ActorSystem = null") shouldBe false
+  }
+
+  it should "provide sensitive metadata without the plaintext runtime" in {
+    typeChecks("val metadata: spoonbill.sensitive.SensitivePresentation = null") shouldBe true
+    typeChecks("val error: spoonbill.sensitive.SensitiveError = spoonbill.sensitive.SensitiveError.Closed") shouldBe true
   }
 }

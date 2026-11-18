@@ -29,7 +29,7 @@ import spoonbill.snapshot.{SnapshotIdentity, SnapshotKeys, ViewSnapshotError}
   * fences, fresh snapshots, host transaction atomicity and frontend call counts.
   */
 class JdbcOperationOutcomesSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private val initialTime = Instant.parse("2026-10-08T12:00:00.123456789Z")
   private val waitSeconds = 10L
   private def accepted[E, A](value: Either[E, A]): A = value.fold(error => fail(error.toString), identity)

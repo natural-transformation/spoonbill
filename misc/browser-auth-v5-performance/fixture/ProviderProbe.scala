@@ -22,7 +22,7 @@ import spoonbill.security.jdbc.*
 import spoonbill.server.BrowserSessionToken
 
 object ProviderProbe {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private val fixedTime = Instant.parse("2026-10-11T12:00:00Z")
   private val expiry = fixedTime.plusSeconds(86400)
   private val binding = "b" * 43

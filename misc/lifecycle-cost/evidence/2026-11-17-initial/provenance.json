@@ -1,0 +1,46 @@
+{
+  "recordedOn": "2026-11-17",
+  "protocol": "lifecycle-cost-v1",
+  "beforeRevision": "97679c6937e3669a08e4506df3928e34101af0ca",
+  "afterBaseRevision": "97679c6937e3669a08e4506df3928e34101af0ca",
+  "candidatePatches": {
+    "variants/coordinator-initial.patch": "8543347f013ad2ba398e10e63f7bfef36680becae081f5601fd532c67ad90264",
+    "variants/timer-render.patch": "2be44d38424f859e822aabbd7418d09a616897b71a90e75b867510df4f8f042c"
+  },
+  "afterSourceHashes": {
+    "modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGate.scala": "85a255f30de70c433a52ef4bc41b7fa88fffcbe134ca68369f16e181322452e1",
+    "modules/spoonbill/src/main/scala/korolev/auth/BrowserCoordinatorGateMachine.scala": "e1303b4ca9002a7ad81d1b5a03da82cf19674dffbd4e8532c9a357691dd9e0f8",
+    "modules/spoonbill/src/main/scala/korolev/internal/TimerRuntime.scala": "59d52b7f24c076cd1bf3c9cc6591b0d032d2c8d0996fff9ad225e99c4f5b53ea",
+    "modules/spoonbill/src/main/scala/korolev/internal/TimerRenderMachine.scala": "225897dd0143e0176a38fcd5cc80c83d9d04fbec3e5d3f288e5adad39fbe19e8"
+  },
+  "fixtureHashes": {
+    "LifecycleBenchmark.scala": "22b1322636cbf1e0ed29aa4ba92c0ccd5067e502a70251b080500048375c6b0d",
+    "prepare.sh": "9cb6440b9527ff94c315356683a6d2e11df51fea234bd3698dd46ab1132eb03b",
+    "run.sh": "e0533fe7763e1eff1f35198becc977af0b5146874e22c44cd82562d9bf18e5d0",
+    "analyze.mjs": "685b6a3444ec6e8420bcd785f8420ee19f32696bf662f0fe282a193cbc0859d6"
+  },
+  "rawSha256": "a27ff60ea191e992face87c3e73c887fa1b0ad087b50e2a998f7b0035fe114c7",
+  "host": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpu": "Apple M4 Max",
+    "logicalCpus": 16
+  },
+  "jvmFlags": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:ActiveProcessorCount=8"
+  ],
+  "concurrency": "Exclusive coordinated window; other agents/root paused all builds and numerical probes",
+  "limits": [
+    "Synthetic same-key coordinator turns and timer render bookkeeping, not server throughput or tail latency",
+    "Three independent JVM trials per variant/cell; medians/ranges, no confidence interval",
+    "Fixed timer clock excludes wake delivery; existing runtime tests verify wake and cancellation contracts"
+  ],
+  "outcome": {
+    "timer-render": "Passed observed throughput/allocation gates in all four timer cells",
+    "coordinator-initial": "Rejected: write4 throughput/allocation, read1 allocation, read4 throughput/allocation"
+  },
+  "toolingRevision": "8bf89eaf0331fdbcb7a9a8f9cfe845c5ff0d9600"
+}

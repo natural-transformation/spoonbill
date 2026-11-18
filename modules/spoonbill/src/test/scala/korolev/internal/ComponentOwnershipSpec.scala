@@ -12,7 +12,7 @@ import spoonbill.state.StateManager
 import spoonbill.state.javaSerialization.*
 
 class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future]               = new Effect.FutureEffect
+  private given Effect[Future]               = Effect.futureEffect
   private def result[A](value: Future[A]): A = Await.result(value, 2.seconds)
 
   "Component ownership" should "hold a successor behind an admitted write, notification, and deletion" in {
@@ -93,6 +93,25 @@ class ComponentOwnershipSpec extends AnyFlatSpec with Matchers {
     worker.drain()
     result(finished)
     result(storage.read[Int](Id.TopLevel)) shouldBe Some(42)
+  }
+
+  it should "join concurrent whole-view drains without releasing an admitted turn early" in {
+    val worker = new Worker
+    val owners = new ComponentOwnership(StateManager.cached[Future](), new Reports, worker)
+    val owner = owners.bind(Id.TopLevel, false)
+    val turn = owner.admit().get
+    val first = owners.closeAndDrain()
+    val second = owners.closeAndDrain()
+    worker.drain()
+    first.isCompleted shouldBe false
+    second.isCompleted shouldBe false
+    owner.admit() shouldBe None
+    turn.release()
+    worker.drain()
+    result(first)
+    result(second)
+    result(owners.closeAndDrain())
+    owner.isActive shouldBe false
   }
 
   it should "drain retired children that have already left the current component tree" in {

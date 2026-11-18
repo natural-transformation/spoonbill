@@ -17,10 +17,10 @@
 package spoonbill.internal
 
 import spoonbill.*
-import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import spoonbill.*
 import spoonbill.Context.*
-import spoonbill.effect.{Effect, Queue, Reporter, Scheduler}
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, StateCell}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.Frontend.DomEventMessage
 import spoonbill.state.StateDeserializer
@@ -76,6 +76,16 @@ final class ApplicationInstance[
     captureProducedAuthorization.fold(() => authorizeProduced.fold(frontend.authorizeInteraction())(check => check(state)))(_(state))
 
   private val devMode       = new DevMode.ForRenderContext(sessionId.toString)
+  private val lifecycle = new StateCell(ApplicationLifecycleMachine.initial)
+  private val initialized = scala.concurrent.Promise[Unit]()
+
+  private def ensureActive(): Unit =
+    if (!ApplicationLifecycleMachine.active(lifecycle.get)) throw new spoonbill.server.SessionAccessDenied
+
+  private def initializationResult: F[Unit] = Effect[F].promise { callback =>
+    initialized.future.onComplete(result => callback(result.toEither))(ExecutionContext.parasitic)
+  }
+
   private val eventCounters = new TrieMap[(Id, String), Int]()
   private val stateQueue    = Queue[F, (Id, Any, Option[Effect.Promise[Unit]])]()
   private val publishedEventHandlers = new AtomicReference(Map.empty[EventId, Vector[DomEventMessage => F[Boolean]]])
@@ -98,6 +108,7 @@ final class ApplicationInstance[
   private var renderAccepted = false
 
   private def acceptRender(): Unit = {
+    ensureActive()
     renderAccepted = true
     timers.acceptTimerRender()
   }
@@ -171,6 +182,7 @@ final class ApplicationInstance[
                case None => frontend.changePageUrl(rootPath ++ uri)
              }}
       _ <- Effect[F].delay {
+             ensureActive()
              timers.beginRender()
              // Prepare render context
              if (renderAccepted) {
@@ -214,6 +226,7 @@ final class ApplicationInstance[
 
   private def awaitReadiness: F[Unit] =
     awaitReady.fold(Effect[F].unit)(ready => Effect[F].delayAsync(ready()))
+      .flatMap(_ => Effect[F].delay(ensureActive()))
 
   private def beforeInteraction: F[Unit] =
     awaitReadiness.flatMap(_ => frontend.authorizeInteraction())
@@ -301,6 +314,11 @@ final class ApplicationInstance[
   private[spoonbill] def closeAdmission(): Unit = topLevelComponentInstance.closeAdmission()
 
   def destroy(): F[Unit] = for {
+    _ <- Effect[F].delay {
+           lifecycle.modify(ApplicationLifecycleMachine.destroy)
+           initialized.tryFailure(new spoonbill.server.SessionAccessDenied)
+           ()
+         }
     _ <- stateQueue.close()
     // A closed queue is not rendered any more. The transitions that still wait
     // for their render fail here, so none of them waits for ever.
@@ -316,17 +334,44 @@ final class ApplicationInstance[
   } yield ()
 
   private def startTimersWhenReady(): F[Unit] = awaitReady match {
-    case None => Effect[F].delay(timers.start())
+    case None => Effect[F].delay { ensureActive(); timers.start() }
     case Some(_) =>
       Effect[F].start {
-        awaitReadiness.flatMap(_ => Effect[F].delay(timers.start())).recover {
+        awaitReadiness.flatMap(_ => Effect[F].delay { ensureActive(); timers.start() }).recover {
           case _: spoonbill.server.SessionAccessDenied => ()
           case error                                   => reporter.error("Unable to start render timers", error)
         }
       }.unit
   }
 
-  def initialize()(implicit ec: ExecutionContext): F[Unit] = {
+  def initialize()(implicit ec: ExecutionContext): F[Unit] = Effect[F].delayAsync {
+    val ownsStart = new AtomicBoolean(false)
+    Effect[F].guarantee(Effect[F].delayAsync {
+      lifecycle.modify(ApplicationLifecycleMachine.initialize) match {
+        case ApplicationLifecycleMachine.Initialization.Start =>
+          ownsStart.set(true)
+          Effect[F].delayAsync(initializeOnce()).flatMap { _ =>
+            if (!lifecycle.modify(ApplicationLifecycleMachine.started))
+              throw new spoonbill.server.SessionAccessDenied
+            initialized.trySuccess(())
+            initializationResult
+          }.recoverF { case error =>
+            lifecycle.modify(ApplicationLifecycleMachine.failed)
+            initialized.tryFailure(error)
+            initializationResult
+          }
+        case ApplicationLifecycleMachine.Initialization.Reject => Effect[F].fail(new spoonbill.server.SessionAccessDenied)
+        case ApplicationLifecycleMachine.Initialization.Join => initializationResult
+      }
+    })(Effect[F].delay {
+      // Native cancellation must also release callers joining startup.
+      if (ownsStart.get() && lifecycle.modify(ApplicationLifecycleMachine.failed))
+        initialized.tryFailure(new spoonbill.server.SessionAccessDenied)
+      ()
+    })
+  }
+
+  private def initializeOnce()(implicit ec: ExecutionContext): F[Unit] = {
 
     // If dev mode is enabled and active
     // CSS should be reloaded
@@ -339,6 +384,7 @@ final class ApplicationInstance[
       for {
         snapshot <- topLevelComponentInstance.stateSnapshot
         _ <- Effect[F].delay {
+               ensureActive()
                timers.beginRender()
                topLevelComponentInstance.applyRenderContext((), renderContext, snapshot)
                // Avocet's DiffRenderContext expects the freshly-rendered document to be finalized
@@ -361,6 +407,7 @@ final class ApplicationInstance[
       for {
         snapshot <- topLevelComponentInstance.stateSnapshot
         _ <- Effect[F].delay {
+               ensureActive()
                timers.beginRender()
                if (frontend.recoversView) {
                  // The client resets to this empty root, so no prior DOM,
@@ -472,7 +519,7 @@ final class ApplicationInstance[
         _ <- startTimersWhenReady()
       } yield ()
     }
-    frontend.authorizeInteraction().flatMap(_ => start()).recoverF { case error =>
+    frontend.authorizeInteraction().flatMap(_ => Effect[F].delayAsync { ensureActive(); start() }).recoverF { case error =>
       abortRender()
       Effect[F].fail(error)
     }

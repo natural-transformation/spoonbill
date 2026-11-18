@@ -179,6 +179,81 @@ class BrowserRpcLifecycleSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
+  it should "reject duplicate descriptors before capacity and ignore an old expiry after descriptor reuse" in {
+    val expirations = new AtomicReference(Vector.empty[() => Unit])
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
+        expirations.updateAndGet(_ :+ expire)
+        () => ()
+      }
+    }
+    val requests = new OwnedBrowserRequests[Future, String](deadlines, 1, () => new SessionAccessDenied)
+    val first = requests.request("reused", 1.second, () => new IllegalStateException("old expiry"))(_ => Future.unit)
+    val duplicate = requests.request("reused", 1.second, () => new IllegalStateException("duplicate expiry"))(_ => Future.unit)
+    for {
+      error <- duplicate.failed
+      _ = error.getMessage shouldBe "Duplicate browser request descriptor"
+      _ = requests.pendingCount shouldBe 1
+      _ <- requests.complete("reused", Right("first"))
+      firstValue <- first
+      second = requests.request("reused", 1.second, () => new IllegalStateException("new expiry"))(_ => Future.unit)
+      _ = expirations.get().head.apply()
+      _ = requests.pendingCount shouldBe 1
+      _ = second.isCompleted shouldBe false
+      _ <- requests.complete("reused", Right("second"))
+      secondValue <- second
+      _ <- requests.close()
+      _ <- requests.close()
+    } yield {
+      firstValue shouldBe "first"
+      secondValue shouldBe "second"
+      requests.pendingCount shouldBe 0
+    }
+  }
+
+  it should "cancel before notifying an admitted request even if cancellation throws" in {
+    val events = new AtomicReference(Vector.empty[String])
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = () => {
+        events.updateAndGet(_ :+ "cancel")
+        throw new IllegalStateException("synthetic cancellation failure")
+      }
+    }
+    val requests = new OwnedBrowserRequests[Future, String](deadlines, 1, () => new SessionAccessDenied)
+    val waiting = requests.request("request", 1.second, () => new IllegalStateException("timeout"))(_ => Future.unit)
+    waiting.onComplete(_ => { events.updateAndGet(_ :+ "notify"); () })(ExecutionContext.parasitic)
+    for {
+      completed <- requests.complete("request", Right("answer"))
+      value <- waiting
+      repeated <- requests.complete("request", Right("late"))
+    } yield {
+      completed shouldBe true
+      repeated shouldBe false
+      value shouldBe "answer"
+      events.get() shouldBe Vector("cancel", "notify")
+    }
+  }
+
+  it should "cancel a handle returned after synchronous expiry without emitting the retired request" in {
+    val cancellations = new AtomicInteger(0)
+    val sent = new AtomicBoolean(false)
+    val failure = new IllegalStateException("immediate timeout")
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
+        expire()
+        () => { cancellations.incrementAndGet(); () }
+      }
+    }
+    val requests = new OwnedBrowserRequests[Future, String](deadlines, 1, () => new SessionAccessDenied)
+    val waiting = requests.request("request", 1.second, () => failure) { _ => sent.set(true); Future.unit }
+    waiting.failed.map { error =>
+      error should be theSameInstanceAs failure
+      cancellations.get() shouldBe 1
+      sent.get() shouldBe false
+      requests.pendingCount shouldBe 0
+    }
+  }
+
   it should "drop a request which expires while still queued for browser emission" in {
     val clock = new ManualDeadlines
     val incoming = Queue[Future, String]()

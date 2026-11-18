@@ -16,7 +16,12 @@ final case class OperationReference(operation: PreparedOperation) {
 }
 
 private[transaction] final class AuthorityLease(val expiresAt: Instant) {
-  val expired = new AtomicBoolean(false)
+  import OneUseLeaseMachine.State
+  private val state = new AtomicReference[State](State.Fresh)
+  def expired: Boolean = state.get() == State.Expired
+  def expire(): Unit = { state.updateAndGet(OneUseLeaseMachine.expire); () }
+  def issue(): Boolean = state.getAndUpdate(OneUseLeaseMachine.issue) == State.Fresh
+  def admit(): Boolean = state.getAndUpdate(OneUseLeaseMachine.admit) == State.Issued
 }
 
 sealed abstract class OneUseEvidence private[transaction] (
@@ -24,8 +29,7 @@ sealed abstract class OneUseEvidence private[transaction] (
   private[transaction] val operation: PreparedOperation,
   private[transaction] val lease: AuthorityLease
 ) {
-  private val redeemed = new AtomicBoolean(false)
-  private[transaction] final def redeem(): Boolean = redeemed.compareAndSet(false, true)
+  private[transaction] final def redeem(): Boolean = lease.issue()
   final def reference: OperationReference = OperationReference(operation)
   override final def toString: String = "OneUseEvidence(<redacted>)"
 }
@@ -44,8 +48,7 @@ final class ExecutionAuthority private[transaction] (
   private[transaction] val operation: PreparedOperation,
   private[transaction] val lease: AuthorityLease
 ) {
-  private val claimed = new AtomicBoolean(false)
-  private[transaction] def claim(): Boolean = claimed.compareAndSet(false, true)
+  private[transaction] def claim(): Boolean = lease.admit()
   def reference: OperationReference = OperationReference(operation)
   override def toString: String = "ExecutionAuthority(<redacted>)"
 }
@@ -85,8 +88,8 @@ final class OneUseAuthorityScope(clock: () => Instant, maxOutstanding: Int = 102
   def issue(evidence: OneUseEvidence): Either[OperationError, ExecutionAuthority] = synchronized {
     if (!(evidence.issuer eq this)) Left(OperationError.ForeignPermit)
     else if (!active.get()) Left(OperationError.ScopeClosed)
-    else if (evidence.lease.expired.get() || !clock().isBefore(evidence.lease.expiresAt)) {
-      evidence.lease.expired.set(true)
+    else if (evidence.lease.expired || !clock().isBefore(evidence.lease.expiresAt)) {
+      evidence.lease.expire()
       release(evidence.lease)
       Left(OperationError.Expired)
     } else if (!evidence.redeem()) Left(OperationError.EvidenceUsed)
@@ -96,8 +99,8 @@ final class OneUseAuthorityScope(clock: () => Instant, maxOutstanding: Int = 102
   private[transaction] def admit(authority: ExecutionAuthority): Either[OperationError, PreparedOperation] = synchronized {
     if (!(authority.issuer eq this)) Left(OperationError.ForeignPermit)
     else if (!active.get()) Left(OperationError.ScopeClosed)
-    else if (authority.lease.expired.get() || !clock().isBefore(authority.lease.expiresAt)) {
-      authority.lease.expired.set(true)
+    else if (authority.lease.expired || !clock().isBefore(authority.lease.expiresAt)) {
+      authority.lease.expire()
       release(authority.lease)
       Left(OperationError.Expired)
     } else if (!authority.claim()) Left(OperationError.PermitUsed)
@@ -119,8 +122,8 @@ final class OneUseAuthorityScope(clock: () => Instant, maxOutstanding: Int = 102
     : Either[OperationError, (PreparedOperation, AuthorityLease)] = {
     val now = clock()
     val retained = leases.get().filter { lease =>
-      if (!now.isBefore(lease.expiresAt)) lease.expired.set(true)
-      !lease.expired.get()
+      if (!now.isBefore(lease.expiresAt)) lease.expire()
+      !lease.expired
     }
     leases.set(retained)
     if (!active.get()) Left(OperationError.ScopeClosed)

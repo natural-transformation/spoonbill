@@ -51,10 +51,11 @@ object instances {
      * Converts spoonbill [[spoonbill.effect.Stream]] to [[Publisher]].
      *
      * If `fanout` is `true`, the `Publisher` will support multiple
-     * `Subscriber`s and the size of the `inputBuffer` configured for this
-     * operator becomes the maximum number of elements that the fastest
-     * [[org.reactivestreams.Subscriber]] can be ahead of the slowest one before
-     * slowing the processing down due to back pressure.
+     * `Subscriber`s. Each subscriber has a lossless buffer of 128 elements;
+     * a full buffer backpressures the shared upstream reader. Canceling one
+     * subscriber detaches it without canceling the remaining subscribers.
+     * After the shared stream terminates, a new subscriber receives an inert
+     * subscription followed by an error; terminated streams do not replay values.
      *
      * If `fanout` is `false` then the `Publisher` will only support a single
      * `Subscriber` and reject any additional `Subscriber`s with

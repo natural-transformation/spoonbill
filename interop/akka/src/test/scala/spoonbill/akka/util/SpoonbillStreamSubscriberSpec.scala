@@ -207,4 +207,53 @@ class SpoonbillStreamSubscriberSpec extends AsyncFlatSpec with Matchers {
       subscription.requestsAfterCancel.get() shouldBe 0
     }
   }
+
+  it should "ignore the same subscription repeated without reissuing deferred demand" in {
+    val subscriber = new SpoonbillStreamSubscriber[Future, Int]
+    val subscription = new ProbeSubscription
+    val pending = subscriber.pull()
+    subscriber.onSubscribe(subscription)
+    subscriber.onSubscribe(subscription)
+    subscriber.onNext(7)
+    pending.map { value =>
+      value shouldBe Some(7)
+      subscription.requested.get() shouldBe 1L
+      subscription.cancellations.get() shouldBe 0
+    }
+  }
+
+  it should "cancel a subscription arriving after completion without requesting deferred demand" in {
+    val subscriber = new SpoonbillStreamSubscriber[Future, Int]
+    val subscription = new ProbeSubscription
+    val pending = subscriber.pull()
+    subscriber.onComplete()
+    subscriber.onSubscribe(subscription)
+    subscriber.onSubscribe(subscription)
+    pending.map { value =>
+      value shouldBe None
+      subscription.requested.get() shouldBe 0L
+      subscription.cancellations.get() shouldBe 1
+    }
+  }
+
+  it should "settle waiting pulls even when upstream cancellation throws" in {
+    val subscriber = new SpoonbillStreamSubscriber[Future, Int]
+    val error = new IllegalStateException("cancel failed")
+    val subscription = new ProbeSubscription {
+      override def cancel(): Unit = { super.cancel(); throw error }
+    }
+    subscriber.onSubscribe(subscription)
+    val pending = subscriber.pull()
+    for {
+      failed <- subscriber.cancel().failed
+      value <- pending
+      _ <- subscriber.cancel()
+      next <- subscriber.pull()
+    } yield {
+      failed shouldBe error
+      value shouldBe None
+      next shouldBe None
+      subscription.cancellations.get() shouldBe 1
+    }
+  }
 }

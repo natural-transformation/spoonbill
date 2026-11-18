@@ -1,10 +1,10 @@
 package spoonbill.internal
 
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import java.util.concurrent.atomic.AtomicReference
 import scala.annotation.tailrec
 import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
-import spoonbill.effect.Effect
+import spoonbill.effect.{Effect, LateHandleMachine}
 
 /** Connection-owned pending requests. Register precedes emission; reply, expiry,
   * send failure and close compete to remove the same entry. Unknown replies can
@@ -18,45 +18,62 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
   require(maxPending > 0, "Pending browser request limit must be positive")
 
   private final class Entry(initialCallback: Effect.Promise[A]) {
-    private val finished = new AtomicBoolean(false)
-    private val callback = new AtomicReference(Option(initialCallback))
-    private val cancellation = new AtomicReference(Option.empty[() => Unit])
+    val token = new PendingRegistryMachine.Token
+    private final case class Held(state: LateHandleMachine.State, callback: Option[Effect.Promise[A]],
+      cancellation: Option[() => Unit])
+    private val held = new AtomicReference(Held(LateHandleMachine.State.Waiting, Some(initialCallback), None))
 
-    def install(cancel: () => Unit): Unit = {
-      cancellation.set(Some(cancel))
-      if (finished.get()) cancellation.getAndSet(None).foreach(_.apply())
+    @tailrec def install(cancel: () => Unit): Unit = {
+      val before = held.get()
+      val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Install)
+      command match {
+        case LateHandleMachine.Command.CancelIncoming => cancel()
+        case LateHandleMachine.Command.StoreHandle =>
+          if (!held.compareAndSet(before, before.copy(state = next, cancellation = Some(cancel)))) install(cancel)
+        case _ => ()
+      }
     }
 
     def finish(result: Either[Throwable, A]): Unit = {
-      if (finished.compareAndSet(false, true)) {
-        val notify = callback.getAndSet(None)
-        cancellation.getAndSet(None).foreach { cancel =>
+      @tailrec def claim(): Option[Held] = {
+        val before = held.get()
+        val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Finish)
+        if (command == LateHandleMachine.Command.Ignore) None
+        else if (held.compareAndSet(before, Held(next, None, None))) Some(before)
+        else claim()
+      }
+      claim().foreach { before =>
+        before.cancellation.foreach { cancel =>
           try cancel() catch { case NonFatal(_) => () }
         }
-        notify.foreach(_(result))
+        before.callback.foreach(_(result))
       }
     }
   }
 
-  private case class State(closed: Boolean, entries: Map[String, Entry])
-  private val state = new AtomicReference(State(false, Map.empty))
+  private case class State(registry: PendingRegistryMachine.State[String], entries: Map[String, Entry])
+  private val state = new AtomicReference(State(PendingRegistryMachine.initial[String], Map.empty))
 
   @tailrec private def register(key: String, entry: Entry): Either[Throwable, Unit] = {
     val before = state.get()
-    if (before.closed) Left(closedError())
-    else if (before.entries.contains(key)) Left(new IllegalStateException("Duplicate browser request descriptor"))
-    else if (before.entries.size >= maxPending) Left(Frontend.ClientSideException("Too many pending browser requests"))
-    else if (state.compareAndSet(before, before.copy(entries = before.entries.updated(key, entry)))) Right(())
-    else register(key, entry)
+    val (next, admission) = PendingRegistryMachine.register(before.registry, key, entry.token, maxPending)
+    admission match {
+      case PendingRegistryMachine.Admission.Closed => Left(closedError())
+      case PendingRegistryMachine.Admission.Duplicate => Left(new IllegalStateException("Duplicate browser request descriptor"))
+      case PendingRegistryMachine.Admission.AtCapacity => Left(Frontend.ClientSideException("Too many pending browser requests"))
+      case PendingRegistryMachine.Admission.Accepted =>
+        if (state.compareAndSet(before, State(next, before.entries.updated(key, entry)))) Right(())
+        else register(key, entry)
+    }
   }
 
   @tailrec private def take(key: String, expected: Option[Entry]): Option[Entry] = {
     val before = state.get()
-    before.entries.get(key) match {
+    val (next, taken) = PendingRegistryMachine.take(before.registry, key, expected.map(_.token))
+    taken match {
       case None => None
-      case Some(entry) if expected.exists(_ ne entry) => None
-      case Some(entry) =>
-        if (state.compareAndSet(before, before.copy(entries = before.entries - key))) Some(entry)
+      case Some(_) =>
+        if (state.compareAndSet(before, State(next, before.entries - key))) before.entries.get(key)
         else take(key, expected)
     }
   }
@@ -78,7 +95,7 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     register(key, entry) match {
       case Left(error) => entry.finish(Left(error))
       case Right(_) =>
-        def pending(): Boolean = state.get().entries.get(key).exists(_ eq entry)
+        def pending(): Boolean = PendingRegistryMachine.contains(state.get().registry, key, entry.token)
         try {
           val cancel = deadlines.schedule(timeout)(() => { finish(key, Some(entry), Left(timeoutError())); () })
           entry.install(cancel)
@@ -96,7 +113,7 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     Effect[F].delay(finish(key, None, result))
 
   def close(): F[Unit] = Effect[F].delay {
-    val before = state.getAndSet(State(true, Map.empty))
+    val before = state.getAndSet(State(PendingRegistryMachine.closed[String], Map.empty))
     before.entries.values.foreach { entry =>
       // Isolate completion callbacks so one faulty effect implementation cannot
       // prevent other requests from being detached and failed during teardown.
@@ -104,5 +121,5 @@ private[spoonbill] final class OwnedBrowserRequests[F[_]: Effect, A](
     }
   }
 
-  private[internal] def pendingCount: Int = state.get().entries.size
+  private[internal] def pendingCount: Int = PendingRegistryMachine.size(state.get().registry)
 }

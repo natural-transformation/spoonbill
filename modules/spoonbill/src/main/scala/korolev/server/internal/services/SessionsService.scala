@@ -17,11 +17,12 @@
 package spoonbill.server.internal.services
 
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
-import scala.collection.concurrent.TrieMap
+import scala.annotation.tailrec
 import scala.concurrent.duration.*
 import spoonbill.Qsid
-import spoonbill.effect.{AsyncTable, Effect, Hub, Scheduler, Stream, Var}
+import spoonbill.effect.{AsyncTable, Effect, Hub, LateHandleMachine, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, DevMode, ExtensionRuntime, Frontend, SensitiveAuthorization}
 import spoonbill.security.Identifiers.ConnectionId
@@ -39,7 +40,9 @@ import spoonbill.web.Request.Head
 
 private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer: StateDeserializer, M](
   config: SpoonbillServiceConfig[F, S, M],
-  pageService: PageService[F, S, M]
+  pageService: PageService[F, S, M],
+  requiredTiming: Option[SessionsService.RequiredTiming[F]] = None,
+  idleTiming: Option[SessionsService.IdleTiming[F]] = None
 ) {
 
   import config.executionContext
@@ -48,18 +51,19 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   type App        = ApplicationInstance[F, S, M]
   type Extensions = ExtensionRuntime[F, S, M]
 
-  private val apps               = AsyncTable.unsafeCreateEmpty[F, Qsid, App]
-  private val guardedAttachments = TrieMap.empty[Qsid, ConnectionId]
-  // Retry a failed storage retirement only while holding the next attachment's
-  // local fence, before opening/restoring a replacement. Never retire an old
-  // view asynchronously after its replacement has started writing.
-  private val pendingStorageRemovals = TrieMap.empty[Qsid, Unit]
-  private case object MissingLocalView extends RuntimeException("Local view is unavailable")
-  // Only URI metadata is retained, never bootstrap authority or application
-  // state. Bound unused HTTP bootstraps and consume them on durable attachment.
-  private val bootstrapPaths = new java.util.LinkedHashMap[Qsid, (Long, PathAndQuery)] {
-    override def removeEldestEntry(entry: java.util.Map.Entry[Qsid, (Long, PathAndQuery)]): Boolean = size() > 5000
+  private val apps = AsyncTable.unsafeCreateEmpty[F, Qsid, App]
+  private type Metadata = SessionRegistryMachine.State[Qsid, ConnectionId, PathAndQuery]
+  private val registryMonitor = new Object
+  private var metadata = SessionRegistryMachine.State[Qsid, ConnectionId, PathAndQuery]()
+  private def updateMetadata(change: Metadata => Metadata): Unit = registryMonitor.synchronized {
+    metadata = change(metadata)
   }
+  private def claimAttachment(qsid: Qsid, connection: ConnectionId): Boolean = registryMonitor.synchronized {
+    val (next, accepted) = SessionRegistryMachine.claim(metadata, qsid, connection)
+    metadata = next
+    accepted
+  }
+  private case object MissingLocalView extends RuntimeException("Local view is unavailable")
 
   private def checkedApplicationPath(raw: String): PathAndQuery = {
     if (
@@ -84,9 +88,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   }
 
   private def applicationRequest(qsid: Qsid, current: Head): Head = {
-    val bootstrap = bootstrapPaths
-      .synchronized(Option(bootstrapPaths.remove(qsid)))
-      .filter { case (created, _) => System.nanoTime() - created <= 5.minutes.toNanos }
+    // Consume once before validating time or the current browser location.
+    val bootstrap = registryMonitor.synchronized {
+      val (next, value) = SessionRegistryMachine.take(metadata, qsid)
+      metadata = next
+      value
+    }.filter { case (created, _) => SessionRegistryMachine.fresh(created, System.nanoTime(), 5.minutes.toNanos) }
       .map(_._2)
     val path = current.param("__spoonbill_location") match {
       // Current browser location takes precedence after client-side navigation.
@@ -102,9 +109,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   }
 
   private def retryStorageRemoval(qsid: Qsid): F[Unit] = Effect[F].delay {
-    if (pendingStorageRemovals.contains(qsid)) {
+    // Called only after claiming this attachment: a retry cannot race a newer
+    // local owner. Keep external storage effects outside the metadata monitor.
+    if (registryMonitor.synchronized(SessionRegistryMachine.needsRemoval(metadata, qsid))) {
       stateStorage.remove(qsid.deviceId, qsid.sessionId)
-      pendingStorageRemovals.remove(qsid)
+      updateMetadata(state => SessionRegistryMachine.removalSucceeded(state, qsid))
     }
     ()
   }
@@ -138,7 +147,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _ <- stateStorage.create(qsid.deviceId, qsid.sessionId, state)
       _ <- Effect[F].delay {
              bootstrapPath.foreach { path =>
-               bootstrapPaths.synchronized { bootstrapPaths.put(qsid, (System.nanoTime(), path)); () }
+               registryMonitor.synchronized {
+                 metadata = SessionRegistryMachine.remember(metadata, qsid, System.nanoTime(), path, 5000)
+               }
              }
            }
     } yield state
@@ -156,15 +167,28 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
    * Mandatory checks have a bounded wait. A late successful open is released;
    * timeout cannot cancel an already-running external database operation.
    */
-  private def required[A](
+  private def scheduleRequired(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] = requiredTiming match {
+    case Some(timing) => timing.scheduleOnce(10.seconds)(job)
+    case None        => scheduler.scheduleOnce(10.seconds)(job)
+  }
+
+  private def unsafeScheduleIdle(job: => F[Unit]): Scheduler.JobHandler[F, Unit] = idleTiming match {
+    case Some(timing) => timing.unsafeScheduleOnce(config.sessionIdleTimeout)(job)
+    case None => scheduler.unsafeScheduleOnce(config.sessionIdleTimeout)(job)
+  }
+  private def scheduleIdle(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] = idleTiming match {
+    case Some(timing) => timing.scheduleOnce(config.sessionIdleTimeout)(job)
+    case None => scheduler.scheduleOnce(config.sessionIdleTimeout)(job)
+  }
+
+  private[services] def required[A](
     operation: => F[A],
     late: Option[A => F[Unit]] = None,
     expired: () => Throwable = () => new SessionAccessDenied
   ): F[A] =
     Effect[F].promiseF[A] { callback =>
       val completed = new AtomicBoolean(false)
-      scheduler
-        .scheduleOnce(10.seconds) {
+      scheduleRequired {
           Effect[F].delay {
             // The deadline must not depend on the execution context of the
             // application: a bound has to end a wait when every worker of the
@@ -204,29 +228,62 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     control: SessionAccessControl[F, S]
   ): F[SessionStart[F]] = {
     val connectionId      = ConnectionId.fromUuid(UUID.randomUUID())
-    val live              = new AtomicBoolean(true)
-    val cleaned           = new AtomicBoolean(false)
+    val lifecycle = new AtomicReference(GuardedSessionMachine.State())
     val terminal          = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
-    val terminalSignalled = new AtomicBoolean(false)
     val ready             = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
-    val guardRef          = new AtomicReference(Option.empty[SessionGuard[F, S]])
-    val appRef            = new AtomicReference(Option.empty[App])
-    val frontendRef       = new AtomicReference(Option.empty[Frontend[F]])
-    val managerRef        = new AtomicReference(Option.empty[GuardedStateManager[F, S]])
-    val rawStateAcquired  = new AtomicBoolean(false)
-    val extensionsRef     = new AtomicReference(Option.empty[Extensions])
-    val idleTimer         = new AtomicReference(Option.empty[Scheduler.JobHandler[F, Unit]])
+    final case class HeldGuard(state: LateHandleMachine.State, value: Option[SessionGuard[F, S]])
+    val guardRef         = new AtomicReference(HeldGuard(LateHandleMachine.State.Waiting, None))
+    val appRef           = new AtomicReference(Option.empty[App])
+    val frontendRef      = new AtomicReference(Option.empty[Frontend[F]])
+    val managerRef       = new AtomicReference(Option.empty[GuardedStateManager[F, S]])
+    val extensionsRef    = new AtomicReference(Option.empty[Extensions])
+    val idleTimer        = new AtomicReference(Option.empty[Scheduler.JobHandler[F, Unit]])
 
-    def requireLive(): F[Unit] = Effect[F].delay(if (!live.get()) throw new SessionAccessDenied)
+    @tailrec def transition(event: GuardedSessionMachine.Event): GuardedSessionMachine.Command = {
+      val before = lifecycle.get()
+      val (next, command) = GuardedSessionMachine.step(before, event)
+      if (next eq before) command
+      else if (lifecycle.compareAndSet(before, next)) command
+      else transition(event)
+    }
+
+    // Register inside the detached acquisition, before required publishes its
+    // result. A canceled waiter can finish teardown while open/resume is pending.
+    // The late guard then closes here rather than being handed to that waiter.
+    def registerGuard(guard: SessionGuard[F, S]): F[SessionGuard[F, S]] = Effect[F].delay {
+      @tailrec def install(): Boolean = {
+        val before          = guardRef.get()
+        val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Install)
+        if (command == LateHandleMachine.Command.CancelIncoming) false
+        else if (guardRef.compareAndSet(before, HeldGuard(next, Some(guard)))) true
+        else install()
+      }
+      if (!install()) Effect[F].delayAsync(guard.close()).runAsyncForget
+      guard
+    }
+    @tailrec def takeGuard(): Option[SessionGuard[F, S]] = {
+      val before          = guardRef.get()
+      val (next, command) = LateHandleMachine.step(before.state, LateHandleMachine.Event.Finish)
+      if (command == LateHandleMachine.Command.Ignore) None
+      else if (guardRef.compareAndSet(before, HeldGuard(next, None))) before.value
+      else takeGuard()
+    }
+
+    def requireLive(): F[Unit] = Effect[F].delay(if (!GuardedSessionMachine.live(lifecycle.get())) throw new SessionAccessDenied)
     def signal(): F[Unit] =
-      Effect[F].delay(terminalSignalled.compareAndSet(false, true)).flatMap {
-        case true  => terminal.put((), ())
-        case false => Effect[F].unit
+      Effect[F].delay(transition(GuardedSessionMachine.Event.Signal)).flatMap {
+        case GuardedSessionMachine.Command.Signal => terminal.put((), ())
+        case _ => Effect[F].unit
       }
     def touch(): F[Unit] = Effect[F].delay {
-      if (live.get()) {
-        val timer = scheduler.unsafeScheduleOnce(config.sessionIdleTimeout)(signal())
-        idleTimer.getAndSet(Some(timer)).foreach(_.unsafeCancel())
+      if (GuardedSessionMachine.live(lifecycle.get())) {
+        val timer = unsafeScheduleIdle(signal())
+        val installed: Option[Scheduler.JobHandler[F, Unit]] = Some(timer)
+        idleTimer.getAndSet(installed).foreach(_.unsafeCancel())
+        // Teardown may finish before scheduling returns its handle. Claim only
+        // this installation: cleanup or a later rearm may already own it.
+        if (!GuardedSessionMachine.live(lifecycle.get()) && idleTimer.compareAndSet(installed, None))
+          timer.unsafeCancel()
       }
     }
     val monitored = new Stream[F, String] {
@@ -245,7 +302,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     }
     def deny(error: Throwable): F[Unit] =
       Effect[F]
-        .delay(live.set(false))
+        .delay(transition(GuardedSessionMachine.Event.Deny))
         .flatMap(_ => frontendRef.get().fold(monitored.cancel())(_.close()))
         .flatMap(_ => signal())
         .flatMap(_ => Effect[F].fail(error))
@@ -297,57 +354,59 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     // returns late would keep its handlers. So a cancellation waits until the
     // cleanup is done, as it does when a legacy view is retired.
     def cleanup(): F[Unit] = Effect[F].uncancelable {
-      Effect[F].delay(cleaned.compareAndSet(false, true)).flatMap {
-        case false => Effect[F].unit
-        case true  => teardown()
+      Effect[F].delay(transition(GuardedSessionMachine.Event.BeginCleanup)).flatMap(teardown).recoverF { case error =>
+        Effect[F].delay(transition(GuardedSessionMachine.Event.CleanupFailed)).flatMap(_ => Effect[F].fail(error))
       }
     }
 
-    /** Every step of the cleanup, in order. Call it through `cleanup` only. */
-    def teardown(): F[Unit] =
-      for {
-        // Stop extension delivery first: no callback starts once teardown began.
-        _ <- attempt(Effect[F].delay(extensionsRef.get().foreach(_.stop())))
-        // Retire component admission before any asynchronous close/drain can
-        // settle a lease and schedule a now-unnecessary per-node deletion.
-        _ <- attempt(Effect[F].delay(appRef.get().foreach(_.closeAdmission())))
-        _ <- Effect[F].delay { live.set(false); idleTimer.getAndSet(None).foreach(_.unsafeCancel()) }
-        _ <- attempt(ready.putEither((), Left(new SessionAccessDenied), silent = true))
-        _ <- attempt(frontendRef.get().fold(monitored.cancel())(_.close()))
-        // Drain already-admitted local storage writes before freeing this Qsid.
-        // Do not time out this barrier and then allow an unsafe local takeover.
-        _ <- managerRef.get().fold(Effect[F].unit)(_.closeAndDrain())
-        _ <- attempt(appRef.get().fold(Effect[F].unit)(_.destroy()))
-        _ <- attempt(guardRef.get().fold(Effect[F].unit)(guard => required(guard.close())))
-        // The view is closed by now, so the access fails inside onDestroy.
-        _ <- attempt(extensionsRef.get().fold(Effect[F].unit)(_.destroy()))
-        _ <- if (rawStateAcquired.get()) {
-               Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)).recover { case error =>
-                 pendingStorageRemovals.put(qsid, ())
-                 config.reporter.error("Guarded storage cleanup failed; retry required before restoration", error)
-                 ()
-               }
-             } else Effect[F].unit
-        _ <- attempt(apps.remove(qsid))
-        _ <- Effect[F].delay { guardedAttachments.remove(qsid, connectionId); () }
-      } yield ()
+    /** Advance only after each stage settles; an admitted-write drain has no timeout. */
+    def teardown(command: GuardedSessionMachine.Command): F[Unit] = command match {
+      case GuardedSessionMachine.Command.Run(stage) =>
+        import GuardedSessionMachine.Stage
+        val operation: F[Unit] = stage match {
+          case Stage.StopExtensions => attempt(Effect[F].delay(extensionsRef.get().foreach(_.stop())))
+          case Stage.StopComponents => attempt(Effect[F].delay(appRef.get().foreach(_.closeAdmission())))
+          case Stage.DenyAndStopIdle => Effect[F].delay {
+            transition(GuardedSessionMachine.Event.Deny)
+            idleTimer.getAndSet(None).foreach(_.unsafeCancel())
+          }
+          case Stage.RejectReady => attempt(ready.putEither((), Left(new SessionAccessDenied), silent = true))
+          case Stage.CloseFrontend => attempt(frontendRef.get().fold(monitored.cancel())(_.close()))
+          case Stage.DrainWrites => managerRef.get().fold(Effect[F].unit)(_.closeAndDrain())
+          case Stage.DestroyApplication => attempt(appRef.get().fold(Effect[F].unit)(_.destroy()))
+          case Stage.CloseGuard =>
+            attempt(Effect[F].delay(takeGuard()).flatMap(_.fold(Effect[F].unit)(guard => required(guard.close()))))
+          case Stage.DestroyExtensions => attempt(extensionsRef.get().fold(Effect[F].unit)(_.destroy()))
+          case Stage.RemoveStorage =>
+            if (GuardedSessionMachine.ownsStorage(lifecycle.get())) {
+              Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)).recover { case error =>
+                updateMetadata(state => SessionRegistryMachine.removalFailed(state, qsid))
+                config.reporter.error("Guarded storage cleanup failed; retry required before restoration", error)
+                ()
+              }
+            } else Effect[F].unit
+          case Stage.RemoveApplication => attempt(apps.remove(qsid))
+          case Stage.ReleaseAttachment => Effect[F].delay { updateMetadata(state => SessionRegistryMachine.release(state, qsid, connectionId)); () }
+        }
+        operation.flatMap(_ => Effect[F].delay(transition(GuardedSessionMachine.Event.Finished(stage)))).flatMap(teardown)
+      case _ => Effect[F].unit
+    }
 
     def create(): F[SessionStart[F]] = for {
       localExists <- stateStorage.exists(qsid.deviceId, qsid.sessionId)
       guard <- required(
-                 if (localExists) control.open(qsid, rh, connectionId)
-                 else control.resume(qsid, rh, connectionId).getOrElse(Effect[F].fail(MissingLocalView)),
-                 Some((value: SessionGuard[F, S]) => value.close())
+                 (if (localExists) control.open(qsid, rh, connectionId)
+                  else control.resume(qsid, rh, connectionId).getOrElse(Effect[F].fail(MissingLocalView)))
+                   .flatMap(registerGuard)
                )
-      _             <- Effect[F].delay(guardRef.set(Some(guard)))
       snapshots      = guard.viewSnapshots
       initialization = guard.applicationStateInitialization
-      initializeApplication = initialization match {
-                                case ApplicationStateInitialization.Retained()       => snapshots.nonEmpty
-                                case ApplicationStateInitialization.Reconstructed(_) => true
-                              }
-      _ <- if (snapshots.nonEmpty && localExists) Effect[F].delay(rawStateAcquired.set(true)) else Effect[F].unit
-      restoredManager <- if (initializeApplication) {
+      attachMode = GuardedSessionMachine.attachMode(snapshots.nonEmpty, initialization match {
+                     case ApplicationStateInitialization.Retained() => false
+                     case ApplicationStateInitialization.Reconstructed(_) => true
+                   })
+      _ <- if (snapshots.nonEmpty && localExists) Effect[F].delay { transition(GuardedSessionMachine.Event.AcquireStorage); () } else Effect[F].unit
+      restoredManager <- if (GuardedSessionMachine.initializeBeforeRender(attachMode)) {
                            // Restore only presentation onto fresh authority. A prior process's
                            // arbitrary state/DOM cache is never the durable bootstrap baseline.
                            for {
@@ -366,7 +425,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                                           case None =>
                                             for {
                                               local <- stateStorage.get(qsid.deviceId, qsid.sessionId)
-                                              _     <- Effect[F].delay(rawStateAcquired.set(true))
+                                              _     <- Effect[F].delay(transition(GuardedSessionMachine.Event.AcquireStorage))
                                               _     <- local.write(avocet.Id.TopLevel, restored)
                                             } yield local
                                         }
@@ -385,7 +444,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       rawManager <- Effect[F].delay {
                       // get may promote a soft-closed snapshot before restoration is allowed.
                       // Track that acquisition even when authorization prevents wrapper creation.
-                      if (snapshots.isEmpty) rawStateAcquired.set(true)
+                      if (GuardedSessionMachine.usesLocalStorage(attachMode)) transition(GuardedSessionMachine.Event.AcquireStorage)
                       restoredManager
                     }
       initial <- rawManager.read[S](avocet.Id.TopLevel).flatMap {
@@ -516,9 +575,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       _         <- Effect[F].delay(appRef.set(Some(app)))
       _         <- app.initialize()
       state     <- rawManager.read[S](avocet.Id.TopLevel).map(_.getOrElse(initial))
-      connected <- if (initializeApplication) Effect[F].pure(state) else required(guard.connected(state))
+      connected <- if (GuardedSessionMachine.initializeBeforeRender(attachMode)) Effect[F].pure(state) else required(guard.connected(state))
       _         <- authorize(guard, connected)
-      _ <- if (initializeApplication) Effect[F].unit
+      _ <- if (GuardedSessionMachine.initializeBeforeRender(attachMode)) Effect[F].unit
            else required(app.topLevelComponentInstance.browserAccess.transitionForce(_ => connected))
       // The connected state is the admitted state: it passed its check above.
       // Setup stops once the connection is gone.
@@ -526,7 +585,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
              _.setup(
                app.topLevelComponentInstance.browserAccess,
                connected,
-               () => if (terminalSignalled.get()) Effect[F].fail[Unit](new SessionAccessDenied) else requireLive()
+               () => if (GuardedSessionMachine.signalled(lifecycle.get())) Effect[F].fail[Unit](new SessionAccessDenied) else requireLive()
              ).recoverF {
                // The runtime has reported the timeout. A guarded attach that
                // does not complete in time is denied, as before.
@@ -549,18 +608,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
     // Whether this attach holds the attachment of the view, and whether it has
     // completed. In between, the attach owns everything it has created so far.
-    val owned    = new AtomicBoolean(false)
-    val attached = new AtomicBoolean(false)
 
     val attach = Effect[F].delay {
-      if (config.sessionIdleTimeout.toMillis <= 0 || guardedAttachments.putIfAbsent(qsid, connectionId).nonEmpty)
+      if (config.sessionIdleTimeout.toMillis <= 0 || !claimAttachment(qsid, connectionId))
         throw new SessionAccessDenied
-      owned.set(true)
+      transition(GuardedSessionMachine.Event.Claim)
     }.flatMap { _ =>
       retryStorageRemoval(qsid)
         .flatMap(_ => create())
         .map[SessionStart[F]] { started =>
-          attached.set(true)
+          transition(GuardedSessionMachine.Event.Attach)
           started
         }
         .recoverF[SessionStart[F]] {
@@ -591,7 +648,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     // returns afterwards finds the teardown done and destroys its handlers.
     // After a failure the cleanup has run already, and it runs only once.
     Effect[F].guarantee(attach) {
-      if (owned.get() && !attached.get()) cleanup() else Effect[F].unit
+      if (GuardedSessionMachine.needsRollback(lifecycle.get())) cleanup() else Effect[F].unit
     }
   }
 
@@ -616,9 +673,14 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     val created = new AtomicReference(Option.empty[View])
     // Set when the connection has closed. Setup then stops before the next
     // extension, and delivery does not start.
-    val connectionClosed = new AtomicBoolean(false)
-    // The close watcher and a failed attach both retire the view.
-    val retired = new AtomicBoolean(false)
+    val lifecycle = new AtomicReference(LegacySessionMachine.State())
+    @tailrec def transition(event: LegacySessionMachine.Event): LegacySessionMachine.Command = {
+      val before = lifecycle.get()
+      val (next, command) = LegacySessionMachine.step(before, event)
+      if (next eq before) command
+      else if (lifecycle.compareAndSet(before, next)) command
+      else transition(event)
+    }
 
     /**
      * Closes the view, then destroys its extensions. It runs once, and to its
@@ -629,24 +691,27 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * @param registry
      *   settles the registration of this view. It runs last.
      */
-    def retire(view: View)(restore: () => F[Unit], registry: () => F[Unit]): F[Unit] = Effect[F].uncancelable {
-      Effect[F].delay(retired.compareAndSet(false, true)).flatMap {
-        case false => Effect[F].unit
-        case true =>
-          for {
-            // Stop extension delivery first: no callback starts once teardown began.
-            _ <- attempt(Effect[F].delay(view.extensions.foreach(_.stop())))
-            _ <- attempt(incomingStream.cancel())
-            _ <- attempt(view.frontend.close())
-            _ <- attempt(view.app.destroy())
-            // The view is closed by now, so the access fails inside onDestroy.
-            _ <- attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
-            _ <- attempt(restore())
-            // A failed removal must not keep the registration: later attaches
-            // of this session would wait for it without an end.
-            _ <- attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
-            _ <- attempt(registry())
-          } yield ()
+    def retire(view: View, cause: LegacySessionMachine.Cause)(restore: () => F[Unit], registry: () => F[Unit]): F[Unit] = {
+      def execute(command: LegacySessionMachine.Command): F[Unit] = command match {
+        case LegacySessionMachine.Command.Run(stage) =>
+          import LegacySessionMachine.Stage
+          val operation: F[Unit] = stage match {
+            case Stage.StopExtensions => attempt(Effect[F].delay(view.extensions.foreach(_.stop())))
+            case Stage.CancelInput => attempt(incomingStream.cancel())
+            case Stage.CloseFrontend => attempt(view.frontend.close())
+            case Stage.DestroyApplication => attempt(view.app.destroy())
+            case Stage.DestroyExtensions => attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
+            case Stage.Restore => attempt(restore())
+            case Stage.RemoveStorage => attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            case Stage.SettleRegistry => attempt(registry())
+          }
+          operation.flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.Finished(stage)))).flatMap(execute)
+        case _ => Effect[F].unit
+      }
+      Effect[F].uncancelable {
+        Effect[F].delay(transition(LegacySessionMachine.Event.Retire(cause))).flatMap(execute).recoverF { case error =>
+          Effect[F].delay(transition(LegacySessionMachine.Event.Failed)).flatMap(_ => Effect[F].fail(error))
+        }
       }
     }
 
@@ -661,7 +726,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // and not the removal.
       val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
       created.get() match {
-        case Some(view) => retire(view)(view.restore, settle)
+        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, settle)
         case None       => attempt(settle())
       }
     }
@@ -678,7 +743,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
         def handleCommunicationTimeout(): F[Unit] = {
           def createTimeout(stream: Stream[F, String]): F[Scheduler.JobHandler[F, Unit]] =
-            scheduler.scheduleOnce(config.sessionIdleTimeout) {
+            scheduleIdle {
               invokeOnce("session idle timeout")(Right(()))
               stream.cancel()
             }
@@ -705,12 +770,18 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       }
 
       consumed
-        .flatMap(_ => Effect[F].delay(connectionClosed.set(true)))
+        .recover {
+          case _: CancellationException => ()
+          case error =>
+            config.reporter.error("Legacy connection closed with an error", error)
+            ()
+        }
+        .flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.ConnectionClosed)))
         // Retire only when this attach has registered the view or rolled it
         // back. So the registry never forgets a view that is registered
         // afterwards, which would keep a retired view for good.
         .flatMap(_ => apps.settled(qsid))
-        .flatMap(_ => retire(view)(() => Effect[F].unit, () => apps.remove(qsid)))
+        .flatMap(_ => retire(view, LegacySessionMachine.Cause.Disconnected)(() => Effect[F].unit, () => apps.remove(qsid)))
     }
 
     def create(): F[ApplicationInstance[F, S, M]] = {
@@ -766,7 +837,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                    app.topLevelComponentInstance.browserAccess,
                    initialState,
                    () =>
-                     if (connectionClosed.get()) Effect[F].fail[Unit](new ExtensionRuntime.SetupAborted)
+                     if (LegacySessionMachine.connectionClosed(lifecycle.get())) Effect[F].fail[Unit](new ExtensionRuntime.SetupAborted)
                      else Effect[F].unit
                  )
                  .flatMap(_ => runtime.start())
@@ -839,4 +910,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     else config.stateStorage
 
   private val scheduler = new Scheduler[F]()
+}
+
+private[spoonbill] object SessionsService {
+  /** Internal timing seam: expiry still executes the same effect on the scheduler's thread/runtime. */
+  trait RequiredTiming[F[_]] {
+    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
+  }
+  /** Idle rearming keeps synchronous and effectful handle installation distinct. */
+  trait IdleTiming[F[_]] {
+    def unsafeScheduleOnce(delay: FiniteDuration)(job: => F[Unit]): Scheduler.JobHandler[F, Unit]
+    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
+  }
 }

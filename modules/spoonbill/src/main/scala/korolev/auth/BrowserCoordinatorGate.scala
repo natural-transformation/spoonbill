@@ -15,35 +15,33 @@ import spoonbill.effect.Effect
  * turn-grant callbacks are queued, bounded by `capacity`; a full queue or a
  * requested close rejects ordinary and read turns. Each operation runs in its
  * original caller effect, preserving native fiber-local state and runtime
- * context. Cancellation cannot abandon an admitted operation or its cleanup.
- * A turn requested inside another turn waits for it forever: reentry is not
+ * context. Cancellation cannot abandon an admitted operation or its cleanup. A
+ * turn requested inside another turn waits for it forever: reentry is not
  * detected.
  */
 private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapacity: Int = 1)(using F: Effect[F]) {
   require(capacity > 0 && readCapacity > 0)
   import BrowserCoordinatorGate.Stats
-  private enum Admission {
-    case Ordinary, Cleanup, Close
-    case Read(key: Any)
-  }
-  /** A queued turn-grant callback. A read turn remembers whether its key made it wait. */
+  private val Model = BrowserCoordinatorGateMachine
+  import BrowserCoordinatorGateMachine.{Admission, Closure, Decision, Occupancy, ReaderDecision, Turn, WriterDecision}
+
+  /**
+   * A queued turn-grant callback. A read turn remembers whether its key made it
+   * wait.
+   */
   private enum Entry {
     case Writer(callback: Effect.Promise[Boolean], since: Long)
     case Reader(callback: Effect.Promise[Boolean], key: Any, waited: Boolean)
   }
-  /** What a running turn holds, released when it finishes. */
-  private enum Turn {
-    case Write
-    case Read(key: Any)
-  }
-  private val lock            = new Object
-  private var pending         = Vector.empty[Entry]
-  private var writing         = false
-  private var reads           = 0
-  private var active          = Set.empty[Any]
-  private var closing         = false
-  private var closeResult     = Option.empty[Either[Throwable, Unit]]
-  private var closeWaiters    = List.empty[Effect.Promise[Boolean]]
+  private val lock      = new Object
+  private var pending   = Vector.empty[Entry]
+  private var occupancy = Occupancy.Idle: Occupancy
+  private final case class HeldClose(
+    phase: Closure,
+    result: Option[Either[Throwable, Unit]],
+    waiters: List[Effect.Promise[Boolean]]
+  )
+  private var closing         = HeldClose(Closure.Open, None, Nil)
   private var bindingWaits    = 0L
   private var rejections      = 0L
   private var writerWaitNanos = 0L
@@ -51,12 +49,15 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
   private def reject: Throwable = new IllegalStateException("Browser coordinator is closed or at capacity")
 
   /** True once close was requested, even before its turn runs. */
-  def isClosing: Boolean = lock.synchronized(closing)
+  def isClosing: Boolean = lock.synchronized(Model.isClosing(closing.phase))
 
-  /** A snapshot of the counters, for sizing the read cap and diagnosing overload. */
+  /**
+   * A snapshot of the counters, for sizing the read cap and diagnosing
+   * overload.
+   */
   def stats: Stats = lock.synchronized {
     Stats(
-      runningReads = reads,
+      runningReads = Model.runningReads(occupancy),
       queuedReads = pending.count(_.isInstanceOf[Entry.Reader]),
       queuedWrites = pending.count(_.isInstanceOf[Entry.Writer]),
       bindingWaits = bindingWaits,
@@ -69,26 +70,23 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
 
   /** true owns a turn; false joins an already settled global close. */
   private def acquire(kind: Admission): F[Boolean] = F.promise { callback =>
-    val rejectable = kind match {
-      case Admission.Ordinary | Admission.Read(_) => true
-      case _                                      => false
-    }
     val (outcome, grants): (Option[Either[Throwable, Boolean]], List[Effect.Promise[Boolean]]) = lock.synchronized {
-      if (rejectable && (closing || pending.size >= capacity)) {
-        rejections += 1
-        (Some(Left(reject)), Nil)
-      } else if (!rejectable && closing) {
-        closeResult match {
-          case Some(result) => (Some(result.map(_ => false)), Nil)
-          case None         => closeWaiters = callback :: closeWaiters; (None, Nil)
-        }
-      } else {
-        if (kind == Admission.Close) closing = true
-        pending = pending :+ (kind match {
-          case Admission.Read(key) => Entry.Reader(callback, key, waited = false)
-          case _                   => Entry.Writer(callback, System.nanoTime())
-        })
-        (None, dispatch())
+      Model.admission(closing.phase, pending.size, kind, capacity) match {
+        case Decision.Reject =>
+          rejections += 1
+          (Some(Left(reject)), Nil)
+        case Decision.ReplayClose => (Some(closing.result.get.map(_ => false)), Nil)
+        case Decision.JoinClose =>
+          closing = closing.copy(waiters = callback :: closing.waiters)
+          (None, Nil)
+        case Decision.Enqueue =>
+          val next = Model.requested(closing.phase, kind)
+          if (next != closing.phase) closing = closing.copy(phase = next)
+          pending = pending :+ (kind match {
+            case Admission.Read(key) => Entry.Reader(callback, key, waited = false)
+            case _                   => Entry.Writer(callback, System.nanoTime())
+          })
+          (None, dispatch())
       }
     }
     outcome.foreach(signal(callback, _))
@@ -109,24 +107,24 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
     while (scanning && index < pending.size) {
       pending(index) match {
         case Entry.Writer(callback, since) =>
-          if (!writing && reads == 0 && blocked.isEmpty) {
-            writing = true
+          if (Model.writerDecision(occupancy, blocked.isEmpty) == WriterDecision.GrantAndStop) {
+            occupancy = Model.writerStarted
             writerWaitNanos += System.nanoTime() - since
             grants += callback
             index += 1
           }
           scanning = false
         case Entry.Reader(callback, key, waited) =>
-          if (writing || reads >= readCapacity) scanning = false
-          else if (active(key)) {
-            blocked = blocked :+ Entry.Reader(callback, key, waited = true)
-            index += 1
-          } else {
-            reads += 1
-            active += key
-            if (waited) bindingWaits += 1
-            grants += callback
-            index += 1
+          Model.readerDecision(occupancy, key, readCapacity) match {
+            case ReaderDecision.Stop => scanning = false
+            case ReaderDecision.Blocked =>
+              blocked = blocked :+ Entry.Reader(callback, key, waited = true)
+              index += 1
+            case ReaderDecision.Grant =>
+              occupancy = Model.readerStarted(occupancy, key)
+              if (waited) bindingWaits += 1
+              grants += callback
+              index += 1
           }
       }
     }
@@ -137,15 +135,11 @@ private[auth] final class BrowserCoordinatorGate[F[_]](capacity: Int, readCapaci
   private def finished(turn: Turn, closeOwner: Boolean, result: Either[Throwable, Unit]): Unit = {
     val (waiters, grants) = lock.synchronized {
       val waiters = if (closeOwner) {
-        closeResult = Some(result)
-        val all = closeWaiters
-        closeWaiters = Nil
+        val all = closing.waiters
+        closing = HeldClose(Model.completed(closing.phase), Some(result), Nil)
         all
       } else Nil
-      turn match {
-        case Turn.Write     => writing = false
-        case Turn.Read(key) => reads -= 1; active -= key
-      }
+      occupancy = Model.finished(occupancy, turn)
       waiters -> dispatch()
     }
     waiters.foreach(callback =>

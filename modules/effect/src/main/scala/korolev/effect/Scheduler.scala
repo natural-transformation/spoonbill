@@ -18,11 +18,12 @@ package spoonbill.effect
 
 import java.util.concurrent.{ScheduledFuture, ScheduledThreadPoolExecutor, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
-import spoonbill.effect.Effect.Promise
-import spoonbill.effect.syntax._
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
+import scala.util.control.NonFatal
+import spoonbill.effect.Effect.Promise
+import spoonbill.effect.syntax._
 
 final class Scheduler[F[_]: Effect] {
 
@@ -42,22 +43,54 @@ final class Scheduler[F[_]: Effect] {
 
   def schedule(delay: FiniteDuration): F[Stream[F, Unit]] = Effect[F].delay {
     new Stream[F, Unit] {
-      var canceled                                    = false
-      var cb: Either[Throwable, Option[Unit]] => Unit = _
-      var task: ScheduledFuture[?]                    = _
-      def pull(): F[Option[Unit]] = Effect[F].promise { cb =>
-        if (canceled) cb(Right(None))
-        else {
-          this.cb = cb
-          this.task = after(delay)(cb(Right(Some(()))))
-        }
+      private final class Tick(val callback: Promise[Option[Unit]]) {
+        var task = Option.empty[ScheduledFuture[?]]
       }
+      private case class Held(state: ScheduledStreamMachine.State, ticks: Map[ScheduledStreamMachine.Ticket, Tick])
+      private val monitor = new Object
+      private var held    = Held(ScheduledStreamMachine.initial, Map.empty)
+
+      private def take(ticket: ScheduledStreamMachine.Ticket): Option[Tick] = monitor.synchronized {
+        val current       = held
+        val (next, owned) = ScheduledStreamMachine.settle(current.state, ticket)
+        if (owned) {
+          held = Held(next, current.ticks - ticket)
+          current.ticks.get(ticket)
+        } else None
+      }
+
+      def pull(): F[Option[Unit]] = Effect[F].promise { cb =>
+        val ticket = new ScheduledStreamMachine.Ticket
+        val tick   = new Tick(cb)
+        val admitted = monitor.synchronized {
+          val current          = held
+          val (next, admitted) = ScheduledStreamMachine.register(current.state, ticket)
+          if (admitted) held = Held(next, current.ticks.updated(ticket, tick))
+          admitted
+        }
+        if (!admitted) cb(Right(None))
+        else
+          try {
+            val task = after(delay)(take(ticket).foreach(_.callback(Right(Some(())))))
+            val installed = monitor.synchronized {
+              if (held.ticks.contains(ticket)) { tick.task = Some(task); true }
+              else false
+            }
+            // A zero-delay tick or cancellation can win before handle installation.
+            if (!installed) task.cancel(false)
+          } catch { case NonFatal(error) => take(ticket).foreach(_.callback(Left(error))) }
+      }
+
       def cancel(): F[Unit] = Effect[F].delay {
-        if (task != null) {
-          canceled = true
-          task.cancel(false)
-          task = null
-          cb(Right(None))
+        val ticks = monitor.synchronized {
+          val current          = held
+          val (next, canceled) = ScheduledStreamMachine.close(current.state)
+          held = Held(next, Map.empty)
+          canceled.toVector.map(current.ticks)
+        }
+        ticks.foreach { tick =>
+          tick.task.foreach(_.cancel(false))
+          tick.callback(Right(None))
         }
       }
     }
@@ -74,19 +107,39 @@ final class Scheduler[F[_]: Effect] {
   def unsafeScheduleOnce[T](delay: FiniteDuration)(job: => F[T]): JobHandler[F, T] =
     new JobHandler[F, T] {
 
-      @volatile private var completed: Either[Throwable, T] = _
-      @volatile private var promise: Promise[T]             = _
+      private case class Completion(
+        state: CompletionLatchMachine.State,
+        result: Option[Either[Throwable, T]] = None,
+        waiters: List[Promise[T]] = Nil
+      )
+      private val monitor    = new Object
+      private var completion = Completion(CompletionLatchMachine.State.Pending)
 
       private val task = after(delay) {
-        job.runAsync { errorOrResult =>
-          if (promise != null) promise(errorOrResult)
-          else completed = errorOrResult
+        Effect[F].delayAsync(job).runAsync { errorOrResult =>
+          val callbacks = monitor.synchronized {
+            val current         = completion
+            val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Complete)
+            if (command == CompletionLatchMachine.Command.Publish) {
+              completion = Completion(next, Some(errorOrResult))
+              val callbacks = current.waiters
+              callbacks
+            } else Nil
+          }
+          callbacks.foreach(_(errorOrResult))
         }
       }
 
       def result: F[T] = Effect[F].promise { cb =>
-        if (completed != null) cb(completed)
-        else promise = cb
+        val ready = monitor.synchronized {
+          val current         = completion
+          val (next, command) = CompletionLatchMachine.step(current.state, CompletionLatchMachine.Event.Observe)
+          if (command == CompletionLatchMachine.Command.Register) {
+            completion = current.copy(state = next, waiters = cb :: current.waiters)
+            None
+          } else current.result
+        }
+        ready.foreach(cb)
       }
 
       def cancel(): F[Unit] = Effect[F].delay(unsafeCancel())
@@ -104,7 +157,7 @@ object Scheduler {
 
   // Non-daemon, as the java.util.Timer thread it replaces.
   private val timerThreads: ThreadFactory = new ThreadFactory {
-    private val count = new AtomicInteger(0)
+    private val count                     = new AtomicInteger(0)
     def newThread(task: Runnable): Thread = new Thread(task, s"spoonbill-scheduler-${count.incrementAndGet()}")
   }
 

@@ -1,6 +1,6 @@
 import java.util.concurrent.atomic.AtomicReference
 import spoonbill.akka.util.Countdown
-import spoonbill.effect.Effect.FutureEffect
+import spoonbill.effect.Effect
 import spoonbill.effect.syntax._
 import org.scalatest.freespec.AsyncFreeSpec
 import scala.concurrent.Future
@@ -9,7 +9,12 @@ class CountdownSpec extends AsyncFreeSpec {
 
   private case class Promise() extends Exception
 
-  class ThrowOnPromise(var switch: Boolean = false) extends FutureEffect {
+  class ThrowOnPromise(var switch: Boolean = false) extends Effect[Future] {
+    export Effect.futureEffect.{
+      pure, delay, uncancelable, fail, unit, never, fromTry,
+      promiseF, flatMap, map, recover, recoverF, start, blocking,
+      fork, sequence, runAsync, run, toFuture
+    }
 
     def toggle(): Future[Unit] = Future.successful {
       switch = !switch
@@ -17,7 +22,7 @@ class CountdownSpec extends AsyncFreeSpec {
 
     override def promise[A](cb: (Either[Throwable, A] => Unit) => Unit): Future[A] = {
       var released = false
-      val p = super.promise { (f: Either[Throwable, A] => Unit) =>
+      val p = Effect.futureEffect.promise { (f: Either[Throwable, A] => Unit) =>
         cb { x =>
           released = true
           f(x)
@@ -92,4 +97,23 @@ class CountdownSpec extends AsyncFreeSpec {
     } yield ()
   }
 
+  "positive demand saturates and remains effectively unbounded" in {
+    val countdown = new Countdown[Future]()(Effect.futureEffect)
+    countdown.unsafeAdd(Long.MaxValue)
+    countdown.unsafeAdd(Long.MaxValue)
+    countdown.unsafeAdd(2)
+    assert(countdown.unsafeValue == Long.MaxValue)
+    countdown.decOrLock().map(_ => assert(countdown.unsafeValue == Long.MaxValue))
+  }
+
+  "a single unbounded request releases a parked pull and stays unbounded" in {
+    val countdown = new Countdown[Future]()(Effect.futureEffect)
+    val parked = countdown.decOrLock()
+    assert(!parked.isCompleted)
+    countdown.unsafeAdd(Long.MaxValue)
+    parked.flatMap { _ =>
+      assert(countdown.unsafeValue == Long.MaxValue)
+      Future.sequence(List.fill(32)(countdown.decOrLock()))
+    }.map(_ => assert(countdown.unsafeValue == Long.MaxValue))
+  }
 }

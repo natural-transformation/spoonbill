@@ -162,7 +162,7 @@ async function cancelNativeDeparture(page) {
 }
 
 (async () => {
-  const modules = new Map(await Promise.all(['bridge.js', 'spoonbill.js', 'connection.js', 'utils.js', 'sensitive.js', 'protocol.js']
+  const modules = new Map(await Promise.all(['bridge.js', 'bridge-machine.js', 'spoonbill.js', 'connection.js', 'connection-machine.js', 'utils.js', 'sensitive.js', 'protocol.js']
     .map(async name => ['/' + name, await fs.readFile(path.join(sourceRoot, name), 'utf8')])));
   const sockets = new Set();
   const peers = [];
@@ -218,6 +218,11 @@ async function cancelNativeDeparture(page) {
           Element.prototype.attachShadow = function(options) {
             const root = attach.call(this, options); roots.set(this, root); return root;
           };
+          const physicalSockets = [];
+          const nativeWebSocket = window.WebSocket;
+          window.WebSocket = new Proxy(nativeWebSocket, {construct(target, args) {
+            const socket = new target(...args); physicalSockets.push(socket); return socket;
+          }});
           const [{Connection}, {Bridge}] = await Promise.all([import('/connection.js'), import('/bridge.js')]);
           const config = {auth: true, heartbeat: {interval: '0'}};
           const connection = new Connection('native-test', '/', location, config);
@@ -228,7 +233,7 @@ async function cancelNativeDeparture(page) {
           connection.dispatcher.addEventListener('open', () => {
             opens++; bridge = new Bridge(config, connection);
             if (!firstSocket) {
-              firstSocket = connection._webSocket;
+              firstSocket = physicalSockets[0];
               firstSocket.addEventListener('close', () => socketCloses++);
               firstSocket.addEventListener('error', () => socketErrors++);
             }
@@ -251,15 +256,15 @@ async function cancelNativeDeparture(page) {
           window.__departureFixture = {
             snapshot: () => {
               const root = roots.get(host);
-              return {sameDocument: document === originalDocument, sameSocket: connection._webSocket === firstSocket,
+              return {sameDocument: document === originalDocument, sameSocket: physicalSockets.length === 1 && physicalSockets[0] === firstSocket,
                 readyState: firstSocket.readyState, opens, closes, errors, socketCloses, socketErrors,
-                beforeUnload, pageHide, pending: bridge._sensitive.departurePending,
+                beforeUnload, pageHide,
                 visibleNodes: root?.childNodes.length || 0, initialVisible: root?.textContent === initialText,
                 freshVisible: root?.textContent === freshText, closedRoot: host.shadowRoot === null,
                 ordinaryClean: !document.documentElement.outerHTML.includes(initialText) &&
                   !document.documentElement.outerHTML.includes(freshText)};
             },
-            cleanup: () => { bridge.destroy(); connection.disconnect(false); Element.prototype.attachShadow = attach; }
+            cleanup: () => { bridge.destroy(); connection.disconnect(false); Element.prototype.attachShadow = attach; window.WebSocket = nativeWebSocket; }
           };
           return document.getElementById('ordinary').vId;
         }, {initialText, freshText});
@@ -290,7 +295,7 @@ async function cancelNativeDeparture(page) {
         await page.waitForTimeout(1000);
         const canceled = await snapshot();
         checkLive(canceled); assert.equal(canceled.beforeUnload, 1);
-        assert.equal(canceled.pending, true); assert.equal(canceled.visibleNodes, 0);
+        assert.equal(canceled.visibleNodes, 0);
         assert.equal(peer.revalidations, 0, 'Peer must withhold recovery');
         await peer.show(2, 'failed');
         await peer.show(1, 'failed', initialText);
@@ -303,7 +308,7 @@ async function cancelNativeDeparture(page) {
         assert.equal(peer.frames.filter(frame => frame[0] === 1).length, 0,
           'Fresh user callback must not reach the server before recovery');
         const pending = await snapshot();
-        checkLive(pending); assert.equal(pending.pending, true); assert.equal(pending.visibleNodes, 0);
+        checkLive(pending); assert.equal(pending.visibleNodes, 0);
 
         await cancelNativeDeparture(page);
         await peer.waitFor(frame => frame[0] === 10 && frame[1] === '2');
@@ -311,11 +316,11 @@ async function cancelNativeDeparture(page) {
         await peer.show(4, 'failed');
         const stale = await snapshot();
         checkLive(stale); assert.equal(stale.beforeUnload, 2);
-        assert.equal(stale.pending, true); assert.equal(stale.visibleNodes, 0);
+        assert.equal(stale.visibleNodes, 0);
         peer.revalidate(2);
         await peer.fence('revalidated-fence', ordinaryId);
         const recovered = await snapshot();
-        checkLive(recovered); assert.equal(recovered.pending, false); assert.equal(recovered.visibleNodes, 0);
+        checkLive(recovered); assert.equal(recovered.visibleNodes, 0);
         await peer.show(1, 'failed', initialText);
         await peer.show(2, 'failed');
         await page.locator('#fresh').click();

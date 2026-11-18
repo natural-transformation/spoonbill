@@ -17,10 +17,10 @@
 package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
-import spoonbill.effect.Effect.Promise
-import spoonbill.effect.syntax._
 import scala.annotation.tailrec
 import scala.collection.immutable.{Queue => IQueue}
+import spoonbill.effect.Effect.Promise
+import spoonbill.effect.syntax._
 
 /**
  * Nonblocking, concurrent, asynchronous queue.
@@ -32,7 +32,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   private val state = new AtomicReference(Queue.State[T]())
 
   /** Distinguishes a rejected offer after close from temporary backpressure. */
-  def isClosed: Boolean = state.get().closed
+  def isClosed: Boolean = QueueMachine.isClosed(state.get().lifecycle)
 
   private final class QueueStream extends Stream[F, T] {
 
@@ -40,10 +40,10 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
       @tailrec
       def aux(): Unit = {
         val ref = state.get()
-        ref.error match {
-          case Some(error)        => cb(Left(error))
-          case None if ref.closed => cb(noneToken)
-          case None if ref.queue.nonEmpty =>
+        QueueMachine.pull(ref.lifecycle, ref.queue.nonEmpty) match {
+          case QueueMachine.Pull.Failed(error) => cb(Left(error))
+          case QueueMachine.Pull.End           => cb(noneToken)
+          case QueueMachine.Pull.Buffered =>
             val (value, updatedQueue) = ref.queue.dequeue
             val canOfferCallback      = ref.canOfferCallbacks.headOption
             val newValue = ref.copy(
@@ -56,8 +56,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
             } else {
               aux()
             }
-          case None if ref.stopped => cb(noneToken)
-          case None =>
+          case QueueMachine.Pull.Wait =>
             val updatedPc = cb :: ref.pullCallbacks
             val newValue  = ref.copy(pullCallbacks = updatedPc)
             if (!state.compareAndSet(ref, newValue)) {
@@ -71,10 +70,11 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     def cancel(): F[Unit] = Effect[F].delay {
       unsafeClose()
       @tailrec def aux(): Unit = {
-        val ref      = state.get
-        val newValue = ref.copy(cancelCallbacks = Nil)
+        val ref                  = state.get
+        val (lifecycle, publish) = QueueMachine.cancel(ref.lifecycle)
+        val newValue             = ref.copy(lifecycle = lifecycle, cancelCallbacks = Nil)
         if (state.compareAndSet(ref, newValue)) {
-          ref.cancelCallbacks.foreach(cb => cb(unitToken))
+          if (publish) ref.cancelCallbacks.foreach(cb => cb(unitToken))
         } else {
           aux()
         }
@@ -90,14 +90,14 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     @tailrec
     def aux(): Boolean = {
       val ref = state.get()
-      if (!ref.stopped && !ref.closed) {
+      if (QueueMachine.mayOffer(ref.lifecycle)) {
         // Pull callbacks can be nonempty
         // if queue was empty when pull was ran.
         if (ref.pullCallbacks.nonEmpty) {
           // A prior dequeue may have left other capacity waiters behind. Direct
           // handoff keeps the buffer free, so pass that hint to one more waiter.
           val canOfferCallback = ref.canOfferCallbacks.headOption
-          val newValue = ref.copy(pullCallbacks = Nil, canOfferCallbacks = ref.canOfferCallbacks.drop(1))
+          val newValue         = ref.copy(pullCallbacks = Nil, canOfferCallbacks = ref.canOfferCallbacks.drop(1))
           if (state.compareAndSet(ref, newValue)) {
             val token = Right(Some(item))
             ref.pullCallbacks.foreach(cb => cb(token))
@@ -126,12 +126,18 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 
   def unsafeStop(): Unit = {
     @tailrec def aux(): Unit = {
-      val ref = state.get
-      if (state.compareAndSet(ref, ref.copy(stopped = true))) {
-        if (ref.queue.isEmpty) {
-          ref.canOfferCallbacks.foreach(cb => cb(unitToken))
-          ref.pullCallbacks.foreach(cb => cb(noneToken))
-        }
+      val ref                  = state.get
+      val (lifecycle, command) = QueueMachine.stop(ref.lifecycle, ref.queue.nonEmpty)
+      val endPulls             = command == QueueMachine.StopCommand.ReleaseProducersAndEndPulls
+      val next = ref.copy(
+        lifecycle = lifecycle,
+        canOfferCallbacks = Nil,
+        pullCallbacks = if (endPulls) Nil else ref.pullCallbacks
+      )
+      if (state.compareAndSet(ref, next)) {
+        // Detach before notification: callbacks may reenter stop or admission.
+        ref.canOfferCallbacks.foreach(cb => cb(unitToken))
+        if (endPulls) ref.pullCallbacks.foreach(cb => cb(noneToken))
       } else {
         aux()
       }
@@ -143,8 +149,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     @tailrec
     def aux(): Unit = {
       val ref = state.get
-      if (!ref.closed) {
-        val newValue = ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, closed = true)
+      if (!QueueMachine.isClosed(ref.lifecycle)) {
+        val newValue =
+          ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, lifecycle = QueueMachine.close(ref.lifecycle))
         if (state.compareAndSet(ref, newValue)) {
           ref.canOfferCallbacks.foreach(cb => cb(unitToken))
           ref.pullCallbacks.foreach(cb => cb(noneToken))
@@ -159,7 +166,10 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   def dequeueAll(): F[Seq[T]] = Effect[F].delay {
     def aux(): Seq[T] = {
       val s = state.get()
-      if (state.compareAndSet(s, s.copy(queue = IQueue.empty))) {
+      if (state.compareAndSet(s, s.copy(queue = IQueue.empty, canOfferCallbacks = Nil))) {
+        // A bulk drain frees capacity just like individual pulls. Wake all
+        // registered capacity waiters; enqueue rechecks available space.
+        s.canOfferCallbacks.foreach(_(unitToken))
         s.queue
       } else {
         aux()
@@ -178,7 +188,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     @tailrec
     def aux(): Unit = {
       val ref = state.get
-      if (ref.closed || ref.stopped || ref.queue.size < maxSize) {
+      if (!QueueMachine.mayOffer(ref.lifecycle) || ref.queue.size < maxSize) {
         cb(unitToken)
       } else {
         val newValue = ref.copy(canOfferCallbacks = cb :: ref.canOfferCallbacks)
@@ -193,8 +203,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   def failUnsafe(e: Throwable): Unit = {
     @tailrec
     def aux(): Unit = {
-      val ref      = state.get
-      val newValue = ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, error = Some(e))
+      val ref = state.get
+      val newValue =
+        ref.copy(canOfferCallbacks = Nil, pullCallbacks = Nil, lifecycle = QueueMachine.fail(ref.lifecycle, e))
       if (state.compareAndSet(ref, newValue)) {
         ref.canOfferCallbacks.foreach(cb => cb(unitToken))
         ref.pullCallbacks.foreach(cb => cb(Left(e)))
@@ -220,9 +231,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     def aux(): F[Unit] = {
       val ref = state.get
       offer(item).flatMap {
-        case true                               => Effect[F].unit
-        case false if ref.stopped || ref.closed => Effect[F].unit
-        case false                              => canOffer *> aux()
+        case true                                           => Effect[F].unit
+        case false if !QueueMachine.mayOffer(ref.lifecycle) => Effect[F].unit
+        case false                                          => canOffer *> aux()
       }
     }
     aux()
@@ -245,15 +256,18 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     Effect[F].delay(failUnsafe(e))
 
   /**
-   * Resolves only if `stream.cancel` ran.
+   * Resolves once `stream.cancel` ran, including for listeners registered
+   * later. Closing the queue without explicit stream cancellation does not
+   * signal it.
    * @return
    */
   def cancelSignal: F[Unit] = Effect[F].promise { cb =>
     @tailrec def aux(): Unit = {
-      val ref      = state.get
-      val newValue = ref.copy(cancelCallbacks = cb :: ref.cancelCallbacks)
-      if (!state.compareAndSet(ref, newValue)) {
-        aux()
+      val ref = state.get
+      if (QueueMachine.cancellationReplays(ref.lifecycle)) cb(unitToken)
+      else {
+        val newValue = ref.copy(cancelCallbacks = cb :: ref.cancelCallbacks)
+        if (!state.compareAndSet(ref, newValue)) aux()
       }
     }
     aux()
@@ -277,9 +291,7 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 object Queue {
 
   private case class State[T](
-    stopped: Boolean = false,
-    closed: Boolean = false,
-    error: Option[Throwable] = None,
+    lifecycle: QueueMachine.State = QueueMachine.initial,
     pullCallbacks: List[Promise[Option[T]]] = Nil,
     canOfferCallbacks: List[Promise[Unit]] = Nil,
     cancelCallbacks: List[Promise[Unit]] = Nil,

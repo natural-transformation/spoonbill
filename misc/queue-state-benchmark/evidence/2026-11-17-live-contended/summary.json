@@ -1,0 +1,40 @@
+{
+  "trials": 6,
+  "repetitions": 3,
+  "seconds": 3,
+  "allocationCounterProtocol": "live warmup and measured workers; self-byte lower bound and escaping controls",
+  "statistics": "median and range of independent JVM trials; no confidence interval",
+  "results": [
+    {
+      "scenario": "contended",
+      "baseline": {
+        "operationsPerSecond": {
+          "median": 1480821.3710099477,
+          "min": 1480372.5298208923,
+          "max": 1544643.2637014512
+        },
+        "bytesPerOperation": {
+          "median": 6237.605735402955,
+          "min": 5635.635176549543,
+          "max": 6420.188815218448
+        }
+      },
+      "candidate": {
+        "operationsPerSecond": {
+          "median": 1505572.8074892925,
+          "min": 1480233.6941814302,
+          "max": 1578599.833906246
+        },
+        "bytesPerOperation": {
+          "median": 5963.922605691049,
+          "min": 5624.4225094272815,
+          "max": 6201.315479422103
+        }
+      },
+      "ratios": {
+        "operationsPerSecond": 1.0167146672542036,
+        "bytesPerOperation": 0.9561236889086216
+      }
+    }
+  ]
+}

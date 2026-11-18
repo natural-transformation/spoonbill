@@ -21,9 +21,8 @@ import avocet.events.EventId
 import avocet.impl.DiffRenderContext.ChangesPerformer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
 import scala.annotation.{switch, tailrec}
-import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -31,7 +30,7 @@ import scala.util.control.NonFatal
 import spoonbill.Context.FileHandler
 import spoonbill.Metrics
 import spoonbill.data.Bytes
-import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream}
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream, StreamSortOverflowException}
 import spoonbill.effect.syntax._
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.server.SessionAccessDenied
@@ -65,18 +64,31 @@ final class Frontend[F[_]: Effect](
 ) {
 
   import Frontend._
+  import FrontendConnectionMachine as Connection
 
   private val actionConnectionId               = connectionId.getOrElse(ConnectionId.fromUuid(UUID.randomUUID()))
-  private val outputClosed                     = new AtomicBoolean(false)
-  private val replacementPending               = new AtomicBoolean(false)
+  private val connectionState                  = new AtomicReference(Connection.initial)
+  private val cleanupState                     = new AtomicReference(FrontendCloseMachine.State.Unclaimed)
   private[spoonbill] def guarded: Boolean      = authorize.nonEmpty
   private[spoonbill] def recoversView: Boolean = viewRecoveryEpoch.nonEmpty
-  private val renderRevision                   = new AtomicLong(0L)
-  private val sensitiveNavigation              = new AtomicLong(0L)
-  private val sensitiveDeparture               = new AtomicLong(0L)
-  private val handledSensitiveDeparture        = new AtomicLong(0L)
-  private val recoveryStarted                  = new AtomicBoolean(false)
   private val renderPublication                = new Object
+
+  private def connection: Connection.State = connectionState.get()
+
+  @tailrec private def advanceConnection(change: Connection.State => Connection.State): Connection.State = {
+    val before = connectionState.get()
+    val next = change(before)
+    if ((before eq next) || connectionState.compareAndSet(before, next)) next else advanceConnection(change)
+  }
+
+  @tailrec private def reserveConnection(change: Connection.State => Option[Connection.State]): Boolean = {
+    val before = connectionState.get()
+    change(before) match {
+      case None => false
+      case Some(next) =>
+        if (connectionState.compareAndSet(before, next)) true else reserveConnection(change)
+    }
+  }
 
   private[spoonbill] def selectFromPublishedView[A](expected: Option[Long])(select: => A): F[A] =
     selectPublishedRevision(expected, ObsoleteRevision.Deny)(select)
@@ -94,13 +106,15 @@ final class Frontend[F[_]: Effect](
     Effect[F].delay {
       renderPublication.synchronized {
         expected.foreach { value =>
-          val published = renderRevision.get()
           // This connection never published a future revision to the browser.
-          if (!recoveryStarted.get() || value < 0 || value > published) throw new SessionAccessDenied
-          if (value < published) obsolete match {
-            case ObsoleteRevision.Deny       => throw new SessionAccessDenied
-            case ObsoleteRevision.Discard    => throw ObsoleteBrowserEvent
-            case ObsoleteRevision.BoundsOnly => ()
+          Connection.revision(connection, value) match {
+            case Connection.Revision.Denied => throw new SessionAccessDenied
+            case Connection.Revision.Obsolete => obsolete match {
+              case ObsoleteRevision.Deny       => throw new SessionAccessDenied
+              case ObsoleteRevision.Discard    => throw ObsoleteBrowserEvent
+              case ObsoleteRevision.BoundsOnly => ()
+            }
+            case Connection.Revision.Current => ()
           }
         }
         select
@@ -119,12 +133,12 @@ final class Frontend[F[_]: Effect](
     selectPublishedRevision(expected, obsolete)(())
 
   private def requireOpen(): F[Unit] = Effect[F].delay {
-    if (outputClosed.get()) throw new SessionAccessDenied
+    if (Connection.closed(connection)) throw new SessionAccessDenied
   }
 
   private[spoonbill] def authorizeInteraction(): F[Unit] = authorizeWith(authorize)
 
-  private[spoonbill] def interactionIsLive: Boolean = !outputClosed.get() && !replacementPending.get()
+  private[spoonbill] def interactionIsLive: Boolean = Connection.live(connection)
 
   private[spoonbill] def selectLiveInteraction[A](select: => A): Option[A] = renderPublication.synchronized {
     if (interactionIsLive) Some(select) else None
@@ -144,10 +158,10 @@ final class Frontend[F[_]: Effect](
    */
   private def authorizeWith(check: Option[() => F[Unit]]): F[Unit] =
     requireOpen().flatMap { _ =>
-      if (replacementPending.get()) Effect[F].fail(new SessionAccessDenied)
+      if (Connection.replacing(connection)) Effect[F].fail(new SessionAccessDenied)
       else check.fold(Effect[F].unit)(run => Effect[F].delayAsync(run()))
     }.flatMap(_ => requireOpen()).recoverF {
-      case error if replacementPending.get() => Effect[F].fail(error)
+      case error if Connection.replacing(connection) => Effect[F].fail(error)
       case error                             => close().flatMap(_ => Effect[F].fail(error))
     }
 
@@ -185,13 +199,15 @@ final class Frontend[F[_]: Effect](
         if (
           !guarded || replacementCompletion.isEmpty || binding.connectionId != actionConnectionId ||
           !(handoff.invocationKey eq binding.replacementIdentity) ||
-          !renderPublication.synchronized(replacementPending.compareAndSet(false, true))
+          !renderPublication.synchronized {
+            reserveConnection(Connection.replace)
+          }
         )
           throw new SessionAccessDenied
         sensitiveOutcomes.close()
       }
     }.flatMap(_ => sensitiveRuntime.clearAll(spoonbill.sensitive.ClearReason.Navigation))
-      .flatMap(_ => outgoingQueue.enqueue(Outgoing("", None, () => true, replacement = Some(handoff -> binding))))
+      .flatMap(_ => outgoingQueue.enqueue(ReplacementOutgoing(handoff, binding)))
 
   /**
    * An uncertain/suppressed replacement observer cannot send a completion.
@@ -220,8 +236,8 @@ final class Frontend[F[_]: Effect](
               // The ordinary output guard runs here; the dedicated runtime performs
               // the sensitive producer/audience check once at the actual handoff.
               if (
-                outputClosed.get() || !outgoingQueue
-                  .offerUnsafe(Outgoing("", Some(() => Effect[F].unit), () => sensitiveRuntime.pending(id), Some(id)))
+                Connection.closed(connection) || !outgoingQueue
+                  .offerUnsafe(SensitiveOutgoing(id, Some(() => Effect[F].unit), () => sensitiveRuntime.pending(id)))
               ) throw new SessionAccessDenied
             }
           }
@@ -241,26 +257,52 @@ final class Frontend[F[_]: Effect](
       .flatMap(_ => sendRaw(s"[24,$counter]", protectedOutput = false, rejectIfFull = true))
       .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
 
-  private[spoonbill] def close(): F[Unit] =
-    Effect[F].delay {
-      renderPublication.synchronized(outputClosed.set(true))
-      val waiting = pendingUserActions.values.toList
-      pendingUserActions.clear()
-      waiting.foreach(_.apply())
-      val downloads = downloadFiles.values.toList
-      downloadFiles.clear()
-      downloads.foreach(meta => Effect[F].delayAsync(meta.stream.cancel()).runAsyncForget)
+  private def cleanup(steps: List[() => F[Unit]], firstError: Option[Throwable] = None): F[Unit] =
+    steps match {
+      case Nil => firstError.fold(Effect[F].unit)(Effect[F].fail[Unit])
+      case step :: rest =>
+        Effect[F].delayAsync(step()).map(_ => Option.empty[Throwable])
+          .recover { case NonFatal(error) => Some(error) }
+          .flatMap(error => cleanup(rest, firstError.orElse(error)))
     }
-      .flatMap(_ => stringRequests.close())
-      .flatMap(_ => formRequests.close())
-      .flatMap(_ => fileRequests.close())
-      .flatMap(_ => fileNameRequests.close())
-      .flatMap(_ => Effect[F].delay(sensitiveOutcomes.close()))
-      .flatMap(_ => sensitiveRuntime.close())
-      .flatMap(_ => outgoingQueue.stream.cancel())
-      .flatMap(_ => userActions.stream.cancel())
-      .flatMap(_ => guardedRacks.toList.flatten.map(_.close()).sequence.unit)
-      .flatMap(_ => incomingMessages.cancel())
+
+  private[spoonbill] def close(): F[Unit] = Effect[F].uncancelable {
+    Effect[F].delayAsync {
+      // Every caller must publish the fence before returning, including a
+      // competing close while the teardown owner waits for publication.
+      renderPublication.synchronized { advanceConnection(Connection.close) }
+      // Claim before callbacks: a callback or input cancellation may close this
+      // frontend recursively, and must not wait for its own cleanup to finish.
+      @tailrec def claim(): List[FrontendCloseMachine.Command] = {
+        val before = cleanupState.get()
+        val (next, commands) = FrontendCloseMachine.close(before)
+        if (next == before || cleanupState.compareAndSet(before, next)) commands else claim()
+      }
+      cleanup(claim().map { command => () => {
+        import FrontendCloseMachine.Command.*
+        command match {
+          case FailActions => Effect[F].delay(pendingUserActions.close())
+            .flatMap(waiting => cleanup(waiting.map(callback => () => Effect[F].delay(callback()))))
+          case CancelDownloads => Effect[F].delay(downloadFiles.close())
+            .flatMap(downloads => cleanup(downloads.map(meta => () => Effect[F].delay {
+            // A download finalizer may await its consumer: retain nonjoining
+            // cancellation while still isolating a synchronous launch failure.
+            Effect[F].delayAsync(meta.stream.cancel()).runAsyncForget
+          })))
+          case CloseStrings => stringRequests.close()
+          case CloseForms => formRequests.close()
+          case CloseFiles => fileRequests.close()
+          case CloseFileNames => fileNameRequests.close()
+          case CloseSensitiveOutcomes => Effect[F].delay(sensitiveOutcomes.close())
+          case CloseSensitiveRuntime => sensitiveRuntime.close()
+          case CancelOutput => outgoingQueue.stream.cancel()
+          case CancelActions => userActions.stream.cancel()
+          case CloseRacks => cleanup(guardedRacks.toList.flatten.map(queue => () => queue.close()))
+          case CancelInput => incomingMessages.cancel()
+        }
+      }})
+    }
+  }
 
   /**
    * One admission/execution queue for DOM, history and user callbacks. Browser
@@ -284,7 +326,7 @@ final class Frontend[F[_]: Effect](
     enqueueUserAction(
       operation,
       expectedRevision,
-      () => Option.when(departure != sensitiveDeparture.get())(()),
+      () => Option.when(departure != connection.departure)(()),
       obsoleteResult = Some(())
     )
 
@@ -310,7 +352,7 @@ final class Frontend[F[_]: Effect](
             pendingUserActions.remove(id)
             callback(result)
           }
-        pendingUserActions.put(id, () => finish(Left(new SessionAccessDenied)))
+        val registered = pendingUserActions.put(id, () => finish(Left(new SessionAccessDenied)))
         val job = () =>
           Effect[F]
             .delay(staleResult())
@@ -354,7 +396,7 @@ final class Frontend[F[_]: Effect](
                 }
               case error => finish(Left(error))
             }
-        if (outputClosed.get() || !userActions.offerUnsafe(job)) {
+        if (!registered || Connection.closed(connection) || !userActions.offerUnsafe(job)) {
           close().runAsyncForget
           finish(Left(new SessionAccessDenied))
         }
@@ -362,7 +404,7 @@ final class Frontend[F[_]: Effect](
 
   private[spoonbill] def browserAdmission(departure: Long): spoonbill.action.InvocationAdmission =
     new spoonbill.action.InvocationAdmission(() =>
-      !outputClosed.get() && !replacementPending.get() && (!guarded || departure == sensitiveDeparture.get())
+      Connection.live(connection) && (!guarded || departure == connection.departure)
     )
 
   private[spoonbill] def newActionBinding(
@@ -373,7 +415,7 @@ final class Frontend[F[_]: Effect](
         spoonbill.security.Identifiers.InvocationId.fromUuid(java.util.UUID.randomUUID()),
         actionConnectionId,
         Option.when(guarded && captureSensitiveAuthorization.nonEmpty)(sensitiveOutcomes),
-        browserAdmission(expectedDeparture.getOrElse(sensitiveDeparture.get())),
+        browserAdmission(expectedDeparture.getOrElse(connection.departure)),
         expectedActionAuthority
       )
     )
@@ -384,7 +426,7 @@ final class Frontend[F[_]: Effect](
   private val scheduler                 = Scheduler[F]
 
   private val customCallbacks = mutable.Map.empty[String, String => F[Unit]]
-  private val downloadFiles   = TrieMap.empty[String, DownloadFileMeta[F]]
+  private val downloadFiles   = new FrontendPendingRegistry[String, DownloadFileMeta[F]]
   private val rpcDeadlines = rpcDeadlineScheduler.getOrElse(new RpcDeadlineScheduler {
     def schedule(delay: FiniteDuration)(expire: () => Unit): () => Unit = {
       val callback      = new java.util.concurrent.atomic.AtomicReference(Option(expire))
@@ -411,15 +453,27 @@ final class Frontend[F[_]: Effect](
     () => new SessionAccessDenied
   )
 
-  private case class Outgoing(
+  private sealed trait Outgoing {
+    final override def toString: String = "Outgoing(<redacted>)"
+  }
+  private sealed trait AuthorizedOutgoing extends Outgoing {
+    def producer: Option[() => F[Unit]]
+    def pending: () => Boolean
+  }
+  private case class MessageOutgoing(
     message: String,
     producer: Option[() => F[Unit]],
-    pending: () => Boolean,
-    sensitiveId: Option[spoonbill.sensitive.PresentationId] = None,
-    replacement: Option[(spoonbill.auth.CommittedReplacement, spoonbill.action.InvocationBinding)] = None
-  ) {
-    override def toString: String = "Outgoing(<redacted>)"
-  }
+    pending: () => Boolean
+  ) extends AuthorizedOutgoing
+  private case class SensitiveOutgoing(
+    id: spoonbill.sensitive.PresentationId,
+    producer: Option[() => F[Unit]],
+    pending: () => Boolean
+  ) extends AuthorizedOutgoing
+  private case class ReplacementOutgoing(
+    handoff: spoonbill.auth.CommittedReplacement,
+    binding: spoonbill.action.InvocationBinding
+  ) extends Outgoing
   private val outgoingQueue = if (authorize.nonEmpty) Queue[F, Outgoing](256) else Queue[F, Outgoing]()
   private lazy val sensitiveRuntime = new SensitiveRuntime[F](
     actionConnectionId,
@@ -431,7 +485,7 @@ final class Frontend[F[_]: Effect](
         rejectIfFull = true
       ).recoverF { case _ => close() }
   )
-  private val pendingUserActions = TrieMap.empty[Long, () => Unit]
+  private val pendingUserActions = new FrontendPendingRegistry[Long, () => Unit]
   private val userActionKeys     = new AtomicLong(0L)
   private val userActions        = Queue[F, () => F[Unit]](128)
   if (guarded) userActions.stream.foreach(job => job()).runAsyncForget
@@ -445,14 +499,23 @@ final class Frontend[F[_]: Effect](
     case Incoming(CallbackType.History.code, _, _, _)  => 1
     case _                                             => 2
   }
+  private def closeOnRoutingOverflow(source: Stream[F, Incoming]): Stream[F, Incoming] = new Stream[F, Incoming] {
+    def pull(): F[Option[Incoming]] = source.pull().recoverF {
+      case error: StreamSortOverflowException =>
+        // The legacy input is a Hub lane: canceling that lane alone leaves the
+        // activity watcher and raw connection alive. Output EOF drives the
+        // transport release and the session's raw-input retirement signal.
+        close().recover { case NonFatal(_) => () }.flatMap(_ => Effect[F].fail(error))
+    }
+    def cancel(): F[Unit] = source.cancel()
+  }
   private val List(rawDomEvents, rawBrowserHistoryChanges, rawClientMessages) = guardedRacks match {
     case Some(queues) => queues.map(_.stream).toList
-    case None         => incomingMessages.map(parseMessage).sort(3)(rack)
+    case None         => incomingMessages.map(parseMessage).sort(3)(rack).map(closeOnRoutingOverflow)
   }
 
-  val outgoingMessages: Stream[F, String] = outgoingQueue.stream.mapAsync { outgoing =>
-    if (outgoing.replacement.nonEmpty) {
-      val (handoff, binding) = outgoing.replacement.get
+  val outgoingMessages: Stream[F, String] = outgoingQueue.stream.mapAsync {
+    case ReplacementOutgoing(handoff, binding) =>
       requireOpen()
         .flatMap(_ =>
           replacementCompletion.fold(Effect[F].fail[spoonbill.auth.BrowserReplacementControl](new SessionAccessDenied))(
@@ -461,8 +524,9 @@ final class Frontend[F[_]: Effect](
         )
         .map[Option[String]](control => Some(s"[${Procedure.CompleteAuthentication.code},\"${control.completionId}\"]"))
         .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
-    } else if (replacementPending.get() || !outgoing.pending()) Effect[F].pure(Option.empty[String])
-    else {
+    case outgoing: AuthorizedOutgoing =>
+      if (Connection.replacing(connection) || !outgoing.pending()) Effect[F].pure(Option.empty[String])
+      else {
       val fused =
         if (outputAdmission.isEmpty) None
         else outgoing.producer.collect { case value: FusedOutputAuthorization[F] @unchecked => value }
@@ -476,9 +540,9 @@ final class Frontend[F[_]: Effect](
         case None => requireOpen()
       }
       val materialized = allowed.flatMap { _ =>
-        outgoing.sensitiveId match {
-          case Some(id) => sensitiveRuntime.pull(id)
-          case None     => Effect[F].pure(Option.when(outgoing.pending())(outgoing.message))
+        outgoing match {
+          case SensitiveOutgoing(id, _, _) => sensitiveRuntime.pull(id)
+          case MessageOutgoing(message, _, _) => Effect[F].pure(Option.when(outgoing.pending())(message))
         }
       }
       val admitted = fused.orElse(outputAdmission) match {
@@ -506,7 +570,7 @@ final class Frontend[F[_]: Effect](
   val browserHistoryMessages: Stream[F, BrowserHistoryMessage] =
     rawBrowserHistoryChanges.mapAsync { case Incoming(_, args, revision, _) =>
       Effect[F].delay {
-        val counter = Option.when(guarded)(sensitiveNavigation.incrementAndGet())
+        val counter = Option.when(guarded)(advanceConnection(Connection.navigate).navigation)
         if (counter.exists(_ > 9007199254740991L)) throw new SessionAccessDenied
         BrowserHistoryMessage(PathAndQuery.fromString(args), revision, counter)
       }.flatMap { message =>
@@ -521,13 +585,14 @@ final class Frontend[F[_]: Effect](
 
   private def enqueueOutput(
     str: String,
+    kind: OutputKind,
     producer: Option[() => F[Unit]],
     pending: () => Boolean,
     rejectIfFull: Boolean,
     resetView: Boolean,
     onPublished: () => Unit
   ): F[Unit] =
-    if (recoversView && (str.startsWith("[4,") || str.startsWith("[4 ") || str == "[4]"))
+    if (recoversView && kind == OutputKind.DomMutation)
       Effect[F].delay {
         // Reserve the revision and publish in one critical section *after* the
         // asynchronous authorization checks. Concurrent producers cannot reorder
@@ -535,36 +600,40 @@ final class Frontend[F[_]: Effect](
         renderPublication.synchronized {
           if (!interactionIsLive) throw new SessionAccessDenied
           import spoonbill.security.Versions.ViewOwnershipEpoch.*
+          if (!Connection.canPublish(connection, resetView)) throw new SessionAccessDenied
           val frame = if (resetView) {
-            if (recoveryStarted.get()) throw new SessionAccessDenied
             val epoch = viewRecoveryEpoch.getOrElse(throw new SessionAccessDenied)
             s"""[19,"${epoch.toLong}","$actionConnectionId","0",$str]"""
           } else {
-            val previous = renderRevision.get()
-            if (!recoveryStarted.get() || previous >= 9007199254740991L) throw new SessionAccessDenied
+            val previous = connection.view match {
+              case Connection.View.Published(value) => value
+              case _ => throw new SessionAccessDenied
+            }
             s"""[20,"$actionConnectionId","$previous","${previous + 1L}",$str]"""
           }
-          if (!outgoingQueue.offerUnsafe(Outgoing(frame, producer, pending))) throw new SessionAccessDenied
-          if (resetView) recoveryStarted.set(true) else renderRevision.incrementAndGet()
+          if (!outgoingQueue.offerUnsafe(MessageOutgoing(frame, producer, pending))) throw new SessionAccessDenied
+          // offerUnsafe may resume a consumer inline, including a recursive
+          // close. Publish only the view onto the latest connection state.
+          advanceConnection(Connection.published(_, resetView))
           onPublished()
           ()
         }
       }
     else if (rejectIfFull)
       Effect[F].delay {
-        if (!outgoingQueue.offerUnsafe(Outgoing(str, producer, pending)))
+        if (!outgoingQueue.offerUnsafe(MessageOutgoing(str, producer, pending)))
           throw ClientSideException("Browser output queue is full")
       }
     else {
       def offer(): F[Unit] = Effect[F].delay {
         renderPublication.synchronized {
           if (
-            outputClosed.get() ||
-            ((str.startsWith("[4,") || str.startsWith("[4 ") || str == "[4]") && replacementPending.get())
+            Connection.closed(connection) ||
+            (kind == OutputKind.DomMutation && Connection.replacing(connection))
           )
             throw new SessionAccessDenied
           if (!pending()) true
-          else if (outgoingQueue.offerUnsafe(Outgoing(str, producer, pending))) { onPublished(); true }
+          else if (outgoingQueue.offerUnsafe(MessageOutgoing(str, producer, pending))) { onPublished(); true }
           else if (outgoingQueue.isClosed) throw new SessionAccessDenied
           else false
         }
@@ -575,8 +644,11 @@ final class Frontend[F[_]: Effect](
       offer()
     }
 
+  private enum OutputKind { case DomMutation, Other }
+
   private def sendRaw(
     str: String,
+    kind: OutputKind = OutputKind.Other,
     protectedOutput: Boolean = true,
     producer: Option[() => F[Unit]] = None,
     pending: () => Boolean = () => true,
@@ -586,7 +658,7 @@ final class Frontend[F[_]: Effect](
   ): F[Unit] =
     if (!pending()) Effect[F].unit
     else if (!protectedOutput)
-      requireOpen().flatMap(_ => enqueueOutput(str, None, pending, rejectIfFull, resetView, onPublished))
+      requireOpen().flatMap(_ => enqueueOutput(str, kind, None, pending, rejectIfFull, resetView, onPublished))
     else {
       val captured = producer match {
         case Some(check) => Effect[F].pure(check)
@@ -607,7 +679,7 @@ final class Frontend[F[_]: Effect](
         }
         allowed.flatMap { _ =>
           if (!pending()) Effect[F].unit
-          else enqueueOutput(str, Some(check), pending, rejectIfFull, resetView, onPublished)
+          else enqueueOutput(str, kind, Some(check), pending, rejectIfFull, resetView, onPublished)
         }
       }.recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
     }
@@ -641,7 +713,8 @@ final class Frontend[F[_]: Effect](
       case code: Int => ControlProcedureCodes.contains(code)
       case _         => false
     }
-    sendRaw(sb.result(), protectedOutput = !control, producer = producer, pending = pending, rejectIfFull = rpc)
+    val kind = if (args.headOption.contains(Procedure.ModifyDom.code)) OutputKind.DomMutation else OutputKind.Other
+    sendRaw(sb.result(), kind, protectedOutput = !control, producer = producer, pending = pending, rejectIfFull = rpc)
   }
 
   def listenEvent(name: String, preventDefault: Boolean): F[Unit] =
@@ -707,7 +780,7 @@ final class Frontend[F[_]: Effect](
         }
       }
       Effect[F].delay {
-        downloadFiles.put(id, DownloadFileMeta(owned, size, mimeType))
+        if (!downloadFiles.put(id, DownloadFileMeta(owned, size, mimeType))) throw new SessionAccessDenied
         ()
       }.flatMap(_ => requireOpen()).flatMap(_ => send(Procedure.DownloadFile.code, id, name)).recoverF { case error =>
         owned
@@ -855,7 +928,7 @@ final class Frontend[F[_]: Effect](
       _ <- sensitiveRuntime.revalidateActive()
       // Switch to blocking context if rendering is slow
       result <- if (avgDiffTime.get() > HeavyRenderThresholdNanos) Effect[F].blocking(diff) else Effect[F].delay(diff)
-      _      <- sendRaw(result, producer = producer, resetView = reset, onPublished = onPublished)
+      _      <- sendRaw(result, OutputKind.DomMutation, producer = producer, resetView = reset, onPublished = onPublished)
     } yield ()
   }
 
@@ -951,9 +1024,9 @@ final class Frontend[F[_]: Effect](
         // admission. A recovery callback may overtake an unread DOM rack item.
         if (parsed.code == CallbackType.SensitiveDeparture.code) {
           val counter = departureCounter(parsed.args)
-          sensitiveDeparture.updateAndGet(previous => math.max(previous, counter))
+          advanceConnection(Connection.depart(_, counter))
         }
-        if (!queues(rack(parsed)).offerUnsafe(parsed.copy(departure = sensitiveDeparture.get())))
+        if (!queues(rack(parsed)).offerUnsafe(parsed.copy(departure = connection.departure)))
           throw new SessionAccessDenied
       }
     }.flatMap(_ => close())
@@ -965,7 +1038,7 @@ final class Frontend[F[_]: Effect](
   }
 
   rawClientMessages.foreach {
-    case _ if replacementPending.get() => Effect[F].unit
+    case _ if Connection.replacing(connection) => Effect[F].unit
     case Incoming(CallbackType.SensitiveDeparture.code, args, _, _) =>
       recoverSensitiveDeparture(args)
     case Incoming(CallbackType.SensitiveAcknowledgment.code, args, _, _) =>
@@ -1027,8 +1100,7 @@ final class Frontend[F[_]: Effect](
   private def recoverSensitiveDeparture(args: String): F[Unit] =
     Effect[F].delay {
       val counter = departureCounter(args)
-      if (counter <= handledSensitiveDeparture.get()) None
-      else { handledSensitiveDeparture.set(counter); Some(counter) }
+      Option.when(reserveConnection(Connection.handleDeparture(_, counter)))(counter)
     }.flatMap {
       case None          => Effect[F].unit
       case Some(counter) =>

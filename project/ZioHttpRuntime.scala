@@ -50,10 +50,9 @@ object ZioHttpRuntime {
     Compile / exportJars := true,
     Compile / resourceGenerators += Def.task {
       val sourceRoot = (Compile / scalaSource).value
-      val names = Seq("WebSocketAppHandler", "WebSocketFrameDeadline", "WebSocketUpgradeBoundary", "SpoonbillWebSocketRuntime")
-      val hashes = names.map { name =>
-        val path = s"zio/http/netty/$name.scala"
-        "\"" + path + "\":\"" + digest(sourceRoot / path) + "\""
+      val patches = Path.allSubpaths(sourceRoot).filter(_._2.endsWith(".scala")).toSeq.sortBy(_._2)
+      val hashes = patches.map { case (file, path) =>
+        "\"" + path + "\":\"" + digest(file) + "\""
       }.mkString(",")
       val manifest = (Compile / resourceManaged).value / "META-INF/spoonbill-zio-http-patch.json"
       IO.write(manifest,

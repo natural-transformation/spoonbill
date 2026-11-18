@@ -11,7 +11,7 @@ import spoonbill.effect.Effect
 import spoonbill.sensitive.*
 
 class ActionFormsExecutionSpec extends AsyncFlatSpec with Matchers:
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private val actions          = new Actions[Future, Int, String]
   private val name             = ActionName.parse("fixture.execute").toOption.get
   private val region           = RegionId.parse("fixture").toOption.get

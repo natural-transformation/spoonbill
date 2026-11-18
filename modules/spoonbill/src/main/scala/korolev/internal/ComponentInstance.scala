@@ -20,6 +20,8 @@ import avocet.Id
 import avocet.StatefulRenderContext
 import avocet.events.EventId
 import avocet.events.EventPhase
+import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import scala.collection.AbstractMapView
 import scala.collection.MapView
 import scala.collection.concurrent.TrieMap
@@ -31,6 +33,7 @@ import spoonbill.Context.*
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream}
 import spoonbill.effect.syntax.*
+import spoonbill.internal.{ComponentBaselineMachine as Baseline}
 import spoonbill.internal.Frontend.DomEventMessage
 import spoonbill.state.StateDeserializer
 import spoonbill.state.StateManager
@@ -87,14 +90,26 @@ final class ComponentInstance[
   private val owner    = owners.bind(nodeId, deleteOnRetire = nodeId != Id.TopLevel)
   // A traversal snapshot can predate a completed predecessor deletion, even
   // when bind no longer finds an outstanding handoff at this address.
-  @volatile private var baselineReady = !owner.reused
-  @volatile private var loading       = false
+  private val baseline = new AtomicReference(Baseline.initial(owner.reused))
+
+  @tailrec private def beginLoad(kind: Baseline.Load): Boolean = {
+    val before = baseline.get()
+    val next = Baseline.begin(before, kind)
+    if (next == before) false
+    else if (baseline.compareAndSet(before, next)) true
+    else beginLoad(kind)
+  }
+  @tailrec private def loadFailed(ownerOpen: Boolean): Unit = {
+    val before = baseline.get()
+    val next = Baseline.failed(before, ownerOpen)
+    if (!baseline.compareAndSet(before, next)) loadFailed(ownerOpen)
+  }
 
   private[spoonbill] def stateSnapshot: F[StateManager.Snapshot] = owners.snapshot
 
   private[spoonbill] def closeAdmission(): Unit = owners.closeAdmission()
 
-  @volatile private var lastParameters: P = _
+  @volatile private var lastParameters: Baseline.Parameters[P] = Baseline.emptyParameters[P]
   private val markedDelays             = mutable.Set.empty[Id] // Set of the delays which are should survive
   private val markedComponentInstances = mutable.Set.empty[Id]
   private val delays                   = mutable.Map.empty[Id, DelayInstance[F, CS, E]]
@@ -357,27 +372,28 @@ final class ComponentInstance[
   ): Unit = miscLock.synchronized {
     // Reset all event handlers delays and elements
     prepare()
-    val hasBaseline = baselineReady && owner.snapshotIsCurrent(snapshot)
+    val hasBaseline = Baseline.hasBaseline(baseline.get()) && owner.snapshotIsCurrent(snapshot)
     val node = if (!hasBaseline) {
       loadWhenReady(parameters)
       component.renderNoState(parameters)
     } else
       snapshot[CS](nodeId).map(Right(_)).getOrElse(component.initialState) match {
         case Right(value) =>
-          if (lastParameters != parameters) {
+          if (Baseline.parametersDiffer(lastParameters, parameters)) {
             component.maybeUpdateState(parameters, value) match {
               case None => ()
               case Some(effect) =>
                 effect.flatMap(newState => writeLoaded(newState, establishBaseline = false)).runAsyncForget
             }
           }
-          component.render(parameters, value)
+          val rendered = component.render(parameters, value)
+          lastParameters = Baseline.remember(parameters)
+          rendered
         case Left(generateState) =>
-          Effect[F].delayAsync(generateState(parameters)).flatMap(value => writeLoaded(value)).runAsyncForget
+          loadInitial(parameters, generateState)
           component.renderNoState(parameters)
       }
 
-    if (hasBaseline) lastParameters = parameters
     val proxy = createMiscProxy(
       rc,
       (proxy, misc) =>
@@ -454,12 +470,29 @@ final class ComponentInstance[
 
   private def notifyLoaded(state: CS, establishBaseline: Boolean = true): F[Unit] = Effect[F].delay {
     if (establishBaseline) owner.establishBaseline()
-    baselineReady = true
-    loading = false
+    baseline.set(Baseline.written)
   }.flatMap(_ => publishState(state, None))
 
-  private def loadWhenReady(parameters: P): Unit = if (!loading) {
-    loading = true
+  private def loadInitial(parameters: P, generate: P => F[CS]): Unit = if (beginLoad(Baseline.Load.Initial)) {
+    try
+      Effect[F].delayAsync(generate(parameters)).flatMap { value =>
+        // A loading placeholder did not render state for its latest parameters.
+        // Keep the parameters that produced this state so the next real render
+        // can offer any newer ones to maybeUpdateState.
+        lastParameters = Baseline.remember(parameters)
+        writeLoaded(value)
+      }.recoverF { case error =>
+        loadFailed(owner.isOpen)
+        Effect[F].fail(error)
+      }.runAsyncForget
+    catch {
+      case NonFatal(error) =>
+        loadFailed(owner.isOpen)
+        throw error
+    }
+  }
+
+  private def loadWhenReady(parameters: P): Unit = if (beginLoad(Baseline.Load.Refresh)) {
     Effect[F]
       .fork(Effect[F].delayAsync {
         owner.awaitOpen.flatMap {
@@ -476,7 +509,7 @@ final class ComponentInstance[
                   case Right(value) => writeLoaded(value)
                   case Left(generate) =>
                     Effect[F].delayAsync(generate(parameters)).flatMap { value =>
-                      lastParameters = parameters
+                      lastParameters = Baseline.remember(parameters)
                       writeLoaded(value)
                     }
                 }
@@ -486,7 +519,7 @@ final class ComponentInstance[
       .recover { case error =>
         // A failed ownership gate cannot recover on another render. Keep this
         // loader settled until remount instead of reporting the same failure.
-        if (owner.isOpen) loading = false
+        loadFailed(owner.isOpen)
         reporter.error("Component initialization failed", error)
       }
       .runAsyncForget
@@ -699,13 +732,24 @@ private[spoonbill] object ComponentInstance {
     deadlines: Option[Frontend.RpcDeadlineScheduler] = None
   ) {
 
-    @volatile private var handler  = Option.empty[() => Unit]
-    @volatile private var finished = false
+    import LegacyDelayMachine.{Command, Event, State}
+    private final case class Held(state: State, handler: Option[() => Unit])
+    private val lifecycle = new Object
+    @volatile private var held = Held(State.Uninstalled, None)
 
-    def isFinished: Boolean = finished
+    private def advance(event: Event, installed: Option[() => Unit] = None): (Command, Option[() => Unit]) =
+      lifecycle.synchronized {
+        val before = held
+        val (next, command) = LegacyDelayMachine.step(before.state, event)
+        val handler = if (command == Command.RetainHandle) installed else before.handler
+        if (next != before.state || command == Command.RetainHandle) held = Held(next, handler)
+        (command, if (command == Command.CancelHandle) before.handler else None)
+      }
+
+    def isFinished: Boolean = LegacyDelayMachine.finished(held.state)
 
     def cancel(): Unit =
-      handler.foreach(_())
+      advance(Event.Cancel)._2.foreach(_())
 
     private def report(error: Throwable): Unit = error match {
       case _: spoonbill.server.SessionAccessDenied => ()
@@ -720,10 +764,9 @@ private[spoonbill] object ComponentInstance {
           () => job.unsafeCancel()
         }
       })
-      try
-        handler = Some(driver.schedule(delay.duration) { () =>
-          finished = true
-          try
+      try {
+        val cancel = driver.schedule(delay.duration) { () =>
+          if (advance(Event.Fired)._1 == Command.RunCallback) try
             Effect[F]
               .fork(Effect[F].delayAsync {
                 authorize().flatMap { _ =>
@@ -735,8 +778,12 @@ private[spoonbill] object ComponentInstance {
                 case Right(_)    => ()
               }
           catch { case NonFatal(error) => report(error) }
-        })
-      catch { case NonFatal(error) => finished = true; report(error) }
+        }
+        advance(Event.Installed, Some(cancel))
+        ()
+      } catch { case NonFatal(error) =>
+        if (advance(Event.ScheduleFailed)._1 == Command.ReportFailure) report(error)
+      }
     }
   }
 }

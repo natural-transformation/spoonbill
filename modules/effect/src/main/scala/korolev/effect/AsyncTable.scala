@@ -17,18 +17,24 @@
 package spoonbill.effect
 
 import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import spoonbill.effect.AsyncTable.{AlreadyContainsKeyException, RemovedBeforePutException}
 import spoonbill.effect.Effect.Promise
 import spoonbill.effect.syntax._
-import scala.annotation.tailrec
 
 final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
 
   private type Callbacks = List[Promise[V]]
   private type Result    = Either[Throwable, V]
 
-  private val state = new AtomicReference[Map[K, Either[Callbacks, Result]]](
-    elems.toVector.map { case (k, v) => (k, Right(Right(v))) }.toMap
+  private enum Slot {
+    case Waiting(callbacks: Callbacks)
+    case Settled(result: Result)
+  }
+  import Slot.*
+
+  private val state = new AtomicReference[Map[K, Slot]](
+    elems.toVector.map { case (k, v) => (k, Settled(Right(v))) }.toMap
   )
 
   def get(key: K): F[V] = Effect[F].promise[V] { cb =>
@@ -36,14 +42,14 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
     def aux(): Unit = {
       val ref = state.get
       ref.get(key) match {
-        case Some(Right(value)) => cb(value)
-        case Some(Left(xs)) =>
-          val newValue = ref.updated(key, Left(cb :: xs))
+        case Some(Settled(value)) => cb(value)
+        case Some(Waiting(xs)) =>
+          val newValue = ref.updated(key, Waiting(cb :: xs))
           if (!state.compareAndSet(ref, newValue)) {
             aux()
           }
         case None =>
-          val newValue = ref.updated(key, Left(cb :: Nil))
+          val newValue = ref.updated(key, Waiting(cb :: Nil))
           if (!state.compareAndSet(ref, newValue)) {
             aux()
           }
@@ -57,19 +63,31 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
     def aux(): F[Unit] = {
       val ref = state.get
       ref.get(key) match {
-        case Some(Right(value)) =>
+        case Some(Settled(value)) =>
           Effect[F].delay(cb(value))
-        case Some(Left(xs)) =>
-          val newValue = ref.updated(key, Left(cb :: xs))
+        case Some(Waiting(xs)) =>
+          val newValue = ref.updated(key, Waiting(cb :: xs))
           if (state.compareAndSet(ref, newValue)) {
             Effect[F].unit
           } else {
             aux()
           }
         case None =>
-          val newValue = ref.updated(key, Left(cb :: Nil))
+          val newValue = ref.updated(key, Waiting(cb :: Nil))
           if (state.compareAndSet(ref, newValue)) {
-            f.flatMap(v => put(key, v))
+            // Capture only the factory outcome. Publication conflicts must not
+            // be mistaken for another factory failure and published again.
+            Effect[F]
+              .delayAsync(f)
+              .map[Result](Right(_))
+              .recover { case error => Left(error) }
+              .flatMap {
+                case Right(value) => put(key, value)
+                case Left(error)  =>
+                  // A factory may already publish its failure (or race an
+                  // explicit value). Preserve that entry and the factory error.
+                  putEither(key, Left(error), silent = true).flatMap(_ => Effect[F].fail[Unit](error))
+              }
           } else {
             aux()
           }
@@ -87,10 +105,10 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
     def aux(): Unit = {
       val ref = state.get
       ref.get(key) match {
-        case Some(Left(xs)) =>
+        case Some(Waiting(xs)) =>
           // Called with the value, the failure, or the removal of the key.
           val waiter: Promise[V] = _ => cb(Right(()))
-          if (!state.compareAndSet(ref, ref.updated(key, Left(waiter :: xs)))) aux()
+          if (!state.compareAndSet(ref, ref.updated(key, Waiting(waiter :: xs)))) aux()
         case _ => cb(Right(()))
       }
     }
@@ -99,12 +117,10 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
 
   def getImmediately(key: K): F[Option[V]] =
     Effect[F].delay {
-      val table = state.get
-      for {
-        lr  <- table.get(key)
-        res <- lr.toOption
-        v   <- res.toOption
-      } yield v
+      state.get.get(key) match {
+        case Some(Settled(result)) => result.toOption
+        case _                     => None
+      }
     }
 
   def put(key: K, value: V): F[Unit] =
@@ -119,18 +135,18 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
       def aux(): Unit = {
         val ref = state.get
         ref.get(key) match {
-          case Some(Right(_)) if silent => () // Do nothing
-          case Some(Right(_)) =>
+          case Some(Settled(_)) if silent => () // Do nothing
+          case Some(Settled(_)) =>
             throw AlreadyContainsKeyException(key)
-          case Some(Left(callbacks)) =>
-            val newValue = ref.updated(key, Right(errorOrValue))
+          case Some(Waiting(callbacks)) =>
+            val newValue = ref.updated(key, Settled(errorOrValue))
             if (state.compareAndSet(ref, newValue)) {
               callbacks.foreach(_(errorOrValue))
             } else {
               aux()
             }
           case None =>
-            val newValue = ref.updated(key, Right(errorOrValue))
+            val newValue = ref.updated(key, Settled(errorOrValue))
             if (!state.compareAndSet(ref, newValue)) {
               aux()
             }
@@ -147,7 +163,7 @@ final class AsyncTable[F[_]: Effect, K, V](elems: Seq[(K, V)]) {
       val updatedRef = ref - key
       if (state.compareAndSet(ref, updatedRef)) {
         value match {
-          case Some(Left(callbacks)) =>
+          case Some(Waiting(callbacks)) =>
             val result = Left(RemovedBeforePutException(key))
             callbacks.foreach(_(result))
           case _ => ()

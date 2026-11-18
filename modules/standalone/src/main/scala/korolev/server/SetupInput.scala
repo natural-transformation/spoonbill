@@ -15,21 +15,21 @@ import scala.util.control.NonFatal
   */
 private[server] final class SetupInput[F[_]: Effect, A](upstream: Stream[F, A]) {
   private val lock = new Object
-  // 0 setup, 1 coupled, 2 released. Volatile so the coupled path does not lock.
-  @volatile private var phase = 0
+  // Volatile so the coupled path does not take the waiter monitor.
+  @volatile private var phase = SetupInputMachine.initial
   private var onEnded: () => F[Unit] = () => upstream.cancel()
   private val ended = new java.util.concurrent.atomic.AtomicBoolean(false)
   private val waiters = mutable.ListBuffer.empty[Either[Throwable, Option[A]] => Unit]
 
   val stream: Stream[F, A] = new Stream[F, A] {
     def pull(): F[Option[A]] =
-      if (phase != 1) pullDuringSetup()
+      if (!SetupInputMachine.readDirect(phase)) pullDuringSetup()
       else upstream.pull()
 
     def cancel(): F[Unit] = Effect[F].delayAsync {
       val (pending, wasCoupled) = lock.synchronized {
-        val coupled = phase == 1
-        phase = 2
+        val coupled = SetupInputMachine.notifyOnCancel(phase)
+        phase = SetupInputMachine.canceled(phase)
         val pending = waiters.toList
         waiters.clear()
         (pending, coupled)
@@ -52,14 +52,14 @@ private[server] final class SetupInput[F[_]: Effect, A](upstream: Stream[F, A]) 
     */
   def couple(): F[Boolean] = Effect[F].delayAsync {
     val (pending, released) = lock.synchronized {
-      phase match {
-        case 0 =>
+      SetupInputMachine.coupleAction(phase) match {
+        case SetupInputMachine.CoupleAction.ForwardWaiters =>
           val pending = waiters.toList
           waiters.clear()
-          phase = 1
+          phase = SetupInputMachine.coupled(phase)
           (pending, false)
-        case 1 => (Nil, false)
-        case _ => (Nil, true)
+        case SetupInputMachine.CoupleAction.AlreadyCoupled => (Nil, false)
+        case SetupInputMachine.CoupleAction.CloseTransport => (Nil, true)
       }
     }
     pending.foreach { callback =>
@@ -80,11 +80,12 @@ private[server] final class SetupInput[F[_]: Effect, A](upstream: Stream[F, A]) 
     */
   def drain(isTerminal: A => Boolean, onTerminated: () => F[Unit]): F[Unit] = {
     def loop(): F[Unit] =
-      upstream.pull().flatMap {
+      upstream.pull().recover { case NonFatal(_) => None }.flatMap {
         case None                                        => onTerminated()
-        case Some(value) if isTerminal(value)            => onTerminated()
-        case Some(_)                                     => loop()
-      }.recoverF { case NonFatal(_) => onTerminated() }
+        case Some(value) =>
+          val terminal = try isTerminal(value) catch { case NonFatal(_) => true }
+          if (terminal) onTerminated() else loop()
+      }
     loop()
   }
 
@@ -94,12 +95,12 @@ private[server] final class SetupInput[F[_]: Effect, A](upstream: Stream[F, A]) 
 
   private def pullDuringSetup(): F[Option[A]] = Effect[F].promise { callback =>
     val direct = lock.synchronized {
-      phase match {
-        case 1 => true
-        case 2 =>
+      SetupInputMachine.pullAction(phase) match {
+        case SetupInputMachine.PullAction.Read => true
+        case SetupInputMachine.PullAction.End =>
           callback(Right(None))
           false
-        case _ =>
+        case SetupInputMachine.PullAction.Wait =>
           waiters += callback
           false
       }

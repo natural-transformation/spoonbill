@@ -4,7 +4,7 @@ import avocet.Id
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
-import spoonbill.effect.{Effect, Queue}
+import spoonbill.effect.{DrainGateMachine, Effect, Queue}
 import spoonbill.effect.syntax.*
 import spoonbill.server.SessionAccessDenied
 
@@ -27,8 +27,8 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
     case Some(check) => check(states)
     case None        => states.foldLeft(Effect[F].unit)((checked, state) => checked.flatMap(_ => authorize(state)))
   }
-  private case class Writes(closing: Boolean, count: Int, waiters: List[Effect.Promise[Unit]])
-  private val writes = new AtomicReference(Writes(false, 0, Nil))
+  private case class Writes(gate: DrainGateMachine.State, waiters: List[Effect.Promise[Unit]])
+  private val writes = new AtomicReference(Writes(DrainGateMachine.initial, Nil))
   private val persistentWrites = persist.map { _ =>
     val queue = Queue[F, () => F[Unit]](128)
     Effect[F].runAsync(queue.stream.foreach(job => job()))(_ => ())
@@ -93,13 +93,15 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
   private def mutation(operation: => F[Unit]): F[Unit] = {
     @tailrec def begin(): Unit = {
       val before = writes.get()
-      if (before.closing) throw new SessionAccessDenied
-      if (!writes.compareAndSet(before, before.copy(count = before.count + 1))) begin()
+      val next = DrainGateMachine.entered(before.gate)
+      if (!DrainGateMachine.changed(before.gate, next)) throw new SessionAccessDenied
+      if (!writes.compareAndSet(before, before.copy(gate = next))) begin()
     }
     @tailrec def finish(): Unit = {
       val before = writes.get()
-      val drain = before.closing && before.count == 1
-      val after = before.copy(count = before.count - 1, waiters = if (drain) Nil else before.waiters)
+      val gate = DrainGateMachine.finished(before.gate)
+      val drain = DrainGateMachine.drained(gate)
+      val after = before.copy(gate = gate, waiters = if (drain) Nil else before.waiters)
       if (!writes.compareAndSet(before, after)) finish()
       else if (drain) before.waiters.foreach(_(Right(())))
     }
@@ -121,9 +123,11 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
   def closeAndDrain(): F[Unit] = Effect[F].promise[Unit] { callback =>
     @tailrec def close(): Unit = {
       val before = writes.get()
-      val after = before.copy(closing = true, waiters = if (before.count == 0) Nil else callback :: before.waiters)
+      val gate = DrainGateMachine.close(before.gate)
+      val drained = DrainGateMachine.drained(gate)
+      val after = before.copy(gate = gate, waiters = if (drained) Nil else callback :: before.waiters)
       if (!writes.compareAndSet(before, after)) close()
-      else if (before.count == 0) callback(Right(()))
+      else if (drained) callback(Right(()))
     }
     close()
   }.flatMap(_ => persistentWrites.fold(Effect[F].unit)(_.close()))

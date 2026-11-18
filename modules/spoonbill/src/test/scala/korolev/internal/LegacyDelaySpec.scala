@@ -9,7 +9,7 @@ import spoonbill.Context
 import spoonbill.effect.{Effect, Scheduler}
 
 class LegacyDelaySpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
 
   "Legacy delay" should "defer authorization and eager callback construction to the borrowed worker" in {
     val worker        = new Worker
@@ -65,6 +65,47 @@ class LegacyDelaySpec extends AnyFlatSpec with Matchers {
     canceled.cancel()
     clock.active shouldBe empty
     canceled.isFinished shouldBe false
+  }
+
+  it should "remember an inline wake before installation returns its cancellation handle" in {
+    val worker = new Worker
+    val reports = new Reports
+    var canceled = 0
+    var called = 0
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(duration: FiniteDuration)(wake: () => Unit): () => Unit = {
+        wake()
+        () => { canceled += 1 }
+      }
+    }
+    val binding = Context.Delay[Future, Int, Unit](1.second, _ => { called += 1; Future.unit })
+    val delay = new ComponentInstance.DelayInstance(binding, new Scheduler[Future], reports, worker, Some(deadlines))
+    delay.start(null, () => Future.unit)
+    delay.isFinished shouldBe true
+    called shouldBe 0
+    delay.cancel()
+    canceled shouldBe 1
+    worker.drain()
+    called shouldBe 1
+    reports.errors shouldBe empty
+  }
+
+  it should "finish and report failed scheduling without creating a cancellation handle" in {
+    val worker = new Worker
+    val reports = new Reports
+    val failure = new IllegalStateException("synthetic scheduler failure")
+    val deadlines = new Frontend.RpcDeadlineScheduler {
+      def schedule(duration: FiniteDuration)(wake: () => Unit): () => Unit = throw failure
+    }
+    val binding = Context.Delay[Future, Int, Unit](1.second, _ => fail("Unscheduled delay ran"))
+    val delay = new ComponentInstance.DelayInstance(binding, new Scheduler[Future], reports, worker, Some(deadlines))
+    delay.cancel() // Before installation cancellation has no pending handle to invoke.
+    delay.isFinished shouldBe false
+    delay.start(null, () => Future.unit)
+    delay.isFinished shouldBe true
+    delay.cancel()
+    worker.drain()
+    reports.errors.map(_._2) shouldBe Vector(failure)
   }
 
   it should "keep the shared scheduler responsive during a slow constructor, unlike the original dispatch path" in {

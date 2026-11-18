@@ -87,8 +87,11 @@ class TimerMachineSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "use checked tokens rather than wrapping an exhausted generation" in {
-    intercept[ArithmeticException] {
-      step(State(serial = Long.MaxValue), Event.Accept(Vector(id -> config)), 0L)
-    }
+    val (exhausted, commands) = step(State(serial = Long.MaxValue), Event.Accept(Vector(id -> config)), 0L)
+    exhausted.exhausted shouldBe true
+    exhausted.serial shouldBe Long.MaxValue
+    exhausted.slots shouldBe empty
+    commands shouldBe Vector(Command.Exhausted)
+    step(exhausted, Event.Accept(Vector(id -> config)), 1L) shouldBe (exhausted, Vector.empty)
   }
 }

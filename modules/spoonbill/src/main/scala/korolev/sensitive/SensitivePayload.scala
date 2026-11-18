@@ -5,11 +5,6 @@ import java.nio.CharBuffer
 import java.nio.charset.{CodingErrorAction, StandardCharsets}
 import scala.util.control.NonFatal
 
-enum SensitiveError {
-  case InvalidName, InvalidLimits, InvalidPayload, PayloadTooLarge, InvalidTotpUri, InvalidQrMatrix
-  case InvalidDeadline, WrongBinding, DeadlineExceeded, NotExpired, InvalidTransition, Closed
-}
-
 final class SensitiveLimits private (
   val maxTextItems: Int,
   val maxTextItemUtf8Bytes: Int,

@@ -31,6 +31,7 @@ final class WebSocketUpgradeSocketSpec extends AnyFlatSpec with Matchers {
     val handshake = run(Promise.make[Nothing, Boolean])
     val requestReady = ScalaPromise[(ChannelHandlerContext, FullHttpRequest)]()
     val prefixRetained = ScalaPromise[Int]()
+    val unregistrationDelivered = ScalaPromise[Unit]()
     val boss = new NioEventLoopGroup(1)
     val worker = new NioEventLoopGroup(1)
     val server = new ServerBootstrap().group(boss, worker).channel(classOf[NioServerSocketChannel])
@@ -48,6 +49,12 @@ final class WebSocketUpgradeSocketSpec extends AnyFlatSpec with Matchers {
           channel.pipeline().addLast("http-encoder", new HttpResponseEncoder)
           channel.pipeline().addLast("http-aggregator", new HttpObjectAggregator(8192))
           channel.pipeline().addLast("request", new SimpleChannelInboundHandler[FullHttpRequest] {
+            override def channelUnregistered(ctx: ChannelHandlerContext): Unit = {
+              // Downstream handlers run on this event loop. Signal after they have handled the event.
+              super.channelUnregistered(ctx)
+              unregistrationDelivered.trySuccess(())
+              ()
+            }
             override def channelRead0(ctx: ChannelHandlerContext, request: FullHttpRequest): Unit = {
               val retained = request.retain()
               if (!requestReady.trySuccess(ctx -> retained)) retained.release()
@@ -91,6 +98,7 @@ final class WebSocketUpgradeSocketSpec extends AnyFlatSpec with Matchers {
       }
       assert(first == -1 || first == -2, "Eager input must not receive HTTP 101 or a WebSocket payload")
       connection.closeFuture().await(3000L) shouldBe true // before client cleanup
+      Await.result(unregistrationDelivered.future, 3.seconds)
       val events = run(queue.takeAll)
       events.exists { case ChannelEvent.Read(_) => true; case _ => false } shouldBe false
       events.count(_ == ChannelEvent.Unregistered) shouldBe 1

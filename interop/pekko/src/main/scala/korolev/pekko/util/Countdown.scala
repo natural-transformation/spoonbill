@@ -2,6 +2,7 @@ package spoonbill.pekko.util
 
 import java.util.concurrent.atomic.AtomicReference
 import spoonbill.effect.Effect
+import spoonbill.internal.StreamPublisherMachine
 import scala.annotation.tailrec
 
 final class Countdown[F[_]: Effect] {
@@ -16,13 +17,15 @@ final class Countdown[F[_]: Effect] {
     @tailrec
     def aux(): Unit = {
       val ref = state.get()
-      if (ref.n == 0) {
+      if (StreamPublisherMachine.unbounded(ref.n)) {
+        cb(Countdown.unitToken)
+      } else if (ref.n == 0) {
         val newValue = ref.copy(pending = Some(cb))
         if (!state.compareAndSet(ref, newValue)) {
           aux()
         }
       } else {
-        val newValue = ref.copy(n = ref.n - 1)
+        val newValue = ref.copy(n = StreamPublisherMachine.consumed(ref.n))
         if (state.compareAndSet(ref, newValue)) {
           cb(Countdown.unitToken)
         } else {
@@ -39,15 +42,15 @@ final class Countdown[F[_]: Effect] {
       @tailrec
       def aux(): Unit = {
         val ref = state.get()
-        ref.pending match {
+        if (!StreamPublisherMachine.unbounded(ref.n)) ref.pending match {
           case Some(cb) =>
-            if (state.compareAndSet(ref, Countdown.State(pending = None, n = ref.n + x - 1))) {
+            if (state.compareAndSet(ref, Countdown.State(pending = None, n = StreamPublisherMachine.consumed(StreamPublisherMachine.addDemand(ref.n, x))))) {
               cb(Countdown.unitToken)
             } else {
               aux()
             }
           case None =>
-            if (!state.compareAndSet(ref, ref.copy(n = ref.n + x))) {
+            if (!state.compareAndSet(ref, ref.copy(n = StreamPublisherMachine.addDemand(ref.n, x)))) {
               aux()
             }
         }

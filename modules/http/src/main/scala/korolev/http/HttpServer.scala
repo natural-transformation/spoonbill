@@ -89,17 +89,19 @@ object HttpServer {
         case Some(reservation) =>
           val deadline = new RequestDeadline(requestHeaderTimeout, () => client.shutdownFromDeadline())
           val bodyDeadline = new RequestDeadline(requestBodyTimeout, () => client.shutdownFromDeadline())
-          val bodyState = new Object
-          var activeBody: AnyRef = null
-          var bodyAbandoned = false
-          def bodyPending: Boolean = bodyState.synchronized(activeBody != null || bodyAbandoned)
+          val bodyLock = new Object
+          var bodyState = HttpBodyOwnershipMachine.initial
+          def bodyPending: Boolean = bodyLock.synchronized(HttpBodyOwnershipMachine.pending(bodyState))
           val detach = client.subscribeClose { _ => deadline.close(); bodyDeadline.close() }
           val input = Decoder(client.stream)
           val decoded = http11.decodeRequest(input,
-            () => bodyState.synchronized { activeBody = new Object; bodyDeadline.start() },
-            () => bodyState.synchronized {
+            () => bodyLock.synchronized {
+              bodyState = HttpBodyOwnershipMachine.started(bodyState, new HttpBodyOwnershipMachine.Owner)
+              bodyDeadline.start()
+            },
+            () => bodyLock.synchronized {
               if (!bodyDeadline.complete()) throw new RequestInputFailure.BodyDeadline
-              activeBody = null
+              bodyState = HttpBodyOwnershipMachine.completed(bodyState)
             })
           val requests = new Stream[F, Request[Stream[F, B]]] {
             def pull(): F[Option[Request[Stream[F, B]]]] = Effect[F].delayAsync {
@@ -110,8 +112,8 @@ object HttpServer {
                 decoded.pull().map { request =>
                   if (!deadline.complete() && request.nonEmpty) throw new TimeoutException("HTTP request header assembly expired")
                   request.map { value =>
-                    val owner = bodyState.synchronized(activeBody)
-                    if (owner == null) value
+                    val owner = bodyLock.synchronized(HttpBodyOwnershipMachine.owner(bodyState))
+                    if (owner.isEmpty) value
                     else {
                       val input = value.body
                       @volatile var canceled = false
@@ -133,8 +135,8 @@ object HttpServer {
                         // Retain transport ownership so an early refusal can still
                         // send its response, then close instead of reusing framing.
                         def cancel(): F[Unit] = Effect[F].delay {
-                          bodyState.synchronized {
-                            if (activeBody eq owner) bodyAbandoned = true
+                          bodyLock.synchronized {
+                            bodyState = HttpBodyOwnershipMachine.canceled(bodyState, owner.get)
                             canceled = true
                           }
                         }

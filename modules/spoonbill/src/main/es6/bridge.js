@@ -2,6 +2,8 @@ import { Spoonbill } from './spoonbill.js';
 import { Procedure, CallbackType, PropertyType } from './protocol.js';
 import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
+import {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
+  acceptsSensitiveView, validBarrier} from './bridge-machine.js';
 
 const ProtocolDebugEnabledKey = "$bridge.protocolDebugEnabled";
 
@@ -16,13 +18,8 @@ export class Bridge {
     this._spoonbill = new Spoonbill(config, this._onCallback.bind(this));
     this._spoonbill.registerRoot(document.children[0]);
     this._connection = connection;
-    this._viewConnection = null;
-    this._viewRevision = null;
-    this._viewRecovering = false;
-    this._applyingView = false;
-    this._callbacksReady = config['auth'] !== true;
+    this._lifecycle = initialBridge(config['auth'] === true);
     this._guarded = config['auth'] === true;
-    this._sensitiveNavigation = 0;
     this._messageHandler = this._onMessage.bind(this);
     this._sensitive = new SensitiveRegions(
       message => this._onCallback(CallbackType.SENSITIVE_ACK, message),
@@ -39,16 +36,16 @@ export class Bridge {
     if (interval > 0) {
       if (config['heartbeat']['limit']) {
         this._heartbeatLimit = parseInt(config['heartbeat']['limit'], 10)
-        this._awaitingHeartbeat = 0
+        this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
       }
 
       this._intervalId = setInterval(() => {
         // The bounded cookie handoff temporarily suspends socket callbacks.
         if (this._connection.authenticationPending) return;
         if (this._heartbeatLimit) {
-          this._awaitingHeartbeat += 1
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-tick'});
 
-          if (this._awaitingHeartbeat === this._heartbeatLimit) {
+          if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit) {
             console.log('Too many lost heartbeats, reloading')
             this._connection.disconnect(false);
             window.location.reload();
@@ -69,37 +66,31 @@ export class Bridge {
   _onCallback(type, args) {
     if (type === CallbackType.HISTORY) this._sensitive.clearAll();
     const userEvent = type === CallbackType.DOM_EVENT || type === CallbackType.CUSTOM_CALLBACK || type === CallbackType.HISTORY;
-    if (this._guarded && userEvent) {
-      if (this._sensitive.terminal) return;
-      // Real history changes keep their own ordered server barrier. Other user
-      // actions wait for both barriers so one-read disclosure cannot be consumed
-      // while its presentation remains fenced. Unguarded apps have no barrier.
-      if (type !== CallbackType.HISTORY &&
-          (this._sensitive.departurePending || this._sensitive.navigationPending)) return;
-    }
-    if ((!this._callbacksReady || this._viewRecovering || this._applyingView) && userEvent) {
-      if (type === CallbackType.HISTORY && this._guarded) {
+    if (userEvent) {
+      const admission = callbackAdmission(this._lifecycle, this._sensitive.lifecycle, this._guarded, type === CallbackType.HISTORY);
+      if (admission === 'drop') return;
+      if (admission === 'blocked-history') {
         this._sensitive.blockNavigation();
-        // This route change cannot use the partial/unready view's revision.
-        // Keep its old sensitive and action fences; a fresh authorized socket
-        // reads the browser's current location and supplies a new baseline.
-        if (!this._viewRecovering) {
-          this._viewRecovering = true;
+        // A partial/unready history event has no authorized revision to send.
+        if (this._lifecycle.gate !== 'recovering') {
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'recover'});
           if (!this._connection.authenticationPending) this._connection.disconnect(true);
         }
+        return;
       }
-      return;
-    }
-    if (type === CallbackType.HISTORY && this._guarded) {
-      if (this._sensitiveNavigation >= Number.MAX_SAFE_INTEGER) {
+      if (admission === 'exhausted') {
         this._sensitive.blockNavigation();
         this._connection.disconnect(true);
         return;
       }
-      this._sensitive.beginNavigation(++this._sensitiveNavigation);
+      if (type === CallbackType.HISTORY && this._guarded) {
+        this._lifecycle = bridgeStep(this._lifecycle, {type: 'begin-navigation'});
+        this._sensitive.beginNavigation(this._lifecycle.navigationCounter);
+      }
     }
-    let message = this._viewConnection && userEvent
-      ? JSON.stringify([CallbackType.VIEW_EVENT, this._viewConnection + ':' + this._viewRevision + ':' + type + ':' + (args === undefined ? '' : args)])
+    const view = this._lifecycle.view;
+    let message = view && userEvent
+      ? JSON.stringify([CallbackType.VIEW_EVENT, view.connection + ':' + view.revision + ':' + type + ':' + (args === undefined ? '' : args)])
       : JSON.stringify(args !== undefined ? [type, args] : [type]);
     if (protocolDebugEnabled)
       console.log('<- callback', type);
@@ -107,8 +98,8 @@ export class Bridge {
   }
 
   _applyView(update) {
-    const previouslyApplying = this._applyingView;
-    this._applyingView = true;
+    const previousApplication = this._lifecycle.application;
+    this._lifecycle = bridgeStep(this._lifecycle, {type: 'begin-application'});
     try {
       // Native custom-element lifecycle callbacks run synchronously inside DOM
       // mutations. Drop their user actions: the partial view has no valid
@@ -116,7 +107,7 @@ export class Bridge {
       // RPC responses and heartbeats remain independent of this user-event gate.
       update();
     } finally {
-      this._applyingView = previouslyApplying;
+      this._lifecycle = bridgeStep(this._lifecycle, {type: 'restore-application', phase: previousApplication});
     }
   }
 
@@ -162,10 +153,10 @@ export class Bridge {
         case Procedure.UPLOAD_FILE: k.uploadFile.apply(k, commands); break;
         case Procedure.REST_FORM: k.resetForm.apply(k, commands); break;
         case Procedure.DOWNLOAD_FILE: k.downloadFile.apply(k, commands); break;
-        case Procedure.HEARTBEAT: this._awaitingHeartbeat -= 1;break;
+        case Procedure.HEARTBEAT: this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-reply'}); break;
         case Procedure.RESET_EVENT_COUNTERS: k.resetEventCounters.apply(k, commands); break;
         case Procedure.COMPLETE_AUTHENTICATION:
-          this._callbacksReady = false;
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'suspend'});
           this._sensitive.clearAll();
           this._connection.commitAuthentication(commands[0]).catch(() => {
             console.error('Authentication handoff failed');
@@ -176,7 +167,7 @@ export class Bridge {
           });
           break;
         case Procedure.RECOVER_AUTHENTICATION:
-          this._callbacksReady = false;
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'suspend'});
           this._sensitive.clearAll();
           this._connection.recoverAuthentication(commands[0]).catch(() => {
             console.error('Authentication recovery unavailable');
@@ -186,14 +177,11 @@ export class Bridge {
           break;
         case Procedure.RESET_VIEW: {
           const [epoch, connection, revision, dom] = commands;
-          if (this._viewConnection !== null || typeof epoch !== 'string' || !/^(0|[1-9][0-9]{0,18})$/.test(epoch) ||
-              typeof connection !== 'string' || !/^[0-9a-f-]{36}$/.test(connection) || revision !== '0' ||
-              !Array.isArray(dom) || dom[0] !== 4) throw new Error('Invalid view baseline');
+          if (!validBaseline(this._lifecycle, epoch, connection, revision, dom)) throw new Error('Invalid view baseline');
           this._applyView(() => {
             this._sensitive.clearAll();
             k.resetView(dom.slice(1));
-            this._viewConnection = connection;
-            this._viewRevision = revision;
+            this._lifecycle = bridgeStep(this._lifecycle, {type: 'baseline-applied', connection, revision});
           });
           break;
         }
@@ -201,38 +189,34 @@ export class Bridge {
           const [connection, previous, next, dom] = commands;
           // A replaced connection's output is obsolete, including decoded frames
           // that were queued before its close. Never apply it to a newer view.
-          if (this._viewConnection !== connection) break;
-          if (typeof previous !== 'string' || typeof next !== 'string' ||
-              !/^(0|[1-9][0-9]*)$/.test(previous) || !/^[1-9][0-9]*$/.test(next) ||
-              !Number.isSafeInteger(Number(next)) || !Array.isArray(dom) || dom[0] !== 4)
-            throw new Error('Invalid view revision');
-          if (Number(next) <= Number(this._viewRevision)) break;
-          if (previous !== this._viewRevision || Number(next) !== Number(previous) + 1)
-            throw new Error('View revision mismatch');
+          const decision = patchDecision(this._lifecycle, connection, previous, next, dom);
+          if (decision === 'obsolete') break;
+          if (decision === 'invalid') throw new Error('Invalid view revision');
+          if (decision === 'mismatch') throw new Error('View revision mismatch');
           this._applyView(() => {
             this._modifyDom(dom.slice(1));
-            this._viewRevision = next;
+            this._lifecycle = bridgeStep(this._lifecycle, {type: 'patch-applied', revision: next});
           });
           break;
         }
         case Procedure.READY_FOR_USER_EVENTS:
-          if (typeof commands[0] !== 'boolean' || commands[0] !== (this._viewConnection !== null))
+          if (!validReadiness(this._lifecycle, commands[0]))
             throw new Error('View baseline is not ready');
-          this._callbacksReady = true;
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'ready'});
           this._connection.applicationReady();
           break;
         case Procedure.PRESENT_SENSITIVE:
-          if (this._viewConnection === null || commands[0] === this._viewConnection)
+          if (acceptsSensitiveView(this._lifecycle, commands[0]))
             this._sensitive.show.apply(this._sensitive, commands);
           break;
         case Procedure.CLEAR_SENSITIVE: this._sensitive.clear.apply(this._sensitive, commands); break;
         case Procedure.SENSITIVE_NAVIGATION_COMPLETE:
-          if (commands.length !== 1 || !Number.isSafeInteger(commands[0]) || commands[0] <= 0)
+          if (!validBarrier(commands))
             throw new Error('Invalid sensitive navigation barrier');
           this._sensitive.completeNavigation(commands[0]);
           break;
         case Procedure.SENSITIVE_DEPARTURE_COMPLETE:
-          if (commands.length !== 1 || !Number.isSafeInteger(commands[0]) || commands[0] <= 0)
+          if (!validBarrier(commands))
             throw new Error('Invalid sensitive departure barrier');
           this._sensitive.completeDeparture(commands[0]);
           break;
@@ -246,7 +230,7 @@ export class Bridge {
       }
       if (pCode === Procedure.RESET_VIEW || pCode === Procedure.PATCH_VIEW || pCode === Procedure.READY_FOR_USER_EVENTS || pCode === Procedure.SENSITIVE_NAVIGATION_COMPLETE || pCode === Procedure.SENSITIVE_DEPARTURE_COMPLETE) {
         console.error('Spoonbill view recovery failed');
-        this._viewRecovering = true;
+        this._lifecycle = bridgeStep(this._lifecycle, {type: 'recover'});
         this._sensitive.blockNavigation();
         this._connection.disconnect(true);
         return;

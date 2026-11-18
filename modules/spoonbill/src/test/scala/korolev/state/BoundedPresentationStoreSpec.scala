@@ -1,8 +1,9 @@
 package spoonbill.state
 
 import avocet.Id
-import java.time.Instant
+import java.time.{DateTimeException, Instant}
 import java.util.UUID
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
@@ -257,5 +258,75 @@ class BoundedPresentationStoreSpec extends AnyFlatSpec with Matchers {
     val fresh = await(store.claim(freshKey, fence(1, 4)))
     await(fresh.publish())
     await(store.resources).history shouldBe 3
+  }
+
+  it should "retain ownership history when a pending deadline overflows" in {
+    val time = Instant.MAX.minusSeconds(1)
+    val store = new BoundedPresentationStore[Future, String](
+      Limits(bootstrapSeconds = 1, pendingSeconds = 2), () => time)
+    await(store.bootstrap(viewKey, "root"))
+    intercept[DateTimeException](await(store.claim(viewKey, fence(1))))
+    await(store.resources) shouldBe Resources(0, 0, 1, 0, 1, 1)
+    rejected(store.claim(viewKey, fence(1)), Error.StaleOwner)
+  }
+
+  it should "retain removal and sweep when a reconnect deadline overflows" in {
+    val clock = new AtomicReference(start)
+    val store = new BoundedPresentationStore[Future, String](Limits(reconnectSeconds = 2), () => clock.get())
+    await(store.bootstrap(viewKey, "root"))
+    val active = await(store.claim(viewKey, fence(1)))
+    await(active.publish())
+    val other = Qsid("device", "expired-on-release")
+    await(store.bootstrap(other, "expired"))
+    clock.set(Instant.MAX.minusSeconds(1))
+    intercept[DateTimeException](await(active.release()))
+    await(store.resources) shouldBe Resources(0, 0, 0, 0, 1, 0)
+  }
+
+  it should "reject stale tokens before expiring their successor's entry" in {
+    val clock = new AtomicReference(start)
+    val store = new BoundedPresentationStore[Future, String](Limits(pendingSeconds = 2), () => clock.get())
+    val old = await(store.bootstrap(viewKey, "root"))
+    await(store.claim(viewKey, fence(1)))
+    clock.set(start.plusSeconds(2))
+    rejected(old.read[String](Id.TopLevel), Error.StaleOwner)
+    // The stale caller did not remove the entry: its first current lookup still
+    // finds it and rejects expiry, whereas the following lookup sees absence.
+    rejected(store.storage.get(viewKey.deviceId, viewKey.sessionId), Error.StaleOwner)
+    rejected(store.storage.get(viewKey.deviceId, viewKey.sessionId), Error.Missing)
+  }
+
+  it should "keep expiry sweeping even when later bootstrap admission is rejected" in {
+    val clock = new AtomicReference(start)
+    val store = new BoundedPresentationStore[Future, String](Limits(bootstrapSeconds = 2), () => clock.get())
+    await(store.bootstrap(viewKey, "root"))
+    val active = await(store.claim(viewKey, fence(1)))
+    await(active.publish())
+    val other = Qsid("device", "expired-before-rejection")
+    await(store.bootstrap(other, "expired"))
+    clock.set(start.plusSeconds(2))
+    rejected(store.bootstrap(viewKey, "duplicate"), Error.AlreadyExists)
+    rejected(store.storage.get(other.deviceId, other.sessionId), Error.Missing)
+  }
+
+  it should "sample the clock before taking its monitor and reject a close that wins meanwhile" in {
+    val entered = new CountDownLatch(1)
+    val release = new CountDownLatch(1)
+    val pause = new java.util.concurrent.atomic.AtomicBoolean(false)
+    val store = new BoundedPresentationStore[Future, String](Limits(), () => {
+      if (pause.get()) {
+        entered.countDown()
+        if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Clock fixture was not released")
+      }
+      start
+    })
+    val manager = await(store.bootstrap(viewKey, "root"))
+    pause.set(true)
+    val reading = Future(await(manager.read[String](Id.TopLevel)))(scala.concurrent.ExecutionContext.global)
+    try {
+      entered.await(2, TimeUnit.SECONDS) shouldBe true
+      await(Future(await(store.close()))(scala.concurrent.ExecutionContext.global))
+    } finally release.countDown()
+    rejected(reading, Error.Closed)
   }
 }

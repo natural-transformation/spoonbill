@@ -11,7 +11,7 @@ import spoonbill.security.Identifiers.*
 import spoonbill.security.Versions.*
 
 class InMemorySecurityStoreSpec extends AsyncFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
 
   private def uuid(n: Long): UUID = new UUID(0L, n)
   private val now                 = Instant.parse("2026-10-05T12:00:00Z")

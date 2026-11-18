@@ -21,6 +21,11 @@ import spoonbill.http.protocol.{Http11, WebSocketProtocol}
 import spoonbill.http.protocol.WebSocketProtocol.Frame
 import spoonbill.web.{Headers, PathAndQuery, Request, Response}
 
+/** Streaming responses own their connection until the body is consumed or canceled.
+  * Acquisition and request-task cancellation are protected until task success.
+  * This is not irrevocable delivery to an outer caller under late cancellation;
+  * callers must still bracket/adopt the returned body in their effect runtime.
+  */
 class HttpClient[F[_]: Effect, B: BytesLike] private (
   name: String,
   maxIdleTime: FiniteDuration,
@@ -60,16 +65,10 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   }
 
   def https(address: InetSocketAddress, request: Request[Stream[F, B]]): F[Response[Stream[F, B]]] =
-    for {
-      borrow   <- takeSecureConnection(address)
-      response <- http(borrow, address.getHostName, request)
-    } yield response
+    withSecureConnection(address)(borrow => http(borrow, address.getHostName, request))
 
   def http(address: InetSocketAddress, request: Request[Stream[F, B]]): F[Response[Stream[F, B]]] =
-    for {
-      borrow   <- takeRawConnection(address)
-      response <- http(borrow, address.getHostName, request)
-    } yield response
+    withRawConnection(address)(borrow => http(borrow, address.getHostName, request))
 
   private def http(
     borrow: Borrow[F, ClientConnection],
@@ -78,6 +77,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     recycleAfterBody: Boolean = true
   ): F[Response[Stream[F, B]]] = Effect[F].delayAsync {
     val connection = borrow.value
+    val owner = new HttpClientConnectionMachine.Owner
     val writer = Promise[Unit]()
     val failure = new AtomicReference[Throwable]()
     val settled = new AtomicBoolean()
@@ -127,7 +127,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
                     // settles. A failed writer retires rather than recycles.
                     Effect[F].start {
                       writerDone.flatMap { _ =>
-                        if (connection.finish(cleanup)) borrow.give()
+                        if (connection.finish(owner)) borrow.give()
                         else { discard(); Effect[F].unit }
                       }.recover { case NonFatal(error) => failed(error) }
                     }.as(None)
@@ -157,7 +157,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         } else result.left.foreach(failed)
       }
       try {
-        connection.begin(cleanup)
+        connection.begin(owner, cleanup)
         deadline.start()
         deadlineStarted = true
         Effect[F].start {
@@ -187,10 +187,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     cookie: Map[String, String],
     headers: Map[String, String]
   ): F[Response[Stream[F, Frame.Merged[B]]]] =
-    for {
-      borrow <- takeSecureConnection(address)
-      frames <- webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers)
-    } yield frames
+    withSecureConnection(address)(borrow => webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers))
 
   def webSocket(
     uri: URI,
@@ -225,10 +222,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     cookie: Map[String, String],
     headers: Map[String, String]
   ): F[Response[Stream[F, Frame.Merged[B]]]] =
-    for {
-      borrow <- takeRawConnection(address)
-      frames <- webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers)
-    } yield frames
+    withRawConnection(address)(borrow => webSocket(borrow, address.getHostName, path, outgoingFrames, cookie, headers))
 
   private def webSocket(
     borrow: Borrow[F, ClientConnection],
@@ -283,17 +277,24 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
   /** The slot belongs to the physical connection, including its finalizers. */
   private class ClientConnection(val raw: RawDataSocket[F, B], val reservation: SocketCloseDispatcher.Reservation) {
     var socket: DataSocket[F, B] = raw
-    private var closed = false
-    private var active: Option[() => F[Unit]] = None
-    def begin(cleanup: () => F[Unit]): Unit = synchronized {
-      require(!closed && active.isEmpty, "HTTP connection is closed or already in use")
-      active = Some(cleanup)
+    private case class Held(state: HttpClientConnectionMachine.State, cleanup: Option[() => F[Unit]])
+    private var held = Held(HttpClientConnectionMachine.initial, None)
+    def begin(owner: HttpClientConnectionMachine.Owner, cleanup: () => F[Unit]): Unit = synchronized {
+      require(HttpClientConnectionMachine.canBegin(held.state), "HTTP connection is closed or already in use")
+      held = Held(HttpClientConnectionMachine.begin(held.state, owner), Some(cleanup))
     }
-    def finish(cleanup: () => F[Unit]): Boolean = synchronized {
-      if (!closed && active.contains(cleanup)) { active = None; true } else false
+    def finish(owner: HttpClientConnectionMachine.Owner): Boolean = synchronized {
+      if (HttpClientConnectionMachine.canFinish(held.state, owner)) {
+        held = Held(HttpClientConnectionMachine.finish(held.state, owner), None)
+        true
+      } else false
     }
     def onPhysicalClose(): F[Unit] = Effect[F].delayAsync {
-      val cleanup = synchronized { closed = true; val previous = active; active = None; previous }
+      val cleanup = synchronized {
+        val previous = held.cleanup
+        held = Held(HttpClientConnectionMachine.close(held.state), None)
+        previous
+      }
       cleanup.fold(Effect[F].unit)(_.apply())
     }
     def abort(): Unit = raw.shutdownFromDeadline()
@@ -342,7 +343,14 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
     }
   }
 
-  private def takeRawConnection(address: InetSocketAddress) = {
+  private def abortAcquisition(borrow: Borrow[F, ClientConnection]): F[Unit] = Effect[F].delay {
+    // Discard must win the loan's claim before touching its physical connection:
+    // a late abort must not close a resource which was already returned/reused.
+    // Cleanup does not join user finalizers that may await this request's outcome.
+    borrow.discard().runAsyncForget
+  }
+
+  private def withRawConnection[A](address: InetSocketAddress)(task: Borrow[F, ClientConnection] => F[A]): F[A] = {
     val pool = rawConnectionsPools.getOrElseUpdate(
       address,
       new AsyncResourcePool(
@@ -353,10 +361,10 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         maxIdleTime
       )
     )
-    pool.borrow()
+    pool.borrowAndTransfer(task)(abortAcquisition)
   }
 
-  private def takeSecureConnection(address: InetSocketAddress) = {
+  private def withSecureConnection[A](address: InetSocketAddress)(task: Borrow[F, ClientConnection] => F[A]): F[A] = {
     val pool = secureConnectionsPools.getOrElseUpdate(
       // InetSocketAddress equality collapses names sharing an IP; TLS identity must not.
       (address.getHostString.toLowerCase(java.util.Locale.ROOT), address),
@@ -368,7 +376,7 @@ class HttpClient[F[_]: Effect, B: BytesLike] private (
         maxIdleTime
       )
     )
-    pool.borrow()
+    pool.borrowAndTransfer(task)(abortAcquisition)
   }
 
   private val closeDispatcher       = new SocketCloseDispatcher(maxTotalConnections, closeNotificationWorkers)
@@ -417,10 +425,11 @@ object HttpClient {
         }
       }
       try {
-        // Install before TCP starts. A timeout cannot depend on connect or TLS
-        // completing, including a delegated handshake task that never returns.
-        detach = raw.subscribeClose(_ => complete(Left(new java.nio.channels.AsynchronousCloseException)))
+        // A late close subscription can call complete inline. Arm first so
+        // an already closed transport is not mistaken for an elapsed deadline.
+        // Both are installed before TCP or TLS setup starts.
         deadline.start()
+        detach = raw.subscribeClose(_ => complete(Left(new java.nio.channels.AsynchronousCloseException)))
         Effect[F].delayAsync(setup).runAsync(complete)
       } catch { case NonFatal(error) => complete(Left(error)) }
     }.recoverF { case NonFatal(error) =>

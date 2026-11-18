@@ -66,6 +66,23 @@ final class SocketCloseDispatcherSpec extends AnyFlatSpec with Matchers {
     } finally dispatcher.stopAdmission()
   }
 
+  it should "keep an existing reservation dispatchable after repeated admission stops" in {
+    val dispatcher = new SocketCloseDispatcher(1, 1)
+    val reservation = dispatcher.reserve().get
+    dispatcher.stopAdmission()
+    dispatcher.stopAdmission()
+    dispatcher.reserve() shouldBe None
+    val dispatched = Promise[Unit]()
+    reservation.dispatch { done => dispatched.success(()); done() }
+    Await.result(dispatched.future, 3.seconds)
+    reservation.awaitReleased[Future]().isCompleted shouldBe false
+    reservation.connectionFinished()
+    Await.result(reservation.awaitReleased[Future](), 3.seconds)
+    dispatcher.inUse shouldBe 0
+    dispatcher.stopAdmission()
+    dispatcher.reserve() shouldBe None
+  }
+
   it should "close native sockets before dispatching a blocked observer and retain asynchronous finalizers" in {
     val listener = AsynchronousServerSocketChannel.open().bind(new InetSocketAddress("127.0.0.1", 0))
     val dispatcher = new SocketCloseDispatcher(2, 1)

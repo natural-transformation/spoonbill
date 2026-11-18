@@ -15,7 +15,7 @@ import spoonbill.security.store.{GrantDefinition, InvocationStatus}
 import spoonbill.security.transaction.*
 
 class OperationTransactionsSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future] = new Effect.FutureEffect
+  private given Effect[Future] = Effect.futureEffect
   private given ExecutionContext = ExecutionContext.parasitic
   private val now = Instant.parse("2026-10-07T12:00:00Z")
   private def id(n: Long): UUID = new UUID(0L, n)

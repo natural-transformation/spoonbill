@@ -164,15 +164,24 @@ class InMemoryBrowserPersistenceSpec extends BrowserReplacementConformance {
 
   "Memory replacement retention" should "store ownership metadata without retaining credential-bearing view capabilities" in
     Using.resource(new MemoryFixture) { db =>
-      val records = db.persistence.getClass.getDeclaredClasses.filter(kind =>
-        kind.getSimpleName == "Replacement" || kind.getSimpleName == "ReplacementView"
-      )
-      records.length shouldBe 2
-      records.foreach { kind =>
-        val fields = kind.getDeclaredFields.map(_.getType).toSet
-        fields should not contain classOf[BrowserView[?]]
-        fields should not contain classOf[BrowserIdentity[?]]
+      db.replacement(db.login())
+      var inspectedRecords = 0
+      var inspectedPredecessors = 0
+      def inspect(value: Any): Unit = value match {
+        case _: BrowserView[?] => fail("Immutable records retain a credential-bearing view capability")
+        case _: BrowserIdentity[?] => fail("Immutable records retain a credential-bearing identity capability")
+        case values: scala.collection.Map[?, ?] => values.foreach { case (key, value) => inspect(key); inspect(value) }
+        case values: Iterable[?] => values.foreach(inspect)
+        case record: Product =>
+          inspectedRecords += 1
+          if (record.isInstanceOf[BrowserReplacementPredecessor]) inspectedPredecessors += 1
+          record.productIterator.foreach(inspect)
+        case _ => () // Runtime handles and services are not immutable record data.
       }
+      db.persistence.getClass.getDeclaredFields.filterNot(field => java.lang.reflect.Modifier.isStatic(field.getModifiers))
+        .foreach { field => field.setAccessible(true); inspect(field.get(db.persistence)) }
+      inspectedRecords should be > 0
+      inspectedPredecessors should be > 0
     }
 
   "Memory replacement" should "commit revocation and successor atomically and disclose only through an activated successor" in
@@ -801,6 +810,16 @@ class InMemoryBrowserPersistenceSpec extends BrowserReplacementConformance {
         await(closing)
         await(db.persistence.resources) shouldBe InMemoryBrowserPersistence.Resources(0, 0, 0, 0, 0, 0)
       } finally release.countDown()
+    }
+  }
+
+  it should "keep admission closed after repeated provider close" in {
+    Using.resource(new MemoryFixture) { db =>
+      val view = db.open()
+      await(db.persistence.close())
+      await(db.persistence.close())
+      await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Closed)
+      await(db.persistence.resources) shouldBe InMemoryBrowserPersistence.Resources(0, 0, 0, 0, 0, 0)
     }
   }
 
