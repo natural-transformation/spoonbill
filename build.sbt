@@ -341,6 +341,7 @@ lazy val akka = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill-akka",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "reactive-streams-tests",
     libraryDependencies ++= Seq(
       ("com.typesafe.akka" %% "akka-actor"  % akkaVersion).cross(CrossVersion.for3Use2_13),
       ("com.typesafe.akka" %% "akka-stream" % akkaVersion).cross(CrossVersion.for3Use2_13),
@@ -355,6 +356,7 @@ lazy val pekko = project
   .settings(commonSettings: _*)
   .settings(
     normalizedName := "spoonbill-pekko",
+    Test / unmanagedSourceDirectories += (LocalRootProject / baseDirectory).value / "misc" / "reactive-streams-tests",
     libraryDependencies ++= Seq(
       "org.apache.pekko" %% "pekko-actor"          % pekkoVersion,
       "org.apache.pekko" %% "pekko-stream"         % pekkoVersion,
