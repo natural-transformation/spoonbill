@@ -126,16 +126,18 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 
   def unsafeStop(): Unit = {
     @tailrec def aux(): Unit = {
-      val ref       = state.get
-      val lifecycle = QueueMachine.stop(ref.lifecycle)
-      val next =
-        if (ref.queue.isEmpty) ref.copy(lifecycle = lifecycle, canOfferCallbacks = Nil, pullCallbacks = Nil)
-        else ref.copy(lifecycle = lifecycle)
+      val ref                  = state.get
+      val (lifecycle, command) = QueueMachine.stop(ref.lifecycle, ref.queue.nonEmpty)
+      val endPulls             = command == QueueMachine.StopCommand.ReleaseProducersAndEndPulls
+      val next = ref.copy(
+        lifecycle = lifecycle,
+        canOfferCallbacks = Nil,
+        pullCallbacks = if (endPulls) Nil else ref.pullCallbacks
+      )
       if (state.compareAndSet(ref, next)) {
-        if (ref.queue.isEmpty) {
-          ref.canOfferCallbacks.foreach(cb => cb(unitToken))
-          ref.pullCallbacks.foreach(cb => cb(noneToken))
-        }
+        // Detach before notification: callbacks may reenter stop or admission.
+        ref.canOfferCallbacks.foreach(cb => cb(unitToken))
+        if (endPulls) ref.pullCallbacks.foreach(cb => cb(noneToken))
       } else {
         aux()
       }

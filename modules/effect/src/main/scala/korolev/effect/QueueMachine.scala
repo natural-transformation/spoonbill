@@ -15,6 +15,9 @@ private[effect] object QueueMachine {
     case Buffered, End, Wait
     case Failed(error: Throwable)
   }
+
+  /** Stop releases producer obligations even while accepted values remain. */
+  enum StopCommand { case ReleaseProducers, ReleaseProducersAndEndPulls }
   val initial: State = State()
 
   def isClosed(state: State): Boolean = state.admission == Admission.Closed
@@ -28,8 +31,11 @@ private[effect] object QueueMachine {
     case None                     => Pull.Wait
   }
 
-  def stop(state: State): State =
-    if (isClosed(state)) state else state.copy(admission = Admission.Stopped)
+  def stop(state: State, buffered: Boolean): (State, StopCommand) = {
+    val next    = if (isClosed(state)) state else state.copy(admission = Admission.Stopped)
+    val command = if (buffered) StopCommand.ReleaseProducers else StopCommand.ReleaseProducersAndEndPulls
+    (next, command)
+  }
   def close(state: State): State                  = state.copy(admission = Admission.Closed)
   def fail(state: State, error: Throwable): State = state.copy(error = Some(error))
 
