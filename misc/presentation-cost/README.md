@@ -49,21 +49,14 @@ one-trial correctness smoke runs cannot report full acceptance.
 | 4 | Compile-time inline interpreter wrappers/body arguments | Screen passed; full matrix rejected snapshot throughput |
 | 5 | Inline wrappers plus original conditional clock publication | All five full-comparison guides passed |
 
-[The accepted full comparison](evidence/v5-full/summary.json) retains all 30 rows
-and ranges. Other packs preserve all earlier screens, the failed full comparison
-and non-comparative correctness smoke: 100 rows total. `variants/v1` through
-`variants/v5` contain the exact production/model-test sources for each design;
-the baseline production source is retained under `evidence/baseline-source`.
-Each provenance file records collection order, source and fixture hashes and
-counter controls. To reconstruct a candidate, start from the recorded baseline
-revision and copy that variant's production sources into their original paths.
+[The accepted full comparison](evidence/v5-full/summary.json) retains all 30 rows,
+ranges and provenance (`trials.jsonl` and `provenance.json`). Intermediate screens
+and variant source copies from rejected designs 1–4 were pruned before merge.
 
-[Diagnostic evidence](evidence/diagnostic/) distinguishes JIT/escape behavior from
-acceptance runs. JFR identified a retained snapshot-construction lambda; `javap`
-shows direct checks after Scala wrapper inlining. Diagnostic JVM flags and timing
-were never acceptance conditions. Larger raw JFR/compilation files remain at the
-recorded local path with hashes; the retained scripts reproduce the investigation.
-Only trailing horizontal whitespace was normalized in copied diagnostic text.
+During investigation, JFR and `javap` diagnostics distinguished JIT/escape behavior
+from acceptance runs: JFR identified a retained snapshot-construction lambda, and
+`javap` confirmed direct checks after Scala wrapper inlining. Diagnostic JVM flags
+and timing were never acceptance conditions.
 
 Baseline compilation modes varied across independent JVMs. In particular, the
 fifth snapshot screen's slow baseline must not be described as a universal 2×

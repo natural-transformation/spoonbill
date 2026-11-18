@@ -1,1 +1,0 @@
-{"label":"large-model-3","scenario":"large","seconds":2,"chunks":1,"payloadBytes":8192,"messages":3004032,"elapsedSeconds":2.000037708,"messagesPerSecond":1501987.6815242528,"bytesPerMessage":9840.0,"p99Nanos":1292,"samples":46938,"sampler":"xorshift32-highbits-stratified-v2","sampleSeed":1831565813,"sampleStride":64,"sampleCapacity":1048576,"correct":true}

@@ -64,28 +64,25 @@ nix develop --no-write-lock-file --command node misc/ownership-cost/analyze.mjs 
 
 The analyzer validates live-producer and self-counter checks for v2, and labels
 v1 allocation provisional. It reports ranges and omits ratios against near-zero
-allocation baselines. The v1 fixture is archived under `evidence/`; pass its path
-as an optional third argument to `prepare.sh` to reproduce that older protocol.
+allocation baselines.
 
 ## Recorded design comparisons
 
-All original rows are retained. Candidate patches apply to `5605813d`; every
-comparison uses the original interpreter at `e733c945` as its baseline. Exact
-revisions, fixture/patch/raw-data hashes and limitations accompany each directory.
-The original wrapper and first compact runs used v1; their allocation observations
-are provisional. A separate v2 wrapper witness confirms 72.014 producer bytes per
-lease operation (diagnostic, not a full acceptance comparison). All five v2 known
-allocation controls report 16,842,752 producer bytes, exceeding the 16 MiB payload.
+Every comparison used the original interpreter at `e733c945` as its baseline, with
+candidates built on `5605813d`. Intermediate rejected runs and patches were pruned
+before merge; the accepted v2 comparison is retained in
+`evidence/2026-11-17-guard-shallow-v2` (`summary.json`, `trials.jsonl` and
+`provenance.json`). All five v2 known-allocation controls reported 16,842,752
+producer bytes, exceeding the 16 MiB payload.
 
 | Candidate and protocol | Full comparison outcome |
 | --- | --- |
-| Case-class wrappers, v1 | Retained original evidence; allocation provisional |
-| Packed state, v1 | Retained original evidence; allocation provisional |
+| Case-class wrappers, v1 | Provisional allocation (post-join counter) |
+| Packed state, v1 | Provisional allocation (post-join counter) |
 | Packed state, v2 | Rejected: single-writer lease throughput 0.696× |
 | Shallow owner transitions, v2 | Rejected: four-writer guarded throughput 0.943× |
 | Shallow owner and drain transitions, v2 | Passed all five observed median gates |
 
-The two targeted screens are preserved separately and are not acceptance runs.
 The final 30-row comparison in `evidence/2026-11-17-guard-shallow-v2` observed:
 
 | Operation | Writers | Throughput ratio | Allocation ratio |
@@ -101,11 +98,7 @@ cell. Near-zero JVM housekeeping allocation has no useful ratio; the producer
 self counters establish zero lease bytes in both variants. Every warmup and
 measured v2 row passes the alive-worker and global-versus-self checks. These are
 three-trial medians, not a confidence claim: final four-writer guarded throughput
-ranges from 5.589 to 6.893 million operations/second in the candidate. The failed
-preceding matrix remains a failed experiment and is not replaced by the screen.
+ranges from 5.589 to 6.893 million operations/second in the candidate.
 
-To reproduce a candidate, create a checkout at its recorded base and apply the
-recorded zero-context patch with `git apply --unidiff-zero`, then prepare both
-classpaths using the same current fixture.
-Analyze screens with a third argument (`leases:1` or `guarded:4`); omit it for the
-complete five-cell matrix.
+Analyze targeted screens with a third argument (`leases:1` or `guarded:4`); omit it
+for the complete five-cell matrix.

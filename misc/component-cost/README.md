@@ -42,22 +42,17 @@ nix develop --no-write-lock-file --command node misc/component-cost/analyze.mjs 
   /tmp/component-cost/new-results
 ```
 
-The initial v1 fixture did not arm the app-owned frontend racks. Its shutdown
-exposed the already-confirmed Stream.sort EOF null-waiter defect in the chosen
-baseline, logging errors despite the render/counter assertions passing. Those
-stdout files are retained as invalid smoke evidence, not performance results.
-V2 arms all racks symmetrically outside measurement and uses a strict reporter;
-production is unchanged in both comparison checkouts. The later production
-Stream.sort fix is independently owned by the effect rollout. Correctness-only
-smoke/control runs may overlap development builds and never guide acceptance.
+The initial v1 fixture did not arm the app-owned frontend racks; its shutdown
+exposed the `Stream.sort` EOF null-waiter defect in the baseline. V2 arms all racks
+symmetrically outside measurement and uses a strict reporter; production is
+unchanged in both comparison checkouts. The later production `Stream.sort` fix is
+independently owned by the effect rollout. Correctness-only smoke/control runs may
+overlap development builds and never guide acceptance.
 
 ## Recorded matched result
 
 The complete 30-row v2 comparison in `evidence/2026-11-17-model-v2` passed all five
-observed median gates. Both production source files match the frozen candidate
-byte for byte. Its zero-context patch applies to the recorded bugfix baseline
-with `git apply --unidiff-zero`; source, fixture and raw-data hashes accompany
-the evidence.
+observed median gates (`summary.json`, `trials.jsonl` and `provenance.json`).
 
 | Render cell | Throughput ratio | Allocation ratio |
 | --- | ---: | ---: |
@@ -72,4 +67,4 @@ the representation does not imply identical whole-operation allocation. The
 candidate changing-32 throughput range was 99,030–100,193 operations/second.
 Every row passes strict reporter, stderr, operation and live-counter checks;
 both known-allocation controls account for at least the 16 MiB escaping payload.
-All valid controls and the invalid v1 smoke/stdout/source remain preserved.
+Superseded v1 smoke logs and intermediate patches were pruned before merge.

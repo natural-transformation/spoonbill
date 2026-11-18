@@ -1,1 +1,0 @@
-{"label":"action-baseline-3","scenario":"action","seconds":2,"messages":3478016,"elapsedSeconds":2.000094375,"messagesPerSecond":1738925.944431997,"bytesPerMessage":4104.0,"p99Nanos":834,"samples":13586,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

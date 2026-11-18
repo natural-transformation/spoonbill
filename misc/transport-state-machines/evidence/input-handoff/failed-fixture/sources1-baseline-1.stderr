@@ -1,4 +1,0 @@
-Exception in thread "main" java.lang.IllegalArgumentException: requirement failed
-	at scala.Predef$.require(Predef.scala:324)
-	at spoonbill.server.SetupInputPullBenchmark$.main(SetupInputPullBenchmark.scala:64)
-	at spoonbill.server.SetupInputPullBenchmark.main(SetupInputPullBenchmark.scala)

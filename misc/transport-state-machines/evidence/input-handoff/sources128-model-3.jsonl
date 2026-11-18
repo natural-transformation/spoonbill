@@ -1,1 +1,0 @@
-{"label":"sources128-model-3","sources":128,"seconds":2,"pulls":1255942144,"pullsPerSecond":6.27961809563309E8,"allocatedBytes":0,"bytesPerPull":0.0,"p99Nanos":42,"samples":1226506,"sampleStride":1024,"sampleCapacity":4194304,"correct":true}

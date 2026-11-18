@@ -107,13 +107,8 @@ calls using one consumer and bounded producers. It omits handlers, handler table
 and effect scheduling; its counts are not runtime retry counts and its timing is
 not delivery latency. The monitor baseline has no corresponding CAS-retry count.
 
-Retained evidence and patches are immutable historical inputs:
+Retained evidence files:
 
-- [Initial runtime/retry observations](evidence/2026-11-16/).
-- [CAS/lock comparison](evidence/2026-11-16-pilot-acceptance/) and
-  [direct-step comparison](evidence/2026-11-16-direct-steps/).
-- [Ownership-design comparisons](evidence/2026-11-16-ownership-designs/), including
-  rejected and pre-correction candidates.
 - [Corrected live-producer pilot](evidence/2026-11-17-live-allocation/), a pass for
   that historical source, not final-rollout acceptance.
 - [Final main comparison and confirmation](evidence/2026-11-17-final-main.json),
@@ -121,7 +116,5 @@ Retained evidence and patches are immutable historical inputs:
 - [Fresh `d057488e` comparison](evidence/2026-11-18-d057488e-main.json). Contended
   delivery p99 misses the guide; aggregate acceptance remains unresolved.
 
-`variants/lock-preserving.patch` applies to `15672bc0`; ownership-design patches
-name their bases in their provenance. Reproduce them in separate pinned
-worktrees with `git apply --unidiff-zero`, then validate before measurement.
-Historical fixtures/patches are not automatically compatible with current APIs.
+Intermediate exploratory screens and variant patches from earlier pilot iterations
+were pruned before merge.

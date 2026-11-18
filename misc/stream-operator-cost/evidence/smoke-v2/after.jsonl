@@ -1,3 +1,0 @@
-{"protocol":"stream-compat-v2","smoke":true,"scenario":"hub","rounds":64,"deliveries":128,"checkedContinuations":1664,"correct":true}
-{"protocol":"stream-compat-v2","smoke":true,"scenario":"sort","rounds":64,"deliveries":128,"checkedContinuations":2176,"correct":true}
-{"protocol":"stream-compat-v2","smoke":true,"scenario":"buffer","rounds":64,"deliveries":64,"checkedContinuations":1664,"correct":true}

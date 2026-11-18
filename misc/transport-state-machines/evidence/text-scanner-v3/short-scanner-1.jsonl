@@ -1,1 +1,0 @@
-{"label":"short-scanner-1","scenario":"short","seconds":2,"chunks":1,"characters":4,"messages":227932672,"elapsedSeconds":2.000016583,"messagesPerSecond":1.1396539105596007E8,"bytesPerMessage":80.0,"p99Nanos":42,"samples":890362,"sampleStride":256,"sampleCapacity":4194304,"correct":true}

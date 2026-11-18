@@ -1,1 +1,0 @@
-{"label":"baseline","operation":"empty input while awaiting payload","iterations":1000000,"allocatedBytes":0,"bytesPerEmpty":0.0,"correct":true,"acceptance":false}

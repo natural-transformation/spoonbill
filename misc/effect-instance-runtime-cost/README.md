@@ -15,9 +15,9 @@ lifecycle behavior is changed for this experiment.
 New isolated worktrees and classpaths are used for both versions. None of the
 frozen stream-reference class directories is rebuilt. Every classpath directory
 class and local/dependency JAR is hashed before collection and checked afterward;
-production sources, fixture/scripts and the exact candidate patch are retained.
+source hashes, fixture/scripts and the exact candidate patch are retained.
 Raw JFR recordings stay outside the repository because they can contain process
-environment data; their hashes and local paths are retained.
+environment data; their hashes are retained.
 
 Preparation and controls use the applicable repository `nix develop` environment:
 
@@ -73,12 +73,12 @@ All ratios below are **API candidate / current compact7**, not original main:
 | Extensions | 0.9969059848427076 | 0.9477911646586347 | 0.9999878130196344 |
 | Backlog | 0.9953886605488417 | 1.013761467889908 | 1.0001554918078974 |
 
-Every median satisfies the predeclared guide. All 24 rows, full metric ranges,
-per-run stderr, live-counter cross-checks and gate output are retained in
-[`evidence/api-v1`](evidence/api-v1). One isolated reference allocation trial is
-1,040.8453 bytes/notification versus about 1,136 in the other two; it remains in
-the data. Nothing was selectively rerun or excluded. Three-trial medians do not
-establish zero regression or a confidence interval.
+Every median satisfies the predeclared guide. All 24 rows (`trials.jsonl`), full
+metric ranges (`summary.json`), provenance, source/JFR hashes and gate output are
+retained in [`evidence/api-v1`](evidence/api-v1). One isolated reference allocation
+trial is 1,040.8453 bytes/notification versus about 1,136 in the other two; it
+remains in the data. Nothing was selectively rerun or excluded. Three-trial medians
+do not establish zero regression or a confidence interval.
 
 All 4,138 recorded class/JAR hashes were unchanged after collection. All eight
 smoke rows and 24 measured rows passed the live-producer boundary checks,

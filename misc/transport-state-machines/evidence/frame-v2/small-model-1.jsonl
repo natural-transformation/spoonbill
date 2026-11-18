@@ -1,1 +1,0 @@
-{"label":"small-model-1","scenario":"small","seconds":2,"chunks":1,"payloadBytes":7,"messages":20604928,"elapsedSeconds":2.00004225,"messagesPerSecond":1.0302246365045538E7,"bytesPerMessage":144.0,"p99Nanos":208,"samples":80488,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

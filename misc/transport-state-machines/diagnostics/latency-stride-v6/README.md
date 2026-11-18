@@ -25,9 +25,9 @@ fixed-seed xorshift32 sequence (`0x6d2b79f5`, shifts 13/17/5). Both variants use
 the same seed/algorithm. Low-bit LCG sampling and choosing favorable offsets are
 excluded. Old fixed-offset rows remain unchanged in the evidence directories.
 
-The `.trace.gz` format is a big-endian version integer (1), count integer and
-`count` long nanosecond values. `analyze-latency-diagnostic.mjs` re-reads every raw
-trace and verifies every reported percentile. Compile the archived probe for
-both checkouts using `prepare-chunked.sh` and run the archived runner through Nix.
-Production sources/hashes are the unchanged baseline and candidate in
-`../../evidence/chunked-v6`. JVM settings/version and all summaries are retained.
+The `.trace.gz` format produced by the runner is a big-endian version integer (1),
+count integer and `count` long nanosecond values. `analyze-latency-diagnostic.mjs`
+re-reads raw traces and verifies every reported percentile. Compile the probe for
+both checkouts using `prepare-chunked.sh` and run `run-latency-diagnostic.sh`
+through Nix. `summary.json` and `java-version.txt` are retained here; raw `.trace.gz`
+dumps were omitted before merge.

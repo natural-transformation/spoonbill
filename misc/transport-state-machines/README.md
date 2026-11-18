@@ -88,24 +88,17 @@ copy of archived data, preserving original evidence unchanged.
 ### Source and fixture selection
 
 - **Text:** the unchanged baseline was compiled at `e733c945` (production source
-  from `3d8c6853`). Each `text-scanner-vN` directory retains its fixture and source
-  hashes. Historical zero-context patches apply to an isolated `e733c945`
-  checkout with `git apply --unidiff-zero implementation.patch`; their paths are
-  recorded in `patch-hashes.txt`. Use that version's archived fixture for both
-  sides. Versions 1–2 had one million sample slots; versions 3–5 had four million.
+  from `3d8c6853`). [Selected v5](evidence/text-scanner-v5/) retains its baseline,
+  source and environment hashes alongside `summary.json`.
 - **Input:** use pre-extraction `f3d9d5a0` and the selected `SetupInput` source,
   checking the [baseline](evidence/input-handoff/baseline-hashes.txt) and
   [candidate hashes](evidence/input-handoff/source-hashes.txt). The current
   `SetupInputPullBenchmark.scala` uses stride 1,024 and initializes sample storage
   outside the allocation window.
-- **Frontend:** start from `1f06cd3a` and restore the corresponding complete files
-  under [transport-v2-source](evidence/transport-v2-source/), following its
-  [path/hash manifest](evidence/transport-v2-source/provenance.json). Use the
-  [archived frontend fixture](evidence/frontend-v2/FrontendFrameBenchmark.scala).
-- **Chunked/frame:** each version retains baseline/model source snapshots and a
-  `provenance.json` mapping them to repository paths, plus its exact fixture,
-  runner and analyzer. Restore those snapshots over isolated `1f06cd3a` checkouts.
-  The selected manifests are [chunked v8](evidence/chunked-v8/provenance.json) and
+- **Frontend:** measured against baseline `1f06cd3a` with `FrontendFrameBenchmark.scala`;
+  the selected result is in [frontend v2](evidence/frontend-v2/summary.json).
+- **Chunked/frame:** measured against `1f06cd3a` checkouts. The selected manifests
+  and summaries are [chunked v8](evidence/chunked-v8/provenance.json) and
   [frame v2](evidence/frame-v2/provenance.json). Verify hashes before compiling.
 
 ## Selected summaries
@@ -167,27 +160,27 @@ The fragmented cell passes narrowly: 95.0677% against the 95% throughput guide.
 Allocation medians are 144/144/656/2,624 bytes per fixture operation, unchanged
 from its paired baseline.
 
-## Retained experiments and diagnostics
+## Diagnostics and sampling notes
 
-[Evidence](evidence/) retains every text design (120 rows), chunked design (192
-rows), both frame designs (48 rows), frontend comparison and coupled-input run.
-Rejected rows remain rejected; do not combine trials across versions or choose
-favorable rows. Historical fixtures and source snapshots remain evidence, not
-current API migration examples.
+[Selected evidence](evidence/) retains the final summaries and provenance for text
+(`text-scanner-v5`), coupled input (`input-handoff`), frontend (`frontend-v2`),
+chunked framing (`chunked-v8`) and Netty frame deadlines (`frame-v2`). Superseded
+intermediate iterations, duplicated source snapshots and raw JFR/trace dumps were
+pruned before merge.
 
-- [Input fixture overflow](evidence/input-handoff/failed-fixture/): sample storage
-  exhausted before a valid row. The retained diagnostic motivated the symmetric
-  stride change; it is not acceptance evidence.
-- [Empty-tail attribution](diagnostics/empty-tail/): the decoder's empty `Fork`
-  remainder measured 0 bytes/call before extraction, 104 in the initial path,
-  then 0 with the state-preserving empty-input path. Direct byte access alone did
-  not fix the fragmented allocation cost.
-- [Whole-trace latency diagnostic](diagnostics/latency-stride-v6/): all 64 stride
-  offsets are retained. Timing every operation changes overhead; this diagnosed
-  sample representativeness and is not a replacement acceptance result.
-- [Trailer CPU/allocation profile](diagnostics/trailers-v6/): retained JFRs,
-  event-count checks and summaries identify framing snapshots and builder work.
-  Profiling results are diagnostic, not benchmark trials.
+- **Input fixture stride:** initial smaller sample storage overflowed before a
+  valid row, motivating the symmetric 1-in-1,024 stride in `SetupInputPullBenchmark.scala`.
+- **Empty-tail attribution:** the decoder's empty `Fork` remainder measured
+  0 bytes/call before extraction, 104 in the initial path, then 0 with the
+  state-preserving empty-input path. Direct byte access alone did not fix the
+  fragmented allocation cost.
+- [Whole-trace latency diagnostic](diagnostics/latency-stride-v6/): compares
+  aggregate p99 against all 64 fixed-stride offsets (`summary.json`). Timing every
+  operation changes overhead; this diagnosed sample representativeness and is not
+  a replacement acceptance result.
+- **Trailer CPU/allocation profile:** JFR profiling identified framing snapshots
+  and builder work on trailer chunks; profiling results were diagnostic, not
+  benchmark trials.
 
 Chunked versions 1–6 use fixed-offset sampling; versions 7–8 use the predeclared
 matched stratified sampler: xorshift32 seed `0x6d2b79f5`, shifts 13/17/5, high six

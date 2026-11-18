@@ -1,1 +1,0 @@
-{"label":"sources1-baseline-1","sources":1,"seconds":2,"pulls":1404075008,"pullsPerSecond":7.019941849918354E8,"allocatedBytes":0,"bytesPerPull":0.0,"p99Nanos":42,"samples":1371167,"sampleStride":1024,"sampleCapacity":4194304,"correct":true}

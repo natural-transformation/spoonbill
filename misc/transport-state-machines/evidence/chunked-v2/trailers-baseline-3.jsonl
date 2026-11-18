@@ -1,1 +1,0 @@
-{"label":"trailers-baseline-3","scenario":"trailers","seconds":2,"chunks":5,"payloadBytes":16,"messages":1495424,"elapsedSeconds":2.000031417,"messagesPerSecond":747700.2547505482,"bytesPerMessage":5552.0,"p99Nanos":1792,"samples":23366,"sampleStride":64,"sampleCapacity":1048576,"correct":true}

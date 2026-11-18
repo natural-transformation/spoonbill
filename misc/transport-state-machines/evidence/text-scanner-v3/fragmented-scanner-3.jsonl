@@ -1,1 +1,0 @@
-{"label":"fragmented-scanner-3","scenario":"fragmented","seconds":2,"chunks":16,"characters":1024,"messages":8486656,"elapsedSeconds":2.000053375,"messagesPerSecond":4243214.759206114,"bytesPerMessage":3224.0,"p99Nanos":333,"samples":33151,"sampleStride":256,"sampleCapacity":4194304,"correct":true}

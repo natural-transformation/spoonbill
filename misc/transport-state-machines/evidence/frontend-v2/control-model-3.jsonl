@@ -1,1 +1,0 @@
-{"label":"control-model-3","scenario":"control","seconds":2,"messages":6120192,"elapsedSeconds":2.000086625,"messagesPerSecond":3059963.465332408,"bytesPerMessage":2416.0,"p99Nanos":500,"samples":23907,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

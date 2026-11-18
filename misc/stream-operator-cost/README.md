@@ -71,14 +71,13 @@ establish semantic equivalence with the historical dropping operators.
 
 - Full routing-state copies, interpreter records and Future promise/continuation
   machinery all contributed to the initial regression. Removing one model result
-  object was insufficient. [Allocation attribution](evidence/allocation-profiles/)
-  separates object classes from nearest-source origins; these overlapping views
-  must not be added or treated as an exact byte census.
-- Lower allocation did not ensure acceptable sort throughput. The
-  [CPU diagnostic](evidence/compact-v2/cpu-diagnostics/) identified command dispatch
-  and registration as hot regions. No observed monitor-blocking events does not
-  mean uncontended monitor operations are free; a sampled call/return source line
-  does not isolate exception-handling cost.
+  object was insufficient. Allocation attribution separates object classes from
+  nearest-source origins; these overlapping views must not be added or treated as
+  an exact byte census.
+- Lower allocation did not ensure acceptable sort throughput. CPU profiling
+  identified command dispatch and registration as hot regions. No observed
+  monitor-blocking events does not mean uncontended monitor operations are free;
+  a sampled call/return source line does not isolate exception-handling cost.
 - Direct first-command reservation and typed callback handling remove ordinary
   dispatch/conversion work. They still need a single release/claim authority,
   queued-work visibility, cleanup pauses and reentrant FIFO behavior. The retained
@@ -91,8 +90,8 @@ establish semantic equivalence with the historical dropping operators.
 Profiles are diagnostic, separate from acceptance timing. The attribution tools
 select measured `Work.run` stacks; the historical v2 measured call site is line
 217, with warmup at 216. Recheck source locations for another fixture. Raw JFRs
-stay at the paths/hashes recorded in provenance because they can contain process
-metadata. Export with sufficient stack depth before running
+stay outside the repository because they can contain process metadata. Export with
+sufficient stack depth before running
 [`attribute-allocations.mjs`](attribute-allocations.mjs) or
 [`attribute-cpu.mjs`](attribute-cpu.mjs).
 
@@ -100,13 +99,9 @@ metadata. Export with sufficient stack depth before running
 
 | Evidence | Purpose |
 | --- | --- |
-| [v3 comparison](v3/README.md), [API sources/rows](v3/evidence/api-v2/) | Current API comparison against both references; all guides passed, with sort's observed median 3.52% below the preceding implementation. |
+| [v3 comparison](v3/README.md), [API summary and rows](v3/evidence/api-v2/) | Current API comparison against both references; all guides passed, with sort's observed median 3.52% below the preceding implementation. |
 | [Canonical-instance runtime comparison](../effect-instance-runtime-cost/README.md) | Separate uninstrumented default-instance check; current-implementation reference, not original-main aggregate acceptance. |
-| [Initial screen](evidence/screen-v2/), [sources before](evidence/source-before/), [sources after](evidence/source-after/) | Original semantic rewrite's measured regression. |
-| [Smoke v1](evidence/smoke-v1/), [smoke v2](evidence/smoke-v2/) | Superseded incomplete Hub teardown and corrected ownership controls. |
-| [Compact](evidence/compact-v2/), [2](evidence/compact2-v2/), [3](evidence/compact3-v2/), [4](evidence/compact4-v2/), [5](evidence/compact5-v2/) | Complete rejected cost screens; throughput misses remain recorded despite allocation improvements. |
-| [Compact 6](evidence/compact6-v2/), [7](evidence/compact7-v2/), [variant patches](variants/) | Passing cost screens and exact sources; compact 6 was superseded for split state/reflection, compact 7 supplies the typed single-value design. |
+| [Compact 7 checkpoint](evidence/compact7-v2/) | Passing v2 cost screen (`summary.json`, `trials.jsonl`, `provenance.json`) for the retained typed single-value dispatch core. |
 
-Each pack owns its source identity, protocol, raw rows and summary. Follow those
-records for exact results and reproduction; this reference does not replace or
-revise their conclusions.
+Intermediate rejected screens (`compact` through `compact6`), smoke runs and
+duplicated source snapshots were pruned before merge.

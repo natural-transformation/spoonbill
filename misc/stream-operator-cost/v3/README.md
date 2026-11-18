@@ -70,16 +70,13 @@ cross-pair of trials; this result does not establish zero regression. One
 candidate sort trial allocated 248.027 bytes/delivery while the other two were
 232.02; the median is 232.0203 against compact7's 232.0276. No row was omitted.
 
-[`evidence/api-v2`](evidence/api-v2) preserves every row and its stderr, the
-summary, exact source snapshots/patch, classpath and class/JAR manifests, and all
-controls. Original/current source snapshots are shared with the retained
-[`api-v1`](evidence/api-v1) preparation pack. That earlier candidate was never
-timed: review removed unnecessary no-op hooks and a completion map from the
-canonical default instance before the corrected freeze. Its sources, bytecode
-hashes and successful controls remain retained. All 886 class/JAR hashes were
-unchanged after collection. Each allocation control observed 16,842,752 bytes
-against a required minimum of 16,777,216; all source, delivery, continuation,
-EOF and started-child join checks passed.
+[`evidence/api-v2`](evidence/api-v2) preserves `trials.jsonl` (all 27 rows),
+`summary.json`, `provenance.json` and `candidate.patch`. Unmeasured preparation
+snapshots, per-row empty stderr files and expanded class manifests were pruned
+before merge. During collection, all 886 class/JAR hashes were unchanged, each
+allocation control observed 16,842,752 bytes against a required minimum of
+16,777,216, and all source, delivery, continuation, EOF and started-child join
+checks passed.
 
 This fixture exercises the explicitly instrumented built-in factory, whose hooks
 run outside the measured loop. It does not measure canonical-default `start`

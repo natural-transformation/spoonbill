@@ -58,25 +58,22 @@ observed median gate; the coordinator candidate failed and remains rejected.
 | Accepted render, 1,024 declarations | 1 | 0.997× | 1.000× |
 | Aborted render, one declaration | 1 | 1.044× | 0.976× |
 
-Each candidate's zero-context patch is retained, including the rejected
-coordinator implementation. Apply with `git apply --unidiff-zero` to the recorded
-base. The two changes affect separate cells; the accepted source commit adopts
-only timer render state. Full ranges and absolute allocation remain in the JSON
-summary; no failed cell is replaced by its smoke result. Both known-allocation
-controls report 16,842,752 producer bytes for 16,777,216 payload bytes.
+The accepted source commit adopts only timer render state from this initial pass.
+Full ranges and absolute allocation remain in `summary.json`, `trials.jsonl` and
+`provenance.json`; both known-allocation controls reported 16,842,752 producer
+bytes for 16,777,216 payload bytes.
 
 ## Coordinator refinements
 
-The second design kept callback-bearing queue entries in the interpreter and
-published pure occupancy/admission decisions. Its complete 24-row comparison is
-retained in `evidence/2026-11-17-coordinator-compact`: write cells passed, but
-read-one throughput was 0.913× and read-four throughput/allocation were
-0.911×/1.104×. That failed gate remains rejected.
+A second design kept callback-bearing queue entries in the interpreter and
+published pure occupancy/admission decisions: write cells passed, but read-one
+throughput was 0.913× and read-four throughput/allocation were 0.911×/1.104×, so
+that candidate was rejected (its intermediate files were pruned before merge).
 
 The third design uses cached Idle/Writing tags or the immutable read-key Set
 directly as occupancy, and matches completion without an intermediate tuple.
 After a passing 12-row read screen, a fresh complete 24-row coordinator comparison
-in `evidence/2026-11-17-coordinator-readset` observed:
+retained in `evidence/2026-11-17-coordinator-readset` observed:
 
 | Cell | Producers | Throughput ratio | Allocation ratio |
 | --- | ---: | ---: | ---: |
@@ -94,8 +91,4 @@ this complete coordinator gate does not substitute its earlier targeted screen.
 Select coordinator-only runs with the optional seventh argument `"write read"`
 after repeat/warmup/measurement durations. Analyze them with arguments
 `3 write:1,write:4,read:1,read:4 "full four-cell coordinator gate"`; a read-only
-screen uses `3 read:1,read:4` and retains the default screen label. The initial
-pack's provenance names its original tooling revision because these optional
-selectors were added later. Every production variant remains reproducible from
-its recorded base and zero-context patch; no frozen classpath was rebuilt during
-measurement.
+screen uses `3 read:1,read:4` and retains the default screen label.

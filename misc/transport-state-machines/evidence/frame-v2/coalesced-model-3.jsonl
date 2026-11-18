@@ -1,1 +1,0 @@
-{"label":"coalesced-model-3","scenario":"coalesced","seconds":2,"chunks":1,"payloadBytes":224,"messages":1956864,"elapsedSeconds":2.000180667,"messagesPerSecond":978343.6227963502,"bytesPerMessage":2624.0,"p99Nanos":1375,"samples":7644,"sampleStride":256,"sampleCapacity":1048576,"correct":true}

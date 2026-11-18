@@ -8,7 +8,7 @@ boundary. The current `QueueLiveAllocationBenchmark` holds warmup and measured
 workers alive, checks worker/main self-allocation lower bounds and escaping
 allocation controls, and rejects inconsistent totals. The corrected six-trial
 [contended evidence](evidence/2026-11-17-live-contended/) replaces the old allocation
-claim; every original row and the historical fixture remain retained.
+claim; both benchmark fixtures remain available here.
 
 Compile the same fixture against baseline and candidate checkouts through the
 repository-local Nix flake using `prepare.sh <checkout> <classpath-file>`, then
@@ -40,9 +40,7 @@ worker/main self totals by only 232–264 bytes. Every thread's escaping 64 KiB
 control and every delivery/order check passed. Ranges overlap; these are
 observations, not a statistical-significance or allocation-site claim.
 
-[The 2026-11-17 comparison](evidence/2026-11-17/) retains all 18 rows against
-baseline `57d7a8b4`. Candidate/baseline median throughput was 1.032× for roundtrip,
-1.259× for batch and 1.065× for contention; main-thread allocation per value was
-0.944× and 0.934×. The old contended 0.913× allocation ratio is provisional under
-the audit above. Every correctness assertion passed. See provenance for exact
-source identities, the formatting-only distinction, and validation logs.
+In the earlier three-workload screen against baseline `57d7a8b4`, candidate/baseline
+median throughput was 1.032× for roundtrip, 1.259× for batch and 1.065× for
+contention; main-thread allocation per value was 0.944× and 0.934× (with the
+contended allocation ratio superseded by the live-worker run above).
