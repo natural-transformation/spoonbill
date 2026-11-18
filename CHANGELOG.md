@@ -15,6 +15,11 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   drains accepted data before reporting upstream completion or failure.
 - `AsyncResourcePool.use` returns a managed loan when the callback fails or
   is canceled.
+- Graceful `Queue.stop()` releases blocked producers and drains accepted values.
+  A late fanout subscriber in Akka or Pekko receives `onSubscribe` followed by
+  `onError` when registration is refused.
+- Idle pool cleanup retains failed close attempts for retry. Canceling the
+  cleanup caller leaves any close already in progress owned by the pool.
 
 - **Breaking:** `Extension.Handlers.onDestroy` takes the last state:
   `onDestroy(lastState)`. The view is closed before it runs, so the access
