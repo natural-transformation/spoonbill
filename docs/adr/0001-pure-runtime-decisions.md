@@ -65,6 +65,20 @@ also impose scheduling and cancellation semantics on backends that differ.
 
 ## Consequences for changes
 
+For every lifecycle or adapter change, cover three boundaries:
+
+1. Test the transition rules without an executor. Track the obligations each
+   event creates or settles. For example, stopping admission releases all
+   capacity waiters even if a buffered value still belongs to a consumer.
+2. Test the interpreter with controlled callbacks and completion signals. Pause
+   an effect after ownership has changed, then fail or cancel it. Check which
+   caller was notified and which owner can still release or retry each resource.
+3. Add an end-to-end case through the public entry point and real effect backend
+   or adapter. Observe what the consumer receives, the order of its terminal
+   signals, or the physical resource that closes. Keep the model's expected
+   state out of that assertion so a matching mistake in the model and
+   interpreter can still fail the test.
+
 Test the decision table with event histories and the interpreter with observable
 effects. For example, test a browser reconnect by delivering a late event from
 the old socket and checking emitted frames and connection events. Socket
