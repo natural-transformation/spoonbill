@@ -44,7 +44,7 @@ final class Countdown[F[_]: Effect] {
         val ref = state.get()
         if (!StreamPublisherMachine.unbounded(ref.n)) ref.pending match {
           case Some(cb) =>
-            if (state.compareAndSet(ref, Countdown.State(pending = None, n = StreamPublisherMachine.addDemand(ref.n, x) - 1))) {
+            if (state.compareAndSet(ref, Countdown.State(pending = None, n = StreamPublisherMachine.consumed(StreamPublisherMachine.addDemand(ref.n, x))))) {
               cb(Countdown.unitToken)
             } else {
               aux()

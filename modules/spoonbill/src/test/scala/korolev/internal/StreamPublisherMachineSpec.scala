@@ -52,4 +52,12 @@ class StreamPublisherMachineSpec extends AnyFlatSpec with Matchers with ScalaChe
     addDemand(Long.MaxValue, Long.MaxValue) shouldBe Long.MaxValue
     consumed(Long.MaxValue) shouldBe Long.MaxValue
   }
+
+  it should "account for a parked pull without consuming unbounded demand" in {
+    forAll(Gen.choose(1L, Long.MaxValue)) { incoming =>
+      val remaining = consumed(addDemand(0L, incoming))
+      remaining shouldBe (if (incoming == Long.MaxValue) Long.MaxValue else incoming - 1L)
+    }
+    consumed(addDemand(0L, Long.MaxValue)) shouldBe Long.MaxValue
+  }
 }

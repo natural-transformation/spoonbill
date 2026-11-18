@@ -105,4 +105,15 @@ class CountdownSpec extends AsyncFreeSpec {
     assert(countdown.unsafeValue == Long.MaxValue)
     countdown.decOrLock().map(_ => assert(countdown.unsafeValue == Long.MaxValue))
   }
+
+  "a single unbounded request releases a parked pull and stays unbounded" in {
+    val countdown = new Countdown[Future]()(Effect.futureEffect)
+    val parked = countdown.decOrLock()
+    assert(!parked.isCompleted)
+    countdown.unsafeAdd(Long.MaxValue)
+    parked.flatMap { _ =>
+      assert(countdown.unsafeValue == Long.MaxValue)
+      Future.sequence(List.fill(32)(countdown.decOrLock()))
+    }.map(_ => assert(countdown.unsafeValue == Long.MaxValue))
+  }
 }
