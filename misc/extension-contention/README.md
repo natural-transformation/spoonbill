@@ -10,8 +10,11 @@ measurement policy and current acceptance status. The
 rows and six contended confirmation rows: the full gate failed at **93.50%**
 contended throughput; the repeat measured **99.23%** and supplemental pooling
 **95.19%**. The repeat does not replace the failure or establish aggregate
-acceptance. Historical results below retain their original scope and sources.
-The final JSON keeps `fullComparison.rawRows` and
+acceptance. A later full comparison of `d057488e` is retained separately in
+[2026-11-18 evidence](evidence/2026-11-18-d057488e-main.json): contended delivery
+p99 is **118.39%** of main, so that gate also fails. It is not pooled with the
+earlier rows. Historical results below retain their original scope and sources.
+The `d806539c` JSON keeps `fullComparison.rawRows` and
 `contendedConfirmation.rawRows` separate because their trial labels repeat;
 pooling is reported only for the contended statistic, not as a new four-cell gate.
 
@@ -114,7 +117,9 @@ Retained evidence and patches are immutable historical inputs:
 - [Corrected live-producer pilot](evidence/2026-11-17-live-allocation/), a pass for
   that historical source, not final-rollout acceptance.
 - [Final main comparison and confirmation](evidence/2026-11-17-final-main.json),
-  with the unresolved aggregate result described in ADR 0004.
+  the `d806539c` result described in ADR 0004.
+- [Fresh `d057488e` comparison](evidence/2026-11-18-d057488e-main.json). Contended
+  delivery p99 misses the guide; aggregate acceptance remains unresolved.
 
 `variants/lock-preserving.patch` applies to `15672bc0`; ownership-design patches
 name their bases in their provenance. Reproduce them in separate pinned

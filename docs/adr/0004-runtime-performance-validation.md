@@ -1,6 +1,6 @@
 # ADR 0004 — Runtime performance validation
 
-Status: measurement policy adopted. Aggregate performance acceptance for PR #34 remains unresolved.
+Status: measurement policy adopted. Aggregate performance acceptance for PR #34 remains unresolved. The latest full comparison, `d057488e`, fails contended delivery p99.
 
 ## Decision
 
@@ -47,7 +47,7 @@ range before attributing a speedup to the candidate.
 [Latency sampling diagnostic](../../misc/transport-state-machines/diagnostics/latency-stride-v6/) ·
 [Presentation-store comparison](../../misc/presentation-cost/README.md)
 
-## Final comparison recorded for PR #34
+## Comparison of `d806539c` with original main
 
 The comparison of `d806539c` with original main `3d8c6853` used 24 measured
 trials. The record includes all 24 and the six later contended trials at full
@@ -75,6 +75,31 @@ margin do not establish robust equivalence. The initial isolated p99 was also
 close to its limit. All observations remain retained; none is discarded as an
 outlier. The recovered manifest records selected class hashes, not a complete
 frozen-classpath audit.
+
+## Comparison of `d057488e` with original main
+
+A fresh comparison of `d057488e` with the same original main used 24 new trials.
+It is not pooled with the `d806539c` rows. `ExtensionRuntime` and `Effect` class
+files match that earlier candidate. `Queue` differs, and this fixture does not
+call the queue or pool edits. [Evidence](../../misc/extension-contention/evidence/2026-11-18-d057488e-main.json)
+
+| `d057488e` / main | Throughput / main | Delivery p99 / main | Allocation / main | Gate |
+| --- | ---: | ---: | ---: | --- |
+| Independent views | 100.55% | 93.11% | 106.76% | pass |
+| Four writers, one view | 96.64% | 118.39% | 106.81% | **fail** |
+| Eight writers, eight extensions | 98.30% | 103.02% | 106.43% | pass |
+| Sustained backlog | 98.27% | 98.94% | 106.68% | pass |
+
+The fresh gate **failed** on contended delivery p99: 0.972 versus 0.821 ms.
+Every candidate trial, 0.944–1.031 ms, is above every main trial, 0.743–0.902 ms.
+That cell's throughput passes at 96.64% (2,294,847 versus 2,374,691
+notifications/second) and its allocation passes at 1,130.16 versus 1,058.05
+bytes/notification. The other three workloads pass. All 24 trials delivered
+correctly. Eight two-second smoke rows are excluded from the metrics.
+
+Collected 2026-11-18 18:42:13Z–18:46:58Z on Zulu 21.0.8. Load averages were
+6.88, 5.29, and 5.59 at the start and 9.04, 9.45, and 7.63 at the end. The
+same three-trial median rule applies. **Aggregate acceptance is not established.**
 
 ## Scope and consequences
 
