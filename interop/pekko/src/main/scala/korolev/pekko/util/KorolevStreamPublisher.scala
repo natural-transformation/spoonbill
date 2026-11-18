@@ -117,12 +117,29 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
       }
   }
 
+  private def rejectFanoutSubscriber(subscriber: Subscriber[_ >: T], error: Throwable): Unit = {
+    // Even refusal must establish the subscription before its terminal signal.
+    // No Hub lane was acquired, so requests/cancellation have no resource to own.
+    val subscribed = try {
+      subscriber.onSubscribe(SpoonbillStreamPublisher.RejectedSubscription)
+      true
+    } catch {
+      case NonFatal(callbackError) => ec.reportFailure(callbackError); false
+    }
+    if (subscribed) {
+      try subscriber.onError(error)
+      catch { case NonFatal(callbackError) => ec.reportFailure(callbackError) }
+    }
+  }
+
   def subscribe(subscriber: Subscriber[_ >: T]): Unit = {
     Objects.requireNonNull(subscriber, "subscriber")
     if (hub != null) {
-      hub.newStream().runAsyncSuccess { newStream =>
-        val subscription = new StreamSubscription(newStream, subscriber)
-        subscriber.onSubscribe(subscription)
+      hub.newStream().runAsync {
+        case Right(newStream) =>
+          val subscription = new StreamSubscription(newStream, subscriber)
+          subscriber.onSubscribe(subscription)
+        case Left(error) => rejectFanoutSubscriber(subscriber, error)
       }
     } else {
       // Claim before application code can reenter subscribe, and atomically
@@ -135,6 +152,11 @@ final class SpoonbillStreamPublisher[F[_]: Effect, T](stream: Stream[F, T], fano
 }
 
 object SpoonbillStreamPublisher {
+  private object RejectedSubscription extends Subscription {
+    def request(n: Long): Unit = ()
+    def cancel(): Unit = ()
+  }
+
   final case class MultipleSubscribersProhibitedException()
       extends Exception("Multiple subscribers prohibited for this SpoonbillStreamPublisher")
 }
