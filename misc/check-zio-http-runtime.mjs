@@ -82,11 +82,14 @@ assert.deepEqual(Object.keys(manifest.patchSources).sort(), [
   'zio/http/netty/SpoonbillWebSocketRuntime.scala',
   'zio/http/netty/WebSocketAppHandler.scala',
   'zio/http/netty/WebSocketFrameDeadline.scala',
+  'zio/http/netty/WebSocketFrameScan.scala',
+  'zio/http/netty/WebSocketFrameTimer.scala',
   'zio/http/netty/WebSocketUpgradeBoundary.scala',
 ]);
 for (const [name, checksum] of Object.entries(manifest.patchSources)) {
   assert.equal(sha(fs.readFileSync(path.join(tracked, 'src/main/scala', name))), checksum, `Tracked patch ${name}`);
   assert.equal(sha(entry(sources, name)), checksum, `Published patch ${name}`);
+  assert(runtime.has(name.replace(/\.scala$/, '.class')), `Missing compiled patch ${name}`);
 }
 assert(sources.size > 100, 'Source artifact omits upstream sources');
 const upstreamPom = entry(runtime, 'META-INF/zio-http-upstream.pom');
