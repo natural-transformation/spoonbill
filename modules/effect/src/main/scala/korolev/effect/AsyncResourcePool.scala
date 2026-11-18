@@ -1,5 +1,6 @@
 package spoonbill.effect
 
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.annotation.tailrec
 import scala.collection.immutable.TreeSet
@@ -190,8 +191,12 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
   private def borrowUnsafe(cb: Promise): Unit = {
     @tailrec def onCloseLoop(value: T, id: BigInt): Unit = {
       val ref = pool.get()
-      // Check value not in closed list
-      if (!ref.itemIsClosed(id)) {
+      if (ref.retirements.contains(id)) {
+        // Cleanup already released this allocation's capacity. Closure, not
+        // cancellation of a waiter, releases its retry handle and tombstone.
+        val next = ref.copy(retirements = ref.retirements - id, closedItems = ref.closedItems - id)
+        if (!pool.compareAndSet(ref, next)) onCloseLoop(value, id)
+      } else if (!ref.itemIsClosed(id)) {
         // An idle entry has no outstanding loan that can return later.
         val wasIdle     = ref.items.exists(_.id == id)
         val closedItems = if (wasIdle) ref.closedItems else ref.closedItems.updated(id, System.identityHashCode(value))
@@ -261,7 +266,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
       ExecutionContext.parasitic.execute(() => createNew().runAsync(callback))
 
     @tailrec def loop(): Unit = pool.get() match {
-      case ref @ PoolData(_, x :: xs, _, _, _, _, _) =>
+      case ref @ PoolData(_, x :: xs, _, _, _, _, _, _) =>
         // Return item from pool
         if (pool.compareAndSet(ref, ref.copy(items = xs))) {
           //reporter.debug("%s - Return item from pool", name)
@@ -327,43 +332,97 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
     Effect[F].delayAsync(loop())
   }
 
+  /**
+   * Expire idle resources and retry previously failed retirements. Returns the
+   * number of retirement claims successfully settled for this call (including
+   * independent closure after a claim). Entries owned by another cleanup or
+   * already closed before claiming are skipped. Every selected entry is tried
+   * once despite ordinary failures, then the first error is propagated.
+   * Cancellation stops waiting, without canceling an entered close attempt;
+   * not-yet-started entries remain available to a later cleanup. A close that
+   * cancels itself is reported as a retryable CancellationException.
+   */
   def cleanup(): F[Int] = {
-    @tailrec
-    def loop(nanos: Long): F[Int] = {
-      val ref         = pool.get()
-      val itemsFilter = (item: PoolEntry) => nanos - item.idle < maxIdleTimeNanos
-      val items       = ref.items.filter(itemsFilter)
-
-      if (!items.eq(ref.items)) {
-        val obsolete      = ref.items.filterNot(itemsFilter)
-        val obsoleteCount = obsolete.length
-        val obsoleteIds   = obsolete.map(_.id)
-        val closedSet     = ref.closedItems ++ obsolete.map(item => item.id -> System.identityHashCode(item.value))
-        val total         = ref.total - obsoleteCount
-        val newValue      = ref.copy(total = total, items = items, closedItems = closedSet)
-        if (pool.compareAndSet(ref, newValue)) {
-          val xs = obsolete.map(item => item.retire())
-          Effect[F].sequence(xs).map { _ =>
-            @tailrec def removeClosedSedLoop(): Unit = {
-              val ref = pool.get
-              if (obsoleteIds.forall(ref.closedItems.contains)) {
-                val closedItems = ref.closedItems -- obsoleteIds
-                if (!pool.compareAndSet(ref, ref.copy(closedItems = closedItems))) {
-                  removeClosedSedLoop()
-                }
-              }
-            }
-            removeClosedSedLoop()
-            obsoleteCount
-          }
-        } else {
-          loop(nanos)
-        }
-      } else {
-        Effect[F].pure(0)
+    @tailrec def detach(nanos: Long): List[BigInt] = {
+      val ref               = pool.get()
+      val (obsolete, items) = ref.items.partition(item => nanos - item.idle >= maxIdleTimeNanos)
+      val retry = ref.retirements.iterator.collect {
+        case (id, retirement) if retirement.state == PoolRetirementMachine.State.Ready => id
+      }.toList.sorted
+      if (obsolete.isEmpty) retry
+      else {
+        val next = ref.copy(
+          total = ref.total - obsolete.size,
+          items = items,
+          closedItems = ref.closedItems ++ obsolete.map(item => item.id -> System.identityHashCode(item.value)),
+          retirements = ref.retirements ++ obsolete.map(item => item.id -> Retirement(item))
+        )
+        if (pool.compareAndSet(ref, next)) obsolete.map(_.id) ++ retry else detach(nanos)
       }
     }
-    currentNanos().flatMap(loop)
+    currentNanos().flatMap(nanos => Effect[F].delay(detach(nanos))).flatMap { ids =>
+      val attempts =
+        ids.map(id => retireIdle(id).map[Either[Throwable, Int]](Right(_)).recover { case error => Left(error) })
+      Effect[F].sequence(attempts).flatMap { outcomes =>
+        outcomes.collectFirst { case Left(error) => error } match {
+          case Some(error) => Effect[F].fail(error)
+          case None        => Effect[F].pure(outcomes.collect { case Right(count) => count }.sum)
+        }
+      }
+    }
+  }
+
+  /**
+   * Change only the matching attempt; a late startup/finalizer cannot take
+   * ownership from a retry, or recreate an entry removed by onClose.
+   */
+  @tailrec private def moveRetirement(
+    id: BigInt,
+    transition: PoolRetirementMachine.State => PoolRetirementMachine.State
+  ): Option[PoolEntry] = {
+    val ref = pool.get()
+    ref.retirements.get(id) match {
+      case Some(retirement) =>
+        val next = transition(retirement.state)
+        if (next == retirement.state) None
+        else if (
+          pool.compareAndSet(ref, ref.copy(retirements = ref.retirements.updated(id, retirement.copy(state = next))))
+        )
+          Some(retirement.item)
+        else moveRetirement(id, transition)
+      case None => None
+    }
+  }
+
+  private def retireIdle(id: BigInt): F[Int] = Effect[F].delayAsync {
+    val owner = new PoolRetirementMachine.Attempt
+    // The scope precedes the claim, including for a lazy/native effect. A
+    // canceled or rejected startup may release Starting, never Running.
+    Effect[F].guarantee(Effect[F].delayAsync {
+      moveRetirement(id, PoolRetirementMachine.claim(_, owner)) match {
+        case None => Effect[F].pure(0)
+        case Some(item) =>
+          val completion = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+          val outcome =
+            new AtomicReference[Either[Throwable, Unit]](Left(new CancellationException("Pool retirement canceled")))
+          def task: F[Unit] = Effect[F].guarantee(
+            Effect[F].delayAsync {
+              if (moveRetirement(id, PoolRetirementMachine.enter(_, owner)).isDefined) item.retire()
+              else Effect[F].unit
+            }.map[Either[Throwable, Unit]](Right(_))
+              .recover { case error => Left(error) }
+              .flatMap(result => Effect[F].delay(outcome.set(result)))
+          )(
+            Effect[F].delay {
+              moveRetirement(id, PoolRetirementMachine.settled(_, owner))
+              outcome.get()
+            }.flatMap(result => completion.putEither((), result))
+          )
+          // Some native Fiber.join implementations never return on child
+          // cancellation. The owned task's finalizer publishes that exit too.
+          Effect[F].delayAsync(Effect[F].start(task)(ExecutionContext.global)).flatMap(_ => completion.get(())).as(1)
+      }
+    })(Effect[F].delay { moveRetirement(id, PoolRetirementMachine.abandon(_, owner)); () })
   }
 
   /**
@@ -402,6 +461,7 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
   }
 
   private case class PoolEntry(id: BigInt, idle: Long, value: T, retire: () => F[Unit])
+  private case class Retirement(item: PoolEntry, state: PoolRetirementMachine.State = PoolRetirementMachine.State.Ready)
   private enum Disposal { case Unclaimed, Claimed }
   private case class PoolData(
     total: Int = 0,
@@ -410,10 +470,11 @@ class AsyncResourcePool[F[_]: Effect, T: Close[F, *]](
     closedItems: Map[BigInt, Int] = Map.empty,
     disposeCbs: List[DisposePromise] = Nil,
     disposal: Disposal = Disposal.Unclaimed,
-    serial: BigInt = BigInt(0)
+    serial: BigInt = BigInt(0),
+    retirements: Map[BigInt, Retirement] = Map.empty
   ) {
     def itemIsClosed(id: BigInt): Boolean = closedItems.contains(id)
-    def disposed: Boolean = disposal == Disposal.Claimed
+    def disposed: Boolean                 = disposal == Disposal.Claimed
   }
 
   @tailrec private def allocateId(): BigInt = {
