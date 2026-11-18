@@ -61,6 +61,8 @@ the managed IO application.
 
 * [Docs](https://natural-transformation.com/open-source/spoonbill/overview)
 * [User guide](docs/user-guide.adoc)
+* [Runtime architecture decisions](docs/adr/README.md)
+* [Future effect instances and migration](docs/effect-future-instances.md)
 * [Browser authentication](docs/browser-authentication.md)
 * [Shared PostgreSQL browser authentication](docs/clustered-browser-authentication.md)
 * [Qualifying a payload adapter](docs/recovery-adapter-qualification.md) — portable UI recovery for external snapshot storage

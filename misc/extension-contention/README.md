@@ -1,24 +1,27 @@
-# Extension contention and GC evidence
+# Extension runtime performance evidence
 
-This is a standalone JVM comparison of the actual `ExtensionRuntime`, compiled
-from main and the pilot against the same fixture. It supplies the pilot review
-with sustained concurrent-writer, backlog, allocation and GC observations. It
-is a synthetic runtime workload, not an HTTP/browser end-to-end measurement or
-a prediction of an application's throughput.
+This fixture measures the actual `ExtensionRuntime` under concurrent writers,
+backlog and bounded callback work. It is a synthetic runtime comparison, not an
+HTTP/browser measurement or a prediction of application throughput.
 
-The [2026-11-16 evidence](evidence/2026-11-16/) retains all 24 runtime rows, all
-nine retry diagnostics, the summary, and source/JFR hashes. The analyzer also
-accepts that directory's combined `trials.jsonl` file. Raw JFR recordings remain
-at the path in `provenance.json`. Measurements ran on a shared developer machine;
-`ActiveProcessorCount` is a JVM hint, not CPU affinity.
+[ADR 0004](../../docs/adr/0004-runtime-performance-validation.md) records the
+measurement policy and current acceptance status. The
+[final main comparison](evidence/2026-11-17-final-main.json) retains all 24 original
+rows and six contended confirmation rows: the full gate failed at **93.50%**
+contended throughput; the repeat measured **99.23%** and supplemental pooling
+**95.19%**. The repeat does not replace the failure or establish aggregate
+acceptance. Historical results below retain their original scope and sources.
+The final JSON keeps `fullComparison.rawRows` and
+`contendedConfirmation.rawRows` separate because their trial labels repeat;
+pooling is reported only for the contended statistic, not as a new four-cell gate.
 
-Each fresh JVM uses G1, a 256 MiB heap and `ActiveProcessorCount=8`. Each trial
-warms for five seconds, measures five seconds of writing, then drains all admitted
-notifications before stopping. Three paired trials per scenario alternate order.
-Every callback checks its writer's sequence; the run fails if a callback is
-missing, duplicated or reordered. The final callback of a notification releases
-a permit, bounding the number of in-flight notifications per view. Closing a
-socket cannot hide pending callbacks in this fixture.
+## Workloads and controls
+
+Each fresh JVM uses G1, a 256 MiB heap and `ActiveProcessorCount=8`. Five-second
+warmup precedes five seconds of writing; admitted notifications drain before the
+measurement ends. Three pairs per workload alternate order. The processor flag
+is a JVM hint, not CPU affinity. Avoid concurrent builds or profiling during
+comparative collection and record other host load.
 
 | Scenario | Views | Writers | Extensions/view | Window/view | CPU work/callback |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -27,208 +30,93 @@ socket cannot hide pending callbacks in this fixture.
 | extensions | 1 | 8 | 8 | 2,048 | 1 microsecond |
 | backlog | 1 | 4 | 3 | 8,192 | 2 microseconds |
 
-The deliberate callback work is a bounded spin, rather than a scheduler sleep.
-These cells include independent-view traffic and upper-bound same-view stress;
-normal application serialization may admit less contention. Results should
-remain separate by workload, not averaged into a single performance score.
+Callback work is a bounded spin. Every callback checks its writer's sequence;
+missing, duplicated or reordered delivery fails the run. The last callback
+releases an in-flight permit. Counts, bounded backlog and teardown must pass;
+closing a socket cannot hide pending callbacks. Smoke runs check these controls
+but their metric magnitudes are not comparative evidence.
 
-The JDK 21 total thread-allocation counter includes all JVM threads and includes
-fixture overhead, so it is not an allocation-site profile. Its implementation
-can temporarily omit terminating threads ([OpenJDK source](https://raw.githubusercontent.com/openjdk/jdk21u/jdk-21.0.8%2B9/src/hotspot/share/services/management.cpp)).
-The current fixture waits for producer startup and keeps producers alive through
-the final sample, checking that the total includes their self-reported allocation
-deltas. Older post-join rows remain historical evidence; their allocation values
-are provisional until rechecked with this boundary. The analyzer prevents mixing
-the two boundary protocols in one comparison. JFR `GCPhasePause`
-events supply stop-the-world pause durations within the measurement window.
-Delivery latency runs from `state` invocation to the final extension callback;
-admission latency measures the `state` call and excludes waiting for a permit.
-Histograms report upper bounds with 1 microsecond buckets below 10 ms and
-100 microsecond buckets thereafter. Overflow is explicitly rejected by the
-analyzer. Throughput includes draining the admitted backlog. Teardown is outside
-the resource-measurement window but must complete successfully.
+The JDK 21 total-allocation counter includes fixture and all JVM-thread overhead;
+it is not an allocation-site profile. It can temporarily omit exiting threads
+([OpenJDK implementation](https://raw.githubusercontent.com/openjdk/jdk21u/jdk-21.0.8%2B9/src/hotspot/share/services/management.cpp)).
+The fixture waits for producer startup, keeps producers and workers alive through
+sampling, and requires total allocation to include producer-local deltas in both
+warmup and measurement. Older post-join allocation rows remain provisional. The
+analyzer rejects mixing boundary protocols; the gate requires
+`producers-alive-through-sample`.
 
-Run from the pilot checkout, using its repository-local flake:
+Delivery latency spans the `state` call through the last callback. Admission
+latency measures that call, excluding permit wait. Histograms give upper bounds
+with 1-microsecond buckets below 10 ms and 100-microsecond buckets thereafter;
+overflow is rejected. Throughput includes backlog drain. Teardown is outside the
+resource window but must finish. JFR `GCPhasePause` events provide pauses within
+the measured interval. Raw recordings stay local because they may include process
+metadata; retained hashes identify them.
 
-```sh
-nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh \
-  /path/to/main /tmp/extension-evidence/main-classpath.txt
-nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh \
-  /path/to/pilot /tmp/extension-evidence/pilot-classpath.txt
-nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
-  /tmp/extension-evidence/main-classpath.txt \
-  /tmp/extension-evidence/pilot-classpath.txt /tmp/extension-evidence/comparison
-nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
-  /tmp/extension-evidence/comparison
-```
+## Reproduction
 
-`prepare.sh` adds fixture sources with temporary sbt settings, without changing
-build files or either runtime. Do not recompile either checkout during a run:
-its exported classpath refers to those directories. Compilation errors stop
-preparation. Output directories must be new so failed or unfavorable trials are
-preserved. The analyzer requires every trial and reports median/range without a
-statistical-significance claim. Do not run other builds during collection.
-
-`StateCellRetryBenchmark` is a historical diagnostic for the CAS implementation
-through commit `18548af3`, not for the subsequent ownership-split designs. Prepare
-that pinned checkout with the explicit `--with-cas-retries` mode to include it;
-the default preparation includes only the runtime fixture and contract tests.
-The diagnostic runs `StateCell.modify` and `ExtensionMachine.step` with
-one consumer and bounded producers. Each thread counts executions of its change
-function; attempts minus successful calls is the number of CAS retries. This
-intentional measurement side effect does not affect transition results. It
-omits handlers, the runtime's handler table and effect scheduling, so its retries
-must not be claimed as counts from the runtime comparison above. Timing from
-this instrumented diagnostic is not a latency result.
+Pin both revisions and validate their contracts separately. Use the applicable
+repository-local Nix flake for preparation, execution and analysis:
 
 ```sh
 nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh \
-  /path/to/checkout-at-18548af3 /tmp/extension-evidence/cas-classpath.txt --with-cas-retries
-nix develop --no-write-lock-file --command bash -c '
-  java -Xms256m -Xmx256m -XX:+UseG1GC -XX:ActiveProcessorCount=8 \
-    -cp "$(cat /tmp/extension-evidence/cas-classpath.txt)" \
-    spoonbill.internal.StateCellRetryBenchmark 4 3 1024 25000
-'
-```
-
-Arguments are writers, extensions, maximum waiting notifications and writes per
-writer. Report each configuration separately and retain every repeat. Baseline
-uses a monitor for admission, so it has no corresponding CAS-retry count.
-
-## Pilot acceptance comparison
-
-The [36-trial acceptance comparison](evidence/2026-11-16-pilot-acceptance/)
-preserves all observations and variant identities. The lock candidate reduced
-allocation but did not recover main's contention throughput, and some tail
-latencies were worse. Neither candidate has been selected or its cost accepted.
-
-The performance gate applies to the pilot itself. The original CAS and lock
-variants above did not meet it. The later [ownership design experiments](#ownership-design-experiments)
-record the selected implementation against the owner's explicit budget; the
-historical comparison does not describe that implementation.
-
-`variants/lock-preserving.patch` is a reviewable candidate, not an active runtime
-change. It applies to pilot commit `15672bc07dd7e1c5cb1fe3a99d88729aea1ab117`, moves
-waiting steps back to the lane's own queue, and updates machine state and handler
-ownership under one monitor. It retains the current `SerialLane` implementation
-in its queue-owned mode. Its pure-machine spec follows `Enqueue` commands instead
-of `Next`; the interpreter, session, adapter and lane contract specs are unchanged.
-The candidate passed 161 selected main-module tests, 12 cats-effect tests and 9
-ZIO tests before measurement.
-
-To reproduce without changing the active pilot:
-
-```sh
-git worktree add --detach /tmp/spoonbill-lock-candidate 15672bc07dd7e1c5cb1fe3a99d88729aea1ab117
-git -C /tmp/spoonbill-lock-candidate apply --unidiff-zero /path/to/pilot/misc/extension-contention/variants/lock-preserving.patch
-# In that worktree, through its flake, validate the candidate first:
-cd /tmp/spoonbill-lock-candidate
-env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
-  sbt --batch --supershell=false -Dsbt.server.autostart=false \
-  'spoonbill/testOnly *Extension*Spec *SerialLane*Spec' \
-  'ce3/testOnly *Extension*Spec' 'zio2/testOnly *Extension*Spec'
-```
-
-The optional `--runtime-only` preparation mode compiles just the runtime benchmark
-fixture. This avoids coupling measurements to a candidate's test representation
-or including the CAS-only retry diagnostic. It does not replace the contract
-validation above. Use the same preparation mode for all compared variants, and
-do not compile or test in those worktrees while measurements run.
-
-```sh
-# From the pilot checkout, prepare main, the unchanged CAS pilot, and the candidate.
-nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh /path/to/main /tmp/acceptance/main.txt --runtime-only
-nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh /path/to/pilot /tmp/acceptance/cas.txt --runtime-only
-nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh /tmp/spoonbill-lock-candidate /tmp/acceptance/locked.txt --runtime-only
+  /path/to/reference /tmp/runtime-check/reference.txt --runtime-only
+nix develop --no-write-lock-file --command bash misc/extension-contention/prepare.sh \
+  /path/to/candidate /tmp/runtime-check/candidate.txt --runtime-only
 nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
-  /tmp/acceptance/main.txt /tmp/acceptance/cas.txt /tmp/acceptance/comparison 3 5 /tmp/acceptance/locked.txt
+  /tmp/runtime-check/reference.txt /tmp/runtime-check/candidate.txt \
+  /tmp/runtime-check/new-comparison 3 5
 nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
-  /tmp/acceptance/comparison 3 baseline,cas,locked
-```
-
-Providing the final classpath argument selects a three-way comparison. The four
-workloads, five-second warmup/measurement, full drain, heap/GC settings and
-correctness assertions are unchanged. Each implementation occupies each run
-position once across three rounds: main/CAS/lock, CAS/lock/main, lock/main/CAS.
-The analyzer requires all 36 trials, checks equal workload/JVM settings, and
-reports each candidate relative to the concurrently collected main baseline.
-All medians and ranges remain observations rather than an acceptance decision.
-
-The optional seventh `run.sh` argument names the third implementation; it
-defaults to `locked` for compatibility. Use `optimized` when comparing a hot-path
-change against main and the unchanged CAS pilot, then pass
-`baseline,cas,optimized` to the analyzer. This changes labels only: the workloads,
-JVM settings, rotation and correctness checks are identical.
-
-The [direct-step comparison](evidence/2026-11-16-direct-steps/) measures this
-optimization against main and the preceding CAS implementation. It improves
-contended throughput by 19.7% and reduces allocation by 32.9%, while preserving
-all delivery assertions. It does not establish parity with main or clear the
-pilot merge gate. The two-second screening rows are separate from the full
-five-second, 36-trial summary.
-
-```sh
-nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
-  /tmp/acceptance/main.txt /tmp/acceptance/cas.txt /tmp/acceptance/optimized-comparison \
-  3 5 /tmp/acceptance/optimized.txt optimized
-nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
-  /tmp/acceptance/optimized-comparison 3 baseline,cas,optimized
-```
-
-## Ownership design experiments
-
-The original observations below are retained. Current allocation acceptance uses
-the [live-producer recheck](#live-producer-allocation-recheck), not the older
-post-join counter boundary.
-
-[The retained experiment evidence](evidence/2026-11-16-ownership-designs/) includes
-Round 1 screening, Round 2 screening, its pre-correction comparison, and the final
-corrected 24-trial comparison. The selected Round 2 design separates admission,
-delivery and received-state ownership and uses compact pure notification decisions.
-It meets the owner-confirmed gate on each workload's three-trial medians:
-
-- Throughput at least 95% of main.
-- Delivery p99 and bytes per notification at most 110% of main.
-- Correctness checks pass separately.
-
-The contended throughput result is 95.2%, close to the boundary. These are synthetic
-shared-machine observations, not a confidence interval or production-wide guarantee.
-Screening and pre-correction trials are excluded from the final gate and retained
-without replacement. The failed/provisional source patches apply to `18548af3`
-with `git apply --unidiff-zero`;
-the final source is the implementation alongside this evidence.
-
-Prepare main and the selected checkout with the default `prepare.sh` mode, run the
-two-way comparison, then regenerate and check the result:
-
-```sh
-nix develop --no-write-lock-file --command bash misc/extension-contention/run.sh \
-  /tmp/acceptance/main.txt /tmp/acceptance/selected.txt /tmp/acceptance/final-comparison 3 5
-nix develop --no-write-lock-file --command node misc/extension-contention/analyze.mjs \
-  /tmp/acceptance/final-comparison 3
+  /tmp/runtime-check/new-comparison 3
 nix develop --no-write-lock-file --command node misc/extension-contention/check-gate.mjs \
-  /tmp/acceptance/final-comparison/summary.json
+  /tmp/runtime-check/new-comparison/summary.json
 ```
 
-The gate checker rejects missing workloads, invalid metrics, fewer than three
-trials per workload/version, an unverified allocation sampling boundary, or a
-ratio outside the budget. Historical numeric-only gate reports are retained as
-computed at the time; the current checker does not accept them until allocation
-is rechecked with live producers. It does not replace
-the runtime and adapter correctness suites. The final candidate passed 819 runtime,
-13 cats-effect and nine ZIO tests, including the new startup/teardown race cases.
+`prepare.sh` uses temporary sbt source settings; it changes no build or runtime
+file. Default mode also compiles contract tests; `--runtime-only` compiles only
+the fixture and does not replace correctness validation. Use the same mode on
+both sides. Freeze class directories and local JARs before collection; do not
+recompile them while their exported classpaths are in use. New output directories
+preserve failed and unfavorable runs. A one-pair, two-second invocation provides
+eight smoke rows; only the full comparison supplies gate metrics.
 
-## Live-producer allocation recheck
+The analyzer accepts per-trial files or a combined `trials.jsonl`, checks complete
+matched workloads and reports per-version medians/ranges. `check-gate.mjs` requires
+at least three trials per version and all four workloads: throughput ≥95%, delivery
+p99 ≤110% and allocation ≤110% of the reference, plus the corrected sampling
+boundary. Its `baseline`/`main` labels mean the explicitly recorded reference,
+not automatically the repository's current main. Do not mix data after inspecting
+results or use a passing repeat to overwrite a failed comparison.
 
-[Corrected evidence](evidence/2026-11-17-live-allocation/) retains eight smoke runs
-and 24 fresh main/selected trials. Producers start before the baseline and remain
-alive until after the final total-allocation snapshot; their self-measured deltas
-must be included in that total. The worker pool also remains alive. This avoids
-the exiting-thread accounting gap identified in the JDK 21 implementation.
+An optional sixth `run.sh` argument supplies a third classpath and a seventh names
+it (`locked` by default). This collects 36 rows in three rotating orders; analyze
+with `3 baseline,cas,locked` (or the chosen third label). Workloads and controls
+are unchanged. Report each workload and candidate separately.
 
-The final medians pass the agreed gate: throughput 96.2–101.0% of main, delivery
-p99 102.8–109.5% and allocation 106.4–106.8%. Isolated p99 is close to the boundary.
-These are shared-machine three-trial observations; no confidence interval is
-claimed. The new `allocationBoundary` field prevents mixed-protocol comparisons,
-and `check-gate.mjs` requires it for acceptance. Historical numeric-only gate
-reports are retained without retroactive rewriting.
+## Historical diagnostics and evidence
+
+`StateCellRetryBenchmark` supports the CAS implementation through `18548af3`,
+not later ownership-split designs. On that pinned checkout, prepare with
+`--with-cas-retries`, then run `spoonbill.internal.StateCellRetryBenchmark` in Nix
+with arguments `writers extensions maximum-waiting writes-per-writer` (for
+example `4 3 1024 25000`). It counts transition-function attempts minus successful
+calls using one consumer and bounded producers. It omits handlers, handler tables
+and effect scheduling; its counts are not runtime retry counts and its timing is
+not delivery latency. The monitor baseline has no corresponding CAS-retry count.
+
+Retained evidence and patches are immutable historical inputs:
+
+- [Initial runtime/retry observations](evidence/2026-11-16/).
+- [CAS/lock comparison](evidence/2026-11-16-pilot-acceptance/) and
+  [direct-step comparison](evidence/2026-11-16-direct-steps/).
+- [Ownership-design comparisons](evidence/2026-11-16-ownership-designs/), including
+  rejected and pre-correction candidates.
+- [Corrected live-producer pilot](evidence/2026-11-17-live-allocation/), a pass for
+  that historical source, not final-rollout acceptance.
+- [Final main comparison and confirmation](evidence/2026-11-17-final-main.json),
+  with the unresolved aggregate result described in ADR 0004.
+
+`variants/lock-preserving.patch` applies to `15672bc0`; ownership-design patches
+name their bases in their provenance. Reproduce them in separate pinned
+worktrees with `git apply --unidiff-zero`, then validate before measurement.
+Historical fixtures/patches are not automatically compatible with current APIs.

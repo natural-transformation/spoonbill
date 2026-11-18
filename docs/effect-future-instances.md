@@ -21,8 +21,8 @@ the generic reader interpreter for custom instances, including wrappers around
 the standard instance; an underlying Future type alone does not grant permission
 to bypass a custom instance's methods.
 
-The uninstrumented default retains the original `start` implementation. It does
-not call instrumentation hooks or allocate a child-completion observation Future.
+The uninstrumented default does not call instrumentation hooks or allocate a
+child-completion observation Future when starting a child.
 
 ## Explicit instrumentation
 
@@ -94,39 +94,6 @@ Removing the public `FutureEffect` implementation class is a source and binary
 API change. Clients that referenced it must migrate and recompile. Existing
 uses of `Effect.futureEffect` and native effect instances retain their API.
 
-The performance comparison uses one shared workload with version-specific
-instrumentation adapters, fresh frozen classpaths and complete child cleanup
-checks. Historical fixtures and results are retained separately under
-[`misc/stream-operator-cost`](../misc/stream-operator-cost/README.md).
-
-## Validation and measured limits
-
-The repository's complete Nix CI command passed: 2,192 ScalaTest cases and 41
-native ZIO cases, with six existing cleanup-basis cancellations. The command was:
-
-```sh
-env -u JAVA_HOME SBT_NATIVE_CLIENT=false nix develop --no-write-lock-file --command \
-  bash scripts/with-test-postgres.sh sbt --batch --supershell=false \
-  -Dsbt.server.autostart=false \
-  'set Global / concurrentRestrictions += Tags.limit(Tags.Test, 1)' \
-  compile 'Test / compile' test
-```
-
-The log is `/tmp/spoonbill-effect-instance-api-full-ci.log`. The ZIO framework's
-58-result summary includes its 17 ScalaTest cases; those are not counted twice.
-Focused tests also preserve custom promise/runAsync behavior, startup refusal,
-dispatch pauses, native cancellation/context and complete child observation.
-
-The [27-row stream comparison](../misc/stream-operator-cost/v3/README.md) meets
-the predeclared 0.95 throughput / 1.10 allocation guides against both compact7
-and the original operator baseline. Relative to compact7, throughput ratios are
-0.99594 (Hub), 0.96485 (sort) and 0.99555 (zero-duration buffer); allocation ratios
-are effectively 1.0. Sort is therefore 3.52% lower on the observed median and
-close to the guide, not proven zero-cost. All rows and ranges are retained.
-
-The [canonical-instance runtime comparison](../misc/effect-instance-runtime-cost/README.md)
-also passes all four current-implementation-relative gates: minimum throughput
-98.35%, maximum delivery p99 104.38% and maximum allocation 100.051%. This uses
-24 fresh trials and the unchanged live-producer fixture, without instrumentation
-on either default instance. Its reference is compact7 `5d71d676`, not original
-main; it does not close the separate final original-main aggregate gate.
+See [ADR 0002](adr/0002-stream-routing-and-effect-instances.md) for the stream
+ownership contracts, backend-selection rationale, alternatives and retained
+validation/performance evidence.

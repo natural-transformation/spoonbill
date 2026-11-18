@@ -85,4 +85,5 @@ smoke rows and 24 measured rows passed the live-producer boundary checks,
 callback ordering/counts, teardown and empty-stderr checks. The 32 raw JFR files
 remain local; their hashes are preserved in the measured and smoke evidence.
 This closes the scoped canonical-default API cost check against current compact7.
-The final aggregate comparison against original main remains a separate task.
+The [performance validation decision](../../docs/adr/0004-runtime-performance-validation.md)
+records the separate comparison of the full rollout against original main.
