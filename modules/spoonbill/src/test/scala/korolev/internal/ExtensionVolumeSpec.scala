@@ -72,6 +72,19 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
   private def withinLimit(started: Long): Unit =
     (System.nanoTime() - started).nanos should be < limit
 
+  /**
+   * The number of steps that still wait once the lane had time to take them.
+   *
+   * The counter completes inside its own last callback. The call of the idle
+   * extension for that notification can still wait at that moment. So the lane
+   * gets a bounded time to take it. A step that stays queued still fails.
+   */
+  private def leftQueued(runtime: ExtensionRuntime[Future, Int, String]): Int = {
+    val deadline = System.nanoTime() + 10.seconds.toNanos
+    while (runtime.pending != 0 && System.nanoTime() < deadline) Thread.sleep(1)
+    runtime.pending
+  }
+
   private def withPool[A](run: ExecutionContext => A): A = {
     val pool = Executors.newFixedThreadPool(4)
     try run(ExecutionContext.fromExecutorService(pool))
@@ -102,7 +115,7 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
     counter.messages.get() shouldBe total
     counter.disordered.get() shouldBe false
     counter.overlapped.get() shouldBe false
-    runtime.pending shouldBe 0
+    leftQueued(runtime) shouldBe 0
   }
 
   it should "drain a large backlog without overflowing the stack or slowing down" in withPool { pool =>
@@ -128,7 +141,7 @@ class ExtensionVolumeSpec extends AnyFlatSpec with Matchers {
     withinLimit(started)
     counter.disordered.get() shouldBe false
     counter.overlapped.get() shouldBe false
-    runtime.pending shouldBe 0
+    leftQueued(runtime) shouldBe 0
   }
 
   it should "not grow while it records states before delivery starts" in withPool { pool =>

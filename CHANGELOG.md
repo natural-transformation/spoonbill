@@ -13,6 +13,9 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - `Stream.sort` preserves FIFO order up to the per-rack capacity (default 128).
   Overflow fails all racks with `StreamSortOverflowException`. `Stream.buffer`
   drains accepted data before reporting upstream completion or failure.
+- `toSpoonbill` on an fs2 stream passes a failure of that stream on. The
+  consumer gets the values that the stream emitted, then every `pull` fails
+  with the stream's error. Such a `pull` used to stay pending for ever.
 - `AsyncResourcePool.use` returns a managed loan when the callback fails or
   is canceled.
 - Graceful `Queue.stop()` releases blocked producers and drains accepted values.

@@ -1,12 +1,13 @@
 package spoonbill.effect
 
-import java.util.concurrent.{CountDownLatch, Executors, Semaphore, TimeUnit}
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
+import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+import java.util.concurrent.atomic.AtomicReference
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
+import spoonbill.effect.StreamRoutingDispatchProbes.*
 
 /**
  * Notification dispatch has one owner at a time, and that owner releases it
@@ -26,54 +27,6 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       }
     }
     else Effect.future(Effect.FutureInstrumentation(beforeStart = before, afterStart = _ => after()))
-
-  /**
-   * Detects two threads inside dispatch: reads and notifications are its
-   * commands.
-   */
-  private final class Exclusion {
-    private val inside       = new AtomicInteger()
-    @volatile var overlapped = false
-    def apply[B](body: => B): B = {
-      if (inside.incrementAndGet() != 1) overlapped = true
-      try body
-      finally inside.decrementAndGet()
-    }
-
-    /**
-     * Runs `body` as the pull's continuation. One that already runs while it is
-     * attached is on the attaching thread, outside dispatch.
-     */
-    def notified[B, C](pull: Future[B])(body: Try[B] => C): Future[C] = {
-      val attaching = new AtomicBoolean(true)
-      val result = pull.transform { result =>
-        Success(if (attaching.get()) body(result) else apply(body(result)))
-      }(ExecutionContext.parasitic)
-      attaching.set(false)
-      result
-    }
-  }
-
-  /** Holds each read until it is published; counts the reads that entered. */
-  private final class Gated(exclusion: Exclusion = new Exclusion)(using Effect[Future]) extends Stream[Future, Int] {
-    private val pending = new AtomicReference[Promise[Option[Int]]]()
-    val reads           = new Semaphore(0)
-    val entered         = new AtomicInteger()
-    val cancellations   = new AtomicInteger()
-    val canceled        = Promise[Unit]()
-    def pull(): Future[Option[Int]] = exclusion {
-      val next = Promise[Option[Int]]()
-      require(pending.compareAndSet(null, next), "Concurrent upstream reads")
-      entered.incrementAndGet()
-      reads.release()
-      next.future
-    }
-    def cancel(): Future[Unit] = { cancellations.incrementAndGet(); canceled.trySuccess(()); Future.unit }
-    def publish(value: Option[Int]): Unit = {
-      require(reads.tryAcquire(10, TimeUnit.SECONDS), "No upstream read to publish")
-      pending.getAndSet(null).success(value)
-    }
-  }
 
   /** A notification whose continuation holds dispatch on its own thread. */
   private final class Held(pull: Future[Option[Int]]) {
@@ -296,17 +249,19 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
 
     for (kind <- List("sort", "hub", "shared hub", "buffer", "delayed buffer")) {
       s"Concurrent $kind consumers with $reader" should "each receive every value once and in order" in {
+        // A reader fiber may read or continue a pull after its command, outside dispatch: `probed` counts the commands.
+        val exclusion           = new Exclusion
+        val attached            = if (fiber) new Exclusion else exclusion
         val total               = if (kind == "delayed buffer") 3000 else 20000
         val pool                = Executors.newFixedThreadPool(4)
-        given Effect[Future]    = effect(fiber)
+        given Effect[Future]    = if (fiber && kind != "delayed buffer") probed(exclusion) else effect(fiber)
         given ExecutionContext  = ExecutionContext.fromExecutor(pool)
         given Reporter          = Reporter.PrintReporter
         given Scheduler[Future] = Scheduler.schedulerF[Future]
-        val exclusion           = new Exclusion
-        val source              = new Gated(exclusion)
+        val source              = new Gated(attached)
         def blocking[B](stream: Stream[Future, B], probe: Boolean)(add: B => Unit): Future[Unit] = Future {
           var more = true
-          while (more) await(if (probe) exclusion.notified(stream.pull())(_.get) else stream.pull()) match {
+          while (more) await(if (probe) attached.notified(stream.pull())(_.get) else stream.pull()) match {
             case Some(value) => add(value)
             case None        => more = false
           }
@@ -325,7 +280,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
                 case Some(Failure(error))       => done.failure(error); again = false
                 case None =>
                   again = false
-                  exclusion.notified(pull) {
+                  attached.notified(pull) {
                     case Success(Some(value)) => add(value); step()
                     case Success(None)        => done.success(())
                     case Failure(error)       => done.failure(error)
@@ -366,7 +321,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
               Vector(blocking(source.buffer(Duration.Zero, 8), probe = true)(_.foreach(sinks(0).add)))
             case _ =>
               // Timers reserve each batch's suffix while reads and pulls go on.
-              // Their batches are settled by the buffer, outside dispatch.
+              // Their batches are settled by the buffer, outside dispatch, through the same promise.
               Vector(blocking(source.buffer(1.millisecond, 8), probe = false)(_.foreach(sinks(0).add)))
           }
           val publisher = Future {
@@ -383,9 +338,60 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
               sinks.flatMap(_.values).sorted shouldBe (0 until total).toVector
             case _ => sinks.foreach(_.values shouldBe (0 until total).toVector)
           }
-          exclusion.overlapped shouldBe false
+          // A delayed buffer settles its batches outside dispatch, so no probe counts its notifications.
+          // With a reader fiber nothing enters `exclusion` at all. With the callback pump only the reads do,
+          // and the source refuses concurrent reads by itself.
+          if (fiber && kind == "delayed buffer") exclusion.used shouldBe false
+          else {
+            exclusion.used shouldBe true
+            exclusion.overlapped shouldBe false
+          }
         } finally pool.shutdownNow()
       }
     }
+  }
+
+  // What a probe of the reads reports as an overlap, step by step. `attached` is such a probe.
+  "A reader fiber's read" should "run outside dispatch after its own thread took its turn" in {
+    val exclusion        = new Exclusion
+    val attached         = new Exclusion
+    given Effect[Future] = probed(exclusion)
+    val reading          = new CountDownLatch(1)
+    val proceed          = new CountDownLatch(1)
+    // Holds the second read while it enters upstream.
+    val source = new Gated(
+      attached,
+      read =>
+        if (read == 2) {
+          reading.countDown()
+          require(proceed.await(10, TimeUnit.SECONDS), "The held read was not released")
+        }
+    )
+    val hub     = Hub(source, 4)
+    val first   = hub.newStreamUnsafe()
+    val settled = attached.notified(first.pull())(_.get)
+    // A second pull of the same subscriber leaves demand behind the first value.
+    val later = first.pull()
+    // The new thread settles the first pull, takes the reader's turn itself and
+    // releases dispatch. Only then does the reader read upstream, and is held.
+    val reader = onThread(source.publish(Some(0)))
+    reading.await(10, TimeUnit.SECONDS) shouldBe true
+    await(settled) shouldBe Some(0)
+    // Dispatch is free while that read is still entering upstream: this
+    // thread owns it for the subscriber that it detaches.
+    val second  = hub.newStreamUnsafe()
+    val waiting = attached.notified(second.pull())(_.get)
+    waiting.isCompleted shouldBe false
+    await(second.cancel())
+    withClue("The read is a command now: the notification waited for it.")(waiting.isCompleted shouldBe true)
+    await(waiting) shouldBe None
+    proceed.countDown()
+    reader.join(10000)
+    source.publish(Some(1))
+    await(later) shouldBe Some(1)
+    // The read met a notification, and no command met another: only the commands may decide.
+    attached.overlapped shouldBe true
+    exclusion.used shouldBe true
+    exclusion.overlapped shouldBe false
   }
 }
