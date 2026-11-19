@@ -15,6 +15,9 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   drains accepted data before reporting upstream completion or failure.
 - `AsyncResourcePool.use` returns a managed loan when the callback fails or
   is canceled.
+- `toSpoonbill` on a ZIO stream passes a failure of that stream on, with
+  ZIO 1 and with ZIO 2. The `pull` that meets the failure and every later one
+  fail with the stream's error. Such a `pull` used to report a normal end.
 - Graceful `Queue.stop()` releases blocked producers and drains accepted values.
   A late fanout subscriber in Akka or Pekko receives `onSubscribe` followed by
   `onError` when registration is refused.
