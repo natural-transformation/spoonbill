@@ -80,7 +80,10 @@ interpreter under its monitor; derived counts change with those queues. The
 immutable routing model is also the differential oracle.
 
 Dispatch ownership is one atomic value of the pure `Dispatch` machine. One owner
-runs notifications and read commands outside the monitor. A command arriving
+runs notifications and read commands outside the monitor. With the persistent
+reader a read command only gives the reader its turn. The upstream read follows
+as the reader's continuation. It may run after the owner has released dispatch;
+read ownership in `Control` keeps reads one at a time. A command arriving
 during the owner's release changes the same cell, so it is neither stranded nor
 executed twice. FIFO dispatch preserves already-reserved work; cross-lane callback
 traversal order is not a public guarantee. Reentrant ready Futures use an iterative
