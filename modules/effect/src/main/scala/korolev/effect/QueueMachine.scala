@@ -23,6 +23,23 @@ private[effect] object QueueMachine {
   def isClosed(state: State): Boolean = state.admission == Admission.Closed
   def mayOffer(state: State): Boolean = state.admission == Admission.Open
 
+  /**
+   * A producer whose value did not fit may wait for room only while a pull can
+   * still make room. A failed queue answers every pull with its error and takes
+   * no value, so that wait would have no end. Failure releases waiting
+   * producers as stop and close do; admission itself stays as it is.
+   */
+  def mayAwaitCapacity(state: State): Boolean = mayOffer(state) && state.error.isEmpty
+
+  /**
+   * A producer that had to wait puts its value in the buffer only by the rule
+   * that let it wait. A drain can make room between a failure and the
+   * producer's next attempt, and a released producer must not use that room.
+   * The two rules have to agree: a producer that may wait but not commit would
+   * be woken by free room again and again.
+   */
+  def mayCommitAfterWait(state: State): Boolean = mayAwaitCapacity(state)
+
   def pull(state: State, buffered: Boolean): Pull = state.error match {
     case Some(error)              => Pull.Failed(error)
     case None if isClosed(state)  => Pull.End
