@@ -73,6 +73,28 @@ class QueueSpec extends AsyncFreeSpec with AsyncTimeLimitedTests {
     } yield assert((pulled eq failure) && buffered == Seq(1))
   }
 
+  "A failed queue takes nothing from a producer that waited, also when a drain makes room" in {
+    val queue   = Queue[Future, Int](1)
+    val failure = new IllegalStateException("Synthetic pull failure")
+    val first   = queue.enqueue(1)
+    val waiting = queue.enqueue(2)
+    assert(first.isCompleted && !waiting.isCompleted)
+    // A second capacity waiter. It registers later, so `fail` calls it first.
+    // It drains the buffer before the waiting producer runs again.
+    val drained = Effect[Future].flatMap(queue.canOffer)(_ => queue.dequeueAll())
+    assert(!drained.isCompleted)
+
+    val failed = queue.fail(failure)
+    assert(waiting.isCompleted && drained.isCompleted)
+    for {
+      _      <- failed
+      _      <- waiting
+      taken  <- drained
+      left   <- queue.dequeueAll()
+      pulled <- queue.stream.pull().failed
+    } yield assert(taken == Seq(1) && left.isEmpty && (pulled eq failure))
+  }
+
   ".canOffer" - {
 
     "passes the free-capacity hint onward after direct handoff" in {

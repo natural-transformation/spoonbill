@@ -31,6 +31,15 @@ private[effect] object QueueMachine {
    */
   def mayAwaitCapacity(state: State): Boolean = mayOffer(state) && state.error.isEmpty
 
+  /**
+   * A producer that had to wait puts its value in the buffer only by the rule
+   * that let it wait. A drain can make room between a failure and the
+   * producer's next attempt, and a released producer must not use that room.
+   * The two rules have to agree: a producer that may wait but not commit would
+   * be woken by free room again and again.
+   */
+  def mayCommitAfterWait(state: State): Boolean = mayAwaitCapacity(state)
+
   def pull(state: State, buffered: Boolean): Pull = state.error match {
     case Some(error)              => Pull.Failed(error)
     case None if isClosed(state)  => Pull.End

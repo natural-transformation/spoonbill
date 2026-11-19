@@ -91,4 +91,23 @@ class QueueMachineSpec extends AnyFlatSpec with Matchers {
       event <- events
     } mayAwaitCapacity(event(state)) shouldBe false
   }
+
+  "A producer that had to wait" should "commit by the rule that let it wait, in every state" in {
+    states.foreach { state =>
+      // Never laxer: a released producer must not use room that a drain made.
+      if (mayCommitAfterWait(state)) mayAwaitCapacity(state) shouldBe true
+      // Never stricter: a producer that may wait but not commit would be woken
+      // by free room again and again.
+      if (mayAwaitCapacity(state)) mayCommitAfterWait(state) shouldBe true
+    }
+  }
+
+  it should "stop committing at a failure, while a new offer is admitted as before" in {
+    mayCommitAfterWait(initial) shouldBe true
+    states.foreach { before =>
+      val after = QueueMachine.fail(before, failure)
+      mayCommitAfterWait(after) shouldBe false
+      mayOffer(after) shouldBe mayOffer(before)
+    }
+  }
 }
