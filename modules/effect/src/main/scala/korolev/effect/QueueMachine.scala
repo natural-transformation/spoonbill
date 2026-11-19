@@ -23,6 +23,14 @@ private[effect] object QueueMachine {
   def isClosed(state: State): Boolean = state.admission == Admission.Closed
   def mayOffer(state: State): Boolean = state.admission == Admission.Open
 
+  /**
+   * A producer whose value did not fit may wait for room only while a pull can
+   * still make room. A failed queue answers every pull with its error and takes
+   * no value, so that wait would have no end. Failure releases waiting
+   * producers as stop and close do; admission itself stays as it is.
+   */
+  def mayAwaitCapacity(state: State): Boolean = mayOffer(state) && state.error.isEmpty
+
   def pull(state: State, buffered: Boolean): Pull = state.error match {
     case Some(error)              => Pull.Failed(error)
     case None if isClosed(state)  => Pull.End

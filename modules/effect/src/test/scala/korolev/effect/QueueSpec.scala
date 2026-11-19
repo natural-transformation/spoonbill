@@ -52,6 +52,27 @@ class QueueSpec extends AsyncFreeSpec with AsyncTimeLimitedTests {
     }
   }
 
+  "A failed queue releases a waiting producer" in {
+    val queue   = Queue[Future, Int](1)
+    val failure = new IllegalStateException("Synthetic pull failure")
+    val first   = queue.enqueue(1)
+    val waiting = queue.enqueue(2)
+    assert(first.isCompleted && !waiting.isCompleted)
+
+    val failed = queue.fail(failure)
+    // Check before awaiting: a regression fails here at once instead of
+    // holding the asynchronous suite until its time limit.
+    assert(waiting.isCompleted)
+    // The producer completes normally, as it does after stop or close. Its
+    // value was not accepted: the buffer holds only the first one.
+    for {
+      _        <- failed
+      _        <- waiting
+      pulled   <- queue.stream.pull().failed
+      buffered <- queue.dequeueAll()
+    } yield assert((pulled eq failure) && buffered == Seq(1))
+  }
+
   ".canOffer" - {
 
     "passes the free-capacity hint onward after direct handoff" in {

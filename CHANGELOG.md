@@ -18,6 +18,11 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - Graceful `Queue.stop()` releases blocked producers and drains accepted values.
   A late fanout subscriber in Akka or Pekko receives `onSubscribe` followed by
   `onError` when registration is refused.
+- `Queue.fail` releases the producers that wait in `enqueue` on a full queue.
+  Each waiting `enqueue` completes normally and its value is not accepted, as
+  after `stop` or `close`. It used to wait until the queue was stopped, closed
+  or drained with `dequeueAll`, and for ever without one of these. `offer` and
+  `canOffer` behave as before.
 - Idle pool cleanup retains failed close attempts for retry. Canceling the
   cleanup caller leaves any close already in progress owned by the pool.
 

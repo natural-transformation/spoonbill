@@ -82,6 +82,22 @@ object Zio2QueueSpec extends ZIOSpecDefault {
         _     <- f.join
       } yield assert(l.toSet)(equalTo(values.toSet))
     },
+    test("back pressured offers are released when the queue fails") {
+      val failure = new IllegalStateException("pull failure")
+      for {
+        _    <- ZIO.unit
+        queue = Queue[Task, Int](2)
+        _    <- queue.offer(1) *> queue.offer(2)
+        f    <- ZIO.forkAll(List(3, 4, 5).map(queue.enqueue))
+        _    <- waitForSize(queue, 5)
+        _    <- queue.fail(failure)
+        _    <- f.join
+        // A producer that arrives after the failure does not wait either.
+        _      <- queue.enqueue(6)
+        pulled <- queue.stream.pull().either
+        left   <- queue.dequeueAll()
+      } yield assert(pulled)(isLeft(equalTo(failure))) && assert(left.toList)(equalTo(List(1, 2)))
+    } @@ timeout(10.seconds),
     // these tests do not work because pulling and offerring are uninterruptable
     // test("take interruption") {
     //   for {
