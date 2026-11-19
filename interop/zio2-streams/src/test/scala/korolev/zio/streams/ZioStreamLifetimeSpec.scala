@@ -260,6 +260,65 @@ class ZioStreamLifetimeSpec extends AnyFlatSpec with Matchers {
     most.get() shouldBe 1
   }
 
+  /** Owns a resource whose release dies, and gives the values of `inner`. */
+  private def dying[A](defect: Throwable)(inner: ZStream[Any, Throwable, A]): ZStream[Any, Throwable, A] =
+    ZStream.acquireReleaseWith(ZIO.unit)(_ => ZIO.die(defect)).flatMap(_ => inner)
+
+  "A finalizer that dies" should "be told to every canceller" in {
+    val defect = new RuntimeException("release failed")
+    val exits = run(dying(defect)(ZStream.repeatZIO(ZIO.succeed(1))).toSpoonbill.flatMap { stream =>
+      for {
+        _     <- stream.pull()
+        both  <- stream.cancel().exit.zipPar(stream.cancel().exit)
+        later <- stream.cancel().exit
+      } yield List(both._1, both._2, later)
+    })
+    exits.map(_.causeOption.flatMap(_.dieOption)) shouldBe List(Some(defect), Some(defect), Some(defect))
+  }
+
+  it should "be told to the pull that meets the end, and to a later pull" in {
+    val defect = new RuntimeException("release failed")
+    val (first, atEnd, later) = run(dying(defect)(ZStream(1)).toSpoonbill.flatMap { stream =>
+      for {
+        first <- stream.pull()
+        atEnd <- stream.pull().exit
+        later <- stream.pull().exit
+      } yield (first, atEnd, later)
+    })
+    first shouldBe Some(Chunk(1))
+    List(atEnd, later).map(_.causeOption.flatMap(_.dieOption)) shouldBe List(Some(defect), Some(defect))
+  }
+
+  it should "leave the failure of the stream in place, for that pull and for a later one" in {
+    val defect = new RuntimeException("release failed")
+    val exits = run(dying(defect)(ZStream(1) ++ ZStream.fail(error)).toSpoonbill.flatMap { stream =>
+      for {
+        _      <- stream.pull()
+        failed <- stream.pull().exit
+        later  <- stream.pull().exit
+      } yield List(failed, later)
+    })
+    exits.map(_.causeOption.toList.flatMap(_.failures)) shouldBe List(List(error), List(error))
+    exits.map(_.causeOption.toList.flatMap(_.defects)) shouldBe List(List(defect), List(defect))
+  }
+
+  it should "be told to the canceller when it is in the pull that was interrupted" in {
+    val defect = new RuntimeException("interruption failed")
+    val (cancelled, pulled) = run(for {
+      queue     <- Queue.unbounded[Int]
+      started   <- Queue.unbounded[Unit]
+      take       = (started.offer(()) *> queue.take).onInterrupt(ZIO.die(defect))
+      stream    <- (ZStream.repeatZIO(take): ZStream[Any, Throwable, Int]).toSpoonbill
+      waiting   <- stream.pull().exit.fork
+      _         <- started.take
+      cancelled <- stream.cancel().exit
+      pulled    <- waiting.join
+    } yield (cancelled, pulled))
+    cancelled.causeOption.flatMap(_.dieOption) shouldBe Some(defect)
+    // The pull that `cancel` interrupted answers as every pull of that stream does now.
+    pulled.causeOption.flatMap(_.dieOption) shouldBe Some(defect)
+  }
+
   "A pull" should "run with the consumer's fiber context and bring its changes back" in {
     val seen = run(ZIO.scoped(for {
       local  <- FiberRef.make("made")
