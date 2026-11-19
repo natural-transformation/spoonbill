@@ -1,12 +1,13 @@
 package spoonbill.effect
 
-import java.util.concurrent.{CountDownLatch, Executors, Semaphore, TimeUnit}
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
+import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+import java.util.concurrent.atomic.AtomicReference
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
+import spoonbill.effect.StreamRoutingDispatchProbes.*
 
 /**
  * Notification dispatch has one owner at a time, and that owner releases it
@@ -26,60 +27,6 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
       }
     }
     else Effect.future(Effect.FutureInstrumentation(beforeStart = before, afterStart = _ => after()))
-
-  // A reader fiber's commands call back, to settle a pull or to give the reader its turn: each call enters the probe.
-  private def probed(inside: Exclusion): Effect[Future] = new ReaderFiberFutureEffect {
-    override def promise[A](register: (Either[Throwable, A] => Unit) => Unit): Future[A] =
-      super.promise[A](callback => register(result => inside(callback(result))))
-  }
-
-  /**
-   * Detects two threads inside dispatch. The callback pump's commands read
-   * upstream and complete pulls. A reader fiber's commands only call back.
-   */
-  private final class Exclusion {
-    private val inside       = new AtomicInteger()
-    @volatile var overlapped = false
-    def apply[B](body: => B): B = {
-      if (inside.incrementAndGet() != 1) overlapped = true
-      try body
-      finally inside.decrementAndGet()
-    }
-
-    /**
-     * Runs `body` as the pull's continuation. One that already runs while it is
-     * attached is on the attaching thread, outside dispatch.
-     */
-    def notified[B, C](pull: Future[B])(body: Try[B] => C): Future[C] = {
-      val attaching = new AtomicBoolean(true)
-      val result = pull.transform { result =>
-        Success(if (attaching.get()) body(result) else apply(body(result)))
-      }(ExecutionContext.parasitic)
-      attaching.set(false)
-      result
-    }
-  }
-
-  /** Holds each read until it is published; counts the reads that entered. */
-  private final class Gated(exclusion: Exclusion = new Exclusion)(using Effect[Future]) extends Stream[Future, Int] {
-    private val pending = new AtomicReference[Promise[Option[Int]]]()
-    val reads           = new Semaphore(0)
-    val entered         = new AtomicInteger()
-    val cancellations   = new AtomicInteger()
-    val canceled        = Promise[Unit]()
-    def pull(): Future[Option[Int]] = exclusion {
-      val next = Promise[Option[Int]]()
-      require(pending.compareAndSet(null, next), "Concurrent upstream reads")
-      entered.incrementAndGet()
-      reads.release()
-      next.future
-    }
-    def cancel(): Future[Unit] = { cancellations.incrementAndGet(); canceled.trySuccess(()); Future.unit }
-    def publish(value: Option[Int]): Unit = {
-      require(reads.tryAcquire(10, TimeUnit.SECONDS), "No upstream read to publish")
-      pending.getAndSet(null).success(value)
-    }
-  }
 
   /** A notification whose continuation holds dispatch on its own thread. */
   private final class Held(pull: Future[Option[Int]]) {
@@ -391,9 +338,59 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
               sinks.flatMap(_.values).sorted shouldBe (0 until total).toVector
             case _ => sinks.foreach(_.values shouldBe (0 until total).toVector)
           }
-          exclusion.overlapped shouldBe false
+          // A reader fiber's delayed buffer has no probe of dispatch, so nothing enters `exclusion` there.
+          // The source still refuses concurrent upstream reads.
+          if (fiber && kind == "delayed buffer") exclusion.entered shouldBe false
+          else {
+            exclusion.entered shouldBe true
+            exclusion.overlapped shouldBe false
+          }
         } finally pool.shutdownNow()
       }
     }
+  }
+
+  // What a probe of the reads reports as an overlap, step by step. `attached` is such a probe.
+  "A reader fiber's read" should "run outside dispatch after its own thread took its turn" in {
+    val exclusion        = new Exclusion
+    val attached         = new Exclusion
+    given Effect[Future] = probed(exclusion)
+    val reading          = new CountDownLatch(1)
+    val proceed          = new CountDownLatch(1)
+    // Holds the second read while it enters upstream.
+    val source = new Gated(
+      attached,
+      read =>
+        if (read == 2) {
+          reading.countDown()
+          require(proceed.await(10, TimeUnit.SECONDS), "The held read was not released")
+        }
+    )
+    val hub     = Hub(source, 4)
+    val first   = hub.newStreamUnsafe()
+    val settled = attached.notified(first.pull())(_.get)
+    // A second pull of the same subscriber leaves demand behind the first value.
+    val later = first.pull()
+    // This thread settles the first pull, takes the reader's turn itself and
+    // releases dispatch. Only then does the reader read upstream, and is held.
+    val reader = onThread(source.publish(Some(0)))
+    reading.await(10, TimeUnit.SECONDS) shouldBe true
+    await(settled) shouldBe Some(0)
+    // Dispatch is free while that read is still entering upstream: this
+    // thread owns it for the subscriber that it detaches.
+    val second  = hub.newStreamUnsafe()
+    val waiting = attached.notified(second.pull())(_.get)
+    waiting.isCompleted shouldBe false
+    await(second.cancel())
+    waiting.isCompleted shouldBe true
+    await(waiting) shouldBe None
+    proceed.countDown()
+    reader.join(10000)
+    source.publish(Some(1))
+    await(later) shouldBe Some(1)
+    // The read met a notification, and no command met another: only the commands may decide.
+    attached.overlapped shouldBe true
+    exclusion.entered shouldBe true
+    exclusion.overlapped shouldBe false
   }
 }
