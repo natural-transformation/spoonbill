@@ -27,9 +27,15 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
     }
     else Effect.future(Effect.FutureInstrumentation(beforeStart = before, afterStart = _ => after()))
 
+  // A reader fiber's commands call back, to settle a pull or to give the reader its turn: each call enters the probe.
+  private def probed(inside: Exclusion): Effect[Future] = new ReaderFiberFutureEffect {
+    override def promise[A](register: (Either[Throwable, A] => Unit) => Unit): Future[A] =
+      super.promise[A](callback => register(result => inside(callback(result))))
+  }
+
   /**
-   * Detects two threads inside dispatch: reads and notifications are its
-   * commands.
+   * Detects two threads inside dispatch. The callback pump's commands read
+   * upstream and complete pulls. A reader fiber's commands only call back.
    */
   private final class Exclusion {
     private val inside       = new AtomicInteger()
@@ -296,17 +302,19 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
 
     for (kind <- List("sort", "hub", "shared hub", "buffer", "delayed buffer")) {
       s"Concurrent $kind consumers with $reader" should "each receive every value once and in order" in {
+        // A reader fiber may read or continue a pull after its command, outside dispatch: `probed` counts the commands.
+        val exclusion           = new Exclusion
+        val attached            = if (fiber) new Exclusion else exclusion
         val total               = if (kind == "delayed buffer") 3000 else 20000
         val pool                = Executors.newFixedThreadPool(4)
-        given Effect[Future]    = effect(fiber)
+        given Effect[Future]    = if (fiber && kind != "delayed buffer") probed(exclusion) else effect(fiber)
         given ExecutionContext  = ExecutionContext.fromExecutor(pool)
         given Reporter          = Reporter.PrintReporter
         given Scheduler[Future] = Scheduler.schedulerF[Future]
-        val exclusion           = new Exclusion
-        val source              = new Gated(exclusion)
+        val source              = new Gated(attached)
         def blocking[B](stream: Stream[Future, B], probe: Boolean)(add: B => Unit): Future[Unit] = Future {
           var more = true
-          while (more) await(if (probe) exclusion.notified(stream.pull())(_.get) else stream.pull()) match {
+          while (more) await(if (probe) attached.notified(stream.pull())(_.get) else stream.pull()) match {
             case Some(value) => add(value)
             case None        => more = false
           }
@@ -325,7 +333,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
                 case Some(Failure(error))       => done.failure(error); again = false
                 case None =>
                   again = false
-                  exclusion.notified(pull) {
+                  attached.notified(pull) {
                     case Success(Some(value)) => add(value); step()
                     case Success(None)        => done.success(())
                     case Failure(error)       => done.failure(error)
@@ -366,7 +374,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
               Vector(blocking(source.buffer(Duration.Zero, 8), probe = true)(_.foreach(sinks(0).add)))
             case _ =>
               // Timers reserve each batch's suffix while reads and pulls go on.
-              // Their batches are settled by the buffer, outside dispatch.
+              // Their batches are settled by the buffer, outside dispatch, through the same promise.
               Vector(blocking(source.buffer(1.millisecond, 8), probe = false)(_.foreach(sinks(0).add)))
           }
           val publisher = Future {
