@@ -338,11 +338,12 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
               sinks.flatMap(_.values).sorted shouldBe (0 until total).toVector
             case _ => sinks.foreach(_.values shouldBe (0 until total).toVector)
           }
-          // A reader fiber's delayed buffer has no probe of dispatch, so nothing enters `exclusion` there.
-          // The source still refuses concurrent upstream reads.
-          if (fiber && kind == "delayed buffer") exclusion.entered shouldBe false
+          // A delayed buffer settles its batches outside dispatch, so no probe counts its notifications.
+          // With a reader fiber nothing enters `exclusion` at all. With the callback pump only the reads do,
+          // and the source refuses concurrent reads by itself.
+          if (fiber && kind == "delayed buffer") exclusion.used shouldBe false
           else {
-            exclusion.entered shouldBe true
+            exclusion.used shouldBe true
             exclusion.overlapped shouldBe false
           }
         } finally pool.shutdownNow()
@@ -371,7 +372,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
     val settled = attached.notified(first.pull())(_.get)
     // A second pull of the same subscriber leaves demand behind the first value.
     val later = first.pull()
-    // This thread settles the first pull, takes the reader's turn itself and
+    // The new thread settles the first pull, takes the reader's turn itself and
     // releases dispatch. Only then does the reader read upstream, and is held.
     val reader = onThread(source.publish(Some(0)))
     reading.await(10, TimeUnit.SECONDS) shouldBe true
@@ -382,7 +383,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
     val waiting = attached.notified(second.pull())(_.get)
     waiting.isCompleted shouldBe false
     await(second.cancel())
-    waiting.isCompleted shouldBe true
+    withClue("The read is a command now: the notification waited for it.")(waiting.isCompleted shouldBe true)
     await(waiting) shouldBe None
     proceed.countDown()
     reader.join(10000)
@@ -390,7 +391,7 @@ class StreamRoutingDispatchSpec extends AnyFlatSpec with Matchers {
     await(later) shouldBe Some(1)
     // The read met a notification, and no command met another: only the commands may decide.
     attached.overlapped shouldBe true
-    exclusion.entered shouldBe true
+    exclusion.used shouldBe true
     exclusion.overlapped shouldBe false
   }
 }

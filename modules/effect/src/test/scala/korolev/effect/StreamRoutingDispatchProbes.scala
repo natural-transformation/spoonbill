@@ -17,15 +17,15 @@ private[effect] object StreamRoutingDispatchProbes {
   /**
    * Detects two threads inside dispatch. The callback pump's commands read
    * upstream and complete pulls. A reader fiber's commands only call back.
-   * `entered` tells whether the probe was used at all: one that nothing enters
-   * checks nothing.
+   * `used` tells whether anything entered the probe at all: one that nothing
+   * enters checks nothing.
    */
   final class Exclusion {
     private val inside       = new AtomicInteger()
     @volatile var overlapped = false
-    @volatile var entered    = false
+    @volatile var used       = false
     def apply[B](body: => B): B = {
-      if (!entered) entered = true
+      if (!used) used = true
       if (inside.incrementAndGet() != 1) overlapped = true
       try body
       finally inside.decrementAndGet()
