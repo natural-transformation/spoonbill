@@ -84,7 +84,8 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   }
 
   /**
-   * Strict version of [[offer]]. Still thread safe.
+   * Strict version of [[offer]]. Still thread safe. A producer that had to wait
+   * uses `offerAfterWait` instead; keep the two in step.
    */
   def offerUnsafe(item: T): Boolean = {
     @tailrec
@@ -117,6 +118,42 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
         } else {
           false
         }
+      } else {
+        false
+      }
+    }
+    aux()
+  }
+
+  /**
+   * The attempt of a producer that had to wait. It does what [[offerUnsafe]]
+   * does, by the rule that let the producer wait. The rule is judged on the
+   * snapshot that takes the item, so no stop, close or failure can slip between
+   * the rule and the commit.
+   *
+   * It has a loop of its own: [[offerUnsafe]] is a measured hot path and keeps
+   * its code. Keep the two in step.
+   */
+  private def offerAfterWait(item: T): Boolean = {
+    @tailrec
+    def aux(): Boolean = {
+      val ref = state.get()
+      if (!QueueMachine.mayCommitAfterWait(ref.lifecycle)) {
+        false
+      } else if (ref.pullCallbacks.nonEmpty) {
+        // Direct handoff, with the capacity hint for one more waiter.
+        val canOfferCallback = ref.canOfferCallbacks.headOption
+        val newValue         = ref.copy(pullCallbacks = Nil, canOfferCallbacks = ref.canOfferCallbacks.drop(1))
+        if (state.compareAndSet(ref, newValue)) {
+          val token = Right(Some(item))
+          ref.pullCallbacks.foreach(cb => cb(token))
+          canOfferCallback.foreach(cb => cb(unitToken))
+          true
+        } else {
+          aux()
+        }
+      } else if (ref.queue.size < maxSize) {
+        if (state.compareAndSet(ref, ref.copy(queue = ref.queue.enqueue(item)))) true else aux()
       } else {
         false
       }
@@ -184,11 +221,18 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
    *   {{{ def aux(): F[Unit] = queue.offer(o).flatMap { case false =>
    *   queue.canOffer *> aux() case true => Effect[F].unit } aux() }}}
    */
-  def canOffer: F[Unit] = Effect[F].promise { cb =>
+  def canOffer: F[Unit] = awaitCapacity(QueueMachine.mayOffer)
+
+  /**
+   * Completes when a producer should look again: there is room, or `mayWait`
+   * says that waiting cannot help any more. The check and the registration use
+   * one snapshot, so no stop, close or failure can slip between them.
+   */
+  private def awaitCapacity(mayWait: QueueMachine.State => Boolean): F[Unit] = Effect[F].promise { cb =>
     @tailrec
     def aux(): Unit = {
       val ref = state.get
-      if (!QueueMachine.mayOffer(ref.lifecycle) || ref.queue.size < maxSize) {
+      if (!mayWait(ref.lifecycle) || ref.queue.size < maxSize) {
         cb(unitToken)
       } else {
         val newValue = ref.copy(canOfferCallbacks = cb :: ref.canOfferCallbacks)
@@ -200,6 +244,9 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     aux()
   }
 
+  /**
+   * Strict version of [[fail]]. Still thread safe.
+   */
   def failUnsafe(e: Throwable): Unit = {
     @tailrec
     def aux(): Unit = {
@@ -226,17 +273,22 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
 
   /**
    * Enqueue item. If [[maxSize]] reached waits until queue will decrease.
+   *
+   * The first attempt is an [[offer]]. An item that it could not place waits
+   * for room, and is accepted later only while the queue is neither stopped,
+   * closed nor failed. When one of these happens, the wait ends and the item is
+   * not accepted, also if a drain makes room afterwards. The effect completes
+   * normally in every case.
    */
   def enqueue(item: T): F[Unit] = {
-    def aux(): F[Unit] = {
-      val ref = state.get
-      offer(item).flatMap {
-        case true                                           => Effect[F].unit
-        case false if !QueueMachine.mayOffer(ref.lifecycle) => Effect[F].unit
-        case false                                          => canOffer *> aux()
-      }
-    }
-    aux()
+    def settle(accepted: Boolean): F[Unit] =
+      if (accepted) Effect[F].unit
+      // Judge the state after the attempt ran. A lazy effect builds this loop
+      // long before it runs, so a snapshot taken earlier can be out of date.
+      else if (!QueueMachine.mayAwaitCapacity(state.get.lifecycle)) Effect[F].unit
+      else awaitCapacity(QueueMachine.mayAwaitCapacity) *> retry()
+    def retry(): F[Unit] = Effect[F].delay(offerAfterWait(item)).flatMap(settle)
+    offer(item).flatMap(settle)
   }
 
   /**
@@ -252,6 +304,14 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
   def close(): F[Unit] =
     Effect[F].delay(unsafeClose())
 
+  /**
+   * Fails every pull with `e`, now and later, until another `fail` replaces the
+   * error. An [[enqueue]] that had to wait and has not placed its item yet is
+   * released: its item is not accepted, also when a drain makes room
+   * afterwards. Admission stays open until [[stop]] or [[close]]: [[offer]] and
+   * a new [[enqueue]] still take items while there is room, and only
+   * [[dequeueAll]] can read them.
+   */
   def fail(e: Throwable): F[Unit] =
     Effect[F].delay(failUnsafe(e))
 

@@ -45,4 +45,69 @@ class QueueMachineSpec extends AnyFlatSpec with Matchers {
     cancellationReplays(canceled) shouldBe true
     stop(canceled, buffered = false)._1 shouldBe canceled
   }
+
+  private val failure = new IllegalStateException("read failure")
+  private val states = for {
+    admission    <- Admission.values.toVector
+    error        <- Vector(None, Some(failure))
+    cancellation <- CompletionLatchMachine.State.values.toVector
+  } yield State(admission, error, cancellation)
+
+  // Every lifecycle event, with both buffer answers for stop.
+  private val events: Vector[State => State] = Vector(
+    stop(_, buffered = false)._1,
+    stop(_, buffered = true)._1,
+    close(_),
+    QueueMachine.fail(_, failure),
+    QueueMachine.cancel(_)._1
+  )
+
+  "Queue producer waiting" should "last only while admission is open and no pull has failed" in {
+    states.foreach { state =>
+      mayAwaitCapacity(state) shouldBe (state.admission == Admission.Open && state.error.isEmpty)
+      // Waiting is the narrower permission: it never outlives admission.
+      if (mayAwaitCapacity(state)) mayOffer(state) shouldBe true
+    }
+  }
+
+  it should "end at failure while admission and the other lifecycle facts stay as they are" in {
+    states.foreach { before =>
+      val after = QueueMachine.fail(before, failure)
+      mayAwaitCapacity(after) shouldBe false
+      mayOffer(after) shouldBe mayOffer(before)
+      isClosed(after) shouldBe isClosed(before)
+      after.cancellation shouldBe before.cancellation
+      pull(after, buffered = true) shouldBe Pull.Failed(failure)
+      pull(after, buffered = false) shouldBe Pull.Failed(failure)
+    }
+  }
+
+  it should "end at stop, close and cancel, and never return after any event" in {
+    mayAwaitCapacity(initial) shouldBe true
+    events.foreach(event => mayAwaitCapacity(event(initial)) shouldBe false)
+    // A released producer stays released: no event reopens admission or clears the error.
+    for {
+      state <- states if !mayAwaitCapacity(state)
+      event <- events
+    } mayAwaitCapacity(event(state)) shouldBe false
+  }
+
+  "A producer that had to wait" should "commit by the rule that let it wait, in every state" in {
+    states.foreach { state =>
+      // Never laxer: a released producer must not use room that a drain made.
+      if (mayCommitAfterWait(state)) mayAwaitCapacity(state) shouldBe true
+      // Never stricter: a producer that may wait but not commit would be woken
+      // by free room again and again.
+      if (mayAwaitCapacity(state)) mayCommitAfterWait(state) shouldBe true
+    }
+  }
+
+  it should "stop committing at a failure, while a new offer is admitted as before" in {
+    mayCommitAfterWait(initial) shouldBe true
+    states.foreach { before =>
+      val after = QueueMachine.fail(before, failure)
+      mayCommitAfterWait(after) shouldBe false
+      mayOffer(after) shouldBe mayOffer(before)
+    }
+  }
 }
