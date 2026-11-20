@@ -21,12 +21,15 @@ class ZioStreamLifetimeSpec extends AnyFlatSpec with Matchers {
   private val error                                  = new IllegalStateException("source failed")
 
   // A step that is never answered fails the test through this bound.
-  private def run[A](io: Task[A]): A =
+  private def run[A](io: Task[A], bound: Duration = 5.seconds): A =
     Unsafe.unsafe { implicit unsafe =>
       runtime.unsafe
-        .run(io.timeoutFail(new RuntimeException("No answer in 5 seconds"))(5.seconds))
+        .run(io.timeoutFail(new RuntimeException(s"No answer in ${bound.toSeconds} seconds"))(bound))
         .getOrThrowFiberFailure()
     }
+
+  // A case of many rounds takes longer than one step may, when the machine is busy.
+  private def runMany[A](io: Task[A]): A = run(io, 60.seconds)
 
   /** What the source did, in order. */
   private final class Events {
@@ -177,7 +180,7 @@ class ZioStreamLifetimeSpec extends AnyFlatSpec with Matchers {
 
   it should "close once and start no take afterwards when it races a pull at any moment" in {
     val rounds = 500
-    val outcomes = run(ZIO.foreach((1 to rounds).toList) { round =>
+    val outcomes = runMany(ZIO.foreach((1 to rounds).toList) { round =>
       val closes = new AtomicInteger()
       val taken  = new AtomicInteger()
       for {

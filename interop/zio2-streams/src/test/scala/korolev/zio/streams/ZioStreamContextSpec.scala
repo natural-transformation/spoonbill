@@ -48,6 +48,30 @@ class ZioStreamContextSpec extends AnyFlatSpec with Matchers {
     run(scenario(bridged = true)) shouldBe direct
   }
 
+  it should "outlive `cancel` and end with the consumer's fiber, unless it is forked in the scope of the stream" in {
+    def scenario(inScope: Boolean): Task[(Boolean, Boolean)] = for {
+      started <- Promise.make[Nothing, Unit]
+      stopped <- Promise.make[Nothing, Unit]
+      gate    <- Promise.make[Nothing, Unit]
+      work     = (started.succeed(()) *> ZIO.never).onInterrupt(stopped.succeed(()))
+      source = (if (inScope) ZStream.scoped(work.forkScoped).flatMap(child => ZStream.fromZIO(child.join))
+                else ZStream.fromZIO(work.fork.flatMap(_.join))): ZStream[Any, Throwable, Int]
+      stream <- source.toSpoonbill
+      // The consumer lives on after its pull.
+      consumer <- (stream.pull() <* gate.await).fork
+      _        <- started.await
+      _        <- stream.cancel()
+      atCancel <- stopped.isDone
+      _        <- gate.succeed(())
+      _        <- consumer.join
+      _        <- stopped.await
+      atEnd    <- stopped.isDone
+    } yield (atCancel, atEnd)
+    // It belongs to the consumer's fiber, as with a direct pull, so `cancel` does not reach it.
+    run(scenario(inScope = false)) shouldBe (false, true)
+    run(scenario(inScope = true)) shouldBe (true, true)
+  }
+
   "A FiberRef with a rule for forks" should "read in the source as with a direct pull" in {
     def scenario(bridged: Boolean): Task[List[Option[Chunk[Int]]]] = ZIO.scoped(for {
       local <- FiberRef.make(0, fork = _ + 1)
@@ -123,5 +147,58 @@ class ZioStreamContextSpec extends AnyFlatSpec with Matchers {
       } yield List(before, after) ++ masked
     })
     seen shouldBe List(true, true, false, false)
+  }
+
+  "A FiberRef of the stream's scope" should "be gone from the consumer after `cancel`, as after its own close" in {
+    def scenario(bridged: Boolean): Task[(String, String)] = for {
+      made <- Promise.make[Nothing, FiberRef[String]]
+      source = ZStream
+                 .scoped(FiberRef.make("made"))
+                 .flatMap(ref => ZStream.fromZIO(made.succeed(ref) *> ref.set("set by the source")).as(1)): ZStream[
+                 Any,
+                 Throwable,
+                 Int
+               ]
+      seen <- if (bridged) source.toSpoonbill.flatMap { stream =>
+                for {
+                  _      <- stream.pull()
+                  ref    <- made.await
+                  during <- ref.get
+                  _      <- stream.cancel()
+                  after  <- ref.get
+                } yield (during, after)
+              }
+              else
+                Scope.make.flatMap { scope =>
+                  for {
+                    pull   <- scope.extend[Any](source.toPull)
+                    _      <- pull.unsome
+                    ref    <- made.await
+                    during <- ref.get
+                    _      <- scope.close(Exit.unit)
+                    after  <- ref.get
+                  } yield (during, after)
+                }
+    } yield seen
+    val direct = run(scenario(bridged = false))
+    direct shouldBe ("set by the source", "made")
+    run(scenario(bridged = true)) shouldBe direct
+  }
+
+  "A finalizer that runs after `cancel`" should "read the fiber context of the canceller, as after its own close" in {
+    def scenario(bridged: Boolean): Task[Int] = ZIO.scoped(for {
+      local <- FiberRef.make(0, fork = _ + 1)
+      seen  <- Promise.make[Nothing, Int]
+      source = ZStream
+                 .acquireReleaseWith(ZIO.unit)(_ => local.get.flatMap(seen.succeed))
+                 .flatMap(_ => ZStream(1, 2).rechunk(1)): ZStream[Any, Throwable, Int]
+      _ <- if (bridged) source.toSpoonbill.flatMap(stream => stream.pull() *> stream.cancel())
+           else
+             Scope.make.flatMap(scope => scope.extend[Any](source.toPull).flatMap(_.unsome) *> scope.close(Exit.unit))
+      value <- seen.await
+    } yield value)
+    val direct = run(scenario(bridged = false))
+    direct shouldBe 0
+    run(scenario(bridged = true)) shouldBe direct
   }
 }

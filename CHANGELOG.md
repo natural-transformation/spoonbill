@@ -25,9 +25,11 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   ends or fails or the result is cancelled, and releases it then. It used to
   release nothing. `cancel` admits no new pull and interrupts the pull that is
   under way; a `pull` after `cancel` ends with `None`. Every pull now runs in
-  a fiber of the bridge, with the `FiberRef` values of the consumer. A
-  finalizer that dies is reported: `cancel` dies with it, and so does a
-  `pull` of the stream that is over.
+  a fiber of the bridge, with the `FiberRef` values of the consumer. What
+  dies in a pull or in a finalizer is not forgotten: every later `pull` dies
+  with it, also after `cancel`. `cancel` dies with what died in the closing
+  and in the pull that it interrupted. A fiber that the stream forks outlives
+  `cancel`, unless the stream forks it in its scope.
 - Graceful `Queue.stop()` releases blocked producers and drains accepted values.
   A late fanout subscriber in Akka or Pekko receives `onSubscribe` followed by
   `onError` when registration is refused.
