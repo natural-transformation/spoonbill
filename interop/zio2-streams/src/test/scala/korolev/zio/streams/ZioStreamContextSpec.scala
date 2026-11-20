@@ -2,6 +2,7 @@ package spoonbill.zio.streams
 
 import _root_.zio._
 import _root_.zio.stream.ZStream
+import java.util.concurrent.atomic.AtomicInteger
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import spoonbill.effect.{Effect => SpoonbillEffect}
@@ -17,12 +18,18 @@ class ZioStreamContextSpec extends AnyFlatSpec with Matchers {
   private implicit val effect: SpoonbillEffect[Task] = taskEffectInstance[Any](runtime)
 
   // A step that is never answered fails the test through this bound.
-  private def run[A](io: Task[A]): A =
+  private def run[A](io: Task[A], bound: Duration = 5.seconds): A =
     Unsafe.unsafe { implicit unsafe =>
       runtime.unsafe
-        .run(io.timeoutFail(new RuntimeException("No answer in 5 seconds"))(5.seconds))
+        .run(io.timeoutFail(new RuntimeException(s"No answer in ${bound.toSeconds} seconds"))(bound))
         .getOrThrowFiberFailure()
     }
+
+  // A case of many rounds takes longer than one step may, when the machine is busy.
+  private def runMany[A](io: Task[A]): A = run(io, 60.seconds)
+
+  /** How many fibers the running fiber knows as its interrupters. */
+  private val interrupters: UIO[Int] = ZIO.descriptor.map(_.interrupters.size)
 
   /** Two pulls: through the bridge, or with the pull of the stream itself. */
   private def twice[A](source: ZStream[Any, Throwable, A], bridged: Boolean): Task[List[Option[Chunk[A]]]] =
@@ -147,6 +154,71 @@ class ZioStreamContextSpec extends AnyFlatSpec with Matchers {
       } yield List(before, after) ++ masked
     })
     seen shouldBe List(true, true, false, false)
+  }
+
+  "A pull that `cancel` interrupts" should "leave the consumer's fiber context as it was, and no interruption in it" in {
+    val (afterPull, inExit, atStop) = run(ZIO.scoped(for {
+      local   <- FiberRef.make("before")
+      queue   <- Queue.unbounded[Int]
+      started <- Queue.unbounded[Unit]
+      take     = local.set("set by the pull") *> started.offer(()) *> queue.take
+      stream  <- (ZStream.repeatZIO(take): ZStream[Any, Throwable, Int]).toSpoonbill
+      first   <- Promise.make[Nothing, (Option[Seq[Int]], Int, String)]
+      stopped <- Promise.make[Nothing, Int]
+      // The consumer says what it has after its pull, and waits. Nobody interrupts it before that. It says
+      // so from inside the region whose handler tells of the interruption, so the handler is in place by then.
+      consumer <- (for {
+                    pulled <- stream.pull()
+                    names  <- interrupters
+                    value  <- local.get
+                    waits   = first.succeed((pulled, names, value)) *> ZIO.never
+                    _      <- waits.onInterrupt(interrupters.flatMap(stopped.succeed))
+                  } yield ()).fork
+      _         <- started.take
+      _         <- stream.cancel()
+      afterPull <- first.await
+      // Now the consumer is interrupted, once.
+      exit   <- consumer.interrupt
+      atStop <- stopped.await
+    } yield (afterPull, exit.causeOption.map(_.interruptors.size), atStop)))
+    // The pull was interrupted, not the consumer. The fiber context of the pull held the interruption of the pull.
+    afterPull shouldBe (None, 0, "before")
+    (inExit, atStop) shouldBe (Some(1), 1)
+  }
+
+  it should "leave no interruption in the consumer at whatever moment the `cancel` comes" in {
+    val rounds = 2000
+    val left = runMany(ZIO.foreach((1 to rounds).toList) { round =>
+      val pulls = new AtomicInteger()
+      // Every pull is back at once, so the `cancel` often finds a pull that is back and not taken yet.
+      val pull: ZIO[Any, Option[Throwable], Chunk[Int]] = ZIO.succeed(Chunk(pulls.incrementAndGet()))
+      for {
+        life     <- Ref.make[Life](Life.Idle)
+        stream    = ZSpoonbillStream[Any, Int](pull, _ => ZIO.unit, life)
+        consumer <- (stream.pull().repeatUntil(_.isEmpty) *> interrupters).fork
+        _        <- ZIO.yieldNow.repeatN(round % 7)
+        _        <- stream.cancel()
+        left     <- consumer.join
+      } yield left
+    })
+    left.distinct shouldBe List(0)
+  }
+
+  "A finalizer that runs when a pull has met the end" should "read what that pull left in the fiber context" in {
+    def scenario(bridged: Boolean): Task[String] = ZIO.scoped(for {
+      local <- FiberRef.make("before")
+      seen  <- Promise.make[Nothing, String]
+      // The only pull changes the fiber context and meets the end. The closing then reads the context.
+      last      = local.set("set by the last pull") *> ZIO.fail(None): ZIO[Any, Option[Throwable], Chunk[Int]]
+      finalizer = (_: Exit[Any, Any]) => local.get.flatMap(seen.succeed).unit
+      _ <- if (bridged)
+             Ref.make[Life](Life.Idle).flatMap(life => ZSpoonbillStream[Any, Int](last, finalizer, life).pull())
+           else last.unsome *> finalizer(Exit.unit)
+      value <- seen.await
+    } yield value)
+    val direct = run(scenario(bridged = false))
+    direct shouldBe "set by the last pull"
+    run(scenario(bridged = true)) shouldBe direct
   }
 
   "A FiberRef of the stream's scope" should "be gone from the consumer after `cancel`, as after its own close" in {

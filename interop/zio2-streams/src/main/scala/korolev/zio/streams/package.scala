@@ -85,7 +85,9 @@ package object streams {
      *
      * A pull runs in a fiber of the bridge. That fiber has the consumer's
      * `FiberRef` values and leaves its changes of them to the consumer, also
-     * when the pull fails. The closing after `cancel` does the same for its
+     * when the pull fails. A pull that was cut short leaves none: by `cancel`,
+     * or because its consumer was interrupted. The closing after `cancel` has
+     * the canceller's `FiberRef` values and leaves its changes to the
      * canceller. In other things the fiber of a pull is a fiber of its own: it
      * has its own id, and `cancel` can interrupt it also where the consumer
      * cannot be interrupted.
@@ -174,7 +176,7 @@ package object streams {
           context <- ZIO.getFiberRefs
           fiber   <- owned(context, graft).fork
           _       <- active.succeed(fiber)
-          exit    <- restore(fiber.await).onInterrupt(abandon(active, context, fiber))
+          exit    <- restore(fiber.await).onInterrupt(abandon(active, fiber))
           out     <- settle(restore, active, context, exit)
         } yield out
       }
@@ -204,12 +206,15 @@ package object streams {
     // stream stays open. A pull that has come back all the same is settled as
     // any pull: when it met the end of the stream, the scope is closed. A chunk
     // that it brought is lost with the consumer, as with a pull that the consumer
-    // runs itself. What died goes into the exit of the consumer.
-    private def abandon(active: Active, context: FiberRefs, fiber: Fiber[Nothing, Pulled]): URIO[R, Unit] =
+    // runs itself. What died goes into the exit of the consumer. The consumer
+    // takes nothing of the fiber context of that pull: it holds the interruption
+    // of the pull, and the consumer has its own.
+    private def abandon(active: Active, fiber: Fiber[Nothing, Pulled]): URIO[R, Unit] =
       fiber.interrupt.flatMap {
         case Exit.Success((Exit.Failure(cause), _)) if cause.isInterrupted =>
           leave(waiting, active, Life.Idle)(ZIO.failCause(cause))
-        case back => settle(waiting, active, context, back)
+        case Exit.Success((pulled, _)) => conclude(waiting, active, pulled, ZIO.unit)
+        case Exit.Failure(cause)       => conclude(waiting, active, Exit.failCause(cause), ZIO.unit)
       }.exit.flatMap(gone => ZIO.foreachDiscard(gone.causeOption.flatMap(_.keepDefects))(ZIO.failCause(_)))
 
     // An interrupted consumer waits for a closing where it stands: it cannot be
@@ -217,8 +222,11 @@ package object streams {
     private def waiting: ZIO.InterruptibilityRestorer = ZIO.InterruptibilityRestorer.MakeUninterruptible
 
     // The consumer goes on with what the pull made of its context, also after a
-    // failure and after an interruption by `cancel`. The fiber of a pull fails
-    // only when something outside the pull went wrong in it.
+    // failure. It takes that context when it takes the result of the pull, and
+    // not from a pull that `cancel` took the stream from: such a pull may hold
+    // its own interruption in its context, and the consumer was not interrupted.
+    // The fiber of a pull fails only when something outside the pull went wrong
+    // in it.
     private def settle(
       restore: ZIO.InterruptibilityRestorer,
       active: Active,
@@ -226,18 +234,20 @@ package object streams {
       exit: Exit[Nothing, Pulled]
     ): RIO[R, Option[Seq[O]]] = exit match {
       case Exit.Success((pulled, after)) =>
-        ZIO.patchFiberRefs(FiberRefs.Patch.diff(context, after)) *> conclude(restore, active, pulled)
-      case Exit.Failure(cause) => conclude(restore, active, Exit.failCause(cause))
+        conclude(restore, active, pulled, ZIO.patchFiberRefs(FiberRefs.Patch.diff(context, after)))
+      case Exit.Failure(cause) => conclude(restore, active, Exit.failCause(cause), ZIO.unit)
     }
 
+    // `adopt` runs only for a pull that still has its place in the stream.
     private def conclude(
       restore: ZIO.InterruptibilityRestorer,
       active: Active,
-      pulled: Exit[Throwable, Option[Chunk[O]]]
+      pulled: Exit[Throwable, Option[Chunk[O]]],
+      adopt: UIO[Unit]
     ): RIO[R, Option[Seq[O]]] = pulled match {
-      case Exit.Success(chunk @ Some(_)) => leave(restore, active, Life.Idle)(ZIO.succeed(chunk))
-      case Exit.Success(None)            => finish(restore, active, None, Exit.unit)
-      case Exit.Failure(cause)           => finish(restore, active, Some(cause), Exit.failCause(cause))
+      case Exit.Success(chunk @ Some(_)) => leave(restore, active, Life.Idle)(adopt *> ZIO.succeed(chunk))
+      case Exit.Success(None)            => finish(restore, active, None, Exit.unit, adopt)
+      case Exit.Failure(cause)           => finish(restore, active, Some(cause), Exit.failCause(cause), adopt)
     }
 
     // The first end of the stream closes the scope. It answers as every later
@@ -246,11 +256,12 @@ package object streams {
       restore: ZIO.InterruptibilityRestorer,
       active: Active,
       cause: Option[Cause[Throwable]],
-      exit: Exit[Any, Any]
+      exit: Exit[Any, Any],
+      adopt: UIO[Unit]
     ): RIO[R, Option[Seq[O]]] =
       Promise.make[Nothing, Unit].flatMap { closed =>
         val over = Life.Over(cause, closed)
-        leave(restore, active, over)(close(exit, Exit.unit, closed) *> answer(restore, over))
+        leave(restore, active, over)(adopt *> close(exit, Exit.unit, closed) *> answer(restore, over))
       }
 
     // Gives the pull of `active` up for `next` and goes on with `mine`. When the
