@@ -36,7 +36,9 @@ private[effect] abstract class StreamRoutingRuntime[F[_], A](
 
   /**
    * Called only while owning monitor. Whatever reads upstream goes on when
-   * credit allows; its start is queued as a command.
+   * credit allows; its start is queued as a command. For a reader fiber that
+   * command is only the reader's turn: the read follows as the fiber's
+   * continuation, and it may run after the command, outside dispatch.
    */
   protected def wakeReader(): Unit
   def stream(lane: Lane): Stream[F, A]
