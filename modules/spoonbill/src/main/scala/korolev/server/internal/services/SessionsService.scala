@@ -673,6 +673,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     incomingStream: Stream[F, String],
     owner: Option[AttachOwner]
   ): F[SessionStart[F]] = {
+    import SessionsService.RolledBack
     val (incomingConsumed, managedIncomingStream) = incomingStream.handleConsumed
     val incomingHub: Hub[F, String]               = Hub(managedIncomingStream)
 
@@ -699,9 +700,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
     // The view of this attach, once it exists. A failed attach rolls it back.
     val created = new AtomicReference(Option.empty[View])
-    // Set when this attach has rolled its view back. Its failure is then not
-    // kept in the session table. See attachOrReload.
-    val rolledBack = new AtomicBoolean(false)
+    // Set when the retirement of this attach's view left the stored state in
+    // place, because the page goes on.
+    val stateLeft = new AtomicBoolean(false)
+    // Completes when the failure of this attach is out of the session table:
+    // its view was rolled back, and the attaches that waited have the failure.
+    // See attachOrReload.
+    val forgotten = scala.concurrent.Promise[Unit]()
     // Set when the connection has closed. Setup then stops before the next
     // extension, and delivery does not start.
     val lifecycle = new AtomicReference(LegacySessionMachine.State())
@@ -746,7 +751,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // newer one replaced it: a view that ends by its idle timeout
               // cancels its own input first, and that removes the topic.
               val pageGoesOn = view.registration.owner.exists(_.superseded) || view.registration.awaited
-              if (pageGoesOn) Effect[F].unit
+              if (pageGoesOn) Effect[F].delay(stateLeft.set(true))
               else attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
             case Stage.SettleRegistry => attempt(registry()).map(_ => legacyViews.departed(qsid, view.registration))
           }
@@ -773,11 +778,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // fill ends with the error: the table then gives the error to every
       // attach that waits. An entry that is failed or removed before the fill
       // has ended is written again when it ends, and that failure would stay.
-      val rollback = created.get() match {
+      created.get() match {
         case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
         case None       => Effect[F].unit
       }
-      rollback.map(_ => rolledBack.set(true))
     }
 
     def handleAppOrWsOutgoingCloseOrTimeout(view: View): F[Unit] = {
@@ -924,7 +928,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // session. Removing the entry would let a reconnect trust the stale DOM.
               apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
             case error =>
-              abandon().flatMap(_ => Effect[F].fail(error))
+              // The attaches that wait get the error together with what the
+              // rollback knew. A rollback that fails itself is not wrapped,
+              // and its failure stays in the table.
+              abandon().flatMap(_ => Effect[F].fail(new RolledBack(error, stateLeft.get(), forgotten)))
           }
         }.recoverF {
           // The fill has ended, and every attach that waited for it has its
@@ -932,15 +939,29 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           // failure must not answer the attaches that come later: the page
           // reconnects, and that attach builds a view of its own. Only the
           // attach that ran the fill takes the entry out, once, and in the
-          // same step that a cancelled request cannot split.
-          case error if rolledBack.get() => apps.remove(qsid).flatMap(_ => Effect[F].fail[App](error))
+          // same step that a cancelled request cannot split. Only then does
+          // it say so: an attach that starts again must not find the failure.
+          case failure: RolledBack if failure.forgotten eq forgotten =>
+            apps.remove(qsid).map { _ => forgotten.trySuccess(()); () }.flatMap(_ => Effect[F].fail[App](failure))
         }
-      }.flatMap(admit).recoverF { case error: DevMode.InvalidSavedRenderContext =>
-        config.reporter.error(error.getMessage, error)
-        incomingStream.cancel().recover { case cleanupError =>
-          config.reporter.error(s"Unable to close invalid development session $qsid", cleanupError)
-          ()
-        }.map(_ => SessionStart.Reload[F](): SessionStart[F])
+      }.flatMap(admit).recoverF {
+        case failure: RolledBack =>
+          val again = LegacyAttachMachine.startsAgain(
+            checked = owner.nonEmpty,
+            ranFill = failure.forgotten eq forgotten,
+            pageGoesOn = failure.pageGoesOn
+          )
+          // This attach only waited for a view of a transport that is over.
+          // It waits until that failure is out of the table, and then builds
+          // a view of its own. The wait also ends when its owner is replaced.
+          if (again) legacyViews.signalled(failure.forgotten.future, owner).flatMap(_ => start())
+          else Effect[F].fail(failure.cause)
+        case error: DevMode.InvalidSavedRenderContext =>
+          config.reporter.error(error.getMessage, error)
+          incomingStream.cancel().recover { case cleanupError =>
+            config.reporter.error(s"Unable to close invalid development session $qsid", cleanupError)
+            ()
+          }.map(_ => SessionStart.Reload[F](): SessionStart[F])
       }
 
     /**
@@ -1020,6 +1041,24 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 }
 
 private[spoonbill] object SessionsService {
+
+  /**
+   * The failure of an attach whose view was rolled back, on its way through
+   * the session table to the attaches that waited for that view. It never
+   * leaves the service: every attach fails with `cause`, or starts again.
+   *
+   * @param pageGoesOn
+   *   the rollback left the stored state in place, because a newer transport
+   *   had replaced the one of the view
+   * @param forgotten
+   *   completes when this failure is out of the session table
+   */
+  private final class RolledBack(
+    val cause: Throwable,
+    val pageGoesOn: Boolean,
+    val forgotten: scala.concurrent.Promise[Unit]
+  ) extends Exception("The view of an attach was rolled back", cause)
+
   /** Internal timing seam: expiry still executes the same effect on the scheduler's thread/runtime. */
   trait RequiredTiming[F[_]] {
     def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]

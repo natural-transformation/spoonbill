@@ -59,4 +59,27 @@ private[services] object LegacyAttachMachine {
     else if (!registered) Decision.Retry
     else if (sameOwner) Decision.Attach
     else Decision.AwaitDeparture
+
+  /**
+   * Whether an attach starts again when the fill of the registry that it took
+   * part in has failed, and the view of that fill was rolled back.
+   *
+   * The attach that ran the fill fails: it is its own attach that did not
+   * work. An attach that only waited for that view starts again when it names
+   * an owner and the page goes on. Then the view was rolled back for a
+   * transport that is over, and the waiting attach belongs to a newer one,
+   * which is fine. In every other case nothing says that the failure is not
+   * the session's own, and the attach fails with it, as it always did.
+   *
+   * @param checked
+   *   the attach names an owner
+   * @param ranFill
+   *   this attach built the view that was rolled back
+   * @param pageGoesOn
+   *   the rollback left the stored state in place, because a newer transport
+   *   had replaced the one of that view. So no removal runs that a new view
+   *   could meet.
+   */
+  def startsAgain(checked: Boolean, ranFill: Boolean, pageGoesOn: Boolean): Boolean =
+    checked && !ranFill && pageGoesOn
 }

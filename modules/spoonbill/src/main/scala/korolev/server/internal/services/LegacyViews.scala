@@ -2,9 +2,10 @@ package spoonbill.server.internal.services
 
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.{ExecutionContext, Promise}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 import spoonbill.Qsid
 import spoonbill.effect.Effect
+import spoonbill.effect.syntax.*
 
 /**
  * The legacy views that are registered, at most one for a session. Each has
@@ -73,10 +74,17 @@ private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionCo
    * retirement of the view failed. The view is marked as awaited from the
    * moment the wait starts.
    */
-  def departure(registration: Registration, waiter: Option[AttachOwner]): F[Unit] = Effect[F].promise { callback =>
-    registration.waited.set(true)
+  def departure(registration: Registration, waiter: Option[AttachOwner]): F[Unit] =
+    Effect[F].delay(registration.waited.set(true)).flatMap(_ => signalled(registration.left.future, waiter))
+
+  /**
+   * Completes with `signal`, or when `waiter` was superseded: its attach has
+   * nothing to wait for then. The attach goes on in a task of the execution
+   * context, not on the thread that gave the signal.
+   */
+  def signalled(signal: Future[Unit], waiter: Option[AttachOwner]): F[Unit] = Effect[F].promise { callback =>
     val woken = Promise[Unit]()
-    registration.left.future.onComplete(woken.tryComplete)(ExecutionContext.parasitic)
+    signal.onComplete(woken.tryComplete)(ExecutionContext.parasitic)
     waiter.foreach(_.whenSuperseded.onComplete(woken.tryComplete)(ExecutionContext.parasitic))
     woken.future.onComplete(result => callback(result.toEither))(executionContext)
   }

@@ -118,7 +118,9 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   every later attach of that session failed with it until the page was
   reloaded: after a socket that closed during extension setup, or after a
   setup that failed once. An attach that waited for the failed one still gets
-  its error.
+  its error, with one exception: a long-polling poll that waited for a view of
+  an opening which a newer opening has replaced starts again and gets a view
+  of its own.
 
 ## 10.0.1 — 2026-11-12
 

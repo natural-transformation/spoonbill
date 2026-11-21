@@ -37,4 +37,21 @@ class LegacyAttachMachineSpec extends AnyFlatSpec with Matchers {
     for (createdHere <- both; registered <- both; sameOwner <- both)
       decide(checked = true, superseded = true, createdHere, registered, sameOwner) shouldBe Decision.Superseded
   }
+
+  "An attach whose view was rolled back" should "fail, also when the page goes on" in {
+    for (checked <- both; pageGoesOn <- both)
+      startsAgain(checked, ranFill = true, pageGoesOn) shouldBe false
+  }
+
+  "An attach that waited for a view which was rolled back" should "start again when it has an owner and the page goes on" in {
+    startsAgain(checked = true, ranFill = false, pageGoesOn = true) shouldBe true
+  }
+
+  it should "fail with that view otherwise" in {
+    // Without an owner it behaves as a WebSocket attach always did.
+    startsAgain(checked = false, ranFill = false, pageGoesOn = true) shouldBe false
+    // Nothing says that the failure belongs to a transport that is over.
+    for (checked <- both)
+      startsAgain(checked, ranFill = false, pageGoesOn = false) shouldBe false
+  }
 }

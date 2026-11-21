@@ -22,4 +22,8 @@ class LongPollingCancellationIOSpec extends AnyFlatSpec {
   "A long-polling request of the next opening that is cancelled" should "still end the view of the opening before" in {
     LongPollingSessionChecks.cancelledReopening[IO](cancelable)
   }
+
+  "A long-polling poll that arrives while the view before is being set up" should "get a view of its own" in {
+    LongPollingSessionChecks.reopenedDuringSetup[IO]()
+  }
 }

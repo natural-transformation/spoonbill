@@ -24,4 +24,8 @@ class LongPollingCancellationZioSpec extends AnyFlatSpec {
   "A long-polling request of the next opening that is interrupted" should "still end the view of the opening before" in {
     LongPollingSessionChecks.cancelledReopening[Task](interruptible)
   }
+
+  "A long-polling poll that arrives while the view before is being set up" should "get a view of its own" in {
+    LongPollingSessionChecks.reopenedDuringSetup[Task]()
+  }
 }

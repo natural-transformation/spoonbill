@@ -247,11 +247,12 @@ class LongPollingHandoffSpec extends AnyFlatSpec with Matchers {
   }
 
   "A poll of the next opening that comes while the view before is being set up" should
-    "fail with that view, and leave a view to the opening after it" in {
-    val gate    = Promise[Unit]()
-    val fixture = new LongPollingFixture(setup = Some(() => gate.future))
-    val first   = fixture.subscribe(Some(1))
-    val second  = fixture.subscribe(Some(2))
+    "get a view of its own when that setup is stopped" in {
+    val repository = new Repository
+    val gate       = Promise[Unit]()
+    val fixture    = new LongPollingFixture(setup = Some(() => gate.future), storage = Some(repository.storage))
+    val first      = fixture.subscribe(Some(1))
+    val second     = fixture.subscribe(Some(2))
     // Opening 2 ended the topic of opening 1. The view of opening 1 is still
     // in its setup, and both polls wait for it.
     first.isCompleted shouldBe false
@@ -260,12 +261,62 @@ class LongPollingHandoffSpec extends AnyFlatSpec with Matchers {
     gate.success(())
     fixture.worker.drain()
 
-    // The setup stops, because its connection is over. Both polls get that.
+    // The setup stops, because its connection is over. The poll of that
+    // opening fails with it.
     first.value.flatMap(_.failed.toOption).get shouldBe a[ExtensionRuntime.SetupAborted]
-    second.value.flatMap(_.failed.toOption).get shouldBe a[ExtensionRuntime.SetupAborted]
-    fixture.view shouldBe None
-    // The failure is not kept for the session: the next opening gets a view.
-    announcesClick(fixture.frames(Some(3))) shouldBe true
+    // The poll of opening 2 only waited for that view. Its own transport is
+    // fine, so it starts again and gets a view of its own.
+    fixture.status(second) shouldBe Some(Response.Status.Ok)
+    fixture.built shouldBe 1
     fixture.view should not be empty
+    // The view that was stopped left the state in place for it.
+    repository.removals shouldBe 0
+    repository.entries.size shouldBe 1
+    fixture.loads shouldBe 1
+  }
+
+  it should "be answered with Gone when its own opening is replaced as well" in {
+    val gate    = Promise[Unit]()
+    val fixture = new LongPollingFixture(setup = Some(() => gate.future))
+    val first   = fixture.subscribe(Some(1))
+    val second  = fixture.subscribe(Some(2))
+    val third   = fixture.subscribe(Some(3))
+
+    gate.success(())
+    fixture.worker.drain()
+
+    first.value.flatMap(_.failed.toOption).get shouldBe a[ExtensionRuntime.SetupAborted]
+    fixture.status(second) shouldBe Some(Response.Status.Gone)
+    fixture.status(third) shouldBe Some(Response.Status.Ok)
+    // One view was built: the one of opening 3.
+    fixture.built shouldBe 1
+  }
+
+  "A poll that waits for a view which fails in its setup" should "fail with it when no newer opening replaced that view" in {
+    // A view that a socket attaches. Its first setup fails by itself: no
+    // transport was replaced, so nothing says that this failure is not the
+    // session's own. A second setup would work.
+    val repository = new Repository
+    val gate       = Promise[Unit]()
+    val failure    = new IllegalStateException("not this time")
+    var setups     = 0
+    val fixture = new LongPollingFixture(
+      setup = Some(() => { setups += 1; if (setups == 1) gate.future else Future.unit }),
+      storage = Some(repository.storage)
+    )
+    val socket = fixture.sessions.createAppIfNeeded(fixture.qsid, fixture.request(None), Queue[Future, String]().stream)
+    fixture.worker.drain()
+    val poll = fixture.subscribe(Some(1))
+    poll.isCompleted shouldBe false
+
+    gate.failure(failure)
+    fixture.worker.drain()
+
+    socket.value shouldBe Some(scala.util.Failure(failure))
+    // The poll does not start again. If it did, its view would attach right
+    // after the removal that the rollback has asked the storage for.
+    poll.value shouldBe Some(scala.util.Failure(failure))
+    setups shouldBe 1
+    repository.removals shouldBe 1
   }
 }
