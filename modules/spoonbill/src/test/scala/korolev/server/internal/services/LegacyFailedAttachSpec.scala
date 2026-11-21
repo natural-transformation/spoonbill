@@ -13,6 +13,7 @@ import spoonbill.effect.{Effect, Queue}
 import spoonbill.internal.ExtensionRuntime
 import spoonbill.internal.TimerTestSupport.{Reports, Worker}
 import spoonbill.server.{SpoonbillServiceConfig, StateLoader}
+import spoonbill.state.{StateManager, StateStorage}
 import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
 
@@ -33,13 +34,19 @@ class LegacyFailedAttachSpec extends AnyFlatSpec with Matchers {
    *   what the first extension waits for in its setup. The service looks for
    *   a closed connection before every setup and once after the last one, so
    *   one extension would do. The second one is there to be left out.
+   * @param storage
+   *   the state storage, when a case needs one that misbehaves
    */
-  private final class Fixture(setup: () => Future[Unit]) {
+  private final class Fixture(
+    setup: () => Future[Unit] = () => Future.unit,
+    storage: Option[StateStorage[Future, Int]] = None
+  ) {
     val worker = new Worker
     private val config = SpoonbillServiceConfig[Future, Int, Any](
       stateLoader = StateLoader.default(0),
       document = state => Html(body(state.toString)),
       reporter = new Reports,
+      stateStorage = storage.orNull,
       extensions = List(
         Extension[Future, Int, Any]("first")(_ =>
           summon[Effect[Future]].map(setup())(_ => Extension.Handlers[Future, Int, Any]())
@@ -69,6 +76,31 @@ class LegacyFailedAttachSpec extends AnyFlatSpec with Matchers {
         worker.drain()
       case other => fail(s"The attach got no view: $other")
     }
+  }
+
+  /** A storage whose first read of a state fails. */
+  private final class FailsOnce(failure: Throwable) extends StateStorage[Future, Int] {
+    private val underlying = StateStorage[Future, Int]()
+    private var reads      = 0
+    def exists(device: String, session: String): Future[Boolean] = underlying.exists(device, session)
+    def create(device: String, session: String, state: Int): Future[StateManager[Future]] =
+      underlying.create(device, session, state)
+    def remove(device: String, session: String): Unit = underlying.remove(device, session)
+    def get(device: String, session: String): Future[StateManager[Future]] = {
+      reads += 1
+      if (reads == 1) Future.failed(failure) else underlying.get(device, session)
+    }
+  }
+
+  "An attach after one that failed before it had a view" should "build a new view" in {
+    // The state cannot be read the first time. Nothing was built then, so
+    // there is nothing to retire. The failure still must not stay behind.
+    val failure = new IllegalStateException("the state cannot be read")
+    val fixture = new Fixture(storage = Some(new FailsOnce(failure)))
+    fixture.attach().value shouldBe Some(Failure(failure))
+    fixture.registered shouldBe false
+
+    fixture.attachedAndReleased(fixture.attach())
   }
 
   "An attach after one that was stopped during its setup" should "build a new view" in {

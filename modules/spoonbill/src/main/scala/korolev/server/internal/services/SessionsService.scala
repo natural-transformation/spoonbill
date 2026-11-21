@@ -700,15 +700,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
     // The view of this attach, once it exists. A failed attach rolls it back.
     val created = new AtomicReference(Option.empty[View])
-    // Set when the retirement of this attach's view left the stored state in
-    // place, because the page goes on.
-    val stateLeft = new AtomicBoolean(false)
-    // Completes when the failure of this attach is out of the session table:
-    // its view was rolled back, and the attaches that waited have the failure.
-    // See attachOrReload.
+    // Tells the attaches that waited for this one when its failure is out of
+    // the session table. It is completed when the machine below says so. See
+    // attachOrReload.
     val forgotten = scala.concurrent.Promise[Unit]()
-    // Set when the connection has closed. Setup then stops before the next
-    // extension, and delivery does not start.
+    // The connection, the retirement of this attach's view, and what became
+    // of the stored state. Setup stops before the next extension once the
+    // connection has closed, and delivery does not start.
     val lifecycle = new AtomicReference(LegacySessionMachine.State())
     @tailrec def transition(event: LegacySessionMachine.Event): LegacySessionMachine.Command = {
       val before = lifecycle.get()
@@ -750,9 +748,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // the same case. Its topic can be gone by then, so that no
               // newer one replaced it: a view that ends by its idle timeout
               // cancels its own input first, and that removes the topic.
-              val pageGoesOn = view.registration.owner.exists(_.superseded) || view.registration.awaited
-              if (pageGoesOn) Effect[F].delay(stateLeft.set(true))
-              else attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+              //
+              // Both facts are looked at here, as late as possible, and the
+              // machine decides.
+              val release = LegacySessionMachine.Event.Release(
+                replaced = view.registration.owner.exists(_.superseded),
+                awaited = view.registration.awaited
+              )
+              if (transition(release) == LegacySessionMachine.Command.RemoveState)
+                attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+              else Effect[F].unit
             case Stage.SettleRegistry => attempt(registry()).map(_ => legacyViews.departed(qsid, view.registration))
           }
           operation.flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.Finished(stage)))).flatMap(execute)
@@ -780,7 +785,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // has ended is written again when it ends, and that failure would stay.
       created.get() match {
         case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
-        case None       => Effect[F].unit
+        // Nothing was built, so nothing is retired. The machine still learns
+        // that this attach was rolled back.
+        case None => Effect[F].delay { transition(LegacySessionMachine.Event.NothingBuilt); () }
       }
     }
 
@@ -931,24 +938,30 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // The attaches that wait get the error together with what the
               // rollback knew. A rollback that fails itself is not wrapped,
               // and its failure stays in the table.
-              abandon().flatMap(_ => Effect[F].fail(new RolledBack(error, stateLeft.get(), forgotten)))
+              abandon().flatMap { _ =>
+                val stateLeft = LegacySessionMachine.stateLeft(lifecycle.get())
+                Effect[F].fail(new RolledBack(error, stateLeft, forgotten))
+              }
           }
         }.recoverF {
           // The fill has ended, and every attach that waited for it has its
           // error. A view that was rolled back leaves nothing behind, so its
           // failure must not answer the attaches that come later: the page
           // reconnects, and that attach builds a view of its own. Only the
-          // attach that ran the fill takes the entry out, once, and in the
+          // attach that rolled back takes the entry out, once, and in the
           // same step that a cancelled request cannot split. Only then does
           // it say so: an attach that starts again must not find the failure.
-          case failure: RolledBack if failure.forgotten eq forgotten =>
-            apps.remove(qsid).map { _ => forgotten.trySuccess(()); () }.flatMap(_ => Effect[F].fail[App](failure))
+          // The machine knows which attach that is.
+          case failure: RolledBack =>
+            if (transition(LegacySessionMachine.Event.Published) == LegacySessionMachine.Command.Forget)
+              apps.remove(qsid).map(_ => forgotten.success(())).flatMap(_ => Effect[F].fail[App](failure))
+            else Effect[F].fail[App](failure)
         }
       }.flatMap(admit).recoverF {
         case failure: RolledBack =>
           val again = LegacyAttachMachine.startsAgain(
             checked = owner.nonEmpty,
-            ranFill = failure.forgotten eq forgotten,
+            ranFill = LegacySessionMachine.rolledBack(lifecycle.get()),
             pageGoesOn = failure.pageGoesOn
           )
           // This attach only waited for a view of a transport that is over.
@@ -1000,9 +1013,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * runs, not when it is put together.
      */
     def attachUnlessReplaced(): F[SessionStart[F]] =
-      Effect[F].delay(owner.exists(_.superseded)).flatMap {
-        case true  => Effect[F].pure[SessionStart[F]](SessionStart.Superseded())
-        case false => attachOrReload()
+      Effect[F].delay(LegacyAttachMachine.mayFill(owner.nonEmpty, owner.exists(_.superseded))).flatMap {
+        case true  => attachOrReload()
+        case false => Effect[F].pure[SessionStart[F]](SessionStart.Superseded())
       }
 
     def start(): F[SessionStart[F]] =

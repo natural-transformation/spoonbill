@@ -1,16 +1,17 @@
 package spoonbill.server.internal.services
 
-import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import spoonbill.Qsid
-import spoonbill.effect.Effect
+import spoonbill.effect.{Effect, StateCell}
 import spoonbill.effect.syntax.*
 
 /**
  * The legacy views that are registered, at most one for a session. Each has
- * the transport that attached it, a signal that it has left the registry, and
- * a mark that an attach waits for it to leave.
+ * the transport that attached it and its phase, a state of
+ * [[LegacyViewMachine]]: registered, awaited or not, then left or stuck. This
+ * class owns the registry itself, the error of a failed retirement, and the
+ * handle that tells the attaches which wait.
  * A long-polling attach names its topic as the owner. A WebSocket attach
  * names none. What an attach does with these facts is decided by
  * [[LegacyAttachMachine]].
@@ -25,16 +26,20 @@ import spoonbill.effect.syntax.*
 private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionContext: ExecutionContext) {
 
   final class Registration(val view: V, val owner: Option[AttachOwner]) {
-    private[LegacyViews] val left    = Promise[Unit]()
-    private[LegacyViews] val waited  = new AtomicBoolean(false)
+    private[LegacyViews] val phase = new StateCell(LegacyViewMachine.initial)
+    // Tells the attaches that wait. It is completed when the phase says so.
+    private[LegacyViews] val left = Promise[Unit]()
 
     /**
      * An attach of the session waits, or has waited, for this view to leave.
      * So the page goes on, and the view leaves the stored state to its
      * successor.
      */
-    def awaited: Boolean = waited.get()
+    def awaited: Boolean = LegacyViewMachine.awaited(phase.get)
   }
+
+  private def feed(registration: Registration, event: LegacyViewMachine.Event): LegacyViewMachine.Command =
+    registration.phase.modify(LegacyViewMachine.step(_, event))
 
   private val registered = TrieMap.empty[Qsid, Registration]
 
@@ -54,8 +59,8 @@ private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionCo
   /** The view has left the registry. The attaches that wait for that go on. */
   def departed(qsid: Qsid, registration: Registration): Unit = {
     registered.remove(qsid, registration)
-    registration.left.trySuccess(())
-    ()
+    if (feed(registration, LegacyViewMachine.Event.Departed) == LegacyViewMachine.Command.Publish)
+      registration.left.success(())
   }
 
   /**
@@ -63,10 +68,9 @@ private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionCo
    * not leave. An attach that waits for its departure fails with this error;
    * it does not wait for ever.
    */
-  def stuck(registration: Registration, error: Throwable): Unit = {
-    registration.left.tryFailure(error)
-    ()
-  }
+  def stuck(registration: Registration, error: Throwable): Unit =
+    if (feed(registration, LegacyViewMachine.Event.Failed) == LegacyViewMachine.Command.Publish)
+      registration.left.failure(error)
 
   /**
    * Completes when the view has left the registry, or when `waiter` was
@@ -75,7 +79,9 @@ private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionCo
    * moment the wait starts.
    */
   def departure(registration: Registration, waiter: Option[AttachOwner]): F[Unit] =
-    Effect[F].delay(registration.waited.set(true)).flatMap(_ => signalled(registration.left.future, waiter))
+    Effect[F]
+      .delay(feed(registration, LegacyViewMachine.Event.Waited))
+      .flatMap(_ => signalled(registration.left.future, waiter))
 
   /**
    * Completes with `signal`, or when `waiter` was superseded: its attach has

@@ -61,6 +61,18 @@ private[services] object LegacyAttachMachine {
     else Decision.AwaitDeparture
 
   /**
+   * Whether an attach fills the registry, at first and again after a view has
+   * left. An attach whose owner was replaced does not: the view that it would
+   * build would be a view for nobody.
+   *
+   * @param checked
+   *   the attach names an owner
+   * @param superseded
+   *   a newer transport has taken the place of that owner
+   */
+  def mayFill(checked: Boolean, superseded: Boolean): Boolean = !(checked && superseded)
+
+  /**
    * Whether an attach starts again when the fill of the registry that it took
    * part in has failed, and the view of that fill was rolled back.
    *

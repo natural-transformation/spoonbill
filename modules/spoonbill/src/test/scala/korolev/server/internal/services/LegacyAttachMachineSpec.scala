@@ -38,6 +38,13 @@ class LegacyAttachMachineSpec extends AnyFlatSpec with Matchers {
       decide(checked = true, superseded = true, createdHere, registered, sameOwner) shouldBe Decision.Superseded
   }
 
+  "An attach" should "fill the registry unless its owner was replaced" in {
+    mayFill(checked = true, superseded = true) shouldBe false
+    mayFill(checked = true, superseded = false) shouldBe true
+    // Without an owner nothing can be replaced.
+    for (superseded <- both) mayFill(checked = false, superseded) shouldBe true
+  }
+
   "An attach whose view was rolled back" should "fail, also when the page goes on" in {
     for (checked <- both; pageGoesOn <- both)
       startsAgain(checked, ranFill = true, pageGoesOn) shouldBe false

@@ -1,6 +1,7 @@
 package spoonbill.server.internal.services
 
 import scala.concurrent.{Future, Promise}
+import spoonbill.effect.{CompletionLatchMachine, StateCell}
 
 /**
  * The transport that a legacy attach belongs to, when the attach must not
@@ -10,17 +11,25 @@ import scala.concurrent.{Future, Promise}
  * A newer transport of the same session can take its place. From then on its
  * requests get no view, and the view that it attached leaves the stored state
  * to the view of its successor.
+ *
+ * Whether it was replaced is the state of a completion latch
+ * ([[spoonbill.effect.CompletionLatchMachine]]). The handle next to it only
+ * tells the attaches that wait, and only when the latch says so.
  */
 private[services] final class AttachOwner {
+  private val latch    = new StateCell(CompletionLatchMachine.State.Pending)
   private val replaced = Promise[Unit]()
 
   /** A newer transport of the session has taken the place of this one. */
   def supersede(): Unit = {
-    replaced.trySuccess(())
-    ()
+    val publish = latch.modify { state =>
+      val (next, command) = CompletionLatchMachine.step(state, CompletionLatchMachine.Event.Complete)
+      (next, command == CompletionLatchMachine.Command.Publish)
+    }
+    if (publish) replaced.success(())
   }
 
-  def superseded: Boolean = replaced.isCompleted
+  def superseded: Boolean = latch.get == CompletionLatchMachine.State.Completed
 
   /** Completes when this owner is superseded. */
   def whenSuperseded: Future[Unit] = replaced.future
