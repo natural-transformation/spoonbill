@@ -80,10 +80,11 @@ test('legacy transport selection, long-poll renewal and publish use observable r
   assert.equal(env.nextTimer(), 200);
   assert.equal(env.sockets.length, 0);
   assert.equal(env.requests[0].method, 'GET');
-  assert.equal(env.requests[0].url, 'http://example.test/app/bridge/long-polling/session/subscribe');
+  assert.equal(env.requests[0].url, 'http://example.test/app/bridge/long-polling/session/subscribe?open=1');
   assert.deepEqual(events, ['open']);
   env.requests[0].respond(503);
   assert.equal(env.requests.length, 2);
+  assert.equal(env.requests[1].url, env.requests[0].url, 'a renewal belongs to the same opening');
   assert.deepEqual(events, ['open']);
   env.requests[1].respond(200, 'frame');
   assert.deepEqual(events, ['open', 'ready', 'frame']);
@@ -91,6 +92,7 @@ test('legacy transport selection, long-poll renewal and publish use observable r
   connection.send('callback');
   const published = env.requests[3];
   assert.equal(published.method, 'POST');
+  assert.equal(published.url, 'http://example.test/app/bridge/long-polling/session/publish?open=1');
   assert.equal(published.body, 'callback');
   assert.equal(published.headers.get('Content-Type'), 'application/json');
 }));
@@ -279,4 +281,36 @@ test('a websocket superseded by long polling cannot publish late frames', () => 
   assert.deepEqual(received, []);
   env.requests[0].respond(200, 'current');
   assert.deepEqual(received, ['current']);
+}));
+
+// A page on long polling tells the server which opening of its connection a
+// request belongs to. The server has no connection that closes, so the number
+// is how it learns that the page built a new bridge and needs a new view.
+const longPolling = 'http://example.test/app/bridge/long-polling/session/';
+
+test('a reconnect after a failed poll is the next opening', () => environment(async env => {
+  const connection = env.create({ws: false});
+  const events = [];
+  for (const name of ['open', 'close'])
+    connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer();
+  env.requests[0].respond(200, 'first');
+  env.requests[1].respond(500);
+  await env.flush();
+  env.nextTimer();
+  assert.deepEqual(events, ['open', 'close', 'open']);
+  assert.equal(env.requests[2].url, longPolling + 'subscribe?open=2');
+  connection.send('callback');
+  assert.equal(env.requests[3].url, longPolling + 'publish?open=2');
+}));
+
+test('a long-poll transport that replaces an open one stays in its opening', () => environment(async env => {
+  const connection = env.create({ws: false});
+  let opens = 0;
+  connection.dispatcher.addEventListener('open', () => opens++);
+  connection.connect(); env.nextTimer();
+  connection.connect(); env.nextTimer();
+  // No close and no second open: the page keeps its bridge, so it keeps its view.
+  assert.equal(opens, 1);
+  assert.equal(env.requests[1].url, longPolling + 'subscribe?open=1');
 }));

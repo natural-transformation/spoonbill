@@ -11,6 +11,10 @@ export function initialConnection() {
     transport: ConnectionType.LONG_POLLING,
     selected: null,
     epoch: null,
+    // How many times the connection has started to open. The page builds a new
+    // bridge on every open, and long polling sends this number so that the
+    // server can give that bridge a new view.
+    opening: 0,
     scheduleEpoch: null,
     reconnect: true,
     presence: 'active',
@@ -48,7 +52,10 @@ export function connectionStep(state, event) {
     case 'clear-delivery':
       return {...state, deliveredEpoch: null};
     case 'install':
+      // A transport that replaces an open one dispatches no open event: the
+      // page keeps its bridge, so the transport serves the same opening.
       return {...state, transport: event.transport, epoch: event.epoch,
+        opening: connectionOpened(state) ? state.opening : state.opening + 1,
         deliveredEpoch: event.transport === ConnectionType.WEB_SOCKET ? null : state.deliveredEpoch};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;

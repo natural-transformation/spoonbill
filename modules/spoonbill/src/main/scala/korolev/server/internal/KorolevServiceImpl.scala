@@ -59,7 +59,7 @@ private[spoonbill] final class SpoonbillServiceImpl[F[_]: Effect](
 
       // Long polling
       case (Some(deviceId), Root / "bridge" / "long-polling" / sessionId / "publish") =>
-        messagingService.longPollingPublish(Qsid(deviceId, sessionId), request.body)
+        messagingService.longPollingPublish(Qsid(deviceId, sessionId), request.body, MessagingService.opening(request))
       case (Some(deviceId), Root / "bridge" / "long-polling" / sessionId / "subscribe") =>
         messagingService.longPollingSubscribe(Qsid(deviceId, sessionId), request)
 
