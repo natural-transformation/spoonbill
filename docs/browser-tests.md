@@ -117,6 +117,9 @@ the current handlers run exactly once. The cases cover long element and
 attribute names, fixed hash-collision witnesses, quote- and delimiter-bearing
 data, and identity across the first patch, with default and preset ids. The
 script ends with an injected name-truncation fault that the runner must detect.
+After that, `misc/long-polling-native-tests.cjs` uses the same service for long
+polling: the page loads without `WebSocket`, one poll fails in the browser, and
+a click after the reconnect must reach the service.
 The native CI job runs it after the sensitive acknowledgement step; its first
 Linux run passed with the preset-id defect as a recorded expected failure, and
 the run after the fix passed every case.

@@ -65,6 +65,10 @@ class ExtensionSpec extends AnyFlatSpec {
     ExtensionSessionChecks.cancelledRelease[Task](interruptible)
   }
 
+  it should "take the failure of an unguarded attach out of the session when the attach is interrupted meanwhile" in {
+    ExtensionSessionChecks.cancelledLegacyRollback[Task](interruptible)
+  }
+
   // ZIO supervises the fibers that an effect forks. Each handler call runs in a
   // fiber of its own, so a child of the handler ends with the call.
   it should "keep a daemon fiber that a handler starts, and interrupt a plain child when the handler returns" in {

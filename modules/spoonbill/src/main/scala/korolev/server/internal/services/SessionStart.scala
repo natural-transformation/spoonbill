@@ -21,4 +21,10 @@ private[spoonbill] object SessionStart {
     * when a guard had been acquired. The caller sends the finite reload frame.
     */
   final case class Reload[F[_]]() extends SessionStart[F]
+
+  /** A newer transport of the session took the place of this attach's owner
+    * while the attach was under way. Nothing was attached for it. The caller
+    * tells its client that this transport is over.
+    */
+  final case class Superseded[F[_]]() extends SessionStart[F]
 }

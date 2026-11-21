@@ -50,7 +50,11 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
   private final case class TopicEntry(
     queue: Queue[F, String],
     lifecycle: AtomicReference[OrphanTopicMachine.State],
-    orphanCleanup: AtomicReference[Option[Scheduler.JobHandler[F, Unit]]]
+    orphanCleanup: AtomicReference[Option[Scheduler.JobHandler[F, Unit]]],
+    // The opening of the page's connection that this topic serves. See TopicOpeningMachine.
+    opening: Long,
+    // Names this topic to the session service as the owner of its view.
+    owner: AttachOwner
   )
 
   private val orphanTiming = orphanCleanupTiming.getOrElse(new OrphanCleanupTiming[F] {
@@ -80,48 +84,62 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
       .takeWhile(ch => ch != ',' && ch != ']' && !ch.isWhitespace)
 
   def longPollingSubscribe(qsid: Qsid, rh: Head): F[HttpResponse[F]] =
-
-    for {
-      started <- sessionsService.createAppIfNeeded(qsid, rh, createTopic(qsid))
-      // The start result selects reload. A missing registry entry is not a
-      // second, implicit recovery path.
-      maybeMessage <- started match {
-                        case SessionStart.Attached(outgoing, _) => outgoing.pull()
-                        case SessionStart.Reload()              => SomeReloadMessageF
+    Effect[F].delay(topicUnsafe(qsid, opening(rh))).flatMap {
+      // A poll of an opening that the page has left behind. Its view is over.
+      case None => Effect[F].pure(commonGoneResponse)
+      case Some(topic) =>
+        for {
+          _ <- forgetReplaced(topic)
+          // The topic is the owner of its view. A view of an older topic has
+          // to leave the registry before this poll gets a view.
+          started <- sessionsService.createAppIfNeeded(qsid, rh, subscribed(topic.entry), Some(topic.entry.owner))
+          // The start result selects reload. A missing registry entry is not a
+          // second, implicit recovery path.
+          maybeMessage <- started match {
+                            case SessionStart.Attached(outgoing, _) => outgoing.pull()
+                            case SessionStart.Reload()              => SomeReloadMessageF
+                            // A newer opening took this one's place while the poll waited.
+                            case SessionStart.Superseded() => Effect[F].pure(Option.empty[String])
+                          }
+          response <- maybeMessage match {
+                        case None => Effect[F].pure(commonGoneResponse)
+                        case Some(message) =>
+                          Effect[F].delay {
+                            reporter.debug(
+                              s"Long-polling send to $qsid: code=${messageCode(message)} length=${message.length}"
+                            )
+                          } *>
+                            HttpResponse(
+                              status = Response.Status.Ok,
+                              text = message,
+                              headers = commonResponseHeaders
+                            )
                       }
-      response <- maybeMessage match {
-                    case None => Effect[F].pure(commonGoneResponse)
-                    case Some(message) =>
-                      Effect[F].delay {
-                        reporter.debug(
-                          s"Long-polling send to $qsid: code=${messageCode(message)} length=${message.length}"
-                        )
-                      } *>
-                      HttpResponse(
-                        status = Response.Status.Ok,
-            text = message,
-                        headers = commonResponseHeaders
-                      )
-                  }
-    } yield {
-      response
+        } yield response
     }
 
   /**
    * Push message to session's incoming queue.
    */
-  def longPollingPublish(qsid: Qsid, data: Stream[F, Bytes]): F[HttpResponse[F]] =
-    for {
-      entry   <- Effect[F].delay(getOrCreateTopicUnsafe(qsid))
-      _       <- scheduleOrphanCleanup(qsid, entry)
-      message <- data.fold(Bytes.empty)(_ ++ _).map(_.asUtf8String)
-      _ <- Effect[F].delay {
-             reporter.debug(
-               s"Long-polling publish received for $qsid: code=${messageCode(message)} length=${message.length}"
-             )
-           }
-      _ <- entry.queue.enqueue(message)
-    } yield commonOkResponse
+  def longPollingPublish(qsid: Qsid, data: Stream[F, Bytes], opening: Option[Long] = None): F[HttpResponse[F]] =
+    Effect[F].delay(topicUnsafe(qsid, opening)).flatMap {
+      // A message of a bridge that the page has replaced. Its view is over.
+      case None => data.cancel().map(_ => commonGoneResponse)
+      case Some(topic) =>
+        for {
+          // The message of a new bridge can arrive before its first poll. It
+          // starts the topic of that opening, and the poll attaches the view.
+          _       <- forgetReplaced(topic)
+          _       <- scheduleOrphanCleanup(qsid, topic.entry)
+          message <- data.fold(Bytes.empty)(_ ++ _).map(_.asUtf8String)
+          _ <- Effect[F].delay {
+                 reporter.debug(
+                   s"Long-polling publish received for $qsid: code=${messageCode(message)} length=${message.length}"
+                 )
+               }
+          _ <- topic.entry.queue.enqueue(message)
+        } yield commonOkResponse
+    }
 
   private lazy val inflaters = ThreadLocal.withInitial(() => new Inflater(true))
   private lazy val deflaters = ThreadLocal.withInitial(() => new Deflater(Deflater.DEFAULT_COMPRESSION, true))
@@ -214,6 +232,9 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
         // so avoid canceling the same frontend a second time after cleanup.
         val release = WebSocketResponse.releaseOnce[F](releaseSession)
         Effect[F].pure(WebSocketResponse.Duplex(output, selectedProtocol, release))
+      case SessionStart.Superseded() =>
+        // Only an attach with an owner can be superseded, and a socket names none.
+        Effect[F].fail(new IllegalStateException("A WebSocket attach has no owner to supersede"))
       case SessionStart.Reload() =>
         // The view is gone after a restart, or guarded recovery declined it.
         // The finite reload frame is independent of application input.
@@ -266,33 +287,59 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     contentLength = Some(0L)
   )
 
-  private def getOrCreateTopicUnsafe(qsid: Qsid): TopicEntry =
-    longPollingTopics.get(qsid) match {
-      case Some(existing) =>
-        existing
-      case None =>
-        val entry = TopicEntry(
-          queue = Queue[F, String](),
-          lifecycle = new AtomicReference(OrphanTopicMachine.initial(orphanTiming.nowMillis())),
-          orphanCleanup = new AtomicReference(None)
-        )
-        longPollingTopics.putIfAbsent(qsid, entry) match {
-          case Some(existing) =>
-            existing
-          case None =>
-            reporter.debug(s"Create long-polling topic for $qsid")
-            entry.queue.cancelSignal.runAsync(_ => longPollingTopics.remove(qsid, entry))
-            entry
-        }
-    }
+  /** The topic that serves a request, and the topic that it replaced, if it replaced one. */
+  private final case class Topic(entry: TopicEntry, replaced: Option[TopicEntry])
 
-  private[services] def createTopic(qsid: Qsid): Stream[F, String] = {
-    val entry = getOrCreateTopicUnsafe(qsid)
+  /** The topic for a request, by the rule of [[TopicOpeningMachine]]. None: the request is of an older opening. */
+  @tailrec private def topicUnsafe(qsid: Qsid, requested: Option[Long]): Option[Topic] = {
+    val existing = longPollingTopics.get(qsid)
+    def fresh() = TopicEntry(
+      queue = Queue[F, String](),
+      lifecycle = new AtomicReference(OrphanTopicMachine.initial(orphanTiming.nowMillis())),
+      orphanCleanup = new AtomicReference(None),
+      opening = requested.getOrElse(TopicOpeningMachine.Unnumbered),
+      owner = new AttachOwner
+    )
+    def installed(entry: TopicEntry): TopicEntry = {
+      reporter.debug(s"Create long-polling topic for $qsid")
+      entry.queue.cancelSignal.runAsync(_ => longPollingTopics.remove(qsid, entry))
+      entry
+    }
+    TopicOpeningMachine.decide(existing.map(_.opening), requested) match {
+      case TopicOpeningMachine.Decision.Stale => None
+      case TopicOpeningMachine.Decision.Use   => existing.map(Topic(_, None))
+      case TopicOpeningMachine.Decision.Create | TopicOpeningMachine.Decision.Replace =>
+        val entry = fresh()
+        // Another request can win the place. Then decide again, on what it left.
+        val won = existing match {
+          case Some(old) => longPollingTopics.replace(qsid, old, entry)
+          case None      => longPollingTopics.putIfAbsent(qsid, entry).isEmpty
+        }
+        if (won) {
+          // In one step with the swap: a request that is cancelled after it
+          // must not leave the old view alive. The end of the old topic's
+          // stream is the close signal of its view. The owner is superseded
+          // first, so that the view knows that the page goes on.
+          existing.foreach { old => old.owner.supersede(); old.queue.unsafeClose() }
+          Some(Topic(installed(entry), existing))
+        } else topicUnsafe(qsid, requested)
+    }
+  }
+
+  /** The cleanup timer of a replaced topic has nothing left to do. */
+  private def forgetReplaced(topic: Topic): F[Unit] = topic.replaced.fold(Effect[F].unit)(cancelOrphanCleanup)
+
+  /** Marks the topic as subscribed and gives the stream that its view reads. */
+  private def subscribed(entry: TopicEntry): Stream[F, String] = {
     if (advanceTopic(entry, OrphanTopicMachine.Event.Subscribe) == OrphanTopicMachine.Command.CancelCleanup) {
       runAsyncForget(cancelOrphanCleanup(entry))
     }
     entry.queue.stream
   }
+
+  private[services] def createTopic(qsid: Qsid): Stream[F, String] =
+    // A request without a number is never stale.
+    topicUnsafe(qsid, None).fold(Stream.empty[F, String])(topic => subscribed(topic.entry))
 
   private def cancelOrphanCleanup(entry: TopicEntry): F[Unit] =
     Effect[F].delay(entry.orphanCleanup.getAndSet(None)).flatMap {
@@ -339,6 +386,9 @@ private[spoonbill] object MessagingService {
 
   private val ProtocolJsonDeflate = "json-deflate"
   private val ProtocolJson        = "json"
+
+  /** The opening that a long-polling request names in its `open` parameter. See [[TopicOpeningMachine]]. */
+  def opening(request: Head): Option[Long] = TopicOpeningMachine.parse(request.param("open"))
 
   private[services] def selectedProtocol(protocols: Seq[String], compressionEnabled: Boolean): String =
     if (compressionEnabled && protocols.contains(ProtocolJsonDeflate)) ProtocolJsonDeflate else ProtocolJson

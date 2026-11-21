@@ -2,6 +2,8 @@
 # F2 real-service renderer acceptance: real standalone Scala service, real
 # HTML5 SSR and assembled client, pinned Chromium/WebKit, synthetic data.
 # Runs the full matrix, then one injected fault that the matrix must detect.
+# Last, on the same service: a page on long polling reconnects after a failed
+# poll and still answers a click.
 set -euo pipefail
 if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   printf '%s\n' 'Run through the repository nix develop environment.' >&2
@@ -103,4 +105,7 @@ nix develop .#browser --no-write-lock-file --command bash -c '
   fi
   grep "\"phase\":\"patched-dom\"" "$1"
   printf "%s\n" "PASS: injected name-truncation fault detected (status $status)"
+  # Long polling on the same service. The page has no WebSocket, one poll
+  # fails in the browser, and the click after the reconnect must arrive.
+  timeout --kill-after=10s 120s node misc/long-polling-native-tests.cjs
 ' renderer-acceptance "$test_root/fault-probe.log"

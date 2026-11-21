@@ -52,6 +52,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   type Extensions = ExtensionRuntime[F, S, M]
 
   private val apps = AsyncTable.unsafeCreateEmpty[F, Qsid, App]
+  // Who attached each legacy view, and the signal that it has left `apps`.
+  private val legacyViews = new LegacyViews[F, App](executionContext)
   private type Metadata = SessionRegistryMachine.State[Qsid, ConnectionId, PathAndQuery]
   private val registryMonitor = new Object
   private var metadata = SessionRegistryMachine.State[Qsid, ConnectionId, PathAndQuery]()
@@ -157,10 +159,23 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   def getApp(qsid: Qsid): F[Option[App]] =
     apps.getImmediately(qsid)
 
-  def createAppIfNeeded(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[SessionStart[F]] =
+  /**
+   * @param owner
+   *   the transport that this attach belongs to, when the attach must not
+   *   share a view with another transport. Long polling names its topic: a
+   *   view of an older topic is retired first, see [[LegacyAttachMachine]]. A
+   *   WebSocket names none and takes the registered view. Guarded sessions
+   *   have no long polling and ignore it.
+   */
+  def createAppIfNeeded(
+    qsid: Qsid,
+    rh: Head,
+    incomingStream: Stream[F, String],
+    owner: Option[AttachOwner] = None
+  ): F[SessionStart[F]] =
     config.sessionAccessControl match {
       case Some(control) => createGuarded(qsid, rh, incomingStream, control)
-      case None          => createLegacy(qsid, rh, incomingStream)
+      case None          => createLegacy(qsid, rh, incomingStream, owner)
     }
 
   /**
@@ -652,7 +667,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     }
   }
 
-  private def createLegacy(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[SessionStart[F]] = {
+  private def createLegacy(
+    qsid: Qsid,
+    rh: Head,
+    incomingStream: Stream[F, String],
+    owner: Option[AttachOwner]
+  ): F[SessionStart[F]] = {
     val (incomingConsumed, managedIncomingStream) = incomingStream.handleConsumed
     val incomingHub: Hub[F, String]               = Hub(managedIncomingStream)
 
@@ -666,11 +686,22 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      *
      * @param restore
      *   writes back the state the page was rendered with
+     * @param registration
+     *   the entry of this view in `legacyViews`, with the signal of its departure
      */
-    final case class View(frontend: Frontend[F], app: App, extensions: Option[Extensions], restore: () => F[Unit])
+    final case class View(
+      frontend: Frontend[F],
+      app: App,
+      extensions: Option[Extensions],
+      restore: () => F[Unit],
+      registration: legacyViews.Registration
+    )
 
     // The view of this attach, once it exists. A failed attach rolls it back.
     val created = new AtomicReference(Option.empty[View])
+    // Set when this attach has rolled its view back. Its failure is then not
+    // kept in the session table. See attachOrReload.
+    val rolledBack = new AtomicBoolean(false)
     // Set when the connection has closed. Setup then stops before the next
     // extension, and delivery does not start.
     val lifecycle = new AtomicReference(LegacySessionMachine.State())
@@ -702,15 +733,25 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
             case Stage.DestroyApplication => attempt(view.app.destroy())
             case Stage.DestroyExtensions => attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
             case Stage.Restore => attempt(restore())
-            case Stage.RemoveStorage => attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
-            case Stage.SettleRegistry => attempt(registry())
+            case Stage.RemoveStorage =>
+              // A view that a newer transport of the page replaced leaves the
+              // state where it is: the page goes on, and its next view takes
+              // the state over. A storage may only start a removal here, and
+              // that removal could still run when the next view has attached.
+              // If no next view comes, the state stays, as the state of a
+              // page does that was rendered and never connected.
+              if (view.registration.owner.exists(_.superseded)) Effect[F].unit
+              else attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            case Stage.SettleRegistry => attempt(registry()).map(_ => legacyViews.departed(qsid, view.registration))
           }
           operation.flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.Finished(stage)))).flatMap(execute)
         case _ => Effect[F].unit
       }
       Effect[F].uncancelable {
         Effect[F].delay(transition(LegacySessionMachine.Event.Retire(cause))).flatMap(execute).recoverF { case error =>
-          Effect[F].delay(transition(LegacySessionMachine.Event.Failed)).flatMap(_ => Effect[F].fail(error))
+          Effect[F]
+            .delay { transition(LegacySessionMachine.Event.Failed); legacyViews.stuck(view.registration, error) }
+            .flatMap(_ => Effect[F].fail(error))
         }
       }
     }
@@ -721,14 +762,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * is written back: the next attach must not trust a state the browser
      * never saw. Every waiting attach gets the error.
      */
-    def abandon(error: Throwable): F[Unit] = {
-      // Fail the entry before it is removed, so the waiters get this error
-      // and not the removal.
-      val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
-      created.get() match {
-        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, settle)
-        case None       => attempt(settle())
+    def abandon(): F[Unit] = {
+      // The table entry is left alone here. This attach fills it, and the
+      // fill ends with the error: the table then gives the error to every
+      // attach that waits. An entry that is failed or removed before the fill
+      // has ended is written again when it ends, and that failure would stay.
+      val rollback = created.get() match {
+        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
+        case None       => Effect[F].unit
       }
+      rollback.map(_ => rolledBack.set(true))
     }
 
     def handleAppOrWsOutgoingCloseOrTimeout(view: View): F[Unit] = {
@@ -820,9 +863,15 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                 frontend.close().recover { case cleanupError => error.addSuppressed(cleanupError); () }
                   .flatMap(_ => Effect[F].fail(error))
               }
-        view = View(frontend, app, extensions, () => stateManager.write(avocet.Id.TopLevel, initialState))
+        view = View(
+                 frontend,
+                 app,
+                 extensions,
+                 () => stateManager.write(avocet.Id.TopLevel, initialState),
+                 new legacyViews.Registration(app, owner)
+               )
         // From here a failed attach rolls the view back. See attachOrReload.
-        _ <- Effect[F].delay(created.set(Some(view)))
+        _ <- Effect[F].delay { created.set(Some(view)); legacyViews.register(qsid, view.registration) }
         // The watcher waits for the connection to close, and then for this
         // attach to settle. So it never retires a view that is half attached.
         _ <- Effect[F].start(handleAppOrWsOutgoingCloseOrTimeout(view))
@@ -869,10 +918,18 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // session. Removing the entry would let a reconnect trust the stale DOM.
               apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
             case error =>
-              abandon(error).flatMap(_ => Effect[F].fail(error))
+              abandon().flatMap(_ => Effect[F].fail(error))
           }
+        }.recoverF {
+          // The fill has ended, and every attach that waited for it has its
+          // error. A view that was rolled back leaves nothing behind, so its
+          // failure must not answer the attaches that come later: the page
+          // reconnects, and that attach builds a view of its own. Only the
+          // attach that ran the fill takes the entry out, once, and in the
+          // same step that a cancelled request cannot split.
+          case error if rolledBack.get() => apps.remove(qsid).flatMap(_ => Effect[F].fail[App](error))
         }
-      }.map[SessionStart[F]](attached).recoverF { case error: DevMode.InvalidSavedRenderContext =>
+      }.flatMap(admit).recoverF { case error: DevMode.InvalidSavedRenderContext =>
         config.reporter.error(error.getMessage, error)
         incomingStream.cancel().recover { case cleanupError =>
           config.reporter.error(s"Unable to close invalid development session $qsid", cleanupError)
@@ -880,28 +937,62 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         }.map(_ => SessionStart.Reload[F](): SessionStart[F])
       }
 
-    stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
-      case true =>
-        // State exists because it was created on static page
-        // rendering phase (see ServerSideRenderingService)
-        attachOrReload()
-      case false =>
-        // State can be missing after a restart; rebuild it from the request.
-        // A failed rebuild is the recognized reload recovery, not an access failure.
-        config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
-        initAppState(qsid, rh)
-          .map(_ => true)
-          .recover { case error =>
-            config.reporter.error(s"Unable to rebuild state for $qsid", error)
-            false
-          }
-          .flatMap {
-            // A failed attach is not a failed rebuild. It fails here as it
-            // does when the state exists: a reload would only repeat it.
-            case true  => attachOrReload()
-            case false => Effect[F].pure[SessionStart[F]](SessionStart.Reload())
-          }
+    /**
+     * Decides what this attach does with the view that the registry gave it.
+     * An attach with an owner does not share a view with another transport:
+     * it waits until that view has left, and then starts again from the
+     * stored state. See [[LegacyAttachMachine]].
+     */
+    def admit(app: App): F[SessionStart[F]] = {
+      val registered = legacyViews.registrationOf(qsid, app)
+      LegacyAttachMachine.decide(
+        checked = owner.nonEmpty,
+        createdHere = created.get().exists(_.app eq app),
+        registered = registered.nonEmpty,
+        sameOwner = registered.exists(_.owner.exists(other => owner.exists(_ eq other)))
+      ) match {
+        case LegacyAttachMachine.Decision.Attach => Effect[F].pure(attached(app))
+        case LegacyAttachMachine.Decision.Retry  => begin()
+        case LegacyAttachMachine.Decision.AwaitDeparture =>
+          // The view of another owner can be a newer one, which stays. So the
+          // wait also ends when this owner is replaced, and `begin` sees that.
+          registered.fold(begin())(registration => legacyViews.departure(registration, owner).flatMap(_ => begin()))
+      }
     }
+
+    /**
+     * Starts the attach, at first and again after a view has left. An attach
+     * whose owner was replaced by a newer transport gets no view here, and it
+     * builds none: that view would be one for nobody.
+     */
+    def begin(): F[SessionStart[F]] =
+      if (owner.exists(_.superseded)) Effect[F].pure(SessionStart.Superseded()) else start()
+
+    def start(): F[SessionStart[F]] =
+      stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
+        case true =>
+          // State exists because it was created on static page
+          // rendering phase (see ServerSideRenderingService)
+          attachOrReload()
+        case false =>
+          // State can be missing after a restart; rebuild it from the request.
+          // A failed rebuild is the recognized reload recovery, not an access failure.
+          config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
+          initAppState(qsid, rh)
+            .map(_ => true)
+            .recover { case error =>
+              config.reporter.error(s"Unable to rebuild state for $qsid", error)
+              false
+            }
+            .flatMap {
+              // A failed attach is not a failed rebuild. It fails here as it
+              // does when the state exists: a reload would only repeat it.
+              case true  => attachOrReload()
+              case false => Effect[F].pure[SessionStart[F]](SessionStart.Reload())
+            }
+      }
+
+    begin()
   }
 
   private val stateStorage =

@@ -103,6 +103,22 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   removed, without a replacement outside the `spoonbill` package.
 - Internal: `AsyncTable.settled` completes when a key is no longer being
   filled.
+- Fix: a page on long polling answers clicks again after it reconnects. Every
+  long-polling request now names the opening of the connection that it belongs
+  to (`subscribe?open=2`, `publish?open=2`). When the number grows, the server
+  retires the view of the opening before and builds a new one, as it does for
+  a WebSocket that reconnects. The new view goes on from the stored state of
+  the session: this handoff removes nothing from the state storage. The page
+  used to reconnect to the old view, which announces its events only once, so
+  the new bridge listened to nothing but `submit`. A request of an older
+  opening is answered with 410. A client that sends no number is served as
+  before.
+- Fix: after a failed attach of an unguarded session, the next attach builds a
+  view of its own. The failure used to stay in the session's registry, so
+  every later attach of that session failed with it until the page was
+  reloaded: after a socket that closed during extension setup, or after a
+  setup that failed once. An attach that waited for the failed one still gets
+  its error.
 
 ## 10.0.1 — 2026-11-12
 

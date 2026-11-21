@@ -305,6 +305,11 @@ export class Connection {
     let url = (this._useSSL ? "https://" : "http://") + this._hostPort;
     let path = this._serverRootPath + `bridge/long-polling/${this._sessionId}/`;
     let uriPrefix = url + path;
+    // Every request names the opening of the connection that it belongs to.
+    // The server has no connection that closes with long polling: a higher
+    // number tells it that the page built a new bridge and needs a new view.
+    // Only the current transport sends, so the lifecycle's number is its own.
+    const opening = () => '?open=' + this._lifecycle.opening;
 
     /** @type {function(boolean)} */
     let subscribe = (firstTime) => {
@@ -335,7 +340,7 @@ export class Connection {
 
       let request = new XMLHttpRequest();
       request.addEventListener('readystatechange', onReadyStateChange);
-      request.open('GET', uriPrefix + 'subscribe', true);
+      request.open('GET', uriPrefix + 'subscribe' + opening(), true);
       request.send('');
     };
 
@@ -357,7 +362,7 @@ export class Connection {
 
       let request = new XMLHttpRequest();
 
-      request.open('POST', uriPrefix + 'publish', true);
+      request.open('POST', uriPrefix + 'publish' + opening(), true);
       request.setRequestHeader("Content-Type", "application/json");
       request.addEventListener('readystatechange', onReadyStateChange);
       request.send(data);

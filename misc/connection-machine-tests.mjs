@@ -94,3 +94,23 @@ test('stop and document departure invalidate old schedules without forbidding a 
   assert.equal(currentSchedule(departed, stopped.scheduleEpoch), false);
   assert.equal(currentSchedule(step(departed, {type: 'show'}), departed.scheduleEpoch), true);
 });
+
+test('an install starts a new opening only while the connection is not open', () => {
+  const first = {}, second = {}, third = {};
+  let state = initialConnection();
+  assert.equal(state.opening, 0);
+  state = step(state, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: first});
+  assert.equal(state.opening, 1);
+  state = step(state, {type: 'open', epoch: first});
+  assert.equal(state.opening, 1);
+  // A transport that replaces an open one dispatches no open: same bridge, same opening.
+  state = step(state, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: second});
+  assert.equal(state.opening, 1);
+  // After the close the next transport opens the connection anew.
+  state = step(state, {type: 'close', epoch: second});
+  state = step(state, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: third});
+  assert.equal(state.opening, 2);
+  // A transport that never opened is replaced by one that counts again: the number only has to grow.
+  state = step(state, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  assert.equal(state.opening, 3);
+});

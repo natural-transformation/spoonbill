@@ -4,7 +4,7 @@ import avocet.dsl.*
 import avocet.dsl.html.*
 import java.util.UUID
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Try}
@@ -91,6 +91,8 @@ object ExtensionSessionChecks {
     def attachAgain(): Unit = run(attach(Queue[F, String]())) match {
       case SessionStart.Attached(_, release) => run(release())
       case SessionStart.Reload()             => ()
+      // Only an attach that names an owner can be superseded. This one names none.
+      case SessionStart.Superseded() => throw new AssertionError("An attach without an owner was superseded")
     }
   }
 
@@ -239,6 +241,58 @@ object ExtensionSessionChecks {
       // Leave nothing pending when an assertion fails.
       Try(run(finishSetup.putEither((), Right(()), silent = true)))
       guard.open()
+    }
+  }
+
+  /**
+   * An unguarded attach is cancelled while a `setup` of it is about to fail.
+   * The attach still rolls its view back, and it takes its failure out of the
+   * session's registry in the same step. So the failure is not the answer for
+   * the next attach, which builds a view of its own.
+   *
+   * @param start
+   *   starts an effect and returns the function that cancels it
+   */
+  def cancelledLegacyRollback[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F            = Effect[F]
+    val failure      = new IllegalStateException("synthetic")
+    val setups       = new AtomicInteger()
+    val setupStarted = new CountDownLatch(1)
+    val failSetup    = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+    // The first setup waits, and then fails. Every later one returns at once.
+    val once = Extension[F, String, String]("once") { _ =>
+      if (setups.incrementAndGet() > 1) F.pure(Extension.Handlers[F, String, String]())
+      else
+        F.flatMap(F.delay(setupStarted.countDown())) { _ =>
+          F.flatMap(failSetup.get(()))(_ => F.fail[Extension.Handlers[F, String, String]](failure))
+        }
+    }
+    val config = SpoonbillServiceConfig[F, String, String](
+      stateLoader = StateLoader.default("initial"),
+      document = state => Html(body(div(state))),
+      reporter = quiet,
+      extensions = List(once)
+    )
+    val service = new SessionsService(config, new PageService(config))
+    val qsid    = Qsid("cancelled-legacy-attach", UUID.randomUUID().toString)
+    val head    = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
+    def attach(): F[SessionStart[F]] = service.createAppIfNeeded(qsid, head, Queue[F, String]().stream)
+
+    // This attach fails on purpose. The check looks at what it leaves behind.
+    val cancel = start(F.recover(F.map(attach())(_ => ())) { case _ => () })
+    try {
+      assert(setupStarted.await(10, TimeUnit.SECONDS), "The setup never started")
+      val cancelling = request(cancel)
+      run(failSetup.put((), ()))
+      Await.result(cancelling, 10.seconds)
+      run(attach()) match {
+        case SessionStart.Attached(_, release) => run(release())
+        case other                             => throw new AssertionError(s"The attach after the rollback got $other")
+      }
+    } finally {
+      // Leave nothing pending when an assertion fails.
+      Try(run(failSetup.putEither((), Right(()), silent = true)))
+      ()
     }
   }
 
