@@ -142,6 +142,10 @@ final class InvalidDevRenderContextSpec extends AnyFlatSpec with Matchers {
       } finally storage.release.trySuccess(())
       await(Future.sequence(pending))
       await(expectReload(sessions))
+      // This failure stays in the session's registry, unlike the failure of
+      // an attach that was rolled back. The later connection was answered
+      // from it, and the state was not read again.
+      storage.reads.get() shouldBe 1
       file.exists() shouldBe false
       Files.readAllBytes(retained.toPath).toSeq shouldBe corruptBytes.toSeq
       await(expectReload(newService()))

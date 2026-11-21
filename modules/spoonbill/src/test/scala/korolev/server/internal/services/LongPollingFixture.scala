@@ -27,11 +27,16 @@ import spoonbill.web.{PathAndQuery, Request, Response}
  *   the state storage, when a case needs one that misbehaves
  * @param reporter
  *   the reporter of the service, when a case needs one that misbehaves
+ * @param setup
+ *   what a first extension waits for in its setup, when a case needs a view
+ *   that is still being set up. The service looks for a closed connection
+ *   before it sets up the extension after it.
  */
 private[services] final class LongPollingFixture(
   destroy: () => Future[Unit] = () => Future.unit,
   storage: Option[StateStorage[Future, Int]] = None,
-  reporter: Reports => Reporter = identity
+  reporter: Reports => Reporter = identity,
+  setup: Option[() => Future[Unit]] = None
 ) {
   import LongPollingFixture.await
   private given Effect[Future] = Effect.futureEffect
@@ -51,7 +56,11 @@ private[services] final class LongPollingFixture(
       ),
     reporter = reporter(reports),
     stateStorage = storage.orNull,
-    extensions = List(
+    extensions = setup.toList.map { waited =>
+      Extension[Future, Int, Any]("held")(_ =>
+        summon[Effect[Future]].map(waited())(_ => Extension.Handlers[Future, Int, Any]())
+      )
+    } ::: List(
       Extension.pure[Future, Int, Any]("retirement")(_ =>
         Extension.Handlers[Future, Int, Any](onDestroy = _ => { destroyed += 1; destroy() })
       )

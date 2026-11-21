@@ -699,6 +699,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
     // The view of this attach, once it exists. A failed attach rolls it back.
     val created = new AtomicReference(Option.empty[View])
+    // Set when this attach has rolled its view back. Its failure is then not
+    // kept in the session table. See attachOrReload.
+    val rolledBack = new AtomicBoolean(false)
     // Set when the connection has closed. Setup then stops before the next
     // extension, and delivery does not start.
     val lifecycle = new AtomicReference(LegacySessionMachine.State())
@@ -759,14 +762,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * is written back: the next attach must not trust a state the browser
      * never saw. Every waiting attach gets the error.
      */
-    def abandon(error: Throwable): F[Unit] = {
-      // Fail the entry before it is removed, so the waiters get this error
-      // and not the removal.
-      val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
-      created.get() match {
-        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, settle)
-        case None       => attempt(settle())
+    def abandon(): F[Unit] = {
+      // The table entry is left alone here. This attach fills it, and the
+      // fill ends with the error: the table then gives the error to every
+      // attach that waits. An entry that is failed or removed before the fill
+      // has ended is written again when it ends, and that failure would stay.
+      val rollback = created.get() match {
+        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
+        case None       => Effect[F].unit
       }
+      rollback.map(_ => rolledBack.set(true))
     }
 
     def handleAppOrWsOutgoingCloseOrTimeout(view: View): F[Unit] = {
@@ -913,8 +918,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // session. Removing the entry would let a reconnect trust the stale DOM.
               apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
             case error =>
-              abandon(error).flatMap(_ => Effect[F].fail(error))
+              abandon().flatMap(_ => Effect[F].fail(error))
           }
+        }.recoverF {
+          // The fill has ended, and every attach that waited for it has its
+          // error. A view that was rolled back leaves nothing behind, so its
+          // failure must not answer the attaches that come later: the page
+          // reconnects, and that attach builds a view of its own. Only the
+          // attach that ran the fill takes the entry out, once, and in the
+          // same step that a cancelled request cannot split.
+          case error if rolledBack.get() => apps.remove(qsid).flatMap(_ => Effect[F].fail[App](error))
         }
       }.flatMap(admit).recoverF { case error: DevMode.InvalidSavedRenderContext =>
         config.reporter.error(error.getMessage, error)

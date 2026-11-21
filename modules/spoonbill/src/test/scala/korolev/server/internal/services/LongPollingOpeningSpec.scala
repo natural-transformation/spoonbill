@@ -9,6 +9,7 @@ import scala.collection.concurrent.TrieMap
 import scala.concurrent.{Future, Promise}
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Queue, Reporter, Stream}
+import spoonbill.internal.ExtensionRuntime
 import spoonbill.internal.TimerTestSupport.Reports
 import spoonbill.server.{spoonbillService, SpoonbillServiceConfig, StateLoader}
 import spoonbill.state.{StateManager, StateStorage}
@@ -186,6 +187,29 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
     // The view of opening 3 is the next one, and it gets the message.
     patches(fixture.frames(Some(3))) shouldBe true
     fixture.destroyed shouldBe 1
+  }
+
+  "A poll of the next opening that comes while the view before is being set up" should
+    "fail with that view, and leave a view to the opening after it" in {
+    val gate    = Promise[Unit]()
+    val fixture = new LongPollingFixture(setup = Some(() => gate.future))
+    val first   = fixture.subscribe(Some(1))
+    val second  = fixture.subscribe(Some(2))
+    // Opening 2 ended the topic of opening 1. The view of opening 1 is still
+    // in its setup, and both polls wait for it.
+    first.isCompleted shouldBe false
+    second.isCompleted shouldBe false
+
+    gate.success(())
+    fixture.worker.drain()
+
+    // The setup stops, because its connection is over. Both polls get that.
+    first.value.flatMap(_.failed.toOption).get shouldBe a[ExtensionRuntime.SetupAborted]
+    second.value.flatMap(_.failed.toOption).get shouldBe a[ExtensionRuntime.SetupAborted]
+    fixture.view shouldBe None
+    // The failure is not kept for the session: the next opening gets a view.
+    announcesClick(fixture.frames(Some(3))) shouldBe true
+    fixture.view should not be empty
   }
 
   "A poll of the same opening" should "stay on its view" in {
