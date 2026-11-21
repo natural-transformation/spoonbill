@@ -740,7 +740,13 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // that removal could still run when the next view has attached.
               // If no next view comes, the state stays, as the state of a
               // page does that was rendered and never connected.
-              if (view.registration.owner.exists(_.superseded)) Effect[F].unit
+              //
+              // A view that an attach of the session already waits for is
+              // the same case. Its topic can be gone by then, so that no
+              // newer one replaced it: a view that ends by its idle timeout
+              // cancels its own input first, and that removes the topic.
+              val pageGoesOn = view.registration.owner.exists(_.superseded) || view.registration.awaited
+              if (pageGoesOn) Effect[F].unit
               else attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
             case Stage.SettleRegistry => attempt(registry()).map(_ => legacyViews.departed(qsid, view.registration))
           }
@@ -947,33 +953,43 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       val registered = legacyViews.registrationOf(qsid, app)
       LegacyAttachMachine.decide(
         checked = owner.nonEmpty,
+        superseded = owner.exists(_.superseded),
         createdHere = created.get().exists(_.app eq app),
         registered = registered.nonEmpty,
         sameOwner = registered.exists(_.owner.exists(other => owner.exists(_ eq other)))
       ) match {
         case LegacyAttachMachine.Decision.Attach => Effect[F].pure(attached(app))
-        case LegacyAttachMachine.Decision.Retry  => begin()
+        // Also when this attach built the view while its owner was replaced.
+        // That view ends by itself: its topic has ended.
+        case LegacyAttachMachine.Decision.Superseded => Effect[F].pure(SessionStart.Superseded())
+        case LegacyAttachMachine.Decision.Retry      => start()
         case LegacyAttachMachine.Decision.AwaitDeparture =>
           // The view of another owner can be a newer one, which stays. So the
-          // wait also ends when this owner is replaced, and `begin` sees that.
-          registered.fold(begin())(registration => legacyViews.departure(registration, owner).flatMap(_ => begin()))
+          // wait also ends when this owner is replaced. The attach then
+          // starts again and stops before it builds a view.
+          registered.fold(start())(registration => legacyViews.departure(registration, owner).flatMap(_ => start()))
       }
     }
 
     /**
-     * Starts the attach, at first and again after a view has left. An attach
-     * whose owner was replaced by a newer transport gets no view here, and it
-     * builds none: that view would be one for nobody.
+     * Fills the registry, unless the owner of this attach was replaced by a
+     * newer transport: such an attach builds no view, because it would be a
+     * view for nobody. This is the last moment before the view is built, at
+     * first and again after a view has left. It is looked at when the attach
+     * runs, not when it is put together.
      */
-    def begin(): F[SessionStart[F]] =
-      if (owner.exists(_.superseded)) Effect[F].pure(SessionStart.Superseded()) else start()
+    def attachUnlessReplaced(): F[SessionStart[F]] =
+      Effect[F].delay(owner.exists(_.superseded)).flatMap {
+        case true  => Effect[F].pure[SessionStart[F]](SessionStart.Superseded())
+        case false => attachOrReload()
+      }
 
     def start(): F[SessionStart[F]] =
       stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
         case true =>
           // State exists because it was created on static page
           // rendering phase (see ServerSideRenderingService)
-          attachOrReload()
+          attachUnlessReplaced()
         case false =>
           // State can be missing after a restart; rebuild it from the request.
           // A failed rebuild is the recognized reload recovery, not an access failure.
@@ -987,12 +1003,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
             .flatMap {
               // A failed attach is not a failed rebuild. It fails here as it
               // does when the state exists: a reload would only repeat it.
-              case true  => attachOrReload()
+              case true  => attachUnlessReplaced()
               case false => Effect[F].pure[SessionStart[F]](SessionStart.Reload())
             }
       }
 
-    begin()
+    start()
   }
 
   private val stateStorage =

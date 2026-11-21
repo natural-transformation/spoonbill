@@ -18,8 +18,8 @@ import spoonbill.web.{PathAndQuery, Request, Response}
 
 /**
  * One session of a counter page on long polling, for the cases of
- * [[LongPollingOpeningSpec]]. The worker runs the tasks of the service when a
- * case drains it.
+ * [[LongPollingOpeningSpec]] and [[LongPollingHandoffSpec]]. The worker runs
+ * the tasks of the service when a case drains it.
  *
  * @param destroy
  *   what the page's extension does when its view is destroyed
@@ -30,13 +30,17 @@ import spoonbill.web.{PathAndQuery, Request, Response}
  * @param setup
  *   what a first extension waits for in its setup, when a case needs a view
  *   that is still being set up. The service looks for a closed connection
- *   before it sets up the extension after it.
+ *   before every setup and once after the last one.
+ * @param load
+ *   how the state of the session is built from a request, when a case needs
+ *   a poll that still waits for its state
  */
 private[services] final class LongPollingFixture(
   destroy: () => Future[Unit] = () => Future.unit,
   storage: Option[StateStorage[Future, Int]] = None,
   reporter: Reports => Reporter = identity,
-  setup: Option[() => Future[Unit]] = None
+  setup: Option[() => Future[Unit]] = None,
+  load: () => Future[Int] = () => Future.successful(0)
 ) {
   import LongPollingFixture.await
   private given Effect[Future] = Effect.futureEffect
@@ -44,11 +48,12 @@ private[services] final class LongPollingFixture(
   val worker    = new Worker
   val reports   = new Reports
   var loads     = 0 // how often the state was built from a request
+  var built     = 0 // how many views were built, as far as the extension below was set up
   var destroyed = 0 // how many views were destroyed
   private val context = Context[Future, Int, Any]
   import context.*
   private val config = SpoonbillServiceConfig[Future, Int, Any](
-    stateLoader = (_, _) => { loads += 1; Future.successful(0) },
+    stateLoader = (_, _) => { loads += 1; load() },
     document = state =>
       Html(
         head(title("Counter")),
@@ -61,9 +66,10 @@ private[services] final class LongPollingFixture(
         summon[Effect[Future]].map(waited())(_ => Extension.Handlers[Future, Int, Any]())
       )
     } ::: List(
-      Extension.pure[Future, Int, Any]("retirement")(_ =>
+      Extension.pure[Future, Int, Any]("retirement") { _ =>
+        built += 1
         Extension.Handlers[Future, Int, Any](onDestroy = _ => { destroyed += 1; destroy() })
-      )
+      }
     )
   )(worker)
   val sessions = new SessionsService(config, new PageService(config))

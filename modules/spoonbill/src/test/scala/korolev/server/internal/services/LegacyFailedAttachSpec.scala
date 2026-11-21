@@ -31,7 +31,8 @@ class LegacyFailedAttachSpec extends AnyFlatSpec with Matchers {
    *
    * @param setup
    *   what the first extension waits for in its setup. The service looks for
-   *   a closed connection before it sets up the second one.
+   *   a closed connection before every setup and once after the last one, so
+   *   one extension would do. The second one is there to be left out.
    */
   private final class Fixture(setup: () => Future[Unit]) {
     val worker = new Worker

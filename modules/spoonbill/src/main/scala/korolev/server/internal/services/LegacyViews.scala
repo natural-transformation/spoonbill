@@ -1,5 +1,6 @@
 package spoonbill.server.internal.services
 
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.{ExecutionContext, Promise}
 import spoonbill.Qsid
@@ -7,7 +8,8 @@ import spoonbill.effect.Effect
 
 /**
  * The legacy views that are registered, at most one for a session. Each has
- * the transport that attached it and a signal that it has left the registry.
+ * the transport that attached it, a signal that it has left the registry, and
+ * a mark that an attach waits for it to leave.
  * A long-polling attach names its topic as the owner. A WebSocket attach
  * names none. What an attach does with these facts is decided by
  * [[LegacyAttachMachine]].
@@ -22,7 +24,15 @@ import spoonbill.effect.Effect
 private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionContext: ExecutionContext) {
 
   final class Registration(val view: V, val owner: Option[AttachOwner]) {
-    private[LegacyViews] val left = Promise[Unit]()
+    private[LegacyViews] val left    = Promise[Unit]()
+    private[LegacyViews] val waited  = new AtomicBoolean(false)
+
+    /**
+     * An attach of the session waits, or has waited, for this view to leave.
+     * So the page goes on, and the view leaves the stored state to its
+     * successor.
+     */
+    def awaited: Boolean = waited.get()
   }
 
   private val registered = TrieMap.empty[Qsid, Registration]
@@ -60,9 +70,11 @@ private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionCo
   /**
    * Completes when the view has left the registry, or when `waiter` was
    * superseded: its attach has nothing to wait for then. Fails when the
-   * retirement of the view failed.
+   * retirement of the view failed. The view is marked as awaited from the
+   * moment the wait starts.
    */
   def departure(registration: Registration, waiter: Option[AttachOwner]): F[Unit] = Effect[F].promise { callback =>
+    registration.waited.set(true)
     val woken = Promise[Unit]()
     registration.left.future.onComplete(woken.tryComplete)(ExecutionContext.parasitic)
     waiter.foreach(_.whenSuperseded.onComplete(woken.tryComplete)(ExecutionContext.parasitic))

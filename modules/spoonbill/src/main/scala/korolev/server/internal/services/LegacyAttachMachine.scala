@@ -9,11 +9,12 @@ package spoonbill.server.internal.services
  * has left the registry and then attaches again, so two views never share the
  * registry entry.
  *
- * An owner can be replaced by a newer one while its attach is under way. Then
- * the view of another owner may be the newer one, which will not leave. This
- * decision does not look at that. The session service does, around it: the
- * wait ends when the owner is replaced, and an attach looks at its owner
- * before every start. A replaced owner gets no view then, and builds none.
+ * An owner can be replaced by a newer one while its attach is under way. Such
+ * an attach gets no view, whatever the registry gave it. Not a view to wait
+ * for: it may be the newer one, which will not leave. Not a view of its own
+ * owner, and not the view that it has just built: that view is on its way
+ * out, because its topic has ended, and the frames that it has ready must not
+ * answer a request of a transport that is over.
  *
  * A WebSocket attach is not checked. It takes the registered view, as before.
  */
@@ -28,11 +29,16 @@ private[services] object LegacyAttachMachine {
 
     /** The view has left the registry already. Attach again. */
     case Retry
+
+    /** A newer transport has replaced the owner. This attach gets no view. */
+    case Superseded
   }
 
   /**
    * @param checked
    *   the attach names an owner
+   * @param superseded
+   *   a newer transport has taken the place of that owner
    * @param createdHere
    *   this attach built the view itself
    * @param registered
@@ -40,8 +46,16 @@ private[services] object LegacyAttachMachine {
    * @param sameOwner
    *   the registered view was attached by the same owner
    */
-  def decide(checked: Boolean, createdHere: Boolean, registered: Boolean, sameOwner: Boolean): Decision =
-    if (!checked || createdHere) Decision.Attach
+  def decide(
+    checked: Boolean,
+    superseded: Boolean,
+    createdHere: Boolean,
+    registered: Boolean,
+    sameOwner: Boolean
+  ): Decision =
+    if (!checked) Decision.Attach
+    else if (superseded) Decision.Superseded
+    else if (createdHere) Decision.Attach
     else if (!registered) Decision.Retry
     else if (sameOwner) Decision.Attach
     else Decision.AwaitDeparture
