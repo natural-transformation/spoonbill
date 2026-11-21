@@ -104,6 +104,15 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - Internal: `AsyncTable.settled` completes when a key is no longer being
   filled.
 
+- Fix: the browser client keeps one connection at a time. A
+  `Spoonbill.connect()` while an attempt is pending starts no second attempt,
+  and a new transport closes the one it replaces. Two quick calls used to open
+  two WebSockets, and a call on an open connection left the old socket open.
+- Fix: `Spoonbill.disconnect()` ends a long-polling connection. It aborts the
+  outstanding request and reports the closed connection once, as with a
+  WebSocket; it reconnects only when asked to. The page used to go on polling
+  and applying frames.
+
 ## 10.0.1 — 2026-11-12
 
 Upgrade all Spoonbill modules together to `10.0.1` and align explicit Avocet
