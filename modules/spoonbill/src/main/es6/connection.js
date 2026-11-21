@@ -26,6 +26,12 @@ export class Connection {
     this._location = location;
 
     this._reconnectTimer = null;
+    /**
+     * Ends the physical transport that is installed now, so that it delivers
+     * nothing more. True when it ended a transport that was still live.
+     * @type {function(): boolean}
+     */
+    this._retireTransport = () => false;
     /** @type {?WebSocket} */
     this._webSocket = null;
     /** @type {?TextEncoder} */
@@ -215,6 +221,16 @@ export class Connection {
       });
     };
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch});
+    // One live transport at a time. The transport that this socket replaces
+    // is stale from here on, so its close does not reach the lifecycle.
+    const replaced = this._retireTransport;
+    this._retireTransport = () => {
+      clearPendingSends();
+      if (sendingSocket.readyState !== WebSocket.CONNECTING && sendingSocket.readyState !== WebSocket.OPEN) return false;
+      sendingSocket.close();
+      return true;
+    };
+    replaced();
 
     this._webSocket.addEventListener('open', (event) => {
       if (isCurrent()) this._onOpen();
@@ -300,7 +316,22 @@ export class Connection {
     this._clearPendingSends();
     const epoch = {};
     this._processing = null;
-    const isCurrent = () => currentTransport(this._lifecycle, epoch);
+    // Long polling has no socket whose state says that it ended. `closed`
+    // plays that part: once it is set, no callback of this transport acts.
+    let closed = false;
+    /** @type {?XMLHttpRequest} The outstanding subscribe request. */
+    let pending = null;
+    const isCurrent = () => !closed && currentTransport(this._lifecycle, epoch);
+    /** Ends this transport once. True when it was still live. */
+    const close = () => {
+      if (closed) return false;
+      closed = true;
+      const request = pending;
+      pending = null;
+      // The abort fires readystatechange, which sees `closed` and does nothing.
+      if (request) request.abort();
+      return true;
+    };
 
     let url = (this._useSSL ? "https://" : "http://") + this._hostPort;
     let path = this._serverRootPath + `bridge/long-polling/${this._sessionId}/`;
@@ -312,7 +343,10 @@ export class Connection {
 
       let onReadyStateChange = (event) => {
         let request = event.target;
-        if (!isCurrent() || request.readyState !== 4)
+        if (request.readyState !== 4)
+          return;
+        if (pending === request) pending = null;
+        if (!isCurrent())
           return;
         switch (request.status) {
           case 200:
@@ -328,12 +362,19 @@ export class Connection {
             break;
           default:
             this._onError();
-            if (isCurrent()) this._onClose();
+            // The request failed, so this transport has ended. Closing it
+            // keeps a later disconnect() from running the close lifecycle
+            // again. A disconnect() during the error event closed it already.
+            if (isCurrent()) {
+              close();
+              this._onClose();
+            }
             break;
         }
       };
 
       let request = new XMLHttpRequest();
+      pending = request;
       request.addEventListener('readystatechange', onReadyStateChange);
       request.open('GET', uriPrefix + 'subscribe', true);
       request.send('');
@@ -365,6 +406,10 @@ export class Connection {
 
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
+    // One live transport at a time, as for a WebSocket.
+    const replaced = this._retireTransport;
+    this._retireTransport = close;
+    replaced();
 
     subscribe(true);
     // Treat long-polling as connected immediately so Spoonbill can attach listeners
@@ -553,23 +598,31 @@ export class Connection {
       this._reconnectTimer = null;
     }
     this._clearPendingSends();
-    if (this._webSocket != null) {
+    if (this._lifecycle.transport === ConnectionType.LONG_POLLING) {
+      // Long polling has no close event of its own. End the transport here and
+      // run the close lifecycle once, as the close event of a socket does. It
+      // reconnects only when asked to.
+      if (this._retireTransport()) await this._onClose();
+    } else if (this._webSocket != null) {
         this._webSocket.close();
-    } else {
-        console.log("Disconnect allowed only for WebSocket connections")
     }
   }
 
   _scheduleConnection(connectionType) {
     const scheduleEpoch = this._lifecycle.scheduleEpoch;
     this._reconnectTimer = setTimeout(() => {
-      if (!currentSchedule(this._lifecycle, scheduleEpoch)) return;
+      // connect() keeps one attempt pending at most, so this timer is that
+      // attempt. Clear it before the check: a stale value would block connect().
       this._reconnectTimer = null;
+      if (!currentSchedule(this._lifecycle, scheduleEpoch)) return;
       if (!(this._lifecycle.presence === 'departed')) this._connectUsingConnectionType(connectionType);
     }, this._lifecycle.reconnectDelay);
   }
 
   connect() {
+
+    // One connection attempt at a time: a pending attempt takes this call.
+    if (this._reconnectTimer !== null) return;
 
     if (connectionOpened(this._lifecycle))
       console.log('Reconnecting...');

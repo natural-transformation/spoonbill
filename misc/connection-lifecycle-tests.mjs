@@ -37,6 +37,14 @@ async function environment(check) {
     open(method, url, async) { this.method = method; this.url = url; this.async = async; }
     setRequestHeader(name, value) { this.headers.set(name, value); }
     send(body) { this.body = body; }
+    // As the XHR standard says: aborting a sent request moves it to DONE with
+    // status 0 and fires readystatechange; aborting a done request fires nothing.
+    abort() {
+      this.aborted = true;
+      if (this.readyState === 4) return;
+      this.status = 0; this.responseText = ''; this.readyState = 4;
+      this.dispatchEvent(new Event('readystatechange'));
+    }
     respond(status, responseText = '') {
       this.status = status; this.responseText = responseText; this.readyState = 4;
       this.dispatchEvent(new Event('readystatechange'));
@@ -279,4 +287,93 @@ test('a websocket superseded by long polling cannot publish late frames', () => 
   assert.deepEqual(received, []);
   env.requests[0].respond(200, 'current');
   assert.deepEqual(received, ['current']);
+}));
+
+// One live transport at a time (survey entry WEB-1).
+test('a connect() while an attempt is pending starts no second attempt', () => environment(async env => {
+  const connection = env.create();
+  connection.connect();
+  connection.connect();
+  assert.equal(env.timers.size, 1);
+  assert.equal(env.nextTimer(), 200, 'the absorbed call does not advance the backoff');
+  assert.equal(env.timers.size, 0);
+  assert.equal(env.sockets.length, 1);
+}));
+
+test('a connect() on an open connection closes the socket it replaces without a close lifecycle', () => environment(async env => {
+  const connection = env.create();
+  const events = [];
+  for (const name of ['open', 'close', 'error'])
+    connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer(); env.sockets[0].open();
+  connection.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 2);
+  assert.equal(env.sockets[0].readyState, WebSocket.CLOSED);
+  await env.flush();
+  assert.deepEqual(events, ['open'], 'the replaced socket reports no close of the connection');
+  assert.equal(env.timers.size, 0, 'the replaced socket schedules no reconnect');
+}));
+
+test('a new transport aborts the long-poll subscription it replaces', () => environment(async env => {
+  const connection = env.create({ws: false});
+  const events = [];
+  for (const name of ['close', 'error'])
+    connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer();
+  const old = env.requests[0];
+  connection.connect(); env.nextTimer();
+  assert.equal(old.aborted, true);
+  assert.equal(env.requests.length, 2, 'the aborted request renews nothing');
+  assert.equal(env.requests[1].aborted, undefined);
+  assert.deepEqual(events, []);
+}));
+
+// disconnect() ends long polling as it ends a WebSocket (survey entry WEB-3).
+test('permanent disconnect ends long polling with one close lifecycle', () => environment(async env => {
+  const connection = env.create({ws: false});
+  const events = [];
+  for (const name of ['open', 'ready', 'close', 'error', 'message'])
+    connection.dispatcher.addEventListener(name, event => events.push(name === 'message' ? event.data : name));
+  connection.connect(); env.nextTimer();
+  env.requests[0].respond(200, 'first');
+  const outstanding = env.requests[1];
+  await connection.disconnect(false);
+  assert.equal(outstanding.aborted, true);
+  assert.deepEqual(events, ['open', 'ready', 'first', 'close']);
+  assert.equal(env.requests.length, 2, 'no subscription is renewed');
+  connection.send('late');
+  assert.equal(env.requests.length, 2, 'nothing is published');
+  assert.equal(env.timers.size, 0, 'no reconnect is scheduled');
+  await connection.disconnect(false);
+  assert.deepEqual(events, ['open', 'ready', 'first', 'close'], 'a second disconnect reports nothing');
+}));
+
+test('disconnect with reconnect ends long polling once and connects again', () => environment(async env => {
+  const connection = env.create({ws: false});
+  let closes = 0;
+  connection.dispatcher.addEventListener('close', () => closes++);
+  connection.connect(); env.nextTimer();
+  env.requests[0].respond(200, 'first');
+  await connection.disconnect(true);
+  assert.equal(closes, 1);
+  assert.equal(env.requests[1].aborted, true);
+  env.nextTimer();
+  assert.equal(env.requests.length, 3);
+  assert.equal(env.requests[2].url, 'http://example.test/app/bridge/long-polling/session/subscribe');
+  assert.equal(env.sockets.length, 0, 'the selected transport stays long polling');
+}));
+
+test('a failed subscription and a disconnect report one close in either order', () => environment(async env => {
+  for (const disconnectDuringError of [false, true]) {
+    const connection = env.create({ws: false});
+    let closes = 0;
+    connection.dispatcher.addEventListener('close', () => closes++);
+    if (disconnectDuringError) connection.dispatcher.addEventListener('error', () => { connection.disconnect(false); });
+    connection.connect(); env.nextTimer();
+    env.requests.at(-1).respond(500);
+    await env.flush();
+    await connection.disconnect(false);
+    await env.flush();
+    assert.equal(closes, 1, `disconnect during the error event: ${disconnectDuringError}`);
+  }
 }));
