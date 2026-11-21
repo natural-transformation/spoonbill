@@ -6,8 +6,14 @@ package spoonbill.server.internal.services
  * A long-polling attach is checked: it names its topic as the owner, and it
  * may only use a view that this topic attached. A view of an older topic is on
  * its way out, because that topic has ended. The attach waits until the view
- * has left the registry and then attaches again, so the new view never shares
- * the registry entry or the stored state with the old one.
+ * has left the registry and then attaches again, so two views never share the
+ * registry entry.
+ *
+ * An owner can be replaced by a newer one while its attach is under way. Then
+ * the view of another owner may be the newer one, which will not leave. This
+ * decision does not look at that. The session service does, around it: the
+ * wait ends when the owner is replaced, and an attach looks at its owner
+ * before every start. A replaced owner gets no view then, and builds none.
  *
  * A WebSocket attach is not checked. It takes the registered view, as before.
  */

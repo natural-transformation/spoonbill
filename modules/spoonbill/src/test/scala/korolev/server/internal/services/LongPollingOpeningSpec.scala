@@ -1,20 +1,16 @@
 package spoonbill.server.internal.services
 
+import LongPollingFixture.*
 import avocet.Id
-import avocet.dsl.*
-import avocet.dsl.html.*
 import java.util.UUID
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import scala.annotation.tailrec
-import scala.concurrent.{Await, Future, Promise}
-import scala.concurrent.duration.*
-import scala.util.{Failure, Success}
-import spoonbill.{Context, Extension, Qsid}
+import scala.collection.concurrent.TrieMap
+import scala.concurrent.{Future, Promise}
 import spoonbill.data.Bytes
-import spoonbill.effect.{Effect, Reporter, Stream}
-import spoonbill.internal.TimerTestSupport.{Reports, Worker}
-import spoonbill.server.{spoonbillService, HttpResponse, SpoonbillServiceConfig, StateLoader}
+import spoonbill.effect.{Effect, Queue, Reporter, Stream}
+import spoonbill.internal.TimerTestSupport.Reports
+import spoonbill.server.{spoonbillService, SpoonbillServiceConfig, StateLoader}
 import spoonbill.state.{StateManager, StateStorage}
 import spoonbill.state.javaSerialization.*
 import spoonbill.testExecution
@@ -27,109 +23,10 @@ import spoonbill.web.{PathAndQuery, Request, Response}
  * status of a poll, and which view answers.
  */
 class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
-  private given Effect[Future]              = Effect.futureEffect
-  private def await[A](value: Future[A]): A = Await.result(value, 5.seconds)
-
-  /**
-   * One session of a counter page. The worker runs the tasks of the service when a case drains it.
-   *
-   * @param destroy
-   *   what the page's extension does when its view is destroyed
-   * @param storage
-   *   the state storage, when a case needs one that misbehaves
-   * @param reporter
-   *   the reporter of the service, when a case needs one that misbehaves
-   */
-  private final class Fixture(
-    destroy: () => Future[Unit] = () => Future.unit,
-    storage: Option[StateStorage[Future, Int]] = None,
-    reporter: Reports => Reporter = identity
-  ) {
-    val worker    = new Worker
-    val reports   = new Reports
-    var loads     = 0 // how often the state was built from a request
-    var destroyed = 0 // how many views were destroyed
-    private val context = Context[Future, Int, Any]
-    import context.*
-    private val config = SpoonbillServiceConfig[Future, Int, Any](
-      stateLoader = (_, _) => { loads += 1; Future.successful(0) },
-      document = state =>
-        Html(
-          head(title("Counter")),
-          body(button("Add", event("click")(access => access.transition(_ + 1))), p(state.toString))
-        ),
-      reporter = reporter(reports),
-      stateStorage = storage.orNull,
-      extensions = List(
-        Extension.pure[Future, Int, Any]("retirement")(_ =>
-          Extension.Handlers[Future, Int, Any](onDestroy = _ => { destroyed += 1; destroy() })
-        )
-      )
-    )(worker)
-    val sessions = new SessionsService(config, new PageService(config))
-    val messaging = new MessagingService[Future](
-      reporter = reports,
-      // Not used by the long-polling requests.
-      commonService = null.asInstanceOf[CommonService[Future]],
-      sessionsService = sessions,
-      compressionSupport = None,
-      orphanTopicTimeout = 1.minute
-    )
-    val qsid = Qsid("long-polling", UUID.randomUUID().toString)
-
-    def request(open: Option[Long]): Request[Unit] = {
-      val path = "/bridge/long-polling/session/subscribe" + open.fold("")(number => s"?open=$number")
-      Request(Request.Method.Get, PathAndQuery.fromString(path), Nil, None, ())
-    }
-
-    /** One poll. It is answered when the view has a frame, or when the view has ended. */
-    def subscribe(open: Option[Long]): Future[HttpResponse[Future]] = {
-      val poll = messaging.longPollingSubscribe(qsid, request(open))
-      worker.drain()
-      poll
-    }
-
-    /** One message of a bridge, as its publish request carries it. */
-    def publish(open: Option[Long], message: String): Future[HttpResponse[Future]] = {
-      val body = await(Stream(Bytes.wrap(message.getBytes("UTF-8"))).mat[Future]())
-      val sent = messaging.longPollingPublish(qsid, body, open)
-      worker.drain()
-      sent
-    }
-
-    def view: Option[AnyRef] = await(sessions.getApp(qsid))
-
-    private var outstanding = Map.empty[Option[Long], Future[HttpResponse[Future]]]
-
-    /** The frames that are ready for this opening, in order. One poll stays outstanding, as in a browser. */
-    def frames(open: Option[Long]): Vector[String] = {
-      @tailrec def collect(done: Vector[String]): Vector[String] = {
-        val poll = outstanding.getOrElse(open, subscribe(open))
-        worker.drain()
-        poll.value match {
-          case Some(Success(response)) if response.status == Response.Status.Ok =>
-            outstanding -= open
-            collect(done :+ await(response.body.fold(Bytes.empty)(_ ++ _)).asUtf8String)
-          case Some(Success(_)) => outstanding -= open; done
-          case Some(Failure(error)) => throw error
-          case None => outstanding += open -> poll; done
-        }
-      }
-      collect(Vector.empty)
-    }
-  }
-
-  /** The frame that tells a bridge to listen to clicks. A view sends it once. */
-  private def announcesClick(frames: Vector[String]): Boolean = frames.exists(_.startsWith("""[2,"click""""))
-
-  /** A view that handled a click renders the next state and sends the patch. */
-  private def patches(frames: Vector[String]): Boolean = frames.exists(_.startsWith("[4,"))
-
-  /** The first click on the button, as a bridge sends it. The button is the first child of the body. */
-  private val click = """[0,"0:1_2_1:click"]"""
+  private given Effect[Future] = Effect.futureEffect
 
   "A poll of the next opening" should "retire the view of the opening before and get a view that announces its events again" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     announcesClick(fixture.frames(Some(1))) shouldBe true
     val first = fixture.view.get
     fixture.frames(Some(1)) shouldBe empty
@@ -144,7 +41,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
 
   it should "attach its view only when the view before has left" in {
     val held    = Promise[Unit]()
-    val fixture = new Fixture(destroy = () => held.future)
+    val fixture = new LongPollingFixture(destroy = () => held.future)
     fixture.frames(Some(1))
     val first = fixture.view.get
 
@@ -163,11 +60,54 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
     fixture.reports.errors shouldBe empty
   }
 
-  it should "fail, and not wait for ever, when the view before cannot be retired" in {
+  it should "leave the stored state of the session in place" in {
+    // What a database would hold, and how often the storage asked it to delete a session.
+    val repository = TrieMap.empty[String, Map[Id, Array[Byte]]]
+    var removals   = 0
+    val storage = StateStorage.fromRepository[Future, Int](
+      repositoryExists = key => Future.successful(repository.contains(key)),
+      loadSnapshot = key => Future.successful(repository.getOrElse(key, Map.empty)),
+      createSnapshot = (key, snapshot) => Future.successful { repository.put(key, snapshot); () },
+      writeNode = (key, id, bytes) => Future.successful { repository.updateWith(key)(_.map(_.updated(id, bytes))); () },
+      deleteNode = (key, id) => Future.successful { repository.updateWith(key)(_.map(_ - id)); () },
+      removeRepository = key => Future.successful { removals += 1; repository.remove(key); () },
+      onRemoveError = _ => ()
+    )
+    val fixture = new LongPollingFixture(storage = Some(storage))
+    fixture.frames(Some(1))
+    val first = fixture.view.get
+
+    announcesClick(fixture.frames(Some(2))) shouldBe true
+
+    // The page goes on, so its state is not removed. A removal that only
+    // starts here could still run when the new view has attached.
+    fixture.view.get should not be theSameInstanceAs(first)
+    removals shouldBe 0
+    repository.size shouldBe 1
+    fixture.loads shouldBe 1
+  }
+
+  it should "go on from the state that the session had" in {
+    val fixture = new LongPollingFixture
+    fixture.frames(Some(1))
+    await(fixture.publish(Some(1), click)).status shouldBe Response.Status.Ok
+    patches(fixture.frames(Some(1))) shouldBe true
+
+    fixture.frames(Some(2))
+    await(fixture.publish(Some(2), click)).status shouldBe Response.Status.Ok
+
+    // The count was 1. The new view starts there, so its click gives 2.
+    val rendered = fixture.frames(Some(2)).filter(_.startsWith("[4,"))
+    rendered should have size 1
+    rendered.head should include("\"2\"")
+    fixture.loads shouldBe 1
+  }
+
+  "A poll that waits for a view which cannot be retired" should "fail, and not wait for ever" in {
     val manager = StateManager.cached[Future](Map(Id.TopLevel -> 0))
     // A storage that cannot remove a state, and a reporter that cannot report
-    // it: the retirement of the old view ends with an error half way, and the
-    // view stays registered.
+    // it: the retirement of a view ends with an error half way, and the view
+    // stays registered.
     val storage = new StateStorage[Future, Int] {
       def exists(device: String, session: String): Future[Boolean]                           = Future.successful(true)
       def create(device: String, session: String, value: Int): Future[StateManager[Future]] = Future.successful(manager)
@@ -186,16 +126,70 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
       def debug(message: String, arg1: Any, arg2: Any): Unit            = ()
       def debug(message: String, arg1: Any, arg2: Any, arg3: Any): Unit = ()
     }
-    val fixture = new Fixture(storage = Some(storage), reporter = unreported)
+    val fixture = new LongPollingFixture(storage = Some(storage), reporter = unreported)
+    // A view that a socket attached. It names no owner, so a poll of the same
+    // session has to wait until it has left. Its state is removed when its
+    // socket closes; the state of a view that the next opening replaces is not.
+    val socket = Queue[Future, String]()
+    fixture.sessions.createAppIfNeeded(fixture.qsid, fixture.request(None), socket.stream)
+    fixture.worker.drain()
+    val poll = fixture.subscribe(Some(1))
+    poll.isCompleted shouldBe false
+
+    await(socket.close())
+    fixture.worker.drain()
+
+    poll.value.map(_.failed.map(_.getMessage).toOption) shouldBe Some(Some("not removed"))
+  }
+
+  "A poll of an opening that is replaced while it waits" should "be answered with Gone at once, and get no view" in {
+    val held    = Promise[Unit]()
+    val fixture = new LongPollingFixture(destroy = () => held.future)
     fixture.frames(Some(1))
+    val second = fixture.subscribe(Some(2))
+    fixture.status(second) shouldBe None // it waits for the view of opening 1 to leave
 
-    val reopening = fixture.subscribe(Some(2))
+    val third = fixture.subscribe(Some(3))
 
-    reopening.value.map(_.failed.map(_.getMessage).toOption) shouldBe Some(Some("not removed"))
+    // Opening 3 took the place of opening 2. The poll of opening 2 is answered
+    // now, while the view of opening 1 is still on its way out.
+    fixture.status(second) shouldBe Some(Response.Status.Gone)
+    fixture.status(third) shouldBe None
+
+    held.success(())
+    fixture.worker.drain()
+
+    fixture.status(third) shouldBe Some(Response.Status.Ok)
+    // One view was destroyed: the one of opening 1. None was built for opening 2.
+    fixture.destroyed shouldBe 1
+    fixture.reports.errors shouldBe empty
+  }
+
+  it should "build no view when the replacement comes just as the old view has left" in {
+    val held    = Promise[Unit]()
+    val fixture = new LongPollingFixture(destroy = () => held.future)
+    fixture.frames(Some(1))
+    val second = fixture.subscribe(Some(2))
+    // The view of opening 1 leaves. The poll of opening 2 is woken, but its
+    // next step waits in the worker.
+    held.success(())
+    // Before that step runs, a message of opening 3 takes the place of opening 2.
+    val body = await(Stream(Bytes.wrap(click.getBytes("UTF-8"))).mat[Future]())
+    fixture.messaging.longPollingPublish(fixture.qsid, body, Some(3))
+
+    fixture.worker.drain()
+
+    // No view is registered now, and the poll of opening 2 must not build one.
+    fixture.status(second) shouldBe Some(Response.Status.Gone)
+    fixture.view shouldBe None
+    fixture.destroyed shouldBe 1
+    // The view of opening 3 is the next one, and it gets the message.
+    patches(fixture.frames(Some(3))) shouldBe true
+    fixture.destroyed shouldBe 1
   }
 
   "A poll of the same opening" should "stay on its view" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     fixture.frames(Some(1))
     val first = fixture.view.get
 
@@ -206,7 +200,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
   }
 
   "A poll of an older opening" should "be answered with Gone and leave the view alone" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     fixture.frames(Some(1))
     fixture.frames(Some(2))
     val current = fixture.view.get
@@ -218,7 +212,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
   }
 
   "The first poll of a page" should "keep the state that the page was rendered with" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     await(fixture.sessions.initAppState(fixture.qsid, fixture.request(None)))
     fixture.loads shouldBe 1
 
@@ -229,7 +223,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
   }
 
   "A poll without a number" should "behave as before: one view for the session" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     announcesClick(fixture.frames(None)) shouldBe true
     val first = fixture.view.get
 
@@ -240,7 +234,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
   }
 
   "A message of the next opening" should "start that opening when it comes before the poll, and reach the new view" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     fixture.frames(Some(1))
     val first = fixture.view.get
 
@@ -256,7 +250,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
   }
 
   "A message of the same opening" should "reach the view" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     fixture.frames(Some(1))
 
     await(fixture.publish(Some(1), click)).status shouldBe Response.Status.Ok
@@ -266,7 +260,7 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
   }
 
   "A message of an older opening" should "be answered with Gone and not reach the view" in {
-    val fixture = new Fixture
+    val fixture = new LongPollingFixture
     fixture.frames(Some(1))
     fixture.frames(Some(2))
 
@@ -281,7 +275,10 @@ class LongPollingOpeningSpec extends AnyFlatSpec with Matchers {
       SpoonbillServiceConfig[Future, Int, Any](stateLoader = StateLoader.default[Future, Int](0))(testExecution.defaultExecutor)
     )
     def call(method: Request.Method, path: String): Response.Status = {
-      val request = Request(method, PathAndQuery.fromString(path), Nil, None, Stream.empty[Future, Bytes], "deviceId=device")
+      // A heartbeat, the smallest message of a bridge. An empty body is no
+      // message, and the view would report it as an invalid frame.
+      val body    = await(Stream(Bytes.wrap("[6]".getBytes("UTF-8"))).mat[Future]())
+      val request = Request(method, PathAndQuery.fromString(path), Nil, None, body, "deviceId=device")
       await(service.http(request)).status
     }
     val session = "/bridge/long-polling/" + UUID.randomUUID().toString

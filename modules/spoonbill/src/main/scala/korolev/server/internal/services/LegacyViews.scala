@@ -21,7 +21,7 @@ import spoonbill.effect.Effect
  */
 private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionContext: ExecutionContext) {
 
-  final class Registration(val view: V, val owner: Option[AnyRef]) {
+  final class Registration(val view: V, val owner: Option[AttachOwner]) {
     private[LegacyViews] val left = Promise[Unit]()
   }
 
@@ -57,8 +57,15 @@ private[services] final class LegacyViews[F[_]: Effect, V <: AnyRef](executionCo
     ()
   }
 
-  /** Completes when the view has left the registry. Fails when its retirement failed. */
-  def departure(registration: Registration): F[Unit] = Effect[F].promise { callback =>
-    registration.left.future.onComplete(result => callback(result.toEither))(executionContext)
+  /**
+   * Completes when the view has left the registry, or when `waiter` was
+   * superseded: its attach has nothing to wait for then. Fails when the
+   * retirement of the view failed.
+   */
+  def departure(registration: Registration, waiter: Option[AttachOwner]): F[Unit] = Effect[F].promise { callback =>
+    val woken = Promise[Unit]()
+    registration.left.future.onComplete(woken.tryComplete)(ExecutionContext.parasitic)
+    waiter.foreach(_.whenSuperseded.onComplete(woken.tryComplete)(ExecutionContext.parasitic))
+    woken.future.onComplete(result => callback(result.toEither))(executionContext)
   }
 }

@@ -107,10 +107,12 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   long-polling request now names the opening of the connection that it belongs
   to (`subscribe?open=2`, `publish?open=2`). When the number grows, the server
   retires the view of the opening before and builds a new one, as it does for
-  a WebSocket that reconnects. The page used to reconnect to the old view,
-  which announces its events only once, so the new bridge listened to nothing
-  but `submit`. A request of an older opening is answered with 410. A client
-  that sends no number is served as before.
+  a WebSocket that reconnects. The new view goes on from the stored state of
+  the session: this handoff removes nothing from the state storage. The page
+  used to reconnect to the old view, which announces its events only once, so
+  the new bridge listened to nothing but `submit`. A request of an older
+  opening is answered with 410. A client that sends no number is served as
+  before.
 
 ## 10.0.1 — 2026-11-12
 

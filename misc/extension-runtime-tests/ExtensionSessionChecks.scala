@@ -91,6 +91,8 @@ object ExtensionSessionChecks {
     def attachAgain(): Unit = run(attach(Queue[F, String]())) match {
       case SessionStart.Attached(_, release) => run(release())
       case SessionStart.Reload()             => ()
+      // Only an attach that names an owner can be superseded. This one names none.
+      case SessionStart.Superseded() => throw new AssertionError("An attach without an owner was superseded")
     }
   }
 

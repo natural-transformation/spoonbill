@@ -171,7 +171,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     qsid: Qsid,
     rh: Head,
     incomingStream: Stream[F, String],
-    owner: Option[AnyRef] = None
+    owner: Option[AttachOwner] = None
   ): F[SessionStart[F]] =
     config.sessionAccessControl match {
       case Some(control) => createGuarded(qsid, rh, incomingStream, control)
@@ -671,7 +671,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     qsid: Qsid,
     rh: Head,
     incomingStream: Stream[F, String],
-    owner: Option[AnyRef]
+    owner: Option[AttachOwner]
   ): F[SessionStart[F]] = {
     val (incomingConsumed, managedIncomingStream) = incomingStream.handleConsumed
     val incomingHub: Hub[F, String]               = Hub(managedIncomingStream)
@@ -730,7 +730,15 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
             case Stage.DestroyApplication => attempt(view.app.destroy())
             case Stage.DestroyExtensions => attempt(view.extensions.fold(Effect[F].unit)(_.destroy()))
             case Stage.Restore => attempt(restore())
-            case Stage.RemoveStorage => attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            case Stage.RemoveStorage =>
+              // A view that a newer transport of the page replaced leaves the
+              // state where it is: the page goes on, and its next view takes
+              // the state over. A storage may only start a removal here, and
+              // that removal could still run when the next view has attached.
+              // If no next view comes, the state stays, as the state of a
+              // page does that was rendered and never connected.
+              if (view.registration.owner.exists(_.superseded)) Effect[F].unit
+              else attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
             case Stage.SettleRegistry => attempt(registry()).map(_ => legacyViews.departed(qsid, view.registration))
           }
           operation.flatMap(_ => Effect[F].delay(transition(LegacySessionMachine.Event.Finished(stage)))).flatMap(execute)
@@ -931,11 +939,21 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         sameOwner = registered.exists(_.owner.exists(other => owner.exists(_ eq other)))
       ) match {
         case LegacyAttachMachine.Decision.Attach => Effect[F].pure(attached(app))
-        case LegacyAttachMachine.Decision.Retry  => start()
+        case LegacyAttachMachine.Decision.Retry  => begin()
         case LegacyAttachMachine.Decision.AwaitDeparture =>
-          registered.fold(start())(registration => legacyViews.departure(registration).flatMap(_ => start()))
+          // The view of another owner can be a newer one, which stays. So the
+          // wait also ends when this owner is replaced, and `begin` sees that.
+          registered.fold(begin())(registration => legacyViews.departure(registration, owner).flatMap(_ => begin()))
       }
     }
+
+    /**
+     * Starts the attach, at first and again after a view has left. An attach
+     * whose owner was replaced by a newer transport gets no view here, and it
+     * builds none: that view would be one for nobody.
+     */
+    def begin(): F[SessionStart[F]] =
+      if (owner.exists(_.superseded)) Effect[F].pure(SessionStart.Superseded()) else start()
 
     def start(): F[SessionStart[F]] =
       stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
@@ -961,7 +979,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
             }
       }
 
-    start()
+    begin()
   }
 
   private val stateStorage =
