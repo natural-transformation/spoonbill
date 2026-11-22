@@ -132,4 +132,43 @@ class SessionRegistryMachineSpec extends AnyFlatSpec with Matchers {
     taken.slots("p").owner shouldBe Some(1L)
     release(taken, "p", 1L) shouldBe State[String, Long, String]()
   }
+
+  // The review of PR 42 measured a VectorMap here: it kept a slot for every
+  // key that it had ever held while it was not empty, one for each render.
+  "The order of the fresh-page records" should "keep nothing for a record that was claimed or expired" in {
+    val lifetime = 60L * 1000000000L
+    var state    = rendered(State[String, Long, String](), "page-0", 0L)
+    var now      = 0L
+    for (render <- 1 to 100000) {
+      now += 1000L
+      state = rendered(state, s"page-$render", now)
+      state = claimFresh(state, s"page-${render - 1}", now, lifetime, takeExpired = true)._1
+    }
+    state.freshOrder.size shouldBe 1
+    state.freshOrder.held shouldBe 1
+    // One render a second, each followed by the cleanup: the records of one lifetime.
+    state = State[String, Long, String]()
+    now = 0L
+    for (render <- 1 to 20000) {
+      now += 1000000000L
+      state = rendered(state, s"page-$render", now)
+      state = expireFresh(state, now, lifetime, limit = 100, removes = false)._1
+    }
+    state.freshOrder.size shouldBe 61
+    state.freshOrder.held shouldBe 61
+    // A render of a page that has a record moves it to the end, and keeps one entry.
+    val again = rendered(rendered(rendered(State[String, Long, String](), "a", 1L), "b", 2L), "a", 3L)
+    again.freshOrder.keys.toVector shouldBe Vector("b", "a")
+    again.freshOrder.held shouldBe 2
+  }
+
+  "The order of the guarded records" should "keep nothing for a record that was taken" in {
+    var state = remember(State[String, Long, String](), "page-0", 0L, "/", 5000)
+    for (render <- 1 to 100000) {
+      state = remember(state, s"page-$render", render.toLong, "/", 5000)
+      state = take(state, s"page-${render - 1}")._1
+    }
+    state.bootstrapOrder.size shouldBe 1
+    state.bootstrapOrder.held shouldBe 1
+  }
 }

@@ -1,6 +1,6 @@
 package spoonbill.server.internal.services
 
-import scala.collection.immutable.VectorMap
+import scala.collection.immutable.TreeMap
 
 /**
  * Metadata only. Application handles and their asynchronous publication stay in
@@ -49,10 +49,41 @@ private[spoonbill] object SessionRegistryMachine {
     bootstrap: Option[(Long, P)] = None,
     fresh: Option[FreshPage] = None
   )
+  /**
+   * Keys in the order in which they came, each once. A key that is removed
+   * leaves nothing behind. A `VectorMap` kept a slot for every key that it had
+   * ever held while it was not empty: one for each render on a server where a
+   * record is always waiting (found in the review of PR 42). Two orders are
+   * equal when they hold the same keys in the same order.
+   */
+  final class Order[K] private (bySeq: TreeMap[Long, K], seqOf: Map[K, Long], next: Long) {
+    def size: Int                 = seqOf.size
+    /** What the order holds: one entry for each key that it has. */
+    def held: Int                 = bySeq.size
+    def keys: Iterable[K]         = bySeq.values
+    def keysIterator: Iterator[K] = bySeq.valuesIterator
+    def headKey: K                = bySeq.head._2
+    def removed(key: K): Order[K] = seqOf.get(key).fold(this)(seq => new Order(bySeq - seq, seqOf - key, next))
+    /** `key` at the end; a key that is there moves to the end. */
+    def last(key: K): Order[K] = {
+      val (rest, restSeq) = seqOf.get(key).fold((bySeq, seqOf))(seq => (bySeq - seq, seqOf - key))
+      new Order(rest.updated(next, key), restSeq.updated(key, next), next + 1L)
+    }
+    override def equals(other: Any): Boolean = other match {
+      case that: Order[?] => keys.toVector == that.keys.toVector
+      case _              => false
+    }
+    override def hashCode: Int    = keys.toVector.hashCode
+    override def toString: String = keys.mkString("Order(", ", ", ")")
+  }
+  object Order {
+    def empty[K]: Order[K] = new Order[K](TreeMap.empty[Long, K], Map.empty[K, Long], 0L)
+  }
+
   final case class State[K, C, P](
     slots: Map[K, Slot[C, P]] = Map.empty[K, Slot[C, P]],
-    bootstrapOrder: VectorMap[K, Unit] = VectorMap.empty[K, Unit],
-    freshOrder: VectorMap[K, Unit] = VectorMap.empty[K, Unit]
+    bootstrapOrder: Order[K] = Order.empty[K],
+    freshOrder: Order[K] = Order.empty[K]
   )
   private def slot[K, C, P](state: State[K, C, P], key: K): Slot[C, P] =
     state.slots.getOrElse(key, Slot[C, P]())
@@ -81,16 +112,16 @@ private[spoonbill] object SessionRegistryMachine {
   def remember[K, C, P](state: State[K, C, P], key: K, created: Long, path: P, capacity: Int): State[K, C, P] = {
     require(capacity > 0)
     val previous = slot(state, key)
-    val ordered  = if (previous.bootstrap.nonEmpty) state.bootstrapOrder else state.bootstrapOrder.updated(key, ())
+    val ordered  = if (previous.bootstrap.nonEmpty) state.bootstrapOrder else state.bootstrapOrder.last(key)
     val next     = put(state.copy(bootstrapOrder = ordered), key, previous.copy(bootstrap = Some(created -> path)))
-    if (ordered.size <= capacity) next else take(next, ordered.head._1)._1
+    if (ordered.size <= capacity) next else take(next, ordered.headKey)._1
   }
   def take[K, C, P](state: State[K, C, P], key: K): (State[K, C, P], Option[(Long, P)]) = {
     val previous = slot(state, key)
     if (previous.bootstrap.isEmpty) (state, None)
     else
       (
-        put(state.copy(bootstrapOrder = state.bootstrapOrder - key), key, previous.copy(bootstrap = None)),
+        put(state.copy(bootstrapOrder = state.bootstrapOrder.removed(key)), key, previous.copy(bootstrap = None)),
         previous.bootstrap
       )
   }
@@ -101,7 +132,7 @@ private[spoonbill] object SessionRegistryMachine {
   private def withFresh[K, C, P](state: State[K, C, P], key: K, value: Option[FreshPage]): State[K, C, P] =
     put(state, key, slot(state, key).copy(fresh = value))
   private def withoutFresh[K, C, P](state: State[K, C, P], key: K): State[K, C, P] =
-    withFresh(state.copy(freshOrder = state.freshOrder - key), key, None)
+    withFresh(state.copy(freshOrder = state.freshOrder.removed(key)), key, None)
 
   /**
    * A page of the session was rendered at `now`. It is made before the state is
@@ -113,7 +144,7 @@ private[spoonbill] object SessionRegistryMachine {
       case Some(FreshPage.Releasing(_)) => state
       case _ =>
         // A new render moves the record to the end of the order.
-        withFresh(state.copy(freshOrder = (state.freshOrder - key).updated(key, ())), key, Some(FreshPage.Waiting(now)))
+        withFresh(state.copy(freshOrder = state.freshOrder.last(key)), key, Some(FreshPage.Waiting(now)))
     }
 
   /**
