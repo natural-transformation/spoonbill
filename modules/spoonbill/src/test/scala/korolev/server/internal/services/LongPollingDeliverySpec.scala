@@ -243,7 +243,9 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
   }
 
   it should "end at most 100 expired records of pages that never connect, and remove none of their states" in {
-    val storage = spoonbill.state.StateStorage[Future, Int]()
+    // In memory whatever the development-mode switch of the JVM says: in that
+    // mode a removed state stays in its file, and this case would prove nothing.
+    val storage = new spoonbill.state.StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
     val f       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
     val pages   = Vector.fill(250)(f.render())
     f.sessions.freshPageRecords shouldBe 250

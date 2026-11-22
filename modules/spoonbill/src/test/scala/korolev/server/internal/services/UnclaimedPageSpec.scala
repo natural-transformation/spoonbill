@@ -47,7 +47,10 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
   /** A storage local to this process, over the default one, that can hold or fail its removal. */
   private final class Local(capacity: Int = 5000) extends StateStorage[Future, Int] {
     @volatile var failReads = false
-    private val underlying = StateStorage[Future, Int](capacity)
+    // Development mode is one switch for the whole JVM, and a suite beside this
+    // one may turn it on: its states go to files that a removal leaves. This
+    // storage stays in memory whatever that switch says.
+    private val underlying = new StateStorage.DefaultStateStorage[Future, Int](capacity, allowDevMode = false)
     val reads              = new AtomicInteger()
     val removed            = TrieMap.empty[String, Int]
     @volatile var failNext = false
