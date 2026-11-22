@@ -176,6 +176,25 @@ test('a heartbeat that cannot be sent is a failed poll, not an unanswered heartb
   assert.equal(heartbeatTick(free.state, 0, true, false).failed, true);
 });
 
+test('a heartbeat that fails gives the re-poll back: the next limit polls again, not a reload', () => {
+  let state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
+  let out = heartbeatTick(state, 2, true, false);
+  state = heartbeatAnswer(out.state, out.seq, true).state;
+  out = heartbeatTick(state, 2, true, false);
+  assert.deepEqual([out.command, out.state.repolled], ['repoll', true]);
+  // The link fails after the re-poll: its request fails.
+  let sent = heartbeatTick(out.state, 2, true, false);
+  const failed = heartbeatAnswer(sent.state, sent.seq, false);
+  assert.deepEqual([failed.failed, failed.state.repolled], [true, false]);
+  // Or it has no answer by the next tick, and is written off there.
+  sent = heartbeatTick(out.state, 2, true, false);
+  const written = heartbeatTick(sent.state, 2, true, false);
+  assert.deepEqual([written.failed, written.state.repolled], [true, false]);
+  // So when the link is back, the limit gives one more re-poll before a reload.
+  state = heartbeatAnswer(heartbeatTick(failed.state, 2, true, false).state, failed.state.heartbeatSeq + 1, true).state;
+  assert.equal(heartbeatTick(state, 2, true, false).command, 'repoll');
+});
+
 test('a heartbeat that no transport takes is neither counted nor a failed poll', () => {
   const state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
   const out = heartbeatTick(state, 2, true, false);

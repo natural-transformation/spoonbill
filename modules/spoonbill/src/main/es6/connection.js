@@ -1,7 +1,7 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, transportNote, frameKind, afterFrame,
-  reloadStarted, messageSent, pollDeadline} from './connection-machine.js';
+  reloadStarted, messageSent, repollsAfterMessage, pollDeadline} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
@@ -50,6 +50,8 @@ export class Connection {
     this._pollDeadline = pollDeadline(options && options['lpw'] ? Number(options['lpw']) : undefined);
     /** Polls again at once, giving up the poll that waits. Only long polling has one. */
     this._repoll = () => {};
+    /** Gives up the request of the heartbeat in flight. Only long polling has one. */
+    this._abortHeartbeat = () => {};
     // The long-polling transport counts a message that could not be sent as a failed poll.
     this._linkFailed = () => {};
     // The transport that is replaced gives up its poll and its deadline.
@@ -362,10 +364,14 @@ export class Connection {
     let uriPrefix = url + path;
     const cursor = () => `page=${this._lifecycle.page}&seen=${this._lifecycle.seen}`;
 
-    // The poll that this transport waits for and its deadline: handles only.
-    // An answer to a request that was given up changes nothing.
+    // The poll that this transport waits for and its deadline, the timer of a
+    // poll that waits out its back-off, and the request of the heartbeat in
+    // flight with its listener: handles only. An answer to a request that was
+    // given up changes nothing.
     let pending = null;
     let deadline = null;
+    let retry = null;
+    let heartbeat = null;
 
     const poll = () => {
       if (!isCurrent()) return;
@@ -432,7 +438,7 @@ export class Connection {
       // A transport that was replaced counts nothing.
       if (!isCurrent()) return;
       linkFailed();
-      setTimeout(poll, pollDelay(this._lifecycle));
+      retry = setTimeout(() => { retry = null; poll(); }, pollDelay(this._lifecycle));
     };
 
     /** @type {function(string)} */
@@ -443,10 +449,13 @@ export class Connection {
         let request = event.target;
         if (request.readyState !== 4)
           return;
+        if (heartbeat !== null && heartbeat.request === request) heartbeat = null;
         // Whether the server took the message, for a heartbeat.
-        if (onAnswer) onAnswer(messageSent(request.status));
+        const sent = messageSent(request.status);
+        if (onAnswer) onAnswer(sent);
         if (!isCurrent())
           return;
+        if (repollsAfterMessage(this._lifecycle, sent)) this._repoll();
         switch (request.status) {
           case 0:
           case 400:
@@ -461,6 +470,8 @@ export class Connection {
       request.setRequestHeader("Content-Type", "application/json");
       request.addEventListener('readystatechange', onReadyStateChange);
       request.send(data);
+      // Only a heartbeat has an answer callback.
+      if (onAnswer) heartbeat = {request, listener: onReadyStateChange};
       return true;
     }
 
@@ -468,14 +479,31 @@ export class Connection {
     this._send = publish;
     this._linkFailed = () => { if (isCurrent()) linkFailed(); };
     this._retire = () => {
+      clearTimeout(retry);
+      retry = null;
       if (pending === null) return;
       const request = pending;
       pending = null;
       clearTimeout(deadline);
       request.abort();
     };
+    this._abortHeartbeat = () => {
+      if (heartbeat === null) return;
+      const {request, listener} = heartbeat;
+      heartbeat = null;
+      request.removeEventListener('readystatechange', listener);
+      request.abort();
+    };
     this._repoll = () => {
-      if (!isCurrent() || pending === null) return;
+      if (!isCurrent()) return;
+      // A poll that waits out its back-off goes now, and only once.
+      if (retry !== null) {
+        clearTimeout(retry);
+        retry = null;
+        poll();
+        return;
+      }
+      if (pending === null) return;
       const request = pending;
       pending = null;
       clearTimeout(deadline);
@@ -501,6 +529,13 @@ export class Connection {
 
   /** Gives up the poll that waits, and polls again with the same cursor. */
   repoll() { this._repoll(); }
+
+  /**
+   * Gives up the request of the heartbeat in flight, which the bridge wrote
+   * off, so that requests do not pile up on a link that hangs. Its listener
+   * goes first: an answer that comes all the same changes nothing.
+   */
+  abortHeartbeat() { this._abortHeartbeat(); }
 
   /**
    * Gives a frame to the bridge, and says whether the bridge applied it.

@@ -56,8 +56,11 @@ export function bridgeStep(state, event) {
 export function heartbeatTick(state, limit, longPolling, reloading) {
   if (reloading) return {state, command: 'skip', failed: false};
   const failed = longPolling && state.heartbeatInFlight !== null;
+  // A heartbeat that failed gives the re-poll back: what the page knew of
+  // its poll before the link failed says nothing about the poll after it.
   const counted = failed ?
-    {...state, heartbeatInFlight: null, outstandingHeartbeats: Math.max(0, state.outstandingHeartbeats - 1)} : state;
+    {...state, heartbeatInFlight: null, outstandingHeartbeats: Math.max(0, state.outstandingHeartbeats - 1), repolled: false} :
+    state;
   if (!(limit > 0)) return heartbeatSent(counted, longPolling, failed);
   const outstanding = counted.outstandingHeartbeats + 1;
   if (outstanding < limit) return heartbeatSent({...counted, outstandingHeartbeats: outstanding}, longPolling, failed);
@@ -73,14 +76,15 @@ function heartbeatSent(state, longPolling, failed) {
 
 /**
  * The request of long-polling heartbeat `seq` has its answer. One that the
- * server did not take is a failed poll and is not counted as unanswered; an
+ * server did not take is a failed poll, is not counted as unanswered, and
+ * gives the re-poll back, as a heartbeat written off at a tick does; an
  * answer of a heartbeat that was written off changes nothing.
  */
 export function heartbeatAnswer(state, seq, sent) {
   if (state.heartbeatInFlight !== seq) return {state, failed: false};
   const next = {...state, heartbeatInFlight: null};
   return sent ? {state: next, failed: false} :
-    {state: {...next, outstandingHeartbeats: Math.max(0, next.outstandingHeartbeats - 1)}, failed: true};
+    {state: {...next, outstandingHeartbeats: Math.max(0, next.outstandingHeartbeats - 1), repolled: false}, failed: true};
 }
 
 /**

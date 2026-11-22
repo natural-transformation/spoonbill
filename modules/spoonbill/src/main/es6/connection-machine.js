@@ -101,6 +101,13 @@ function requestFailed(status) {
 export const messageSent = status => !requestFailed(status);
 
 /**
+ * A message that the server took while the link is interrupted: the link is
+ * back, so a poll that hangs on the broken link or waits out its back-off is
+ * replaced at once. Added after the second review of PR 42.
+ */
+export const repollsAfterMessage = (state, sent) => sent && !linkUp(state);
+
+/**
  * The deadline of a poll in milliseconds: the poll wait that the page
  * configuration names (`lpw`), plus a margin of at most five seconds and at
  * most half the wait. The server bounds the wait to half the idle timeout, so

@@ -560,9 +560,10 @@ bridge and holds for both transports of an unguarded page.
 | A poll fails: status 0, 5xx, `408`, `429`, or no answer by the deadline | `failures + 1`, link interrupted | Poll again after the back-off; show the notice when `failures` is 2 |
 | A poll is answered with any other status | none | Reload |
 | The reload frame arrives | none | Reload |
-| A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted | As a failed poll; the heartbeat is not counted as unanswered |
+| A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted | As a failed poll; the heartbeat is not counted as unanswered, and the re-poll is given back. A request that is written off at the next heartbeat is aborted, so that requests do not pile up on a link that hangs (the last two added after the second review of PR 42) |
 | No transport takes a heartbeat, so no request goes out (added after the second review of PR 42) | none | Not counted as unanswered, and no failed poll |
-| The heartbeat limit is reached, for the first time since a reply | none | Give up the current poll and poll again |
+| A message that the server took while the link is interrupted (added after the second review of PR 42) | none | The link is back: give up the current poll, which may hang on the broken link, or its back-off, and poll again |
+| The heartbeat limit is reached, for the first time since a reply or a failed heartbeat | none | Give up the current poll, or its back-off, and poll again |
 | The heartbeat limit is reached again, and the heartbeats that the server took are still unanswered | none | Reload, through the reload guard |
 
 - **Applied means applied.** The bridge reports the result of a frame to the

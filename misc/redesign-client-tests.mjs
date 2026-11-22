@@ -1516,6 +1516,61 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('after an outage a heartbeat that the server takes replaces the poll that hangs, and the page does not reload', () => {
+      // The second review of PR 42, probe 1A: the reply to a heartbeat is lost,
+      // the page polls again, and that poll goes out while the link is down.
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 2, 'the re-poll at the limit');
+        // The link is down: the next heartbeat fails, and the second poll hangs.
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 0);
+        // The link is back: the server takes a heartbeat. The poll that hangs is replaced at once.
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls()[1].aborted, true);
+        assert.equal(lp.polls().length, 3);
+        lp.polls()[2].frame(1, 0, '[16]');
+        for (let tick = 0; tick < 3; tick++) lp.intervals[0].callback();
+        assert.equal(reloads, 0);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a re-poll while the poll waits out its back-off polls at once', () => {
+      // Probe 1B: the bridge spends its one re-poll, so the re-poll must not be lost.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        answer(lp.polls()[0], 503);
+        const backOff = lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1);
+        assert.ok(backOff, 'the poll waits out its back-off');
+        lp.connection.repoll();
+        assert.equal(lp.polls().length, 2, 'the poll goes at once');
+        assert.equal(backOff.cleared, true, 'and not a second time when the back-off ends');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('on a hanging link a heartbeat that is written off is given up, so requests do not pile up', () => {
+      // Probe 2: a browser opens about six requests to one origin at a time.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        for (let tick = 0; tick < 6; tick++) lp.intervals[0].callback();
+        const heartbeats = lp.posts().filter(request => request.body === heartbeat);
+        assert.equal(heartbeats.length, 6);
+        assert.deepEqual(heartbeats.map(request => request.aborted === true), [true, true, true, true, true, false]);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a long-polling heartbeat that no transport takes is not counted, and is no failed poll', () => {
       const saved = keepTiming();
       const { window } = browser();
@@ -1560,9 +1615,12 @@ test('redesign client regressions against real source modules', { timeout: 10000
         for (let tick = 0; tick < 6; tick++) lp.intervals[0].callback();
         assert.equal(reloads, 0);
         assert.equal(lp.polls().length, 1, 'no re-poll: no heartbeat was taken');
-        // The link is back: a heartbeat is taken, and its reply answers the poll that the server holds.
+        // The link is back: a heartbeat is taken. The poll from before is
+        // replaced at once, since it may hang on the broken link, and the
+        // reply answers the new one.
         answer(lp.posts().at(-1), 200);
-        lp.polls()[0].frame(1, 0, '[16]');
+        assert.deepEqual([lp.polls()[0].aborted, lp.polls().length], [true, 2]);
+        lp.polls()[1].frame(1, 0, '[16]');
         assert.deepEqual(events, ['interrupt', 'resume']);
         assert.equal(new URL(lp.polls().at(-1).url).searchParams.get('seen'), '1');
         assert.equal(reloads, 0);

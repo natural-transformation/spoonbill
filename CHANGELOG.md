@@ -125,8 +125,11 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - On long polling the heartbeat goes on while the link is interrupted. A
   heartbeat that cannot be sent is a failed poll, so a link that hangs shows
   the notice; heartbeats that the server takes and does not answer give one
-  re-poll, then a reload through the reload guard. A WebSocket of a session
-  whose view a poll owns gets the reload frame.
+  re-poll, then a reload through the reload guard. A heartbeat that fails
+  gives that re-poll back, and a heartbeat that is written off gives up its
+  request. A message that the server takes while the link is interrupted
+  replaces a poll that hangs or waits out its back-off at once. A WebSocket
+  of a session whose view a poll owns gets the reload frame.
 - A framework reload of an unguarded page happens at most once in 30 seconds
   for a tab, on both transports. A second one shows the connection-lost
   notice and waits for the end of that time; meanwhile the page sends,

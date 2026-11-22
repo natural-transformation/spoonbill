@@ -49,7 +49,11 @@ export class Bridge {
         const out = heartbeatTick(this._lifecycle, this._heartbeatLimit, this._connection.longPolling,
           this._connection.reloadStarted);
         this._lifecycle = out.state;
-        if (out.failed) this._connection.messageFailed();
+        if (out.failed) {
+          // The heartbeat that was written off gives up its request.
+          this._connection.abortHeartbeat();
+          this._connection.messageFailed();
+        }
         switch (out.command) {
           case 'send':
             this._sendHeartbeat(out.seq);

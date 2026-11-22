@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connectio
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, transportNote,
-  frameKind, afterFrame, reloadStarted, messageSent, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
+  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
@@ -255,6 +255,19 @@ test('408 and 429 are failed polls, and a message is sent unless its request fai
     assert.equal(pollAnswer(state, status, null, null, null), 'failed', String(status));
   for (const status of [0, 408, 429, 500, 503]) assert.equal(messageSent(status), false, String(status));
   for (const status of [200, 204, 400, 410]) assert.equal(messageSent(status), true, String(status));
+});
+
+test('a message that the server took while the link is interrupted replaces the poll, and no other', () => {
+  // (failures, sent) -> poll again at once
+  const table = [
+    [0, true, false],  // the link is up: the poll that waits is sound
+    [1, true, true],   // the link is back: a poll that hangs or waits out its back-off goes now
+    [2, true, true],
+    [1, false, false], // the message failed too: the link is still down
+    [0, false, false]
+  ];
+  for (const [failures, sent, repolls] of table)
+    assert.equal(repollsAfterMessage({...initialConnection(), failures}, sent), repolls, String([failures, sent]));
 });
 
 test('the deadline of a poll is its wait and a margin, below twice the wait, and a sound timer', () => {
