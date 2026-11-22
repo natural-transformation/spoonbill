@@ -4,6 +4,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 import spoonbill.effect.{Queue, Reporter, Scheduler}
+import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, DevMode, Frontend}
 import spoonbill.state.StateStorage
 import spoonbill.state.javaSerialization.*
@@ -243,6 +244,91 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
         case Some(v) => sys.props.update(devModeKey, v)
         case None    => sys.props.remove(devModeKey)
       }
+    }
+  }
+
+  it should "publish its handlers from a saved render context in a view that resumes" in exclusively {
+    // A view that a long-polling entry owns runs a handler only for the display
+    // that it was published with. Its start from a saved render context sends
+    // a DOM frame; the click of that display must find the handlers of that
+    // frame, and a click of the display before it runs nothing.
+    val qsid = Qsid("devmode-resuming", UUID.randomUUID().toString)
+    val devMode = new DevMode.ForRenderContext(qsid.toString)
+    val saved = {
+      val rc = DiffRenderContext[Nothing]()
+      import avocet.dsl._
+      import avocet.dsl.html._
+      body(div("saved"))(rc)
+      rc.finalizeDocument()
+      devMode.saveRenderContext(rc)
+      devMode.saved shouldBe true
+      devMode.file
+    }
+    try {
+      val page     = UUID.fromString("11111111-1111-4111-8111-111111111111")
+      val counter  = new AtomicInteger(0)
+      val incoming = Queue[Future, String]()
+      val frontend = new Frontend[Future](
+        incoming.stream,
+        None,
+        connectionId = Some(spoonbill.security.Identifiers.ConnectionId.fromUuid(page)),
+        resumes = true
+      )
+      val frames       = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+      val stateManager = new StateStorage.SimpleInMemoryStateManager[Future]()
+      val app = new ApplicationInstance[Future, DevModeSavedRenderContextSpec.S, Any](
+        sessionId = qsid,
+        frontend = frontend,
+        rootPath = Root,
+        router = Router.empty[Future, String],
+        render = DevModeSavedRenderContextSpec.render(
+          firstEvents = Seq(event("click") { access => access.transition { _ => counter.incrementAndGet(); "secondState" } }),
+          secondEvents = Seq()
+        ),
+        stateManager = stateManager,
+        initialState = "firstState",
+        reporter = Reporter.PrintReporter,
+        scheduler = new Scheduler[Future](),
+        createMiscProxy = (rc, k) =>
+          new StatefulRenderContext[Context.Binding[Future, DevModeSavedRenderContextSpec.S, Any]] {
+            def currentContainerId: Id                                   = rc.currentContainerId
+            def currentId: Id                                            = rc.currentId
+            def subsequentId: Id                                         = rc.subsequentId
+            def openNode(xmlns: XmlNs, name: String): Unit               = rc.openNode(xmlns, name)
+            def closeNode(name: String): Unit                            = rc.closeNode(name)
+            def setAttr(xmlNs: XmlNs, name: String, value: String): Unit = rc.setAttr(xmlNs, name, value)
+            def setStyle(name: String, value: String): Unit              = rc.setStyle(name, value)
+            def addTextNode(text: String): Unit                          = rc.addTextNode(text)
+            def addMisc(misc: Context.Binding[Future, DevModeSavedRenderContextSpec.S, Any]): Unit = k(rc, misc)
+          },
+        recovery = PartialFunction.empty,
+        delayedRender = 0.seconds
+      )
+      Await.result(frontend.outgoingMessages.foreach(frame => Future.successful { frames.add(frame); () }).start, 3.seconds)
+      Await.result(app.initialize(), 3.seconds)
+      val targetId =
+        app.topLevelComponentInstance.allEventHandlers.keys
+          .collectFirst {
+            case eid if eid.`type` == "click" && eid.phase == avocet.events.EventPhase.Bubbling => eid.target.mkString
+          }
+          .getOrElse(fail("Expected a click handler to be registered after initialize()"))
+      // The start sent the difference to the saved render context as one DOM frame.
+      eventually(timeout(Span(2, Seconds)), interval(Span(25, Millis))) {
+        frames.toArray.count(_.toString.startsWith("[4")) shouldBe 1
+      }
+      // A click of the display that the page had before that frame runs nothing.
+      incoming.offerUnsafe(s"""[7,"$page:0:0:0:$targetId:click"]""")
+      // A click of the display after it runs the handler of that display.
+      incoming.offerUnsafe(s"""[7,"$page:1:0:0:$targetId:click"]""")
+      eventually(timeout(Span(2, Seconds)), interval(Span(25, Millis))) {
+        Await.result(stateManager.read[DevModeSavedRenderContextSpec.S](Id.TopLevel), 200.millis) shouldBe Some("secondState")
+        counter.get shouldBe 1
+      }
+      Await.result(frontend.close(), 3.seconds)
+      Await.result(app.destroy(), 3.seconds)
+    } finally {
+      try saved.delete()
+      catch { case _: Throwable => () }
     }
   }
 }

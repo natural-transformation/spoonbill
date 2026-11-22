@@ -416,4 +416,60 @@ class BrowserRpcLifecycleSpec extends AsyncFlatSpec with Matchers {
     intercept[IllegalArgumentException](Frontend.RpcSettings(maxPendingPerKind = 0))
     succeed
   }
+
+  // The output of a view that a long-polling entry owns: each frame with its
+  // kind, and for a command whether the view still waits for its answer.
+  private def frame(frontend: Frontend[Future]): Future[Frontend.OutgoingFrame] =
+    frontend.outgoingFrames.pull().map(_.getOrElse(fail("Missing frame")))
+
+  "The frames of a view" should "not hand out a command that expired while it was queued" in {
+    val clock    = new ManualDeadlines
+    val browser  = frontend(clock, Queue[Future, String]())
+    val request  = browser.evalJs("must not execute")
+    clock.expireNext()
+    for {
+      error <- request.failed
+      _     <- browser.focus(Id("1"))
+      next  <- frame(browser)
+      _     <- browser.close()
+    } yield {
+      error shouldBe a[Frontend.ClientSideException]
+      next.message should startWith("[5,")
+      next.kind shouldBe Frontend.FrameKind.Other
+    }
+  }
+
+  it should "know when a command that was handed out has expired" in {
+    val clock   = new ManualDeadlines
+    val browser = frontend(clock, Queue[Future, String]())
+    val request = browser.evalJs("return 1")
+    for {
+      command <- frame(browser)
+      before   = command.awaited()
+      _        = clock.expireNext()
+      _       <- request.failed
+      after    = command.awaited()
+      _       <- browser.close()
+    } yield {
+      command.kind shouldBe Frontend.FrameKind.Command
+      before shouldBe true
+      after shouldBe false
+    }
+  }
+
+  it should "say which frame is a DOM frame" in {
+    val browser = frontend(new ManualDeadlines, Queue[Future, String]())
+    for {
+      _     <- browser.performDomChanges(_ => ())
+      dom   <- frame(browser)
+      _     <- browser.focus(Id("1"))
+      other <- frame(browser)
+      _     <- browser.close()
+    } yield {
+      dom.message should startWith("[4")
+      dom.kind shouldBe Frontend.FrameKind.Dom
+      dom.awaited() shouldBe true
+      other.kind shouldBe Frontend.FrameKind.Other
+    }
+  }
 }

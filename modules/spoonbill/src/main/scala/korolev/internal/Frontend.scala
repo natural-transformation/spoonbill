@@ -57,7 +57,8 @@ final class Frontend[F[_]: Effect](
       spoonbill.auth.CommittedReplacement,
       spoonbill.action.InvocationBinding
     ) => F[spoonbill.auth.BrowserReplacementControl]
-  ] = None
+  ] = None,
+  resumes: Boolean = false
 )(implicit
   reporter: Reporter,
   ec: ExecutionContext
@@ -71,6 +72,17 @@ final class Frontend[F[_]: Effect](
   private val cleanupState                     = new AtomicReference(FrontendCloseMachine.State.Unclaimed)
   private[spoonbill] def guarded: Boolean      = authorize.nonEmpty
   private[spoonbill] def recoversView: Boolean = viewRecoveryEpoch.nonEmpty
+
+  /**
+   * A view that a long-polling entry owns. Its page keeps its bridge after a
+   * lost poll, so it can be behind the view: the view publishes its revision
+   * and its handlers together, and runs a handler only for the display that it
+   * was published with. Its frames are not wrapped: the page counts them.
+   */
+  private[spoonbill] def resuming: Boolean = resumes
+
+  /** Whether user events are checked against a published revision. */
+  private[spoonbill] def publishesRevisions: Boolean = recoversView || resumes
   private val renderPublication                = new Object
 
   private def connection: Connection.State = connectionState.get()
@@ -105,6 +117,9 @@ final class Frontend[F[_]: Effect](
   private def selectPublishedRevision[A](expected: Option[Long], obsolete: ObsoleteRevision)(select: => A): F[A] =
     Effect[F].delay {
       renderPublication.synchronized {
+        // An event that names no revision could run a handler of any display.
+        // A view that resumes refuses it.
+        if (resumes && expected.isEmpty && obsolete == ObsoleteRevision.Discard) throw UnrevisedBrowserEvent
         expected.foreach { value =>
           // This connection never published a future revision to the browser.
           Connection.revision(connection, value) match {
@@ -126,6 +141,10 @@ final class Frontend[F[_]: Effect](
           // Metadata only: browser actions can carry credentials.
           reporter.debug("Obsolete browser event discarded")
         }.flatMap(_ => Effect[F].fail(ObsoleteBrowserEvent))
+      case UnrevisedBrowserEvent =>
+        // It runs nothing, as an obsolete event, and the view goes on.
+        Effect[F].delay(reporter.warning("A browser event without a view revision was refused"))
+          .flatMap(_ => Effect[F].fail(ObsoleteBrowserEvent))
       case error => close().flatMap(_ => Effect[F].fail(error))
     }
 
@@ -147,6 +166,12 @@ final class Frontend[F[_]: Effect](
   private[spoonbill] def acceptInitialRender(accepted: () => Unit): F[Unit] = Effect[F].delay {
     renderPublication.synchronized {
       if (!interactionIsLive) throw new SessionAccessDenied
+      // The page shows the server render: for a view that resumes it is
+      // revision 0, published with the handlers that `accepted` stores.
+      if (resumes) {
+        if (!Connection.canPublish(connection, reset = true)) throw new SessionAccessDenied
+        advanceConnection(Connection.published(_, reset = true))
+      }
       accepted()
     }
   }
@@ -341,7 +366,15 @@ final class Frontend[F[_]: Effect](
     staleResult: () => Option[A],
     obsoleteResult: Option[A] = None
   ): F[A] =
-    if (!guarded) Effect[F].delayAsync(operation)
+    if (!guarded) obsoleteResult match {
+      // A browser callback of a view that resumes is checked against its
+      // published revision right before it runs, as a DOM event is.
+      case Some(discarded) if resumes =>
+        checkRenderRevision(expectedRevision, ObsoleteRevision.Discard)
+          .flatMap(_ => Effect[F].delayAsync(operation))
+          .recover { case ObsoleteBrowserEvent => discarded }
+      case _ => Effect[F].delayAsync(operation)
+    }
     else
       Effect[F].promise[A] { callback =>
         // A local key, not an identifier; avoids the shared SecureRandom per action.
@@ -463,7 +496,8 @@ final class Frontend[F[_]: Effect](
   private case class MessageOutgoing(
     message: String,
     producer: Option[() => F[Unit]],
-    pending: () => Boolean
+    pending: () => Boolean,
+    kind: FrameKind
   ) extends AuthorizedOutgoing
   private case class SensitiveOutgoing(
     id: spoonbill.sensitive.PresentationId,
@@ -514,7 +548,13 @@ final class Frontend[F[_]: Effect](
     case None         => incomingMessages.map(parseMessage).sort(3)(rack).map(closeOnRoutingOverflow)
   }
 
-  val outgoingMessages: Stream[F, String] = outgoingQueue.stream.mapAsync {
+  /**
+   * The output of this view. `wrap` makes the element of a frame from its
+   * message, its kind, and whether the view still waits for the answer to it.
+   * A command that expired while it was queued is not handed out. A view has
+   * one consumer of its output: [[outgoingFrames]] or [[outgoingMessages]].
+   */
+  private def output[A](wrap: (String, FrameKind, () => Boolean) => A): Stream[F, A] = outgoingQueue.stream.mapAsync {
     case ReplacementOutgoing(handoff, binding) =>
       requireOpen()
         .flatMap(_ =>
@@ -522,10 +562,12 @@ final class Frontend[F[_]: Effect](
             admit => Effect[F].delayAsync(admit(handoff, binding))
           )
         )
-        .map[Option[String]](control => Some(s"[${Procedure.CompleteAuthentication.code},\"${control.completionId}\"]"))
+        .map[Option[A]](control =>
+          Some(wrap(s"[${Procedure.CompleteAuthentication.code},\"${control.completionId}\"]", FrameKind.Other, alwaysAwaited))
+        )
         .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
     case outgoing: AuthorizedOutgoing =>
-      if (Connection.replacing(connection) || !outgoing.pending()) Effect[F].pure(Option.empty[String])
+      if (Connection.replacing(connection) || !outgoing.pending()) Effect[F].pure(Option.empty[A])
       else {
       val fused =
         if (outputAdmission.isEmpty) None
@@ -542,7 +584,7 @@ final class Frontend[F[_]: Effect](
       val materialized = allowed.flatMap { _ =>
         outgoing match {
           case SensitiveOutgoing(id, _, _) => sensitiveRuntime.pull(id)
-          case MessageOutgoing(message, _, _) => Effect[F].pure(Option.when(outgoing.pending())(message))
+          case MessageOutgoing(message, _, _, _) => Effect[F].pure(Option.when(outgoing.pending())(message))
         }
       }
       val admitted = fused.orElse(outputAdmission) match {
@@ -554,9 +596,25 @@ final class Frontend[F[_]: Effect](
         // Preserve the existing effect chain for single-owner applications.
         case _ => materialized
       }
-      admitted.recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
+      admitted
+        .map(_.map { message =>
+          outgoing match {
+            case value: MessageOutgoing => wrap(message, value.kind, value.pending)
+            case _                      => wrap(message, FrameKind.Other, alwaysAwaited)
+          }
+        })
+        .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
     }
-  }.collect { case Some(message) => message }
+  }.collect { case Some(frame) => frame }
+
+  /**
+   * The output of this view for a long-polling entry: each frame with its
+   * kind, and for a command whether the view still waits for its answer.
+   */
+  val outgoingFrames: Stream[F, Frontend.OutgoingFrame] = output(Frontend.OutgoingFrame(_, _, _))
+
+  /** The output of this view as plain messages, for a WebSocket. */
+  val outgoingMessages: Stream[F, String] = output((message, _, _) => message)
 
   val domEventMessages: Stream[F, Frontend.DomEventMessage] =
     rawDomEvents.mapAsync { case Incoming(_, args, revision, departure) =>
@@ -611,7 +669,7 @@ final class Frontend[F[_]: Effect](
             }
             s"""[20,"$actionConnectionId","$previous","${previous + 1L}",$str]"""
           }
-          if (!outgoingQueue.offerUnsafe(MessageOutgoing(frame, producer, pending))) throw new SessionAccessDenied
+          if (!outgoingQueue.offerUnsafe(MessageOutgoing(frame, producer, pending, FrameKind.Dom))) throw new SessionAccessDenied
           // offerUnsafe may resume a consumer inline, including a recursive
           // close. Publish only the view onto the latest connection state.
           advanceConnection(Connection.published(_, resetView))
@@ -621,19 +679,27 @@ final class Frontend[F[_]: Effect](
       }
     else if (rejectIfFull)
       Effect[F].delay {
-        if (!outgoingQueue.offerUnsafe(MessageOutgoing(str, producer, pending)))
+        if (!outgoingQueue.offerUnsafe(MessageOutgoing(str, producer, pending, frameKind(kind, rejectIfFull))))
           throw ClientSideException("Browser output queue is full")
       }
     else {
+      // A DOM frame of a view that resumes is one more revision. It is
+      // counted and its handlers are stored in the step that offers it.
+      val counted = resumes && kind == OutputKind.DomMutation
       def offer(): F[Unit] = Effect[F].delay {
         renderPublication.synchronized {
           if (
             Connection.closed(connection) ||
-            (kind == OutputKind.DomMutation && Connection.replacing(connection))
+            (kind == OutputKind.DomMutation && Connection.replacing(connection)) ||
+            (counted && !Connection.canPublish(connection, reset = false))
           )
             throw new SessionAccessDenied
           if (!pending()) true
-          else if (outgoingQueue.offerUnsafe(MessageOutgoing(str, producer, pending))) { onPublished(); true }
+          else if (outgoingQueue.offerUnsafe(MessageOutgoing(str, producer, pending, frameKind(kind, rejectIfFull)))) {
+            if (counted) advanceConnection(Connection.published(_, reset = false))
+            onPublished()
+            true
+          }
           else if (outgoingQueue.isClosed) throw new SessionAccessDenied
           else false
         }
@@ -645,6 +711,14 @@ final class Frontend[F[_]: Effect](
     }
 
   private enum OutputKind { case DomMutation, Other }
+
+  private val alwaysAwaited: () => Boolean = () => true
+
+  /** A request that waits for an answer is a command; it is rejected, not held, when the queue is full. */
+  private def frameKind(kind: OutputKind, rejectIfFull: Boolean): FrameKind =
+    if (kind == OutputKind.DomMutation) FrameKind.Dom
+    else if (rejectIfFull) FrameKind.Command
+    else FrameKind.Other
 
   private def sendRaw(
     str: String,
@@ -996,7 +1070,7 @@ final class Frontend[F[_]: Effect](
       }
       if (callbackType == CallbackType.ViewEvent.code) {
         val fields = args.split(":", 4)
-        if (!recoversView || fields.length != 4 || fields(0) != actionConnectionId.toString)
+        if (!publishesRevisions || fields.length != 4 || fields(0) != actionConnectionId.toString)
           throw new IllegalArgumentException("Invalid view callback")
         val revision = fields(1).toLongOption
           .filter(value => value >= 0L && value <= 9007199254740991L)
@@ -1141,6 +1215,32 @@ object Frontend {
    * is discarded, never rebound to the newer DOM. It is distinct from a future
    * or invalid revision and from failed authorization, which close.
    */
+  /** What a frame of a view is, for the delivery of a long-polling page. */
+  enum FrameKind {
+
+    /** A DOM patch. */
+    case Dom
+
+    /** A browser command that the view waits for. It can expire. */
+    case Command
+
+    /** Any other frame. */
+    case Other
+  }
+
+  /**
+   * One frame of a view, with its kind, and for a command whether the view
+   * still waits for its answer.
+   */
+  final case class OutgoingFrame(message: String, kind: FrameKind, awaited: () => Boolean) {
+    override def toString: String = s"OutgoingFrame($kind, <redacted>)"
+  }
+
+  /** A browser event without a view revision, for a view that resumes. It is refused and reported. */
+  private case object UnrevisedBrowserEvent
+      extends RuntimeException("Browser event without a view revision")
+      with scala.util.control.NoStackTrace
+
   private[spoonbill] case object ObsoleteBrowserEvent
       extends RuntimeException("Obsolete browser event")
       with scala.util.control.NoStackTrace
