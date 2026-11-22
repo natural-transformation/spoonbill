@@ -178,6 +178,7 @@ final class InvalidDevRenderContextSpec extends AnyFlatSpec with Matchers {
           try await(sessions.getApp(fresh)).isDefined shouldBe true
           finally await(release())
         case SessionStart.Reload() => fail("A fresh HTTP session must initialize normally")
+        case other                 => fail(s"A fresh HTTP session got $other")
       }
     }
   }
@@ -230,6 +231,7 @@ final class InvalidDevRenderContextSpec extends AnyFlatSpec with Matchers {
           new File(file.getPath + ".invalid").exists() shouldBe false
         } finally await(release())
       case SessionStart.Reload() => fail("Guarded sessions must not restore legacy dev buffers")
+      case other => fail(s"A guarded session got $other")
     }
   }
 

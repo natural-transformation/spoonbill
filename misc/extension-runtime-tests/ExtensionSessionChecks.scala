@@ -91,6 +91,8 @@ object ExtensionSessionChecks {
     def attachAgain(): Unit = run(attach(Queue[F, String]())) match {
       case SessionStart.Attached(_, release) => run(release())
       case SessionStart.Reload()             => ()
+      // A WebSocket attach owns no long-polling entry and is not refused here.
+      case other => throw new AssertionError(s"An attach again got $other")
     }
   }
 
