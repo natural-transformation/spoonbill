@@ -301,9 +301,6 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
    */
   private val longPollingTopics = TrieMap.empty[Qsid, TopicEntry]
 
-  private[services] def topicExists(qsid: Qsid): Boolean =
-    longPollingTopics.contains(qsid)
-
   /**
    * Same headers in all responses
    */
@@ -369,7 +366,4 @@ private[spoonbill] object MessagingService {
 
   private[services] def selectedProtocol(protocols: Seq[String], compressionEnabled: Boolean): String =
     if (compressionEnabled && protocols.contains(ProtocolJsonDeflate)) ProtocolJsonDeflate else ProtocolJson
-
-  def SomeReloadMessageF[F[_]: Effect]: F[Option[String]] =
-    Effect[F].pure(Option(Frontend.ReloadMessage))
 }

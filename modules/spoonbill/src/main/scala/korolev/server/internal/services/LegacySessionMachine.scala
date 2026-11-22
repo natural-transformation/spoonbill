@@ -55,11 +55,6 @@ private[spoonbill] object LegacySessionMachine {
   }
   def connectionClosed(state: State): Boolean = state.connection == Connection.Closed
 
-  /** This attach rolled back what it had built. A failure that it meets is its own, not one that it waited for. */
-  def rolledBack(state: State): Boolean = state.retirement match {
-    case Retirement.Done(Cause.Abandoned) | Retirement.Forgotten => true
-    case _                                                        => false
-  }
   private def after(stage: Stage): Option[Stage] = stage match {
     case Stage.StopExtensions     => Some(Stage.CancelInput)
     case Stage.CancelInput        => Some(Stage.CloseFrontend)

@@ -1211,11 +1211,6 @@ final class Frontend[F[_]: Effect](
 
 object Frontend {
 
-  /**
-   * A browser event stamped with a revision older than the published view. It
-   * is discarded, never rebound to the newer DOM. It is distinct from a future
-   * or invalid revision and from failed authorization, which close.
-   */
   /** What a frame of a view is, for the delivery of a long-polling page. */
   enum FrameKind {
 
@@ -1242,6 +1237,11 @@ object Frontend {
       extends RuntimeException("Browser event without a view revision")
       with scala.util.control.NoStackTrace
 
+  /**
+   * A browser event stamped with a revision older than the published view. It
+   * is discarded, never rebound to the newer DOM. It is distinct from a future
+   * or invalid revision and from failed authorization, which close.
+   */
   private[spoonbill] case object ObsoleteBrowserEvent
       extends RuntimeException("Obsolete browser event")
       with scala.util.control.NoStackTrace

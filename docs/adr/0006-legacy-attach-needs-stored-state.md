@@ -129,7 +129,10 @@ Revisit this rule when one of these holds:
 
 - A deployment with a repository, or one that restarts often, finds the
   reloads too costly. The counter `missing-state-reloads` says how often a
-  deployment pays for this rule.
+  deployment pays for this rule where the storage is asked: at a WebSocket
+  attach, and at the first poll of a page that this server rendered. A
+  long-polling page after a restart, or on another server, is told to reload
+  before that, for its missing fresh-page record, and is not counted.
 - The WebSocket transport gets the delivery rules that long polling has since
   this change.
 - A legacy view can send a whole document.

@@ -149,7 +149,11 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   the default storage a page reloads after a restart of the server. With
   several servers that share no repository and have no sticky routing, a page
   reloads until its render and its attach meet on one server. Watch
-  `missing-state-reloads`; ADR 0006 says what a redesign has to keep.
+  `missing-state-reloads`; ADR 0006 says what a redesign has to keep. It
+  counts the reloads where the storage was asked: a WebSocket attach, and the
+  first poll of a page that this server rendered. A long-polling page after a
+  restart of the server, or on another server, is told to reload before that,
+  for its missing fresh-page record, and is not counted.
 
 ## 10.0.1 — 2026-11-12
 

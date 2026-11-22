@@ -59,11 +59,9 @@ class LegacySessionMachineSpec extends AnyFlatSpec with Matchers {
 
   "A rollback" should "take its failure out of the registry once, after the registry has published it" in {
     val done = retired(Cause.Abandoned)
-    rolledBack(done) shouldBe true
     val (forgotten, command) = step(done, Event.Published)
     command shouldBe Command.Forget
     forgotten.retirement shouldBe Retirement.Forgotten
-    rolledBack(forgotten) shouldBe true
     step(forgotten, Event.Published) shouldBe (forgotten, Command.None)
   }
 
@@ -93,7 +91,6 @@ class LegacySessionMachineSpec extends AnyFlatSpec with Matchers {
       step(at(Cause.Abandoned, Stage.Restore), Event.Failed)._1 // its rollback failed
     )
     for (state <- states) {
-      rolledBack(state) shouldBe false
       step(state, Event.Published) shouldBe (state, Command.None)
     }
   }
