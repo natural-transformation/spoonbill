@@ -292,7 +292,16 @@ const cases = all.filter(([key]) => picked.includes(key));
 
 (async () => {
   for (const engine of engines) {
-    const browser = await {chromium, webkit}[engine].launch({headless: true});
+    // On Linux the owned WebKit process gets the flake's EGL vendor and
+    // software rendering, as in the renderer acceptance runner; without them
+    // its first page never opens (docs/browser-tests.md).
+    const env = {...process.env};
+    if (engine === 'webkit' && process.platform === 'linux') {
+      assert.ok(env.SPOONBILL_PLAYWRIGHT_EGL_VENDOR, 'Use the flake-provided Linux WebKit EGL vendor');
+      env.__EGL_VENDOR_LIBRARY_FILENAMES = env.SPOONBILL_PLAYWRIGHT_EGL_VENDOR;
+      env.LIBGL_ALWAYS_SOFTWARE = 'true';
+    }
+    const browser = await {chromium, webkit}[engine].launch({headless: true, env, timeout: 15000});
     try {
       for (let round = 1; round <= rounds; round++) {
         for (const [key, name, run] of cases) {
