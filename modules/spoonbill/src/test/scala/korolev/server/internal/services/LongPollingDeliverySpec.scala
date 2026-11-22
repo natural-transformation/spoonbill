@@ -249,6 +249,28 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     read(await(poll)).frame shouldBe Some(seen + 1L)
   }
 
+  it should "be answered with the reload frame and closed, while the view of the poll goes on" in {
+    val f                     = new LongPollingFixture()
+    val (page, seen, _, poll) = start(f)
+    val head = spoonbill.web.Request(
+      spoonbill.web.Request.Method.Get, spoonbill.web.PathAndQuery.fromString("/bridge/web-socket/x"), Nil, None, ()
+    )
+    val response = f.messaging.webSocketMessaging(page.qsid, head, Queue[Future, spoonbill.data.Bytes]().stream, Seq("json"))
+    f.worker.drain()
+    await(response) match {
+      case spoonbill.server.WebSocketResponse.SendThenClose(output, _, release) =>
+        val first = output.pull(); f.worker.drain()
+        await(first).map(_.asUtf8String) shouldBe Some("[1]")
+        val end = output.pull(); f.worker.drain()
+        await(end) shouldBe None
+        await(release())
+      case other => fail(s"A WebSocket of a session whose view a poll owns got $other")
+    }
+    f.hasView(page) shouldBe true
+    await(f.heartbeat(page, seen))
+    read(await(poll)).frame shouldBe Some(seen + 1L)
+  }
+
   "A render" should "make a fresh-page record, and an attach makes none" in {
     val f = new LongPollingFixture()
     f.sessions.freshPageRecords shouldBe 0

@@ -336,7 +336,11 @@ test('a websocket superseded by long polling cannot publish late frames', () => 
   env.nextTimer();
   assert.equal(env.requests.length, 1);
   old.message('stale'); await env.flush();
+  // A reload frame of a socket that is not current changes nothing either: the
+  // server answers a late WebSocket of a session whose view a poll owns so.
+  old.message('[1]'); await env.flush();
   assert.deepEqual(received, []);
+  assert.equal(env.reloads.count, 0);
   env.requests[0].frame(1, 0, '["current"]');
   assert.deepEqual(received, ['["current"]']);
 }));

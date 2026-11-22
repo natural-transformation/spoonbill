@@ -266,9 +266,14 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
         val release = WebSocketResponse.releaseOnce[F](releaseSession)
         Effect[F].pure(WebSocketResponse.Duplex(output, selectedProtocol, release))
       case SessionStart.Refused() | SessionStart.Owned(_, _) =>
-        // A poll owns the view of this session. The socket gets nothing and
-        // closes; the view goes on.
-        Stream[String]().mat().map { messages =>
+        // A poll owns the view of this session. The socket gets the reload
+        // frame and closes; the view goes on. A second document with this
+        // session id so reloads once, into a session of its own, through the
+        // reload guard. The page that moved on to long polling ignores the
+        // frame: that socket is not its transport any more. Decided by the user
+        // on 2026-11-22, after the review of PR 42; it got nothing before, and
+        // a second document whose WebSocket works reconnected every 200 ms.
+        Stream(Frontend.ReloadMessage).mat().map { messages =>
           val output = messages.mapAsync(encoder)
           val release = WebSocketResponse.releaseOnce[F](() =>
             incoming.cancel().recover { case NonFatal(_) => () } *>
