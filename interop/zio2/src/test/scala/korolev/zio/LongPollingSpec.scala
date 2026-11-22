@@ -36,4 +36,8 @@ class LongPollingSpec extends AnyFlatSpec {
   it should "finish the cleanup of a render that was interrupted while it removed an expired state" in {
     LongPollingSessionChecks.cancelledCleanup[Task](interruptible)
   }
+
+  it should "run a WebSocket attach that was cancelled after its claim to its end" in {
+    LongPollingSessionChecks.cancelledWebSocketAttach[Task](interruptible)
+  }
 }

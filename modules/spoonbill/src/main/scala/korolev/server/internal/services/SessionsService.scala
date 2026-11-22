@@ -1043,7 +1043,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         Effect[F].delay(config.reporter.debug(s"No fresh page for $qsid; the page is told to reload")) *>
           incomingStream.cancel().recover { case _ => () }.map(_ => SessionStart.Reload[F](): SessionStart[F])
 
-    withRecord(stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
+    // The claim of the record, the look into the storage and the attach are
+    // steps of one effect: a throw on the way is a failed effect that the
+    // caller sees, and a cancelled request cannot stop it between the claim
+    // and the attach, which would leave a state without record or view.
+    Effect[F].uncancelable(Effect[F].delayAsync(withRecord(stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
       case true =>
         // State exists because it was created on static page
         // rendering phase (see ServerSideRenderingService)
@@ -1065,7 +1069,7 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           config.reporter.error(s"Unable to close session $qsid without a stored state", cleanupError)
           ()
         }.map(_ => SessionStart.Reload[F](): SessionStart[F])
-    })
+    })))
   }
 
   private val stateStorage =

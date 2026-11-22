@@ -297,6 +297,30 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     f.hasView(page) shouldBe false
   }
 
+  "A first poll" should "take its entry out when its storage throws, so that the next poll is answered" in {
+    val down = new java.util.concurrent.atomic.AtomicBoolean(false)
+    val storage = new spoonbill.state.StateStorage[Future, Int] {
+      private val underlying = new spoonbill.state.StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
+      // A blocking check of a database that is down throws, and fails no effect.
+      def exists(device: String, session: String): Future[Boolean] =
+        if (down.get()) throw new IllegalStateException("the database is down") else underlying.exists(device, session)
+      def get(device: String, session: String): Future[spoonbill.state.StateManager[Future]] = underlying.get(device, session)
+      def create(device: String, session: String, state: Int): Future[spoonbill.state.StateManager[Future]] =
+        underlying.create(device, session, state)
+      def remove(device: String, session: String): Unit = underlying.remove(device, session)
+    }
+    val f    = new LongPollingFixture(storage = Some(storage))
+    val page = f.render()
+    down.set(true)
+    f.poll(page, 0L).value.exists(_.isFailure) shouldBe true
+    down.set(false)
+    // The attach claimed the record of the page, so the page is told to
+    // reload. Without its entry the poll would wait for a view that never comes.
+    val next = f.poll(page, 0L)
+    withClue("the next poll is answered at once: ")(next.isCompleted shouldBe true)
+    read(await(next)).body shouldBe "[1]"
+  }
+
   "A render" should "make a fresh-page record, and an attach makes none" in {
     val f = new LongPollingFixture()
     f.sessions.freshPageRecords shouldBe 0

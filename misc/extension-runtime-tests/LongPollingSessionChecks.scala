@@ -4,13 +4,13 @@ import avocet.dsl.*
 import avocet.dsl.html.*
 import java.util.UUID
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.Try
 import spoonbill.{Context, Extension, Qsid}
 import spoonbill.data.Bytes
-import spoonbill.effect.{AsyncTable, Effect, Reporter, Stream}
+import spoonbill.effect.{AsyncTable, Effect, Queue, Reporter, Stream}
 import spoonbill.server.*
 import spoonbill.state.{StateManager, StateStorage}
 import spoonbill.state.javaSerialization.*
@@ -250,6 +250,47 @@ object LongPollingSessionChecks {
       assert(server.sessions.freshPageRecords == 2, s"Records after a later render: ${server.sessions.freshPageRecords}")
     } finally {
       release.countDown()
+      ()
+    }
+  }
+
+  /**
+   * A WebSocket attach is cancelled after it claimed the fresh-page record of
+   * its page, while it looks into the storage. It runs to its end: the page
+   * gets its view. A stop between the claim and the attach would leave a state
+   * without record or view, which no cleanup finds.
+   */
+  def cancelledWebSocketAttach[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F       = Effect[F]
+    val entered = new CountDownLatch(1)
+    val release = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+    val holding = new AtomicBoolean(false)
+    val held = new StateStorage[F, Int] {
+      private val underlying                                       = StateStorage[F, Int]()
+      def get(device: String, session: String): F[StateManager[F]] = underlying.get(device, session)
+      def remove(device: String, session: String): Unit            = underlying.remove(device, session)
+      def create(device: String, session: String, state: Int): F[StateManager[F]] = underlying.create(device, session, state)
+      def exists(device: String, session: String): F[Boolean] =
+        if (!holding.get()) underlying.exists(device, session)
+        else F.flatMap(F.delay(entered.countDown()))(_ => F.flatMap(release.get(()))(_ => underlying.exists(device, session)))
+    }
+    val server = new Server[F](() => F.unit, Some(held))
+    run(server.render())
+    holding.set(true)
+    val head   = Request(Request.Method.Get, PathAndQuery.fromString("/bridge/web-socket/x"), Nil, None, ())
+    val attach = server.sessions.createAppIfNeeded(server.qsid, head, Queue[F, String]().stream)
+    val cancel = start(F.map(attach)(_ => ()))
+    try {
+      assert(entered.await(10, TimeUnit.SECONDS), "The attach never looked into the storage")
+      val cancelling = request(cancel)
+      run(release.putEither((), Right(()), silent = true))
+      Await.result(cancelling, 10.seconds)
+      holding.set(false)
+      val view    = run(server.sessions.getApp(server.qsid)).nonEmpty
+      val records = server.sessions.freshPageRecords
+      assert(view && records == 0, s"After a cancelled WebSocket attach: a view=$view, records=$records")
+    } finally {
+      Try(run(release.putEither((), Right(()), silent = true)))
       ()
     }
   }
