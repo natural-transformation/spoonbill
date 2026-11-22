@@ -307,4 +307,47 @@ class LongPollingDeliveryInterpreterSpec extends AnyFlatSpec with Matchers {
     worker.drain()
     await(joined) shouldBe PollAnswer.Reload
   }
+
+  /**
+   * The timer of a poll comes back from the scheduler on another thread, and
+   * the poll is answered meanwhile. Whichever comes first, the timer is
+   * cancelled: none stays set for a poll that the machine has settled. A timer
+   * that was kept by a separate look at the machine state failed this, about
+   * 29 times in 20,000 polls.
+   */
+  "The timer of a poll" should "be cancelled once the poll is answered, also when it comes back after the answer" in {
+    val scheduling = java.util.concurrent.Executors.newFixedThreadPool(4)
+    try {
+      val context = scala.concurrent.ExecutionContext.fromExecutor(scheduling)
+      final class Timer extends Scheduler.JobHandler[Future, Unit] {
+        val cancelled              = new java.util.concurrent.atomic.AtomicBoolean(false)
+        def unsafeCancel(): Unit   = cancelled.set(true)
+        def cancel(): Future[Unit] = Future.successful(unsafeCancel())
+        def result: Future[Unit]   = Future.never
+      }
+      val timers = new java.util.concurrent.ConcurrentLinkedQueue[Future[Timer]]()
+      val timing = new LongPollingDelivery.Timing[Future] {
+        def scheduleOnce(delay: FiniteDuration)(job: => Future[Unit]): Future[Scheduler.JobHandler[Future, Unit]] = {
+          val timer = Future(new Timer)(context)
+          timers.add(timer)
+          timer
+        }
+      }
+      val frames   = Queue[Future, Frontend.OutgoingFrame]()
+      val delivery = new LongPollingDelivery[Future](30.seconds, timing, Reporter.PrintReporter)
+      await(delivery.own(frames.stream))
+      val polls = 20000
+      for (seen <- 0 until polls) {
+        val answer = delivery.poll(seen.toLong)
+        frames.offerUnsafe(Frontend.OutgoingFrame(s"[4,$seen]", Frontend.FrameKind.Dom, () => true))
+        await(answer) shouldBe PollAnswer.Frame(s"[4,$seen]", seen + 1L, seen + 1L)
+      }
+      val made = timers.toArray(Array.empty[Future[Timer]]).toVector.map(await)
+      made.size shouldBe polls
+      // The callbacks of the last timers.
+      val deadline = System.nanoTime() + 5.seconds.toNanos
+      while (made.exists(!_.cancelled.get()) && System.nanoTime() < deadline) Thread.sleep(10)
+      made.count(!_.cancelled.get()) shouldBe 0
+    } finally scheduling.shutdownNow()
+  }
 }

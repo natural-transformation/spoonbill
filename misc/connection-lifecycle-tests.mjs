@@ -412,6 +412,25 @@ test('an unguarded page reloads at once, and a second reload in the window waits
   assert.equal(env.reloads.count, 2);
 }));
 
+test('while a reload waits, the page sends and polls nothing, and a second reload schedules no other', () => environment(async env => {
+  await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  const {connection, events} = await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1, 'the second reload waits');
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+  const sent = env.requests.length;
+  // The user clicks while the page waits for its reload.
+  connection.send('["click"]');
+  assert.equal(env.requests.length, sent, 'a request left while the reload waits');
+  // The server says reload once more, on another path: still one reload.
+  connection.reloadPage();
+  const waiting = [...env.timers.values()].filter(timer => timer.delay > 25000 && timer.delay <= 30000);
+  assert.equal(waiting.length, 1, 'a second reload was scheduled');
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+}));
+
 test('a page without sessionStorage reloads at once', () => environment(async env => {
   await polling(env);
   env.polls().at(-1).respond(200, '[1]');

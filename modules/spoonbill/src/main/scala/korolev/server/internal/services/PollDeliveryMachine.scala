@@ -14,10 +14,15 @@ package spoonbill.server.internal.services
  * after it, which is the number of DOM frames among the frames up to it. The
  * page checks both before it applies the frame.
  *
+ * No frame is asked for before the entry owns its view: until then a poll
+ * only waits, and the state says so.
+ *
  * Pure: the interpreter, [[LongPollingDelivery]], keeps the frame itself, the
- * completion handle of each poll that waits, and the one pull of the view. Each
- * waiter is settled once: by a frame, by its timeout or by its cancellation,
- * whichever the machine sees first.
+ * frames of the view, and for each poll that waits its completion handle and
+ * the handle of its timer, all in one cell with this state. Each waiter is
+ * settled once: by a frame, by its timeout or by the end of its request,
+ * whichever the machine sees first. Its timer is kept only while it waits
+ * ([[keepsTimer]]).
  */
 private[spoonbill] object PollDeliveryMachine {
 
@@ -48,6 +53,8 @@ private[spoonbill] object PollDeliveryMachine {
    *   the polls that wait for a frame, in the order in which they came
    * @param ended
    *   the view has ended, and no frame will come
+   * @param owned
+   *   the entry owns its view, so frames can be asked for
    */
   final case class State[I](
     confirmed: Long = 0L,
@@ -55,7 +62,8 @@ private[spoonbill] object PollDeliveryMachine {
     kept: Option[Kind] = None,
     pulling: Boolean = false,
     waiting: Vector[I] = Vector.empty[I],
-    ended: Boolean = false
+    ended: Boolean = false,
+    owned: Boolean = false
   )
 
   def initial[I]: State[I] = State[I]()
@@ -84,11 +92,18 @@ private[spoonbill] object PollDeliveryMachine {
     /** The frame stream of the view has ended. */
     case Ended()
 
+    /** The entry owns its view now: its frames can be asked for. */
+    case Owned()
+
     /** The wait limit of a poll is over. */
     case TimedOut(id: I)
 
-    /** The request of a poll is gone. */
-    case Cancelled(id: I)
+    /**
+     * The request of a poll has ended: it was answered, it timed out, or it was
+     * cancelled. A poll that still waits is taken out; for any other poll this
+     * changes nothing.
+     */
+    case RequestEnded(id: I)
   }
 
   enum Result[I] {
@@ -111,6 +126,9 @@ private[spoonbill] object PollDeliveryMachine {
      * or it has everything. When `pull` holds, one frame is asked for now.
      */
     case Wait(pull: Boolean)
+
+    /** One frame is asked for now, for the polls that wait. */
+    case Pull()
 
     /** Every poll in `ids` gets the frame that came. */
     case Answered(ids: Vector[I], frame: Long, dom: Long)
@@ -140,7 +158,8 @@ private[spoonbill] object PollDeliveryMachine {
             (current, Result.Answer(current.confirmed + 1L, domAfter(current), kind == Kind.Command && !keptAwaited))
           case None =>
             val waiting = if (current.waiting.contains(id)) current.waiting else current.waiting :+ id
-            if (current.pulling) (current.copy(waiting = waiting), Result.Wait(pull = false))
+            // Before the entry owns its view, the poll only waits.
+            if (current.pulling || !current.owned) (current.copy(waiting = waiting), Result.Wait(pull = false))
             else (current.copy(waiting = waiting, pulling = true), Result.Wait(pull = true))
         }
       }
@@ -151,13 +170,24 @@ private[spoonbill] object PollDeliveryMachine {
     case Event.Ended() =>
       if (state.ended) (state, Result.Reloaded(Vector.empty[I]))
       else (state.copy(ended = true, pulling = false, waiting = Vector.empty[I]), Result.Reloaded(state.waiting))
+    case Event.Owned() =>
+      if (state.owned || state.ended) (state, Result.Silent())
+      else if (state.waiting.nonEmpty) (state.copy(owned = true, pulling = true), Result.Pull())
+      else (state.copy(owned = true), Result.Silent())
     case Event.TimedOut(id) =>
       if (state.waiting.contains(id)) (state.copy(waiting = state.waiting.filterNot(_ == id)), Result.NoContent())
       else (state, Result.Silent())
-    case Event.Cancelled(id) =>
+    case Event.RequestEnded(id) =>
       if (state.waiting.contains(id)) (state.copy(waiting = state.waiting.filterNot(_ == id)), Result.Silent())
       else (state, Result.Silent())
   }
+
+  /**
+   * The timer of a poll comes back from the scheduler after the poll started to
+   * wait. It is kept while the poll waits; for a poll that was settled
+   * meanwhile it is cancelled.
+   */
+  def keepsTimer[I](state: State[I], id: I): Boolean = state.waiting.contains(id)
 
   /** What becomes of a message that the page sends with cursor `seen`. */
   enum Message { case Deliver, Gone }

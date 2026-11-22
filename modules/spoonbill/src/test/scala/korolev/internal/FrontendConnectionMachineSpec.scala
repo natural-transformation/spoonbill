@@ -101,4 +101,29 @@ final class FrontendConnectionMachineSpec extends AnyFlatSpec with Matchers {
     // Before its first render a view has no handlers to select.
     revision(initial, 0L) shouldBe Revision.Denied
   }
+
+  it should "refuse browser input that names no revision, and nothing else" in {
+    // (resumes, browser input, revision) -> refused as unrevised
+    val table = List(
+      (true, true, None)        -> true,
+      (true, true, Some(3L))    -> false,
+      (true, false, None)       -> false, // history and programmatic transitions
+      (false, true, None)       -> false, // a view that does not resume
+      (false, false, None)      -> false
+    )
+    for (((resumes, browserInput, expected), refused) <- table)
+      withClue((resumes, browserInput, expected))(unrevised(resumes, browserInput, expected) shouldBe refused)
+  }
+
+  it should "check a browser callback against its revision right before it runs, and run any other action" in {
+    // (resumes, browser input) -> checked right before it runs
+    val table = List(
+      (true, true)   -> true,
+      (true, false)  -> false, // history and programmatic transitions always run
+      (false, true)  -> false, // a view that does not resume runs its callbacks directly
+      (false, false) -> false
+    )
+    for (((resumes, browserInput), checked) <- table)
+      withClue((resumes, browserInput))(checkedBeforeRun(resumes, browserInput) shouldBe checked)
+  }
 }

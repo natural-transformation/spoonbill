@@ -1,6 +1,7 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
-  linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, notesLongPolling} from './connection-machine.js';
+  linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, notesLongPolling, frameKind, afterFrame,
+  reloadStarted} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
@@ -379,24 +380,19 @@ export class Connection {
 
     const answered = request => {
       const body = request.responseText;
-      let domFrame = false;
-      if (request.status === 200) {
-        try {
-          const frame = JSON.parse(body);
-          domFrame = Array.isArray(frame) && frame[0] === 4;
-        } catch (_) {
-          return this.reloadPage();
-        }
-      }
+      const kind = request.status === 200 ? frameKind(body) : null;
       switch (pollAnswer(this._lifecycle, request.status, request.getResponseHeader('spoonbill-frame'),
-          request.getResponseHeader('spoonbill-dom'), domFrame)) {
-        case 'apply':
+          request.getResponseHeader('spoonbill-dom'), kind)) {
+        case 'apply': {
           resumed();
           if (!isCurrent()) return;
           // Applied means applied: a frame that the bridge could not apply reloads.
-          if (!this._deliver(body)) return this.reloadPage();
-          this._lifecycle = connectionStep(this._lifecycle, {type: 'frame-applied', domFrame});
-          return poll();
+          // The bridge may change the lifecycle while it applies, so it is read after.
+          const applied = this._deliver(body);
+          const {state, next} = afterFrame(this._lifecycle, applied, kind === 'dom');
+          this._lifecycle = state;
+          return next === 'poll' ? poll() : this.reloadPage();
+        }
         case 'empty':
           resumed();
           return poll();
@@ -497,26 +493,35 @@ export class Connection {
    * the end of the window. Without sessionStorage the page reloads at once.
    */
   reloadPage() {
+    // A page reloads once: another word to reload while one waits changes nothing.
+    if (reloadStarted(this._lifecycle)) return;
     const storage = sessionStore();
-    if (storage === null) return window.location.reload();
+    let wait = 0;
     try {
-      if (notesLongPolling(this._lifecycle)) storage.setItem(TRANSPORT_KEY, 'long-polling');
-      const now = Date.now();
-      const stored = storage.getItem(RELOAD_KEY);
-      const wait = reloadWait(stored === null ? null : Number(stored), now);
-      if (wait === 0) {
-        storage.setItem(RELOAD_KEY, String(now));
-        window.location.reload();
-      } else {
-        this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
-        setTimeout(() => {
-          try { storage.setItem(RELOAD_KEY, String(Date.now())); } catch (_) {}
-          window.location.reload();
-        }, wait);
+      if (storage !== null) {
+        if (notesLongPolling(this._lifecycle)) storage.setItem(TRANSPORT_KEY, 'long-polling');
+        const stored = storage.getItem(RELOAD_KEY);
+        wait = reloadWait(stored === null ? null : Number(stored), Date.now());
       }
     } catch (_) {
-      window.location.reload();
+      wait = 0;
     }
+    const shown = noticeShown(this._lifecycle);
+    // From now on no transport is current: nothing is sent, polled or reconnected.
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'reload', wait, scheduleEpoch: {}});
+    if (this._reconnectTimer !== null) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._clearPendingSends();
+    if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
+    const reload = () => {
+      try { if (storage !== null) storage.setItem(RELOAD_KEY, String(Date.now())); } catch (_) {}
+      window.location.reload();
+    };
+    // The timer is only the handle of the wait; the machine knows that the page waits.
+    if (wait === 0) reload();
+    else setTimeout(reload, wait);
   }
 
   /** @private */

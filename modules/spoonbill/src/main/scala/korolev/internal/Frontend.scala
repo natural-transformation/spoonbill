@@ -119,7 +119,8 @@ final class Frontend[F[_]: Effect](
       renderPublication.synchronized {
         // An event that names no revision could run a handler of any display.
         // A view that resumes refuses it.
-        if (resumes && expected.isEmpty && obsolete == ObsoleteRevision.Discard) throw UnrevisedBrowserEvent
+        if (Connection.unrevised(resumes, browserInput = obsolete == ObsoleteRevision.Discard, expected))
+          throw UnrevisedBrowserEvent
         expected.foreach { value =>
           // This connection never published a future revision to the browser.
           Connection.revision(connection, value) match {
@@ -369,7 +370,7 @@ final class Frontend[F[_]: Effect](
     if (!guarded) obsoleteResult match {
       // A browser callback of a view that resumes is checked against its
       // published revision right before it runs, as a DOM event is.
-      case Some(discarded) if resumes =>
+      case Some(discarded) if Connection.checkedBeforeRun(resumes, browserInput = true) =>
         checkRenderRevision(expectedRevision, ObsoleteRevision.Discard)
           .flatMap(_ => Effect[F].delayAsync(operation))
           .recover { case ObsoleteBrowserEvent => discarded }

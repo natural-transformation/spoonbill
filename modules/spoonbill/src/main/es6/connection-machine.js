@@ -28,7 +28,10 @@ export function initialConnection() {
     page: null,
     seen: 0,
     dom: 0,
-    failures: 0
+    failures: 0,
+    // A framework reload of an unguarded page has started: 'now', or 'waiting'
+    // for the end of the reload window. From then on no transport is current.
+    reloading: null
   };
 }
 
@@ -39,8 +42,10 @@ export const currentSchedule = (state, epoch) => state.scheduleEpoch === epoch;
 export const authenticationPending = state => state.authentication !== null;
 /** No poll failed since the last answer. */
 export const linkUp = state => state.failures === 0;
-/** The connection-lost notice shows from the second failed poll in a row. */
-export const noticeShown = state => state.failures >= 2;
+/** The connection-lost notice shows from the second failed poll in a row, and while a reload waits. */
+export const noticeShown = state => state.failures >= 2 || state.reloading === 'waiting';
+/** A framework reload has started; a page reloads once. */
+export const reloadStarted = state => state.reloading !== null;
 /** The wait before the next poll: none after an answer, the reconnect back-off after failures. */
 export const pollDelay = state => state.failures === 0 ? 0 :
   Math.min(MIN_RECONNECT_TIMEOUT * 2 ** (state.failures - 1), MAX_RECONNECT_TIMEOUT);
@@ -52,20 +57,40 @@ export function headerCount(value) {
   return Number.isSafeInteger(count) ? count : null;
 }
 
+/** The body of an answer: a DOM frame ('dom'), another frame ('other'), or no frame at all (null). */
+export function frameKind(body) {
+  try {
+    const frame = JSON.parse(body);
+    return Array.isArray(frame) && frame[0] === 4 ? 'dom' : 'other';
+  } catch (_) {
+    return null;
+  }
+}
+
 /**
  * What the long-polling transport does with an answer to its poll. A `200` is
- * applied only when it is frame `seen + 1` and names the DOM revision that the
- * page has after it: its own count, plus one for a DOM frame. Anything else that
- * is not a failure or `204` makes the page reload.
+ * applied only when its body is a frame (`kind`, from `frameKind`), it is frame
+ * `seen + 1`, and it names the DOM revision that the page has after it: its own
+ * count, plus one for a DOM frame. Anything else that is not a failure or `204`
+ * makes the page reload.
  */
-export function pollAnswer(state, status, frameHeader, domHeader, domFrame) {
+export function pollAnswer(state, status, frameHeader, domHeader, kind) {
   if (status === 204) return 'empty';
   if (status === 0 || (status >= 500 && status < 600)) return 'failed';
-  if (status !== 200) return 'reload';
+  if (status !== 200 || kind === null) return 'reload';
   const frame = headerCount(frameHeader), dom = headerCount(domHeader);
   if (frame === null || dom === null) return 'reload';
-  if (frame !== state.seen + 1 || dom !== state.dom + (domFrame ? 1 : 0)) return 'reload';
+  if (frame !== state.seen + 1 || dom !== state.dom + (kind === 'dom' ? 1 : 0)) return 'reload';
   return 'apply';
+}
+
+/**
+ * After the transport handed a frame to the bridge. Applied means applied: a
+ * frame that applied in full is counted and the next poll goes out; one that
+ * did not makes the page reload, and nothing is counted.
+ */
+export function afterFrame(state, applied, domFrame) {
+  return applied ? {state: connectionStep(state, {type: 'frame-applied', domFrame}), next: 'poll'} : {state, next: 'reload'};
 }
 
 /**
@@ -106,6 +131,8 @@ export function connectionStep(state, event) {
     case 'clear-delivery':
       return {...state, deliveredEpoch: null};
     case 'install':
+      // A page that reloads takes no new transport.
+      if (state.reloading !== null) return state;
       // A new long-polling transport is a first attach: it has applied nothing.
       return event.transport === ConnectionType.LONG_POLLING ?
         {...state, transport: event.transport, epoch: event.epoch, seen: 0, dom: 0, failures: 0} :
@@ -157,6 +184,11 @@ export function connectionStep(state, event) {
       return {...state, seen: state.seen + 1, dom: state.dom + (event.domFrame ? 1 : 0)};
     case 'poll-failed':
       return {...state, failures: state.failures + 1};
+    case 'reload':
+      // Once only. The transport is no one's any more, and nothing reconnects.
+      if (state.reloading !== null) return state;
+      return {...state, reloading: event.wait > 0 ? 'waiting' : 'now', epoch: null, reconnect: false,
+        scheduleEpoch: event.scheduleEpoch};
     default:
       return state;
   }

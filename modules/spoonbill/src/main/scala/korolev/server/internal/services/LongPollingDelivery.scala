@@ -1,9 +1,8 @@
 package spoonbill.server.internal.services
 
 import java.util.concurrent.atomic.AtomicLong
-import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.FiniteDuration
-import spoonbill.effect.{AsyncTable, Effect, Queue, Reporter, Scheduler, StateCell, Stream}
+import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, StateCell, Stream}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.Frontend
 
@@ -13,9 +12,11 @@ import spoonbill.internal.Frontend
  *
  * The machine decides. This class keeps the handles: the frame that was
  * handed out last, the completion handle of each poll that waits, the timer of
- * each such poll, and the frames of the view once the entry owns one. A frame
- * is pulled from the view only when the machine asks for it, so the view still
- * drops a browser command that expires while it waits in its queue.
+ * each such poll, and the frames of the view once the entry owns one. They live
+ * in one cell with the machine state and change in the same step, so no handle
+ * outlives the poll that the machine settled. A frame is pulled from the view
+ * only when the machine asks for it, so the view still drops a browser command
+ * that expires while it waits in its queue.
  *
  * @param pollWait
  *   how long a poll waits for a frame at most. It is then answered with `204`.
@@ -29,56 +30,67 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
   import PollDeliveryMachine.{Event, Kind, Result}
 
   private type Answer = Either[Throwable, PollAnswer] => Unit
+  private type Timer  = Scheduler.JobHandler[F, Unit]
+  private type Frames = Stream[F, Frontend.OutgoingFrame]
+
+  /** A poll that waits: its completion handle, and its timer once the scheduler has set it. */
+  private final case class Waiter(answer: Answer, timer: Option[Timer])
 
   /** The machine state, with the handles that it names. They change in one step. */
   private final case class Held(
     state: PollDeliveryMachine.State[Long],
     frame: Option[Frontend.OutgoingFrame],
-    waiters: Map[Long, Answer]
+    waiters: Map[Long, Waiter],
+    frames: Option[Frames]
   )
 
-  private val held   = new StateCell(Held(PollDeliveryMachine.initial[Long], None, Map.empty))
-  private val ids    = new AtomicLong()
-  private val timers = TrieMap.empty[Long, Scheduler.JobHandler[F, Unit]]
-
-  // The frames of the view, once this entry owns one. A pull waits for them,
-  // so a poll that joins a first attach waits for that attach.
-  private val source = AsyncTable.unsafeCreateEmpty[F, Unit, Stream[F, Frontend.OutgoingFrame]]
+  private val held = new StateCell(Held(PollDeliveryMachine.initial[Long], None, Map.empty, None))
+  private val ids  = new AtomicLong()
 
   // One element for each poll that is progress: it confirmed a frame, or the
   // page has everything. The idle timer of the view watches this stream.
   private val progressQueue      = Queue[F, Unit]()
   val progress: Stream[F, Unit] = progressQueue.stream
 
-  /** The entry owns the view. Its frames come from `frames` from now on. */
-  def own(frames: Stream[F, Frontend.OutgoingFrame]): F[Unit] = source.put((), frames)
-
   /**
-   * The entry will own no view: every poll that waits, and every later one, is
-   * told to reload. A pull that waits for the frames ends too.
+   * The entry owns the view. Its frames come from `frames` from now on, and a
+   * poll that joined the first attach gets its frame now.
    */
-  def abandon(): F[Unit] =
-    source.fail((), new IllegalStateException("The long-polling entry owns no view")).flatMap(_ => Effect[F].delay(ended()))
+  def own(frames: Frames): F[Unit] = Effect[F].delay {
+    val pull = held.modify { current =>
+      val (next, result) = PollDeliveryMachine.step(current.state, Event.Owned())
+      val owns           = next.owned && !current.state.owned
+      (current.copy(state = next, frames = if (owns) Some(frames) else current.frames), result == Result.Pull[Long]())
+    }
+    if (pull) startPull(frames)
+  }
+
+  /** The entry will own no view: every poll that waits, and every later one, is told to reload. */
+  def abandon(): F[Unit] = Effect[F].delay(ended())
 
   /** What becomes of a message with cursor `seen`. */
   def message(seen: Long): PollDeliveryMachine.Message = PollDeliveryMachine.message(held.get.state, seen)
 
   /**
-   * One poll with cursor `seen`. A poll whose request is cancelled is taken out
-   * of the waiters; the pull that it may have started goes on for the entry.
+   * One poll with cursor `seen`. When its request ends, however it ends, the
+   * machine hears of it: a poll that still waits, as after a cancellation, is
+   * taken out with its timer; for an answered poll nothing changes. The pull
+   * that a poll may have started goes on for the entry.
    */
   def poll(seen: Long): F[PollAnswer] = {
     val id = ids.incrementAndGet()
     Effect[F].guarantee(Effect[F].promise[PollAnswer] { answer =>
-      val (result, kept) = held.modify { current =>
+      val (result, kept, frames) = held.modify { current =>
         // Only a command can expire. The view says whether it still waits for its answer.
         val awaited        = current.frame.forall(_.awaited())
         val (next, result) = PollDeliveryMachine.step(current.state, Event.Poll(id, seen, awaited))
         val waiters = result match {
-          case Result.Wait(_) => current.waiters.updated(id, answer)
+          case Result.Wait(_) => current.waiters.updated(id, Waiter(answer, None))
           case _              => current.waiters
         }
-        (Held(next, current.frame, waiters), (result, current.frame))
+        // A frame that the page confirmed is not kept any more.
+        val frame = if (next.kept.isEmpty) None else current.frame
+        (Held(next, frame, waiters, current.frames), (result, frame, current.frames))
       }
       result match {
         case Result.Reload() => answer(Right(PollAnswer.Reload))
@@ -88,16 +100,17 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
           answer(Right(PollAnswer.Frame(message, frame, dom)))
         case Result.Wait(pull) =>
           progressQueue.offerUnsafe(())
-          if (pull) startPull()
+          // The machine asks for a frame only when the entry owns its view.
+          if (pull) frames.foreach(startPull)
           startTimer(id)
         case _ => ()
       }
-    })(Effect[F].delay(settle(Event.Cancelled(id))))
+    })(Effect[F].delay(settle(id, Event.RequestEnded(id))))
   }
 
   /** Asks the view for one frame. The pull belongs to the entry, not to a request. */
-  private def startPull(): Unit =
-    Effect[F].runAsync(source.get(()).flatMap(_.pull())) {
+  private def startPull(frames: Frames): Unit =
+    Effect[F].runAsync(frames.pull()) {
       case Right(Some(frame)) => pulled(frame)
       case Right(None)        => ended()
       case Left(error) =>
@@ -109,63 +122,63 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
     val answered = held.modify { current =>
       PollDeliveryMachine.step(current.state, Event.Pulled(kind(frame.kind))) match {
         case (next, Result.Answered(waiting, number, dom)) =>
-          (Held(next, Some(frame), current.waiters -- waiting), Some((waiting, number, dom, current.waiters)))
-        case _ => (current, None)
+          val waiters = waiting.flatMap(current.waiters.get)
+          (Held(next, Some(frame), current.waiters -- waiting, current.frames), waiters.map((_, number, dom)))
+        case _ => (current, Vector.empty)
       }
     }
-    answered.foreach { case (waiting, number, dom, waiters) =>
-      waiting.foreach { id =>
-        stopTimer(id)
-        waiters.get(id).foreach(_(Right(PollAnswer.Frame(frame.message, number, dom))))
-      }
+    answered.foreach { case (waiter, number, dom) =>
+      waiter.timer.foreach(_.unsafeCancel())
+      waiter.answer(Right(PollAnswer.Frame(frame.message, number, dom)))
     }
   }
 
   private def ended(): Unit = {
     val reloaded = held.modify { current =>
-      PollDeliveryMachine.step(current.state, Event.Ended()) match {
-        case (next, Result.Reloaded(waiting)) =>
-          (Held(next, None, current.waiters -- waiting), waiting.flatMap(id => current.waiters.get(id).map(id -> _)))
-        case (next, _) => (Held(next, None, current.waiters), Vector.empty)
+      val (next, result) = PollDeliveryMachine.step(current.state, Event.Ended())
+      val waiting = result match {
+        case Result.Reloaded(ids) => ids
+        case _                    => Vector.empty
       }
+      (Held(next, None, current.waiters -- waiting, current.frames), waiting.flatMap(current.waiters.get))
     }
-    reloaded.foreach { case (id, answer) =>
-      stopTimer(id)
-      answer(Right(PollAnswer.Reload))
+    reloaded.foreach { waiter =>
+      waiter.timer.foreach(_.unsafeCancel())
+      waiter.answer(Right(PollAnswer.Reload))
     }
     progressQueue.unsafeClose()
   }
 
-  /** A timeout or a cancellation. Only the first event that the machine sees settles a poll. */
-  private def settle(event: Event[Long]): Unit = {
-    val id = event match {
-      case Event.TimedOut(value)  => value
-      case Event.Cancelled(value) => value
-      case _                      => -1L
-    }
-    val answer = held.modify { current =>
+  /** A timeout or the end of a request. Only the first event that the machine sees settles a poll. */
+  private def settle(id: Long, event: Event[Long]): Unit = {
+    val (settled, noContent) = held.modify { current =>
       val (next, result) = PollDeliveryMachine.step(current.state, event)
-      val waiters        = if (next.waiting.contains(id)) current.waiters else current.waiters - id
-      val settled = result match {
-        case Result.NoContent() => current.waiters.get(id)
-        case _                  => None
-      }
-      (Held(next, current.frame, waiters), settled)
+      // The handles of a poll that no longer waits leave with it.
+      val settled = if (next.waiting.contains(id)) None else current.waiters.get(id)
+      val waiters = if (settled.isEmpty) current.waiters else current.waiters - id
+      (Held(next, current.frame, waiters, current.frames), (settled, result == Result.NoContent[Long]()))
     }
-    stopTimer(id)
-    answer.foreach(_(Right(PollAnswer.NoContent)))
+    settled.foreach { waiter =>
+      waiter.timer.foreach(_.unsafeCancel())
+      if (noContent) waiter.answer(Right(PollAnswer.NoContent))
+    }
   }
 
   private def startTimer(id: Long): Unit =
-    Effect[F].runAsync(timing.scheduleOnce(pollWait)(Effect[F].delay(settle(Event.TimedOut(id))))) {
-      case Right(handle) =>
-        // A poll that was settled meanwhile leaves the handle; it ends at its time.
-        if (held.get.state.waiting.contains(id)) timers.put(id, handle)
-        else handle.unsafeCancel()
+    Effect[F].runAsync(timing.scheduleOnce(pollWait)(Effect[F].delay(settle(id, Event.TimedOut(id))))) {
+      case Right(timer) =>
+        // The timer joins its poll in one step, or it is cancelled: the poll
+        // was settled before the scheduler gave the timer back.
+        val keeps = held.modify { current =>
+          current.waiters.get(id) match {
+            case Some(waiter) if PollDeliveryMachine.keepsTimer(current.state, id) =>
+              (current.copy(waiters = current.waiters.updated(id, waiter.copy(timer = Some(timer)))), true)
+            case _ => (current, false)
+          }
+        }
+        if (!keeps) timer.unsafeCancel()
       case Left(error) => reporter.error("Unable to schedule the wait limit of a long poll", error)
     }
-
-  private def stopTimer(id: Long): Unit = timers.remove(id).foreach(_.unsafeCancel())
 
   private def kind(value: Frontend.FrameKind): Kind = value match {
     case Frontend.FrameKind.Dom     => Kind.Dom

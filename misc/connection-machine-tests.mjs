@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connectio
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, notesLongPolling,
-  RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
+  frameKind, afterFrame, reloadStarted, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
@@ -120,22 +120,44 @@ test('the cursor counts applied frames, and the DOM revision counts the DOM fram
 
 test('a frame is applied only when both headers name what the page has after it', () => {
   const state = {...initialConnection(), seen: 3, dom: 2};
-  assert.equal(pollAnswer(state, 200, '4', '3', true), 'apply');
-  assert.equal(pollAnswer(state, 200, '4', '2', false), 'apply');
+  assert.equal(pollAnswer(state, 200, '4', '3', 'dom'), 'apply');
+  assert.equal(pollAnswer(state, 200, '4', '2', 'other'), 'apply');
   // The page counts itself: a header that differs makes it reload.
-  for (const [frame, dom, domFrame] of [['4', '2', true], ['4', '3', false], ['5', '3', true], ['3', '2', false],
-    [null, '3', true], ['4', null, true], ['04', '3', true], ['4', '-3', true], ['4', '3.0', true],
-    ['9007199254740993', '3', true]])
-    assert.equal(pollAnswer(state, 200, frame, dom, domFrame), 'reload', `${frame} ${dom} ${domFrame}`);
+  for (const [frame, dom, kind] of [['4', '2', 'dom'], ['4', '3', 'other'], ['5', '3', 'dom'], ['3', '2', 'other'],
+    [null, '3', 'dom'], ['4', null, 'dom'], ['04', '3', 'dom'], ['4', '-3', 'dom'], ['4', '3.0', 'dom'],
+    ['9007199254740993', '3', 'dom']])
+    assert.equal(pollAnswer(state, 200, frame, dom, kind), 'reload', `${frame} ${dom} ${kind}`);
+  // A body that is not a frame makes the page reload, whatever the headers say.
+  assert.equal(pollAnswer(state, 200, '4', '2', null), 'reload');
 });
 
 test('a poll answer is applied, empty, failed or a reason to reload', () => {
   const state = initialConnection();
-  assert.equal(pollAnswer(state, 204, null, null, false), 'empty');
+  assert.equal(pollAnswer(state, 204, null, null, null), 'empty');
   for (const status of [0, 500, 502, 503, 504])
-    assert.equal(pollAnswer(state, status, null, null, false), 'failed', String(status));
+    assert.equal(pollAnswer(state, status, null, null, null), 'failed', String(status));
   for (const status of [400, 404, 410, 302])
-    assert.equal(pollAnswer(state, status, '1', '0', false), 'reload', String(status));
+    assert.equal(pollAnswer(state, status, '1', '0', 'other'), 'reload', String(status));
+});
+
+test('the body of an answer is a DOM frame, another frame, or not a frame', () => {
+  assert.equal(frameKind('[4,1,"a"]'), 'dom');
+  for (const body of ['["frame"]', '[1]', '[0,"1_2","click",1]', '[]', '{"a":1}', '7'])
+    assert.equal(frameKind(body), 'other', body);
+  for (const body of ['', 'not json', '[4,', '<html>'])
+    assert.equal(frameKind(body), null, body);
+});
+
+test('a frame that applied is counted and the next poll goes out; one that did not makes the page reload', () => {
+  const state = {...initialConnection(), seen: 3, dom: 2};
+  const dom = afterFrame(state, true, true);
+  assert.equal(dom.next, 'poll');
+  assert.deepEqual([dom.state.seen, dom.state.dom], [4, 3]);
+  const other = afterFrame(state, true, false);
+  assert.deepEqual([other.next, other.state.seen, other.state.dom], ['poll', 4, 2]);
+  // Nothing is counted for a frame that did not apply in full.
+  for (const domFrame of [true, false])
+    assert.deepEqual(afterFrame(state, false, domFrame), {state, next: 'reload'});
 });
 
 test('failed polls interrupt the link, show the notice from the second one, and back off', () => {
@@ -164,6 +186,25 @@ test('the reload guard allows one reload in its window, and a second one waits f
   assert.equal(reloadWait(1000, 11000), RELOAD_WINDOW - 10000);
   // A clock that went back is not a reason to wait.
   assert.equal(reloadWait(5000, 1000), 0);
+});
+
+test('a page that reloads is no transport\'s any more: it sends nothing, reconnects never, and reloads once', () => {
+  const epoch = {}, schedule = {};
+  const live = step(step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch}), {type: 'open', epoch});
+  assert.equal(reloadStarted(live), false);
+  for (const [wait, phase, notice] of [[0, 'now', false], [12000, 'waiting', true]]) {
+    const reloading = step(live, {type: 'reload', wait, scheduleEpoch: schedule});
+    assert.equal(reloading.reloading, phase);
+    assert.equal(reloadStarted(reloading), true);
+    assert.equal(currentTransport(reloading, epoch), false, 'the transport is still current');
+    assert.equal(reloading.reconnect, false);
+    assert.equal(currentSchedule(reloading, schedule), true);
+    // The notice shows while a reload waits for the end of its window.
+    assert.equal(noticeShown(reloading), notice);
+    // A second word to reload, and a transport installed meanwhile, change nothing.
+    assert.equal(step(reloading, {type: 'reload', wait: 0, scheduleEpoch: {}}), reloading);
+    assert.equal(step(reloading, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}}), reloading);
+  }
 });
 
 test('a long-polling page that is told to reload before its first frame starts with long polling', () => {
