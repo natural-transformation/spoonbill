@@ -121,6 +121,22 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     read(await(first)).frame shouldBe Some(seen + 1L)
   }
 
+  it should "be told to reload when the view that a poll built has ended, also while the storage keeps the state" in {
+    // In memory whatever the development-mode switch of the JVM says.
+    val storage = new spoonbill.state.StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
+    val f       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    val page    = f.render()
+    read(await(f.poll(page, 0L))).frame shouldBe Some(1L)
+    // The page makes no progress any more: its view ends by the idle timeout.
+    f.advance(11.seconds)
+    f.hasView(page) shouldBe false
+    await(storage.exists(page.qsid.deviceId, page.qsid.sessionId)) shouldBe true
+    // The same page polls again with seen=0. Its record was claimed by the first
+    // poll, so no second view is built from the state that is still there.
+    read(await(f.poll(page, 0L))).body shouldBe "[1]"
+    f.hasView(page) shouldBe false
+  }
+
   "A lost answer" should "be answered again with the same frame while the view lives" in {
     val f                      = new LongPollingFixture()
     val (page, seen, _, poll)  = start(f)
@@ -239,6 +255,30 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     val page = f.render()
     f.sessions.freshPageRecords shouldBe 1
     frames(f, page, 0L)
+    f.sessions.freshPageRecords shouldBe 0
+  }
+
+  it should "leave its record and no state when its storage write fails, and the page is then told to reload" in {
+    // The record is made before the state is stored, so no stored state is
+    // without a record. A write that fails leaves a record without a state.
+    val failing = new spoonbill.state.StateStorage[Future, Int] {
+      private val underlying = new spoonbill.state.StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
+      def exists(device: String, session: String): Future[Boolean] = underlying.exists(device, session)
+      def get(device: String, session: String): Future[spoonbill.state.StateManager[Future]] = underlying.get(device, session)
+      def create(device: String, session: String, state: Int): Future[spoonbill.state.StateManager[Future]] =
+        Future.failed(new IllegalStateException("the state cannot be written"))
+      def remove(device: String, session: String): Unit = underlying.remove(device, session)
+    }
+    val f = new LongPollingFixture(storage = Some(failing))
+    val page = f.Page(spoonbill.Qsid("long-polling", java.util.UUID.randomUUID().toString))
+    val rendered = f.sessions.initAppState(page.qsid, spoonbill.web.Request(spoonbill.web.Request.Method.Get, spoonbill.web.PathAndQuery.Root, Nil, None, ()))
+    f.worker.drain()
+    rendered.value.exists(_.isFailure) shouldBe true
+    f.sessions.freshPageRecords shouldBe 1
+    await(failing.exists(page.qsid.deviceId, page.qsid.sessionId)) shouldBe false
+    // The first poll claims the record and finds no state.
+    read(await(f.poll(page, 0L))).body shouldBe "[1]"
+    f.hasView(page) shouldBe false
     f.sessions.freshPageRecords shouldBe 0
   }
 

@@ -45,6 +45,10 @@ class MissingStateReloadSpec extends AnyFlatSpec with Matchers {
     def debug(message: String, arg1: Any, arg2: Any): Unit            = ()
     def debug(message: String, arg1: Any, arg2: Any, arg3: Any): Unit = ()
     def reloads: Int = debugs.count(_.contains(missing))
+    // The line that is written in the same step as the counter of missing
+    // states. The counter is one for the whole JVM, and suites run in
+    // parallel, so its exact count is read through this line of one service.
+    def missingStates: Int = debugs.count(_.startsWith("State is missing for"))
   }
 
   /** A repository in memory, under a storage of `StateStorage.fromRepository`. */
@@ -97,6 +101,15 @@ class MissingStateReloadSpec extends AnyFlatSpec with Matchers {
       start
     }
 
+    /** A first poll of the session, as the long-polling bridge makes it. */
+    def poll(): Future[SessionStart[Future]] = {
+      val start = service.createAppIfNeeded(
+        qsid, bridge, Queue[Future, String]().stream, PollAdmissionMachine.Transport.Poll, Some(UUID.randomUUID())
+      )
+      worker.drain()
+      start
+    }
+
     def registered: Boolean = { val app = service.getApp(qsid); worker.drain(); await(app).nonEmpty }
 
     /** The state of the view that the session has now. */
@@ -140,6 +153,7 @@ class MissingStateReloadSpec extends AnyFlatSpec with Matchers {
     fixture.loads.get() shouldBe 1
     repository.rows shouldBe empty
     fixture.reporter.reloads shouldBe 1
+    fixture.reporter.missingStates shouldBe 1
     Metrics.MissingStateReloads.get - before should be >= 1L
   }
 
@@ -201,5 +215,15 @@ class MissingStateReloadSpec extends AnyFlatSpec with Matchers {
       case other                                      => fail(s"The attach got no view: $other")
     }
     fixture.reporter.reloads shouldBe 0
+    fixture.reporter.missingStates shouldBe 0
+  }
+
+  "A reload of another cause" should "not count as a reload for a missing state" in {
+    // A poll of a page that this server did not render: it has no fresh-page
+    // record, and is told to reload before the storage is asked.
+    val fixture = new Fixture()
+    isReload(fixture.poll()) shouldBe true
+    fixture.reporter.reloads shouldBe 1
+    fixture.reporter.missingStates shouldBe 0
   }
 }

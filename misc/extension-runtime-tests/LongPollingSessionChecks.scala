@@ -57,7 +57,8 @@ object LongPollingSessionChecks {
   private final class Server[F[_]: Effect](
     setup: () => F[Unit],
     storage: Option[StateStorage[F, Int]] = None,
-    clock: () => Long = () => System.nanoTime()
+    clock: () => Long = () => System.nanoTime(),
+    pollTiming: Option[LongPollingDelivery.Timing[F]] = None
   )(implicit
     ec: ExecutionContext
   ) {
@@ -75,7 +76,8 @@ object LongPollingSessionChecks {
       })
     )
     val sessions  = new SessionsService(config, new PageService(config), nanoTime = clock)
-    val messaging = new MessagingService[F](quiet, null.asInstanceOf[CommonService[F]], sessions, None, 30.seconds)
+    val messaging =
+      new MessagingService[F](quiet, null.asInstanceOf[CommonService[F]], sessions, None, 30.seconds, pollTiming = pollTiming)
     val qsid      = Qsid("long-polling-checks", UUID.randomUUID().toString)
     val page      = UUID.randomUUID()
 
@@ -141,13 +143,23 @@ object LongPollingSessionChecks {
    * same cursor gets it, and a poll of the cursor after it waits.
    */
   def cancelledAfterPull[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
-    val F      = Effect[F]
-    val server = new Server[F](() => F.unit)
+    val F = Effect[F]
+    // A poll that waits sets its timer right after it has registered and asked
+    // for its frame, so the timer says when the pull is under way.
+    val waits     = new java.util.concurrent.atomic.AtomicReference(new CountDownLatch(1))
+    val scheduler = spoonbill.effect.Scheduler[F]
+    val timing = new LongPollingDelivery.Timing[F] {
+      def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[spoonbill.effect.Scheduler.JobHandler[F, Unit]] = {
+        waits.get().countDown()
+        scheduler.scheduleOnce(delay)(job)
+      }
+    }
+    val server = new Server[F](() => F.unit, pollTiming = Some(timing))
     run(server.render())
-    val seen   = server.settle(0L)
+    val seen = server.settle(0L)
+    waits.set(new CountDownLatch(1))
     val cancel = start(F.map(server.poll(seen))(_ => ()))
-    // Let the poll register and start its pull.
-    Thread.sleep(200)
+    assert(waits.get().await(10, TimeUnit.SECONDS), "The poll never waited")
     Await.result(request(cancel), 10.seconds)
     assert(server.read(run(server.heartbeat(seen))).status == 200, "The heartbeat was not taken")
     val again = server.read(run(server.poll(seen)))
@@ -194,7 +206,10 @@ object LongPollingSessionChecks {
   /**
    * A render is cancelled while its cleanup removes the state of a page that
    * expired. The cleanup runs to its end: the record of that page is not left
-   * releasing, and no state stays live without a record or a view.
+   * releasing, and no state stays live without a record or a view. What this
+   * shows is the end state after a cancel that came during the removal. It
+   * does not prove the `uncancelable` around the cleanup: the cleanup is one
+   * `delay` block, and no effect type cancels a block that runs.
    */
   def cancelledCleanup[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
     val F       = Effect[F]

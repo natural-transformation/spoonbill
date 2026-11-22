@@ -354,7 +354,7 @@ test('an answer without fitting frame numbers makes the page reload and applies 
   }
 }));
 
-test('a frame that the bridge cannot apply makes the page reload, and the cursor stays', () => environment(async env => {
+test('a frame that the bridge cannot apply makes the page reload, and it polls no more', () => environment(async env => {
   const {connection} = await polling(env);
   connection.dispatcher.addEventListener('message', event => { event.applied = false; });
   const polls = env.polls().length;
@@ -374,13 +374,29 @@ test('a poll that is not answered by its deadline fails, and its late answer cha
   assert.equal(events.filter(name => name.startsWith('[')).length, 0);
 }));
 
-test('503 again and again retries with the back-off', () => environment(async env => {
-  await polling(env);
-  for (const delay of [200, 400, 800]) {
+test('503 again and again retries with the back-off, and the notice shows at the second one', () => environment(async env => {
+  const {events} = await polling(env);
+  for (const [delay, notices] of [[200, 0], [400, 1], [800, 1]]) {
     env.polls().at(-1).respond(503);
+    assert.equal(events.filter(name => name === 'interrupt').length, notices, `after the ${delay} ms back-off`);
     runTimer(env, delay);
   }
   assert.equal(env.polls().length, 4);
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('a frame that arrives while the notice shows is applied, and the notice hides', () => environment(async env => {
+  const {events} = await polling(env);
+  env.polls().at(-1).respond(500);
+  runTimer(env, 200);
+  env.polls().at(-1).respond(0);
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+  runTimer(env, 400);
+  // The link is back: the next poll gets the first frame.
+  env.polls().at(-1).frame(1, 0, '["one"]');
+  assert.deepEqual(events.filter(name => name.startsWith('[')), ['["one"]']);
+  assert.equal(events.filter(name => name === 'resume').length, 1);
+  assert.equal(query(env.polls().at(-1).url).seen, '1');
   assert.equal(env.reloads.count, 0);
 }));
 

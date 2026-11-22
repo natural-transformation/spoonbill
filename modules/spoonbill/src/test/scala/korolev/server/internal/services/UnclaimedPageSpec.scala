@@ -144,6 +144,13 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
     entered.await(10, TimeUnit.SECONDS) shouldBe true
     storage.hold = None
     val reads = storage.reads.get()
+    // A WebSocket takes a record at any age, so only the fence keeps it away
+    // from a state whose removal runs. A poll of an expired record is told to
+    // reload anyway.
+    f.webSocket(page).value match {
+      case Some(scala.util.Success(SessionStart.Reload())) => ()
+      case other                                          => fail(s"The WebSocket attach got $other")
+    }
     read(await(f.poll(page, 0L))).body shouldBe reload
     storage.reads.get() shouldBe reads
     release.countDown()

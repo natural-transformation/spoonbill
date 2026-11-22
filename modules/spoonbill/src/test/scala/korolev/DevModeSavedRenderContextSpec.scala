@@ -268,12 +268,32 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
       val page     = UUID.fromString("11111111-1111-4111-8111-111111111111")
       val counter  = new AtomicInteger(0)
       val incoming = Queue[Future, String]()
-      val frontend = new Frontend[Future](
-        incoming.stream,
-        None,
-        connectionId = Some(spoonbill.security.Identifiers.ConnectionId.fromUuid(page)),
-        resumes = true
-      )
+      // The view says when it drops a click of an older display. Both clicks
+      // carry event counter 0, so a first click that ran would make the
+      // second one a repeat, and the count of handler runs alone could not
+      // tell the two apart.
+      val discarded = new AtomicInteger(0)
+      val recording = new Reporter {
+        def error(message: String, cause: Throwable): Unit                 = ()
+        def error(message: String): Unit                                   = ()
+        def warning(message: String, cause: Throwable): Unit               = ()
+        def warning(message: String): Unit                                 = ()
+        def info(message: String): Unit                                    = ()
+        def debug(message: String): Unit                                   =
+          if (message == "Obsolete browser event discarded") { discarded.incrementAndGet(); () }
+        def debug(message: String, arg1: Any): Unit                        = ()
+        def debug(message: String, arg1: Any, arg2: Any): Unit             = ()
+        def debug(message: String, arg1: Any, arg2: Any, arg3: Any): Unit = ()
+      }
+      val frontend = {
+        given Reporter = recording
+        new Frontend[Future](
+          incoming.stream,
+          None,
+          connectionId = Some(spoonbill.security.Identifiers.ConnectionId.fromUuid(page)),
+          resumes = true
+        )
+      }
       val frames       = new java.util.concurrent.ConcurrentLinkedQueue[String]()
       val stateManager = new StateStorage.SimpleInMemoryStateManager[Future]()
       val app = new ApplicationInstance[Future, DevModeSavedRenderContextSpec.S, Any](
@@ -318,6 +338,10 @@ class DevModeSavedRenderContextSpec extends AnyFlatSpec with Matchers with Event
       }
       // A click of the display that the page had before that frame runs nothing.
       incoming.offerUnsafe(s"""[7,"$page:0:0:0:$targetId:click"]""")
+      eventually(timeout(Span(2, Seconds)), interval(Span(25, Millis))) {
+        discarded.get shouldBe 1
+      }
+      counter.get shouldBe 0
       // A click of the display after it runs the handler of that display.
       incoming.offerUnsafe(s"""[7,"$page:1:0:0:$targetId:click"]""")
       eventually(timeout(Span(2, Seconds)), interval(Span(25, Millis))) {

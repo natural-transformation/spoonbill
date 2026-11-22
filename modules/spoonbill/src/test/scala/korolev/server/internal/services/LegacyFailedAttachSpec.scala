@@ -87,13 +87,19 @@ class LegacyFailedAttachSpec extends AnyFlatSpec with Matchers {
   }
 
   /** A storage whose first read of a state fails. */
+  /**
+   * The default storage, local to this process as in production, whose first
+   * read fails. In memory whatever the development-mode switch of the JVM says.
+   */
   private final class FailsOnce(failure: Throwable) extends StateStorage[Future, Int] {
-    private val underlying = StateStorage[Future, Int]()
+    private val underlying = new StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
     private var reads      = 0
+    @volatile var removes  = 0
+    override private[spoonbill] def localToProcess: Boolean = true
     def exists(device: String, session: String): Future[Boolean] = underlying.exists(device, session)
     def create(device: String, session: String, state: Int): Future[StateManager[Future]] =
       underlying.create(device, session, state)
-    def remove(device: String, session: String): Unit = underlying.remove(device, session)
+    def remove(device: String, session: String): Unit = { removes += 1; underlying.remove(device, session) }
     def get(device: String, session: String): Future[StateManager[Future]] = {
       reads += 1
       if (reads == 1) Future.failed(failure) else underlying.get(device, session)
@@ -104,9 +110,13 @@ class LegacyFailedAttachSpec extends AnyFlatSpec with Matchers {
     // The state cannot be read the first time. Nothing was built then, so
     // there is nothing to retire. The failure still must not stay behind.
     val failure = new IllegalStateException("the state cannot be read")
-    val fixture = new Fixture(storage = Some(new FailsOnce(failure)))
+    val storage = new FailsOnce(failure)
+    val fixture = new Fixture(storage = Some(storage))
     fixture.attach().value shouldBe Some(Failure(failure))
     fixture.registered shouldBe false
+    // The failed attach removed the state: into the for-deletion cache of the
+    // default storage, from which the next attach takes it back.
+    storage.removes shouldBe 1
 
     fixture.attachedAndReleased(fixture.attach())
   }
