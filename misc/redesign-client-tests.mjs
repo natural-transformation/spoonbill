@@ -1371,6 +1371,127 @@ test('redesign client regressions against real source modules', { timeout: 10000
         globalThis.clearTimeout = originalClearTimeout;
       }
     });
+
+    // Long polling that resumes, with the bridge on top of the transport.
+    const longPolling = (window, options = {}) => {
+      const requests = [];
+      globalThis.XMLHttpRequest = class extends EventTargetFake {
+        constructor() { super(); this.headers = {}; requests.push(this); }
+        open(method, url) { this.method = method; this.url = url; }
+        setRequestHeader() {}
+        send(body) { this.body = body; }
+        abort() { this.aborted = true; }
+        getResponseHeader(name) { return this.responseHeaders?.[name.toLowerCase()] ?? null; }
+        frame(number, dom, body) {
+          this.status = 200; this.responseText = body; this.readyState = 4;
+          this.responseHeaders = {'spoonbill-frame': String(number), 'spoonbill-dom': String(dom)};
+          this.dispatchEvent({type: 'readystatechange', target: this});
+        }
+      };
+      const timers = [];
+      globalThis.setTimeout = (callback, delay) => { const timer = {callback, delay}; timers.push(timer); return timer; };
+      globalThis.clearTimeout = timer => { if (timer) timer.cleared = true; };
+      const intervals = [];
+      globalThis.setInterval = (callback, delay) => { const interval = {callback, delay}; intervals.push(interval); return interval; };
+      globalThis.clearInterval = () => {};
+      const connection = new Connection('synthetic-session', '/', window.location, {ws: false, lpw: 1000, ...options});
+      connection._connectUsingConnectionType(ConnectionType.LONG_POLLING);
+      const bridge = new Bridge({heartbeat: {interval: '25', limit: '2'}, ...options}, connection);
+      const polls = () => requests.filter(request => request.method === 'GET');
+      const sent = () => requests.filter(request => request.method === 'POST').map(request => request.body);
+      const page = new URL(polls()[0].url).searchParams.get('page');
+      return {connection, bridge, polls, sent, page, timers, intervals};
+    };
+    const timing = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'XMLHttpRequest'];
+    const keepTiming = () => new Map(timing.map(name => [name, globalThis[name]]));
+    const restoreTiming = saved => { for (const [name, value] of saved) globalThis[name] = value; };
+
+    await t.test('a user event of a long-polling page travels in the envelope with the page id and DOM revision', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        lp.bridge._onCallback(CallbackType.DOM_EVENT, '0:1_1:click');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:0:${CallbackType.DOM_EVENT}:0:1_1:click`]));
+        // A DOM frame is one more revision of the page; another frame is not.
+        lp.polls()[0].frame(1, 0, '[9]');
+        lp.polls()[1].frame(2, 1, '[4]');
+        lp.bridge._onCallback(CallbackType.DOM_EVENT, '0:1_1:click');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:1:${CallbackType.DOM_EVENT}:0:1_1:click`]));
+        assert.equal(new URL(lp.polls()[2].url).searchParams.get('seen'), '2');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a DOM frame whose node is missing, or that throws, makes a long-polling page reload', () => {
+      for (const patch of [
+        JSON.stringify([4, 0, 'missing-parent', 'missing-parent_1', 0, 'div']),
+        JSON.stringify([4, 3, 'missing-element', 0, 'title', 'x', false])
+      ]) {
+        const saved = keepTiming();
+        const { window } = browser();
+        let reloads = 0;
+        window.location.reload = () => { reloads++; };
+        const lp = longPolling(window);
+        try {
+          lp.polls()[0].frame(1, 1, patch);
+          assert.equal(reloads, 1, patch);
+          assert.equal(lp.polls().length, 1, 'no poll for the frame after it');
+        } finally { lp.bridge.destroy(); restoreTiming(saved); }
+      }
+    });
+
+    await t.test('a long-polling page polls again at the heartbeat limit, and sends no heartbeat while interrupted', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        const heartbeats = () => lp.sent().filter(body => body === JSON.stringify([CallbackType.HEARTBEAT])).length;
+        lp.intervals[0].callback();
+        lp.intervals[0].callback();
+        assert.equal(heartbeats(), 1);
+        // The limit: the poll is given up and sent again, and the page does not reload.
+        assert.equal(reloads, 0);
+        assert.equal(lp.polls()[0].aborted, true);
+        assert.equal(lp.polls().length, 2);
+        // Two failed polls interrupt the link. No heartbeat goes out then.
+        for (const poll of [lp.polls()[1]]) {
+          poll.status = 500; poll.readyState = 4; poll.dispatchEvent({type: 'readystatechange', target: poll});
+        }
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        const second = lp.polls().at(-1);
+        second.status = 0; second.readyState = 4; second.dispatchEvent({type: 'readystatechange', target: second});
+        lp.intervals[0].callback();
+        assert.equal(heartbeats(), 1);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('the reload frame of an unguarded WebSocket page passes the reload guard; a guarded page reloads as before', () => {
+      for (const guarded of [false, true]) {
+        const saved = keepTiming();
+        const { window } = browser();
+        const session = new Map();
+        window.sessionStorage = {getItem: key => session.get(key) ?? null, setItem: (key, value) => session.set(key, String(value)), removeItem: key => session.delete(key)};
+        let reloads = 0;
+        window.location.reload = () => { reloads++; };
+        const timers = [];
+        globalThis.setTimeout = (callback, delay) => { const timer = {callback, delay}; timers.push(timer); return timer; };
+        globalThis.clearTimeout = () => {};
+        try {
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const connection = new Connection('synthetic-session', '/', window.location, guarded ? {auth: true} : {});
+            connection._connectUsingWebSocket();
+            WebSocketFake.instances.at(-1).protocol = 'json';
+            const bridge = new Bridge(guarded ? {auth: true, heartbeat: {interval: '0'}} : {heartbeat: {interval: '0'}}, connection);
+            connection.dispatcher.dispatchEvent({type: 'message', data: '[1]'});
+            bridge.destroy();
+          }
+          assert.equal(reloads, guarded ? 2 : 1, `guarded: ${guarded}`);
+          if (!guarded) assert.ok(timers.some(timer => timer.delay > 25000 && timer.delay <= 30000));
+        } finally { restoreTiming(saved); }
+      }
+    });
   } finally {
     for (const [name, descriptor] of originalGlobals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);

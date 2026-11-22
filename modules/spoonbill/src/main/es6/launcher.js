@@ -53,6 +53,11 @@ window.document.addEventListener("DOMContentLoaded", () => {
       .addEventListener('close', closeHandler);
   });
 
+  // Long polling that resumes: a failed poll keeps the bridge. The notice shows
+  // while the link is interrupted and hides at the next answer.
+  connection.dispatcher.addEventListener('interrupt', () => clw.show());
+  connection.dispatcher.addEventListener('resume', () => clw.hide());
+
   connection.dispatcher.addEventListener('ready', () => {
     clw.hide();
     window['Spoonbill']['ready'] = true;

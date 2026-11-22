@@ -106,8 +106,10 @@ export function connectionStep(state, event) {
     case 'clear-delivery':
       return {...state, deliveredEpoch: null};
     case 'install':
-      return {...state, transport: event.transport, epoch: event.epoch,
-        deliveredEpoch: event.transport === ConnectionType.WEB_SOCKET ? null : state.deliveredEpoch};
+      // A new long-polling transport is a first attach: it has applied nothing.
+      return event.transport === ConnectionType.LONG_POLLING ?
+        {...state, transport: event.transport, epoch: event.epoch, seen: 0, dom: 0, failures: 0} :
+        {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;
       return {...state, phase: connectionReady(state) ? 'ready' : 'opened',

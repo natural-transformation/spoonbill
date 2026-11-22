@@ -1,8 +1,34 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
-  currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep} from './connection-machine.js';
+  currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
+  linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, notesLongPolling} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
+// The tab remembers its last framework reload and, after a fallback, its transport.
+const RELOAD_KEY = 'spoonbill:reload';
+const TRANSPORT_KEY = 'spoonbill:transport';
+// A poll that the server has not answered by its wait limit and this margin has failed.
+const POLL_DEADLINE_MARGIN = 5000;
+
+/** The sessionStorage of this tab, or null when the browser has none or refuses it. */
+function sessionStore() {
+  try {
+    const storage = window.sessionStorage;
+    return storage ? storage : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** A random UUID for this document. getRandomValues also works outside secure contexts. */
+function randomPageId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) hex += (bytes[i] + 0x100).toString(16).slice(1);
+  return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+}
 
 /**
  * Reconnectable WebSocket connection
@@ -18,6 +44,11 @@ export class Connection {
    */
   constructor(sessionId, serverRootPath, location, options) {
     this._lifecycle = initialConnection();
+    // The page id names this document for its whole life.
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'page', page: randomPageId()});
+    this._pollDeadline = (options && options['lpw'] ? Number(options['lpw']) : 30000) + POLL_DEADLINE_MARGIN;
+    /** Polls again at once, giving up the poll that waits. Only long polling has one. */
+    this._repoll = () => {};
     this._sessionId = sessionId;
     this._serverRootPath = serverRootPath;
 
@@ -77,6 +108,14 @@ export class Connection {
       });
     }
     this._webSocketsSupported = wsEnabled && window.WebSocket !== undefined;
+    // A page that fell back to long polling and was told to reload starts with it.
+    if (!this._guarded) {
+      const storage = sessionStore();
+      try {
+        if (storage !== null && storage.getItem(TRANSPORT_KEY) === 'long-polling')
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'prefer-long-polling'});
+      } catch (_) {}
+    }
     /** @type {?function(string)} */
     this._send = null;
     this._clearPendingSends = () => {};
@@ -294,7 +333,13 @@ export class Connection {
     console.log(`Trying to open connection to ${url + path} using WebSocket`);
   }
 
-  /** @private */
+  /**
+   * Long polling that resumes. Every request names the page and the last frame
+   * that it applied, and the server answers with exactly the next one. A
+   * failed poll is not a closed connection: the page polls again after the
+   * back-off and keeps its bridge. Everything uncertain ends in a reload.
+   * @private
+   */
   _connectUsingLongPolling() {
 
     this._clearPendingSends();
@@ -305,38 +350,77 @@ export class Connection {
     let url = (this._useSSL ? "https://" : "http://") + this._hostPort;
     let path = this._serverRootPath + `bridge/long-polling/${this._sessionId}/`;
     let uriPrefix = url + path;
+    const cursor = () => `page=${this._lifecycle.page}&seen=${this._lifecycle.seen}`;
 
-    /** @type {function(boolean)} */
-    let subscribe = (firstTime) => {
+    // The poll that this transport waits for and its deadline: handles only.
+    // An answer to a request that was given up changes nothing.
+    let pending = null;
+    let deadline = null;
+
+    const poll = () => {
       if (!isCurrent()) return;
-
-      let onReadyStateChange = (event) => {
-        let request = event.target;
-        if (!isCurrent() || request.readyState !== 4)
-          return;
-        switch (request.status) {
-          case 200:
-            if (firstTime)
-              this._onOpen();
-            if (!isCurrent()) return;
-            this._onReady();
-            if (!isCurrent()) return;
-            this._onMessage(request.responseText);
-          case 503:
-            // Poll again
-            subscribe(false);
-            break;
-          default:
-            this._onError();
-            if (isCurrent()) this._onClose();
-            break;
-        }
-      };
-
-      let request = new XMLHttpRequest();
-      request.addEventListener('readystatechange', onReadyStateChange);
-      request.open('GET', uriPrefix + 'subscribe', true);
+      const request = new XMLHttpRequest();
+      pending = request;
+      deadline = setTimeout(() => {
+        if (pending !== request) return;
+        pending = null;
+        request.abort();
+        failed();
+      }, this._pollDeadline);
+      request.addEventListener('readystatechange', () => {
+        if (request.readyState !== 4 || pending !== request || !isCurrent()) return;
+        pending = null;
+        clearTimeout(deadline);
+        answered(request);
+      });
+      request.open('GET', uriPrefix + 'subscribe?' + cursor(), true);
       request.send('');
+    };
+
+    const answered = request => {
+      const body = request.responseText;
+      let domFrame = false;
+      if (request.status === 200) {
+        try {
+          const frame = JSON.parse(body);
+          domFrame = Array.isArray(frame) && frame[0] === 4;
+        } catch (_) {
+          return this.reloadPage();
+        }
+      }
+      switch (pollAnswer(this._lifecycle, request.status, request.getResponseHeader('spoonbill-frame'),
+          request.getResponseHeader('spoonbill-dom'), domFrame)) {
+        case 'apply':
+          resumed();
+          if (!isCurrent()) return;
+          // Applied means applied: a frame that the bridge could not apply reloads.
+          if (!this._deliver(body)) return this.reloadPage();
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'frame-applied', domFrame});
+          return poll();
+        case 'empty':
+          resumed();
+          return poll();
+        case 'failed':
+          return failed();
+        default:
+          // The reload frame, another status, or numbers that do not fit.
+          return this.reloadPage();
+      }
+    };
+
+    // Any answer ends an interruption.
+    const resumed = () => {
+      const shown = noticeShown(this._lifecycle);
+      this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-answered'});
+      if (shown) this._dispatcher.dispatchEvent(this._createEvent('resume'));
+      this._onReady();
+    };
+
+    const failed = () => {
+      const shown = noticeShown(this._lifecycle);
+      this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-failed'});
+      if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
+      setTimeout(poll, pollDelay(this._lifecycle));
     };
 
     /** @type {function(string)} */
@@ -357,7 +441,7 @@ export class Connection {
 
       let request = new XMLHttpRequest();
 
-      request.open('POST', uriPrefix + 'publish', true);
+      request.open('POST', uriPrefix + 'publish?' + cursor(), true);
       request.setRequestHeader("Content-Type", "application/json");
       request.addEventListener('readystatechange', onReadyStateChange);
       request.send(data);
@@ -365,12 +449,74 @@ export class Connection {
 
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
+    this._repoll = () => {
+      if (!isCurrent() || pending === null) return;
+      const request = pending;
+      pending = null;
+      clearTimeout(deadline);
+      request.abort();
+      poll();
+    };
 
-    subscribe(true);
+    poll();
     // Treat long-polling as connected immediately so Spoonbill can attach listeners
     // before the first subscribe response arrives.
     this._onOpen();
     console.log(`Trying to open connection to ${uriPrefix} using long polling`);
+  }
+
+  /** @return {string} The page id of this document. */
+  get page() { return this._lifecycle.page; }
+
+  /** @return {boolean} The connection runs on long polling. */
+  get longPolling() { return this._lifecycle.transport === ConnectionType.LONG_POLLING; }
+
+  /** @return {boolean} No poll failed since the last answer. */
+  get linkUp() { return linkUp(this._lifecycle); }
+
+  /** Gives up the poll that waits, and polls again with the same cursor. */
+  repoll() { this._repoll(); }
+
+  /**
+   * Gives a frame to the bridge, and says whether the bridge applied it.
+   * @param {string} data
+   * @return {boolean}
+   * @private
+   */
+  _deliver(data) {
+    const event = this._createEvent('message');
+    event.data = data;
+    event.applied = true;
+    this._dispatcher.dispatchEvent(event);
+    return event.applied !== false;
+  }
+
+  /**
+   * A reload that the framework starts for an unguarded page. The guard allows
+   * one in its window for this tab; a second one shows the notice and waits for
+   * the end of the window. Without sessionStorage the page reloads at once.
+   */
+  reloadPage() {
+    const storage = sessionStore();
+    if (storage === null) return window.location.reload();
+    try {
+      if (notesLongPolling(this._lifecycle)) storage.setItem(TRANSPORT_KEY, 'long-polling');
+      const now = Date.now();
+      const stored = storage.getItem(RELOAD_KEY);
+      const wait = reloadWait(stored === null ? null : Number(stored), now);
+      if (wait === 0) {
+        storage.setItem(RELOAD_KEY, String(now));
+        window.location.reload();
+      } else {
+        this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
+        setTimeout(() => {
+          try { storage.setItem(RELOAD_KEY, String(Date.now())); } catch (_) {}
+          window.location.reload();
+        }, wait);
+      }
+    } catch (_) {
+      window.location.reload();
+    }
   }
 
   /** @private */

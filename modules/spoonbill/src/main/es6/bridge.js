@@ -18,7 +18,9 @@ export class Bridge {
     this._spoonbill = new Spoonbill(config, this._onCallback.bind(this));
     this._spoonbill.registerRoot(document.children[0]);
     this._connection = connection;
-    this._lifecycle = initialBridge(config['auth'] === true);
+    // A long-polling bridge starts with the view of its page: its user events
+    // carry the page id and the DOM revision that the page shows.
+    this._lifecycle = initialBridge(config['auth'] === true, connection.longPolling ? connection.page : null);
     this._guarded = config['auth'] === true;
     this._messageHandler = this._onMessage.bind(this);
     this._sensitive = new SensitiveRegions(
@@ -42,10 +44,18 @@ export class Bridge {
       this._intervalId = setInterval(() => {
         // The bounded cookie handoff temporarily suspends socket callbacks.
         if (this._connection.authenticationPending) return;
+        // While long polling is interrupted no heartbeat is sent.
+        if (!this._connection.linkUp) return;
         if (this._heartbeatLimit) {
           this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-tick'});
 
-          if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit) {
+          if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit && this._connection.longPolling) {
+            // A poll that hangs is given up and sent again; the answer of the
+            // server decides the rest.
+            console.log('Too many lost heartbeats, polling again')
+            this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
+            this._connection.repoll();
+          } else if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit) {
             console.log('Too many lost heartbeats, reloading')
             this._connection.disconnect(false);
             window.location.reload();
@@ -111,10 +121,12 @@ export class Bridge {
     }
   }
 
+  /** @return {boolean} Every command found its node. */
   _modifyDom(commands) {
     this._sensitive.beforePatch(commands);
-    this._spoonbill.modifyDom(commands);
+    const complete = this._spoonbill.modifyDom(commands);
     this._sensitive.reconcile();
+    return complete;
   }
 
   _onMessage(event) {
@@ -129,11 +141,19 @@ export class Bridge {
         case Procedure.RELOAD:
           this._sensitive.clearAll();
           this._connection.disconnect(false);
-          window.location.reload();
+          // A guarded page reloads in flows of its own. An unguarded page
+          // passes the reload guard, on both transports.
+          if (this._guarded) window.location.reload();
+          else this._connection.reloadPage();
           break;
         case Procedure.LISTEN_EVENT: k.listenEvent.apply(k, commands); break;
         case Procedure.EXTRACT_PROPERTY: k.extractProperty.apply(k, commands); break;
-        case Procedure.MODIFY_DOM: this._modifyDom(commands); break;
+        case Procedure.MODIFY_DOM:
+          // The transport learns whether the frame was applied; a long-polling
+          // page reloads after one that was not.
+          if (!this._modifyDom(commands)) event.applied = false;
+          else this._lifecycle = bridgeStep(this._lifecycle, {type: 'frame-applied', domFrame: true});
+          break;
         case Procedure.FOCUS: k.focus.apply(k, commands); break;
         case Procedure.CHANGE_PAGE_URL: {
           // The router may emit an equivalent raw Unicode/space URL on every
@@ -223,6 +243,7 @@ export class Bridge {
         default: console.error(`Procedure ${pCode} is undefined`);
       }
     } catch (error) {
+      event.applied = false;
       if (pCode === Procedure.PRESENT_SENSITIVE || pCode === Procedure.CLEAR_SENSITIVE) {
         this._sensitive.clearAll(false);
         console.error('Sensitive presentation failed');

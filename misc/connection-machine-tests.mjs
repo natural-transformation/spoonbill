@@ -186,3 +186,11 @@ test('header counts are digits without sign or leading zeros, up to a safe integ
   for (const value of [null, undefined, '', '01', '+1', '-1', '1e2', ' 1', '9007199254740992', '99999999999999999'])
     assert.equal(headerCount(value), null, String(value));
 });
+
+test('a new long-polling transport starts from nothing, and a WebSocket leaves the counts alone', () => {
+  const counted = {...initialConnection(), seen: 5, dom: 2, failures: 1};
+  const polling = step(counted, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.deepEqual([polling.seen, polling.dom, polling.failures], [0, 0, 0]);
+  const socket = step(counted, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  assert.deepEqual([socket.seen, socket.dom, socket.failures], [5, 2, 1]);
+});
