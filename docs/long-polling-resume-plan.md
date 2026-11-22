@@ -120,6 +120,18 @@ Every step was built as planned, tests first. Where the work differs:
   contended, extensions, backlog). The load average was 7 to 11, so these
   numbers are weaker evidence than a quiet machine would give.
 
+- **The review of PR 42** (2026-11-22) found 21 points. The user decided the
+  seven that changed the design (revision 5 records them), and the commits
+  after step 9 build them: the poll wait and the heartbeat rules, the state
+  of an unclaimed page dropped for good, only a DOM patch must apply, the
+  transport note, the reload frame for a refused WebSocket; and the plain
+  fixes: the order of the records, the revision of a frame from its start,
+  the cursor across transports, the weak cases, and the tidying. Open, and
+  reported to the user: a view whose frontend closed waits for its idle
+  timer (two tries failed), a throw while an attach is built, a malformed
+  envelope, a `remove` whose child is missing, the cleanup's `finally`, and
+  cats-effect 3.5, where a waiting poll cannot be cancelled.
+
 ## What is true when the plan is done
 
 - A long-polling page that loses a poll keeps its bridge and its view, gets

@@ -111,13 +111,22 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   `?page=<id>&seen=<n>`. The server answers `seen=n` only with frame `n + 1`
   of the view that this page owns, names its number and the DOM revision
   after it in the headers `spoonbill-frame` and `spoonbill-dom`, and keeps
-  the frame until the page confirms it. A poll waits half of
-  `sessionIdleTimeout` and is then answered with `204`. A click or a custom
+  the frame until the page confirms it. A poll waits `longPollingWait` (new,
+  15 seconds by default, at most half of `sessionIdleTimeout`) and is then
+  answered with `204`; the Akka and Pekko poll routes raise their request
+  timeout above that wait. A click or a custom
   callback made on an older display than the view's runs no handler and is
   counted in `obsolete-browser-events`; a history event is always handled.
-  The page reloads only when its view is gone or an answer does not fit. The
-  connection-lost notice shows from the second failed poll in a row until
-  the next answer. A message that no view can take is answered with `410`.
+  The page reloads only when its view is gone or an answer does not fit;
+  `408` and `429` are failed polls. The connection-lost notice shows from the
+  second failed poll in a row until the next answer. A message that no view
+  can take is answered with `410`. Only a DOM patch must apply: another
+  frame that throws is delivered once, as on a WebSocket.
+- On long polling the heartbeat goes on while the link is interrupted. A
+  heartbeat that cannot be sent is a failed poll, so a link that hangs shows
+  the notice; heartbeats that the server takes and does not answer give one
+  re-poll, then a reload through the reload guard. A WebSocket of a session
+  whose view a poll owns gets the reload frame.
 - A framework reload of an unguarded page happens at most once in 30 seconds
   for a tab, on both transports. A second one shows the connection-lost
   notice and waits for the end of that time; meanwhile the page sends,
