@@ -126,11 +126,15 @@ Every step was built as planned, tests first. Where the work differs:
   of an unclaimed page dropped for good, only a DOM patch must apply, the
   transport note, the reload frame for a refused WebSocket; and the plain
   fixes: the order of the records, the revision of a frame from its start,
-  the cursor across transports, the weak cases, and the tidying. Open, and
-  reported to the user: a view whose frontend closed waits for its idle
-  timer (two tries failed), a throw while an attach is built, a malformed
-  envelope, a `remove` whose child is missing, the cleanup's `finally`, and
-  cats-effect 3.5, where a waiting poll cannot be cancelled.
+  the cursor across transports, the weak cases, and the tidying. Then the
+  notes, each with a case that failed first: a view whose frames end retires
+  at once; the attach is one effect from the claim on; a view that resumes
+  closes when its input fails; the cleanup steps every record that it takes;
+  `promise` of the cats-effect instance can be cancelled on cats-effect 3.5
+  too. A `remove` whose child is missing stays applied: the renderer writes
+  an empty text as nothing, and a client case pins it. Open, and asked of
+  the user: a row of ADR 0005 for the orphan timer that this change removes,
+  and the absolute values that ADR 0004 asks for.
 
 ## What is true when the plan is done
 

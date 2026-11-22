@@ -147,6 +147,20 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   never asked to delete.
 - An attach that failed and was rolled back no longer fails the attaches of
   that session that come after it.
+- A long-polling view whose frames end, or whose input fails (a message that
+  it cannot read), retires at once, and its page is told to reload. Before,
+  it lived until its idle timeout and handled nothing.
+- An unguarded attach is one effect from the claim of its fresh-page record
+  to its end. A storage whose `exists` throws, instead of failing its effect,
+  no longer leaves a long-polling entry without a view, whose polls only got
+  `204`; with cats-effect and ZIO a cancelled WebSocket attach no longer
+  leaves a stored state without its record or a view.
+- The cleanup of unclaimed pages steps every record that it took, also when
+  a removal fails and its report throws. An attach that failed before it had
+  a view keeps its own error when the removal of its state fails too.
+- cats-effect: `Effect.promise` can be cancelled also with cats-effect 3.5 or
+  newer, where `IO.async_` cannot be cancelled while it waits. A long poll
+  whose request is cancelled leaves its wait there too.
 
 **For deployments.**
 

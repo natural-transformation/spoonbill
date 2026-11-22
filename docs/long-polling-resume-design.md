@@ -284,7 +284,12 @@ decision 25, and the user confirmed it with this row in view.
 **In which order an attach looks.** First the claim of the fresh-page record,
 then the storage, then the view. The claim is a step of a pure machine, and
 the expiry can only take a record that nobody has claimed. So the storage is
-never read for a session whose state the expiry is removing. The other
+never read for a session whose state the expiry is removing. The three steps
+are one effect, which a cancelled request cannot stop half way: a stop
+between the claim and the view would leave a state without record or view.
+A storage that throws instead of failing its effect fails that effect, and
+the entry of a poll leaves the table. (Added after the review of PR 42,
+finding 13.) The other
 removal of this change is made by a failed attach itself, while it holds the
 place of the session in the table of views; see
 [A page without a view](#a-page-without-a-view-its-record-and-its-state).
@@ -353,6 +358,20 @@ the first row that fits decides:
 - **The end of a view** is the end of its frame stream: after an idle timeout
   the retirement closes the frontend (read). The entry leaves the map when
   the view cancels its input, as on `main`.
+- **A view whose frames end retires at once.** The frontend can close by
+  itself: a routing overflow, a revision that the view never published, an
+  output failure. Then the delivery runs the release of its view, as a
+  WebSocket adapter does when the output ends, and the view does not wait
+  for its idle timeout. The release cancels the input through the stream
+  that the close watcher sees. (Added after the review of PR 42, finding 12.)
+- **A view whose input fails closes.** A message that the view cannot read,
+  or a reply that it cannot take, fails its input. A view that resumes then
+  closes its frontend, as a guarded view does, so its page is told to
+  reload; else its polls keep it alive while it handles nothing. An
+  unguarded WebSocket view keeps the failure in its input, as on `main`
+  (`FrontendConnectionMachine.closesOnFailedInput`). Admission takes a page
+  id in lower case only, as the view compares it. (Added after the review of
+  PR 42, finding 14.)
 - **A message never creates an entry.** So no entry can be an orphan, and the
   orphan timer of `main` has no job left; see decision 9.
 
@@ -477,11 +496,16 @@ not local either. How the session service knows is decision 26.
 
 **Who removes.** Two paths, and only for a local storage:
 
-1. **The expiry** of a record that nothing claimed.
+1. **The expiry** of a record that nothing claimed. Every record that it
+   takes leaves its releasing step, released or back for a later expiry,
+   also when a removal fails and its report throws.
 2. **An attach that fails before it has a view** (decision 24). On `main`
    nothing removes the state in this case (read: `abandon`, line 724). The
    removal runs while the failed attach still holds the place of the session
-   in the table of views.
+   in the table of views. A removal that fails is reported, and the attach
+   keeps its own error.
+
+(The two last sentences were added after the review of PR 42, finding 18.)
 
 **What became of decision 20.** The user decided on 2026-11-22 that a session
 whose page is told to reload, and which has no view, gives up its stored
@@ -545,6 +569,13 @@ bridge and holds for both transports of an unguarded page.
   the bridge catches a failed patch and only logs it, and `create`,
   `createText` and `remove` skip a missing parent without any error (read:
   `bridge.js`, `spoonbill.js`).
+- **A missing child is allowed in `remove`.** The page renderer writes an
+  empty text as nothing, so the parsed page has no node for it, and the view
+  may remove that text later. Such a patch names a child that the page never
+  had, and the page is still in step. The diff of the renderer removes each
+  node once, and never a node inside one that it removes (read: Avocet
+  2.0.1, `DiffRenderContext.deleteLoop`). So `remove` fails only for a
+  missing parent. (Checked after the review of PR 42, finding 17.)
 - **A failed poll keeps the bridge.** No `close` event. Two new events,
   `interrupt` and `resume`, show and hide the connection-lost notice. It
   appears when the first retry fails too. Every answered poll hides it again,
@@ -1081,6 +1112,16 @@ the user decided each on the same day. They change:
 | 29 (new) | The transport note is written at every reload at cursor 0 and never removed | Only after a fallback, and it ends at a reload |
 | 30 (new) | A refused WebSocket is closed with nothing | It gets the reload frame |
 | 31 (new) | | PR 41 is merged first |
+
+The same review found plain fixes, which needed no decision. Those that add
+a rule to this design are written where the rule belongs, each marked
+"after the review of PR 42": a view whose frames end retires at once (finding
+12); the attach is one effect from the claim on (13); a view that resumes
+closes when its input fails, and admission takes a page id in lower case
+only (14); `remove` allows a missing child (17, checked, no change of code);
+the cleanup steps every record that it takes (18). With cats-effect 3.5 or
+newer a waiting poll could not be cancelled (21); `promise` of that instance
+can be cancelled now, as on the version that the build pins.
 
 ## Changes from revision 3
 
