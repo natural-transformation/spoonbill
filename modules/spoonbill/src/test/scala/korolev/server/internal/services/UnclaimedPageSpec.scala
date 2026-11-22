@@ -207,6 +207,38 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
     storage.removed.get(s"${page.qsid.deviceId}-${page.qsid.sessionId}") shouldBe Some(1)
   }
 
+  it should "step every record of a batch when the report of a failed removal throws" in {
+    val storage = new Local()
+    val f       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    val first   = f.render()
+    val second  = f.render()
+    def key(page: f.Page) = s"${page.qsid.deviceId}-${page.qsid.sessionId}"
+    f.advance(11.seconds)
+    // The oldest record goes first: its removal fails, and so does its report.
+    storage.failNext = true
+    f.reports.failing = true
+    f.render()
+    f.reports.failing = false
+    // The rest of the batch went on.
+    storage.removed.get(key(second)) shouldBe Some(1)
+    storage.live(second.qsid.deviceId, second.qsid.sessionId) shouldBe false
+    // The first record came back, and the next render removes its state.
+    storage.removed.get(key(first)) shouldBe None
+    f.render()
+    storage.removed.get(key(first)) shouldBe Some(1)
+  }
+
+  it should "fail an attach with its own error when the removal after it fails too" in {
+    val storage = new Local()
+    val f       = new LongPollingFixture(storage = Some(storage))
+    val page    = f.render()
+    storage.failReads = true
+    storage.failNext = true
+    val attach = f.webSocket(page)
+    attach.value.flatMap(_.failed.toOption).map(_.getMessage) shouldBe Some("the state cannot be read")
+    f.reports.errors.map(_._1) should contain("Legacy session cleanup failed")
+  }
+
   it should "lose the state of a page whose attach failed before it had a view" in {
     val storage = new Local()
     val f       = new LongPollingFixture(storage = Some(storage))

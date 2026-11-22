@@ -195,15 +195,22 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     }
     // Outside the monitor: a claim meanwhile finds the record releasing.
     removing.foreach { qsid =>
-      try {
-        // Dropped for good: an unclaimed state does not go to a for-deletion cache.
-        stateStorage.drop(qsid.deviceId, qsid.sessionId)
-        updateMetadata(metadata => SessionRegistryMachine.freshReleased(metadata, qsid))
-      } catch {
-        case scala.util.control.NonFatal(error) =>
-          config.reporter.error(s"Unable to remove the state of an unclaimed page $qsid", error)
-          updateMetadata(metadata => SessionRegistryMachine.freshRemovalFailed(metadata, qsid))
-      }
+      // Dropped for good: an unclaimed state does not go to a for-deletion cache.
+      val dropped = scala.util.Try(stateStorage.drop(qsid.deviceId, qsid.sessionId))
+      try
+        dropped.failed.foreach { error =>
+          // A report that throws stops nothing: it has a try of its own.
+          try config.reporter.error(s"Unable to remove the state of an unclaimed page $qsid", error)
+          catch { case scala.util.control.NonFatal(_) => () }
+        }
+      finally
+        // Every key that was given out leaves its releasing step, released or
+        // back for a later expiry. A key left releasing would refuse every
+        // attach of its session for good.
+        updateMetadata(metadata =>
+          if (dropped.isSuccess) SessionRegistryMachine.freshReleased(metadata, qsid)
+          else SessionRegistryMachine.freshRemovalFailed(metadata, qsid)
+        )
     }
   }
 
@@ -828,11 +835,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         // that comes again takes it back from the for-deletion cache of the
         // default storage; a poll that comes again is told to reload.
         case None =>
-          Effect[F].delay {
-            transition(LegacySessionMachine.Event.NothingBuilt(removesState = stateStorage.localToProcess)) match {
-              case LegacySessionMachine.Command.RemoveState => stateStorage.remove(qsid.deviceId, qsid.sessionId)
-              case _                                        => ()
-            }
+          // A removal that fails is reported, as in a retirement: the attach
+          // keeps its own error.
+          Effect[F].delay(transition(LegacySessionMachine.Event.NothingBuilt(removesState = stateStorage.localToProcess))).flatMap {
+            case LegacySessionMachine.Command.RemoveState => attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            case _                                        => Effect[F].unit
           }
       }
     }

@@ -41,8 +41,11 @@ private[spoonbill] object TimerTestSupport {
   final class Reports extends Reporter {
     @volatile var errors                                              = Vector.empty[(String, Throwable)]
     @volatile var warnings                                            = Vector.empty[String]
-    def error(message: String, cause: Throwable): Unit                = synchronized(errors :+= message -> cause)
-    def error(message: String): Unit                                  = synchronized(errors :+= message -> null)
+    /** When set, a report of an error is recorded and then throws, as a reporter that fails does. */
+    @volatile var failing                                             = false
+    private def failed(): Unit                                        = if (failing) throw new IllegalStateException("the reporter failed")
+    def error(message: String, cause: Throwable): Unit                = { synchronized(errors :+= message -> cause); failed() }
+    def error(message: String): Unit                                  = { synchronized(errors :+= message -> null); failed() }
     def warning(message: String, cause: Throwable): Unit              = synchronized(warnings :+= message)
     def warning(message: String): Unit                                = synchronized(warnings :+= message)
     def info(message: String): Unit                                   = ()
