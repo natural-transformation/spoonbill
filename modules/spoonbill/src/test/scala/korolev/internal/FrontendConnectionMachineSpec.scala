@@ -82,4 +82,23 @@ final class FrontendConnectionMachineSpec extends AnyFlatSpec with Matchers {
     registry.remove("two") shouldBe None
     registry.put("late", "third") shouldBe false
   }
+
+  "An unguarded view that resumes" should "publish its first render as revision 0 and count each DOM frame" in {
+    // The accepted first render of a view of a long-polling entry is the page's
+    // display 0: the page was rendered by the server, and nothing is sent.
+    val first = published(initial, reset = true)
+    first.view shouldBe View.Published(0L)
+    revision(first, 0L) shouldBe Revision.Current
+    val frames = (1 to 3).scanLeft(first)((state, _) => published(state, reset = false))
+    frames.map(_.view) shouldBe Vector(0L, 1L, 2L, 3L).map(View.Published(_))
+    val third = frames.last
+    // A user event names the revision that the page showed.
+    revision(third, 3L) shouldBe Revision.Current
+    revision(third, 2L) shouldBe Revision.Obsolete
+    revision(third, 0L) shouldBe Revision.Obsolete
+    revision(third, 4L) shouldBe Revision.Denied
+    revision(third, -1L) shouldBe Revision.Denied
+    // Before its first render a view has no handlers to select.
+    revision(initial, 0L) shouldBe Revision.Denied
+  }
 }

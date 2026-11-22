@@ -115,3 +115,18 @@ test('exhausted counters fence without emitting a wrapped barrier', () => {
   assert.equal(sensitiveTerminal(refused), true);
   assert.equal(refused.departure.issued, Number.MAX_SAFE_INTEGER);
 });
+
+test('a long-polling bridge starts with the view of its page, and counts the DOM frames it applies', () => {
+  assert.equal(initialBridge(false).view, null);
+  let state = initialBridge(false, connection);
+  assert.deepEqual(state.view, {connection, revision: '0'});
+  assert.equal(callbackAdmission(state, initialSensitive(), false, false), 'send');
+  state = bridgeStep(state, {type: 'frame-applied', domFrame: false});
+  assert.equal(state.view.revision, '0');
+  state = bridgeStep(state, {type: 'frame-applied', domFrame: true});
+  state = bridgeStep(state, {type: 'frame-applied', domFrame: true});
+  assert.deepEqual(state.view, {connection, revision: '2'});
+  // A bridge without a view has nothing to count.
+  const plain = initialBridge(false);
+  assert.equal(bridgeStep(plain, {type: 'frame-applied', domFrame: true}), plain);
+});

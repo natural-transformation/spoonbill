@@ -1,9 +1,14 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAME_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
 
-export function initialBridge(guarded) {
-  return {view: null, gate: guarded ? 'waiting' : 'ready', application: 'idle',
-    navigationCounter: 0, outstandingHeartbeats: undefined};
+/**
+ * A long-polling bridge starts with a view: its connection is the page id, and
+ * revision 0 is the page as the server rendered it. Its user events carry that
+ * revision, and every applied DOM frame adds one.
+ */
+export function initialBridge(guarded, page = null) {
+  return {view: page === null ? null : {connection: page, revision: '0'}, gate: guarded ? 'waiting' : 'ready',
+    application: 'idle', navigationCounter: 0, outstandingHeartbeats: undefined};
 }
 
 export function bridgeStep(state, event) {
@@ -15,6 +20,9 @@ export function bridgeStep(state, event) {
     case 'restore-application': return {...state, application: event.phase};
     case 'baseline-applied': return {...state, view: {connection: event.connection, revision: event.revision}};
     case 'patch-applied': return {...state, view: {...state.view, revision: event.revision}};
+    case 'frame-applied':
+      return event.domFrame && state.view !== null ?
+        {...state, view: {...state.view, revision: String(Number(state.view.revision) + 1)}} : state;
     case 'begin-navigation': return {...state, navigationCounter: state.navigationCounter + 1};
     case 'heartbeat-configured': return {...state, outstandingHeartbeats: 0};
     case 'heartbeat-tick': return {...state, outstandingHeartbeats: state.outstandingHeartbeats + 1};
