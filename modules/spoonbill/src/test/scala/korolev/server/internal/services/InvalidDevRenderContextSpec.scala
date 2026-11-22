@@ -135,24 +135,37 @@ final class InvalidDevRenderContextSpec extends AnyFlatSpec with Matchers {
       // Concurrent waiters and later reconnects must all settle, including the
       // AsyncTable cell whose application producer failed during construction.
       val pending = Vector.fill(4)(expectReload(sessions))
-      try {
-        await(storage.entered.future)
-        pending.foreach(_.isCompleted shouldBe false)
+      if (stateExists) {
+        try {
+          await(storage.entered.future)
+          pending.foreach(_.isCompleted shouldBe false)
+          storage.reads.get() shouldBe 1
+        } finally storage.release.trySuccess(())
+        await(Future.sequence(pending))
+        await(expectReload(sessions))
+        // This failure stays in the session's registry, unlike the failure of
+        // an attach that was rolled back. The later connection was answered
+        // from it, and the state was not read again.
         storage.reads.get() shouldBe 1
-      } finally storage.release.trySuccess(())
-      await(Future.sequence(pending))
-      await(expectReload(sessions))
-      // This failure stays in the session's registry, unlike the failure of
-      // an attach that was rolled back. The later connection was answered
-      // from it, and the state was not read again.
-      storage.reads.get() shouldBe 1
-      file.exists() shouldBe false
-      Files.readAllBytes(retained.toPath).toSeq shouldBe corruptBytes.toSeq
-      await(expectReload(newService()))
-      config.reporter.asInstanceOf[Reports].errors.exists { case (message, error) =>
-        message.contains(file.getPath) && message.toLowerCase.contains("full page reload") &&
-        error.isInstanceOf[DevMode.InvalidSavedRenderContext]
-      } shouldBe true
+        file.exists() shouldBe false
+        Files.readAllBytes(retained.toPath).toSeq shouldBe corruptBytes.toSeq
+        await(expectReload(newService()))
+        config.reporter.asInstanceOf[Reports].errors.exists { case (message, error) =>
+          message.contains(file.getPath) && message.toLowerCase.contains("full page reload") &&
+          error.isInstanceOf[DevMode.InvalidSavedRenderContext]
+        } shouldBe true
+      } else {
+        // Without a stored state every connection is told to reload before
+        // anything reads a state or the saved render context.
+        await(Future.sequence(pending))
+        await(expectReload(sessions))
+        await(expectReload(newService()))
+        storage.reads.get() shouldBe 0
+        Files.readAllBytes(file.toPath).toSeq shouldBe corruptBytes.toSeq
+        retained.exists() shouldBe false
+        // The storage holds its first read. The fresh session below makes it.
+        storage.release.trySuccess(())
+      }
 
       // HTTP navigation allocates a new session and establishes its own DOM.
       val fresh = await(sessions.initSession(request))

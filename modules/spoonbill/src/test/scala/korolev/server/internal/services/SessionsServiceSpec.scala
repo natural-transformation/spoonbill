@@ -113,24 +113,22 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     finally fixture.close()
   }
 
-  "createAppIfNeeded" should "rebuild missing state and create app" in {
+  "createAppIfNeeded" should "tell a session without a stored state to reload" in {
     val config = SpoonbillServiceConfig[Future, String, Any](
       stateLoader = StateLoader.default[Future, String]("initial-state")
     )
     val pageService     = new PageService[Future, String, Any](config)
     val sessionsService = new SessionsService[Future, String, Any](config, pageService)
 
-    val qsid           = Qsid("device", "session")
+    // A new session id each run: a development-mode directory of an earlier
+    // run could otherwise hold a state for a fixed one.
+    val qsid           = Qsid("device", UUID.randomUUID().toString)
     val request        = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
     val incomingStream = Stream.endless[Future, String]
 
-    val resultF =
-      sessionsService
-        .createAppIfNeeded(qsid, request, incomingStream)
-        .flatMap(_ => sessionsService.getApp(qsid))
-
-    val result = Await.result(resultF, 3.seconds)
-    result.isDefined shouldBe true
+    // An attach never builds a state. The page reloads and is rendered again.
+    Await.result(sessionsService.createAppIfNeeded(qsid, request, incomingStream), 3.seconds) shouldBe SessionStart.Reload()
+    Await.result(sessionsService.getApp(qsid), 3.seconds) shouldBe None
   }
 
   it should "reconstruct an anonymous login route and continuation before the full DOM baseline and readiness" in withAnonymous {
@@ -252,13 +250,13 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     var manager: StateManager[Future] = null
     val storage = new StateStorage[Future, Int] {
       def exists(deviceId: String, sessionId: String): Future[Boolean] =
-        Future.successful(removals == 0 && manager != null)
+        Future.successful(manager != null)
       def create(deviceId: String, sessionId: String, state: Int): Future[StateManager[Future]] = {
         manager = StateManager.cached[Future](Map(Id.TopLevel -> state), onDelete = _ => Future.failed(deleteFailure))
         Future.successful(manager)
       }
       def get(deviceId: String, sessionId: String): Future[StateManager[Future]] = Future.successful(manager)
-      def remove(deviceId: String, sessionId: String): Unit                      = removals += 1
+      def remove(deviceId: String, sessionId: String): Unit                      = { removals += 1; manager = null }
     }
     val context = Context[Future, Int, Any]
     import context.*
@@ -284,12 +282,20 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     val service = new SessionsService(config, new PageService(config))
     val qsid    = Qsid("legacy-cleanup", UUID.randomUUID().toString)
     val request = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
+    // A page is rendered before it connects. An attach never builds a state.
+    def render(): Unit = {
+      val rendered = service.initAppState(qsid, request)
+      worker.drain()
+      await(rendered)
+      ()
+    }
     def attach(): SessionStart.Attached[Future] = {
       val attached = await(service.createAppIfNeeded(qsid, request, Queue[Future, String]().stream))
         .asInstanceOf[SessionStart.Attached[Future]]
       worker.drain()
       attached
     }
+    render()
     val first = attach()
     val old   = await(service.getApp(qsid)).get
     await(old.topLevelComponentInstance.browserAccess.transition(_ => 1))
@@ -303,6 +309,8 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
     removals shouldBe 1
     await(service.getApp(qsid)) shouldBe None
     reports.errors should contain("Legacy session cleanup failed" -> deleteFailure)
+    // The retirement removed the state, so the page reloads and is rendered again.
+    render()
     val second = attach()
     await(service.getApp(qsid)).get should not be theSameInstanceAs(old)
     await(second.outgoing.pull()).isDefined shouldBe true
@@ -365,6 +373,10 @@ class SessionsServiceSpec extends AnyFlatSpec with Matchers {
       worker.drain()
       attached
     }
+    // A page is rendered before it connects. An attach never builds a state.
+    val rendered = service.initAppState(qsid, request)
+    worker.drain()
+    await(rendered)
     val first      = attach()
     val old        = await(service.getApp(qsid)).get
     val held       = Promise[Int]()

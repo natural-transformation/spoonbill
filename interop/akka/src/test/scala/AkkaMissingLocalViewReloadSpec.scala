@@ -106,7 +106,8 @@ final class AkkaMissingLocalViewReloadSpec extends AnyFreeSpec with Matchers wit
     try {
       val (status, outcome) = exchange()
       status shouldBe StatusCodes.SwitchingProtocols.intValue
-      rebuilds.get() shouldBe (if (control.isEmpty) 1 else 0)
+      // An attach never builds a state, so the state loader is not called.
+      rebuilds.get() shouldBe 0
       control.foreach { probe =>
         probe.opened.get() shouldBe 0
         probe.resumed.get() shouldBe 1
@@ -127,7 +128,7 @@ final class AkkaMissingLocalViewReloadSpec extends AnyFreeSpec with Matchers wit
   }
 
   "Missing local view over the official Akka adapter" - {
-    "sends reload when an unguarded missing view cannot be rebuilt (control)" in {
+    "sends reload when an unguarded view has no stored state (control)" in {
       expectReload(None)
     }
 

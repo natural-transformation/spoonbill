@@ -170,21 +170,14 @@ class ExtensionContractSpec extends AnyFlatSpec with Matchers with Eventually {
     view.storedState shouldBe Some("initial")
   }
 
-  // A reload would rebuild the state and fail in the same way, without an end.
-  it should "fail the attach, and not ask for a reload, when a setup fails after the state was rebuilt" in {
-    val log = new Log
-    val view =
-      new View(Mode.Legacy, List(recorder(log, "failing", onSetup = _ => Future.failed(failure))), rendered = false)
-    view.tryAttach() shouldBe Failure(failure)
-    view.errors.map(_._1) should contain("Extension failing: setup failed")
-    view.errors.map(_._1).exists(_.startsWith("Unable to rebuild state")) shouldBe false
-  }
-
-  it should "attach a view whose state was rebuilt" in {
+  // An attach never builds a state. A session without one reloads its page,
+  // and no extension of it is set up.
+  it should "tell a session without a stored state to reload, and set up no extension" in {
     val log  = new Log
-    val view = new View(Mode.Legacy, List(recorder(log, "a")), rendered = false).attach()
-    eventually(log.of("a") shouldBe Vector("a.setup", "a.onState(initial)"))
-    view.release()
+    val view = new View(Mode.Legacy, List(recorder(log, "a")), rendered = false)
+    view.tryAttach() shouldBe Success(SessionStart.Reload())
+    view.registered shouldBe false
+    log.of("a") shouldBe empty
   }
 
   private def guarded: List[Mode] = Mode.values.toList.filterNot(_ == Mode.Legacy)

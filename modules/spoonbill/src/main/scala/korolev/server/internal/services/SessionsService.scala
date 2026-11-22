@@ -21,7 +21,7 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.annotation.tailrec
 import scala.concurrent.duration.*
-import spoonbill.Qsid
+import spoonbill.{Metrics, Qsid}
 import spoonbill.effect.{AsyncTable, Effect, Hub, LateHandleMachine, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, DevMode, ExtensionRuntime, Frontend, SensitiveAuthorization}
@@ -135,6 +135,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       Qsid(deviceId, sessionId)
     }
 
+  /**
+   * Builds and stores the state of a session for a page render, the only
+   * caller. An attach never builds a state: see [[createLegacy]].
+   */
   def initAppState(qsid: Qsid, rh: Head): F[S] =
     for {
       bootstrapPath <- Effect[F].delay(Option.when(config.sessionAccessControl.nonEmpty)(checkedApplicationPath(rh.pq)))
@@ -901,21 +905,22 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         // rendering phase (see ServerSideRenderingService)
         attachOrReload()
       case false =>
-        // State can be missing after a restart; rebuild it from the request.
-        // A failed rebuild is the recognized reload recovery, not an access failure.
-        config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
-        initAppState(qsid, rh)
-          .map(_ => true)
-          .recover { case error =>
-            config.reporter.error(s"Unable to rebuild state for $qsid", error)
-            false
-          }
-          .flatMap {
-            // A failed attach is not a failed rebuild. It fails here as it
-            // does when the state exists: a reload would only repeat it.
-            case true  => attachOrReload()
-            case false => Effect[F].pure[SessionStart[F]](SessionStart.Reload())
-          }
+        // An unguarded attach never builds a state. Its request is the bridge
+        // request, which matches no route of the application, so a state built
+        // from it would show another page than the one in the browser. The
+        // state is missing after a restart, after a removal, or with a storage
+        // over a repository after the view before retired. The page is told to
+        // reload: it is rendered again from its own address, under a new
+        // session. ADR 0006 records this decision, its cost and when to
+        // revisit it.
+        // Like every rejected session, it releases its input first.
+        Effect[F].delay {
+          Metrics.MissingStateReloads.update(_ + 1)
+          config.reporter.debug(s"State is missing for $qsid; the page is told to reload")
+        } *> incomingStream.cancel().recover { case cleanupError =>
+          config.reporter.error(s"Unable to close session $qsid without a stored state", cleanupError)
+          ()
+        }.map(_ => SessionStart.Reload[F](): SessionStart[F])
     }
   }
 

@@ -38,6 +38,10 @@ class LegacyStreamFailureSpec extends AnyFlatSpec with Matchers {
       val qsid     = Qsid("legacy-stream-failure", UUID.randomUUID().toString)
       val request  = Request(Request.Method.Get, PathAndQuery.Root, Nil, None, ())
       val incoming = Queue[Future, String]()
+      // A page is rendered before it connects. An attach never builds a state.
+      val rendered = service.initAppState(qsid, request)
+      worker.drain()
+      await(rendered)
       val first = await(service.createAppIfNeeded(qsid, request, incoming.stream))
         .asInstanceOf[SessionStart.Attached[Future]]
       worker.drain()
