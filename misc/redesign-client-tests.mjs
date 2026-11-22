@@ -1516,6 +1516,32 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('a long-polling heartbeat that no transport takes is not counted, and is no failed poll', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        // The transport refuses every message: no request goes out.
+        const send = lp.connection.send;
+        lp.connection.send = () => false;
+        for (let tick = 0; tick < 4; tick++) lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 1, 'no re-poll for heartbeats that never went out');
+        assert.notEqual(lp.polls()[0].aborted, true);
+        assert.deepEqual([events, reloads], [[], 0]);
+        // The transport takes messages again: the heartbeat goes out with its full allowance.
+        lp.connection.send = send;
+        lp.intervals[0].callback();
+        assert.equal(lp.posts().at(-1).body, heartbeat);
+        answer(lp.posts().at(-1), 200);
+        lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 2, 'then the limit counts as usual');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a long-polling page whose link hangs shows the notice, does not reload, and goes on when the link is back', () => {
       const saved = keepTiming();
       const { window } = browser();

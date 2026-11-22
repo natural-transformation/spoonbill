@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/bridge-ma
 const {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
   initialSensitive, sensitiveStep, departurePending, navigationPending, sensitiveTerminal,
   sensitiveBlocked, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable,
-  heartbeatTick, heartbeatAnswer} =
+  heartbeatTick, heartbeatAnswer, heartbeatRefused} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const connection = '11111111-1111-4111-8111-111111111111';
 const presentation = '22222222-2222-4222-8222-222222222222';
@@ -174,6 +174,17 @@ test('a heartbeat that cannot be sent is a failed poll, not an unanswered heartb
   const free = heartbeatTick(bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'}), 0, true, false);
   assert.equal(free.command, 'send');
   assert.equal(heartbeatTick(free.state, 0, true, false).failed, true);
+});
+
+test('a heartbeat that no transport takes is neither counted nor a failed poll', () => {
+  const state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
+  const out = heartbeatTick(state, 2, true, false);
+  const refused = heartbeatRefused(out.state, out.seq);
+  assert.deepEqual([refused.outstandingHeartbeats, refused.heartbeatInFlight], [0, null]);
+  // So the next tick sends again, and does not reach the limit.
+  assert.equal(heartbeatTick(refused, 2, true, false).command, 'send');
+  // A heartbeat that is not the one in flight changes nothing.
+  assert.equal(heartbeatRefused(out.state, out.seq + 1), out.state);
 });
 
 test('a WebSocket page reloads at the limit, and no heartbeat goes out once a reload has started', () => {

@@ -83,6 +83,16 @@ export function heartbeatAnswer(state, seq, sent) {
     {state: {...next, outstandingHeartbeats: Math.max(0, next.outstandingHeartbeats - 1)}, failed: true};
 }
 
+/**
+ * Long-polling heartbeat `seq` was refused: no transport took it, so no
+ * request went out. It is not in flight and not counted as unanswered, and it
+ * is no failed poll either. Another heartbeat changes nothing.
+ */
+export function heartbeatRefused(state, seq) {
+  if (state.heartbeatInFlight !== seq) return state;
+  return {...state, heartbeatInFlight: null, outstandingHeartbeats: Math.max(0, state.outstandingHeartbeats - 1)};
+}
+
 /** This decision does not allocate a transition for ordinary user callbacks. */
 export function callbackAdmission(state, barriers, guarded, history) {
   if (guarded && sensitiveTerminal(barriers)) return 'drop';

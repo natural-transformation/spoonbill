@@ -3,7 +3,7 @@ import { Procedure, CallbackType, PropertyType } from './protocol.js';
 import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
 import {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
-  acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer} from './bridge-machine.js';
+  acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer, heartbeatRefused} from './bridge-machine.js';
 
 const ProtocolDebugEnabledKey = "$bridge.protocolDebugEnabled";
 
@@ -85,9 +85,9 @@ export class Bridge {
       this._lifecycle = out.state;
       if (out.failed) this._connection.messageFailed();
     };
-    // A heartbeat that no transport took is not in flight.
+    // A heartbeat that no transport took is not in flight, not counted, and no failed poll.
     if (!this._connection.send(message, onAnswer) && seq !== null)
-      this._lifecycle = heartbeatAnswer(this._lifecycle, seq, true).state;
+      this._lifecycle = heartbeatRefused(this._lifecycle, seq);
   }
 
   /**

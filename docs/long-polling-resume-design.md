@@ -561,6 +561,7 @@ bridge and holds for both transports of an unguarded page.
 | A poll is answered with any other status | none | Reload |
 | The reload frame arrives | none | Reload |
 | A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted | As a failed poll; the heartbeat is not counted as unanswered |
+| No transport takes a heartbeat, so no request goes out (added after the second review of PR 42) | none | Not counted as unanswered, and no failed poll |
 | The heartbeat limit is reached, for the first time since a reply | none | Give up the current poll and poll again |
 | The heartbeat limit is reached again, and the heartbeats that the server took are still unanswered | none | Reload, through the reload guard |
 
