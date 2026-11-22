@@ -5,7 +5,7 @@ import test from 'node:test';
 const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connection-machine.js', import.meta.url), 'utf8');
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
-  linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, notesLongPolling,
+  linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, transportNote,
   frameKind, afterFrame, reloadStarted, messageSent, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
@@ -210,11 +210,21 @@ test('a page that reloads is no transport\'s any more: it sends nothing, reconne
   }
 });
 
-test('a long-polling page that is told to reload before its first frame starts with long polling', () => {
-  const polling = {...initialConnection(), transport: ConnectionType.LONG_POLLING};
-  assert.equal(notesLongPolling(polling), true);
-  assert.equal(notesLongPolling({...polling, seen: 1}), false);
-  assert.equal(notesLongPolling({...polling, transport: ConnectionType.WEB_SOCKET}), false);
+test('the note "start with long polling" is written only after a fallback, and ends at a reload of a noted page', () => {
+  const epoch = {};
+  const fellBack = step(step(initialConnection(), {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}}),
+    {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
+  // A document that tried a WebSocket, fell back, and is told to reload before its first frame.
+  assert.equal(transportNote(fellBack), 'write');
+  // After a frame, or on a WebSocket, nothing is noted.
+  assert.equal(transportNote({...fellBack, seen: 1}), 'keep');
+  assert.equal(transportNote(step(fellBack, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}})), 'keep');
+  // A page that never tried a WebSocket (ws: false) notes nothing.
+  assert.equal(transportNote(step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch})), 'keep');
+  // A document that started with long polling because of the note, told to reload before its first frame: the note ends.
+  const noted = step(step(initialConnection(), {type: 'prefer-long-polling'}), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
+  assert.equal(transportNote(noted), 'remove');
+  assert.equal(transportNote({...noted, seen: 2}), 'keep');
   const preferred = step(initialConnection(), {type: 'prefer-long-polling'});
   assert.equal(nextTransport(preferred, false), ConnectionType.LONG_POLLING);
   assert.equal(nextTransport(initialConnection(), false), ConnectionType.WEB_SOCKET);

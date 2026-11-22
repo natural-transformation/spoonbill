@@ -1,13 +1,15 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
-  linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, notesLongPolling, frameKind, afterFrame,
+  linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, transportNote, frameKind, afterFrame,
   reloadStarted, messageSent, pollDeadline} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
-// The tab remembers its last framework reload and, after a fallback, its transport.
-const RELOAD_KEY = 'spoonbill:reload';
-const TRANSPORT_KEY = 'spoonbill:transport';
+// The tab remembers its last framework reload and, after a fallback, its
+// transport. The keys carry the root path of the application, so that two
+// applications on one origin keep theirs apart.
+const RELOAD_KEY = 'spoonbill:reload:';
+const TRANSPORT_KEY = 'spoonbill:transport:';
 
 /** The sessionStorage of this tab, or null when the browser has none or refuses it. */
 function sessionStore() {
@@ -111,11 +113,13 @@ export class Connection {
       });
     }
     this._webSocketsSupported = wsEnabled && window.WebSocket !== undefined;
+    this._reloadKey = RELOAD_KEY + serverRootPath;
+    this._transportKey = TRANSPORT_KEY + serverRootPath;
     // A page that fell back to long polling and was told to reload starts with it.
     if (!this._guarded) {
       const storage = sessionStore();
       try {
-        if (storage !== null && storage.getItem(TRANSPORT_KEY) === 'long-polling')
+        if (storage !== null && storage.getItem(this._transportKey) === 'long-polling')
           this._lifecycle = connectionStep(this._lifecycle, {type: 'prefer-long-polling'});
       } catch (_) {}
     }
@@ -522,10 +526,17 @@ export class Connection {
     if (reloadStarted(this._lifecycle)) return;
     const storage = sessionStore();
     let wait = 0;
+    // The note and the time of the last reload, each in a try of its own.
     try {
       if (storage !== null) {
-        if (notesLongPolling(this._lifecycle)) storage.setItem(TRANSPORT_KEY, 'long-polling');
-        const stored = storage.getItem(RELOAD_KEY);
+        const note = transportNote(this._lifecycle);
+        if (note === 'write') storage.setItem(this._transportKey, 'long-polling');
+        else if (note === 'remove') storage.removeItem(this._transportKey);
+      }
+    } catch (_) {}
+    try {
+      if (storage !== null) {
+        const stored = storage.getItem(this._reloadKey);
         wait = reloadWait(stored === null ? null : Number(stored), Date.now());
       }
     } catch (_) {
@@ -541,7 +552,7 @@ export class Connection {
     this._clearPendingSends();
     if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
     const reload = () => {
-      try { if (storage !== null) storage.setItem(RELOAD_KEY, String(Date.now())); } catch (_) {}
+      try { if (storage !== null) storage.setItem(this._reloadKey, String(Date.now())); } catch (_) {}
       window.location.reload();
     };
     // The timer is only the handle of the wait; the machine knows that the page waits.

@@ -31,7 +31,11 @@ export function initialConnection() {
     failures: 0,
     // A framework reload of an unguarded page has started: 'now', or 'waiting'
     // for the end of the reload window. From then on no transport is current.
-    reloading: null
+    reloading: null,
+    // For the note "start with long polling": this document tried a WebSocket,
+    // or it started with long polling because of the note.
+    triedWebSocket: false,
+    fromNote: false
   };
 }
 
@@ -131,11 +135,20 @@ export function reloadWait(last, now) {
 }
 
 /**
- * A long-polling page that is told to reload before it applied any frame may
- * have fallen back from a WebSocket that the server took, and so its fresh-page
- * record. It notes that it starts with long polling after the reload.
+ * What a long-polling page that is told to reload does with the note "start
+ * with long polling". A document that tried a WebSocket, fell back, and applied
+ * no frame may have lost its fresh-page record to a socket that a proxy broke:
+ * it writes the note ('write'). A document that started with long polling
+ * because of the note and applied no frame takes it away ('remove'), so that
+ * the next one tries a WebSocket again: that ends the loop on a network where
+ * long polling is what fails. Anything else keeps it. Decided by the user on
+ * 2026-11-22, after the review of PR 42.
  */
-export const notesLongPolling = state => state.transport === ConnectionType.LONG_POLLING && state.seen === 0;
+export function transportNote(state) {
+  if (state.transport !== ConnectionType.LONG_POLLING || state.seen !== 0) return 'keep';
+  if (state.fromNote) return 'remove';
+  return state.triedWebSocket ? 'write' : 'keep';
+}
 
 export function nextTransport(state, guarded) {
   if (state.selected !== null) return state.selected;
@@ -164,7 +177,7 @@ export function connectionStep(state, event) {
       // of it, after a connect(), goes on from the frame that it has applied.
       return event.transport === ConnectionType.LONG_POLLING ?
         {...state, transport: event.transport, epoch: event.epoch, failures: 0} :
-        {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null};
+        {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null, triedWebSocket: true};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;
       return {...state, phase: connectionReady(state) ? 'ready' : 'opened',
@@ -205,7 +218,7 @@ export function connectionStep(state, event) {
       return state.page === null && typeof event.page === 'string' && PAGE_PATTERN.test(event.page) ?
         {...state, page: event.page.toLowerCase()} : state;
     case 'prefer-long-polling':
-      return state.selected === null ? {...state, selected: ConnectionType.LONG_POLLING} : state;
+      return state.selected === null ? {...state, selected: ConnectionType.LONG_POLLING, fromNote: true} : state;
     case 'poll-answered':
       return state.failures === 0 ? state : {...state, failures: 0};
     case 'frame-applied':

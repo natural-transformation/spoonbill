@@ -496,6 +496,44 @@ test('a page that fell back and is told to reload starts with long polling after
   assert.equal(env.polls().length, 2);
 }));
 
+test('a page without a WebSocket that reloads at its first poll notes nothing', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  assert.equal([...env.session.keys()].some(key => key.startsWith('spoonbill:transport')), false);
+}));
+
+test('a noted page that is told to reload at its first poll ends the note, and the next document opens a WebSocket', () => environment(async env => {
+  // The note of a fallback.
+  const first = env.create({lpw: 1000});
+  first.connect(); env.nextTimer();
+  env.sockets[0].close(); await env.flush();
+  runTimer(env, 400);
+  env.polls().at(-1).respond(200, '[1]');
+  // The next document starts with long polling, and is told to reload at once: long polling is what fails here.
+  const noted = env.create({lpw: 1000});
+  noted.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 1, 'the noted document starts with long polling');
+  env.polls().at(-1).respond(200, '[1]');
+  for (const [id, timer] of [...env.timers.entries()].filter(([, entry]) => entry.delay > 25000)) { env.timers.delete(id); timer.callback(); }
+  const next = env.create({lpw: 1000});
+  next.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 2, 'the document after it tries a WebSocket again');
+}));
+
+test('two applications on one origin keep their notes apart', () => environment(async env => {
+  const connection = env.create({lpw: 1000});
+  connection.connect(); env.nextTimer();
+  env.sockets[0].close(); await env.flush();
+  runTimer(env, 400);
+  env.polls().at(-1).respond(200, '[1]');
+  // The application at /app/ noted long polling; a document of the one at /other/ did not.
+  const other = new Connection('session', '/other/', {host: 'example.test', protocol: 'http:', pathname: '/other/', search: ''}, {lpw: 1000});
+  other.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 2, 'the other application tries a WebSocket');
+  await other.disconnect(false);
+}));
+
 test('a page whose fallback works notes nothing', () => environment(async env => {
   const connection = env.create({lpw: 1000});
   connection.connect(); env.nextTimer();
