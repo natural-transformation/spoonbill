@@ -14,7 +14,12 @@ class PollAdmissionMachineSpec extends AnyFlatSpec with Matchers {
 
   "A page id" should "be a UUID in its canonical form" in {
     PollAdmissionMachine.page(pageText) shouldBe Some(page)
-    PollAdmissionMachine.page(pageText.toUpperCase) shouldBe Some(page)
+    // The view compares the page id with its connection id in lower case, as
+    // the client writes it: an id in upper case would attach and then have
+    // every event refused, so admission refuses it at once.
+    val lettered = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+    PollAdmissionMachine.page(lettered) shouldBe Some(UUID.fromString(lettered))
+    PollAdmissionMachine.page(lettered.toUpperCase) shouldBe None
     // java.util.UUID would take these. A page id does not.
     for (value <- List("1-1-1-1-1", "", "11111111111141118111111111111111", pageText + "0", " " + pageText))
       withClue(value)(PollAdmissionMachine.page(value) shouldBe None)

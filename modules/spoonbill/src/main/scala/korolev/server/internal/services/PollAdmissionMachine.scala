@@ -22,7 +22,8 @@ private[spoonbill] object PollAdmissionMachine {
   /** What a request says about its page. */
   final case class Cursor(page: UUID, seen: Long)
 
-  private val PagePattern   = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}".r
+  // Lower case only, as the client writes it and the view compares it.
+  private val PagePattern   = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}".r
   private val CursorPattern = "0|[1-9][0-9]{0,15}".r
 
   /** A page id in its canonical form, with 32 hex digits in five groups. */
