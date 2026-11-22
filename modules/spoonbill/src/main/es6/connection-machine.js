@@ -133,9 +133,10 @@ export function connectionStep(state, event) {
     case 'install':
       // A page that reloads takes no new transport.
       if (state.reloading !== null) return state;
-      // A new long-polling transport is a first attach: it has applied nothing.
+      // The page id and the counts belong to the document: a second transport
+      // of it, after a connect(), goes on from the frame that it has applied.
       return event.transport === ConnectionType.LONG_POLLING ?
-        {...state, transport: event.transport, epoch: event.epoch, seen: 0, dom: 0, failures: 0} :
+        {...state, transport: event.transport, epoch: event.epoch, failures: 0} :
         {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;

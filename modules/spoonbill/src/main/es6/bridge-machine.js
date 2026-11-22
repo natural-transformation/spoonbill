@@ -20,8 +20,11 @@ export function bridgeStep(state, event) {
     case 'restore-application': return {...state, application: event.phase};
     case 'baseline-applied': return {...state, view: {connection: event.connection, revision: event.revision}};
     case 'patch-applied': return {...state, view: {...state.view, revision: event.revision}};
-    case 'frame-applied':
-      return event.domFrame && state.view !== null ?
+    // A DOM frame begins. Its revision is the view's from now on, so an event
+    // that the patch itself makes belongs to the display that the frame makes.
+    // A patch that then fails makes the page reload.
+    case 'dom-frame':
+      return state.view !== null ?
         {...state, view: {...state.view, revision: String(Number(state.view.revision) + 1)}} : state;
     case 'begin-navigation': return {...state, navigationCounter: state.navigationCounter + 1};
     case 'heartbeat-configured': return {...state, outstandingHeartbeats: 0};

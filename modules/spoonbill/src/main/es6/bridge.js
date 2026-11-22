@@ -149,10 +149,11 @@ export class Bridge {
         case Procedure.LISTEN_EVENT: k.listenEvent.apply(k, commands); break;
         case Procedure.EXTRACT_PROPERTY: k.extractProperty.apply(k, commands); break;
         case Procedure.MODIFY_DOM:
-          // The transport learns whether the frame was applied; a long-polling
-          // page reloads after one that was not.
+          // The revision of the frame is the view's from the start of the
+          // patch. The transport learns whether the frame was applied; a
+          // long-polling page reloads after one that was not.
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'dom-frame'});
           if (!this._modifyDom(commands)) event.applied = false;
-          else this._lifecycle = bridgeStep(this._lifecycle, {type: 'frame-applied', domFrame: true});
           break;
         case Procedure.FOCUS: k.focus.apply(k, commands); break;
         case Procedure.CHANGE_PAGE_URL: {

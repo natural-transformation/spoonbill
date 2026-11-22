@@ -50,6 +50,8 @@ export class Connection {
     this._pollDeadline = (options && options['lpw'] ? Number(options['lpw']) : 30000) + POLL_DEADLINE_MARGIN;
     /** Polls again at once, giving up the poll that waits. Only long polling has one. */
     this._repoll = () => {};
+    // The transport that is replaced gives up its poll and its deadline.
+    this._retire = () => {};
     this._sessionId = sessionId;
     this._serverRootPath = serverRootPath;
 
@@ -146,6 +148,8 @@ export class Connection {
    * @private
    */
   _connectUsingConnectionType(connectionType) {
+    this._retire();
+    this._retire = () => {};
     switch (connectionType) {
       case ConnectionType.LONG_POLLING:
         if (this._guarded) this._onError();
@@ -363,7 +367,7 @@ export class Connection {
       const request = new XMLHttpRequest();
       pending = request;
       deadline = setTimeout(() => {
-        if (pending !== request) return;
+        if (pending !== request || !isCurrent()) return;
         pending = null;
         request.abort();
         failed();
@@ -413,6 +417,8 @@ export class Connection {
     };
 
     const failed = () => {
+      // A transport that was replaced counts nothing.
+      if (!isCurrent()) return;
       const shown = noticeShown(this._lifecycle);
       this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-failed'});
       if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
@@ -445,6 +451,13 @@ export class Connection {
 
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
+    this._retire = () => {
+      if (pending === null) return;
+      const request = pending;
+      pending = null;
+      clearTimeout(deadline);
+      request.abort();
+    };
     this._repoll = () => {
       if (!isCurrent() || pending === null) return;
       const request = pending;

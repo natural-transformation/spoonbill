@@ -299,6 +299,33 @@ test('a superseded long-poll response cannot publish or renew its old subscripti
   assert.equal(env.requests.length, 3);
 }));
 
+test('a second long-polling transport of the document keeps its cursor, and the first one counts nothing', () => environment(async env => {
+  const {connection, events} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  env.polls()[1].frame(2, 0, '["two"]');
+  const first = env.polls()[2];
+  assert.equal(query(first.url).seen, '2');
+  // A page script reconnects, for example on the online event.
+  connection.connect();
+  for (const [id, timer] of [...env.timers.entries()].filter(([, entry]) => entry.delay <= 200)) {
+    env.timers.delete(id); timer.callback();
+  }
+  const second = env.polls().at(-1);
+  assert.notEqual(second, first);
+  // The cursor and the page id belong to the document, not to the transport.
+  assert.equal(query(second.url).seen, '2');
+  assert.equal(query(second.url).page, query(first.url).page);
+  // The deadline of the first transport is cleared, and a late run of it counts nothing.
+  const late = [...env.timers.values()].filter(entry => entry.delay === 6000);
+  assert.equal(late.length, 1, 'only the deadline of the current poll is set');
+  first.respond(0);
+  assert.equal(connection.linkUp, true);
+  assert.equal(events.includes('interrupt'), false);
+  second.frame(3, 0, '["three"]');
+  assert.deepEqual(events.filter(name => name.startsWith('[')), ['["one"]', '["two"]', '["three"]']);
+  assert.equal(env.reloads.count, 0);
+}));
+
 test('a websocket superseded by long polling cannot publish late frames', () => environment(async env => {
   const connection = env.create();
   const received = [];

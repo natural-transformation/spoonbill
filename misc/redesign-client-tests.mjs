@@ -1422,6 +1422,21 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('an event that the page sends while it applies a DOM frame names the revision of that frame', () => {
+      // A custom element that a patch inserts can call back from its
+      // connectedCallback; the event belongs to the display that the frame makes.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        lp.bridge._spoonbill.modifyDom = () => { lp.bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'ready:1'); return true; };
+        lp.polls()[0].frame(1, 1, '[4]');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:1:${CallbackType.CUSTOM_CALLBACK}:ready:1`]));
+        lp.bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'later:1');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:1:${CallbackType.CUSTOM_CALLBACK}:later:1`]));
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a DOM frame whose node is missing, or that throws, makes a long-polling page reload', () => {
       for (const patch of [
         JSON.stringify([4, 0, 'missing-parent', 'missing-parent_1', 0, 'div']),
