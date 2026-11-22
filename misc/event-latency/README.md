@@ -51,7 +51,11 @@ tree (`local`). Results and their interpretation are in the
   readiness). The reconnect sends the page location as the browser bridge
   does; a handshake that arrives before the server has cleaned up the old
   attachment is refused and retried, and those refusals appear in the run's
-  server-log error summary.
+  server-log error summary. `BENCH_TRANSPORT=long-polling` makes every user
+  poll instead, as a browser whose WebSocket is blocked does (unguarded modes
+  only). A page that names a poll wait (`lpw:`) gets the protocol of long
+  polling that resumes, with the page id, the cursor and the DOM revision;
+  any other page gets the protocol before that change.
 - `client/budget.mjs`: the recovery plan's healthy commit budget, asserted from
   the counter deltas of the snapshot modes. Startup (sign-in, page load, session
   open and the initial publication of the empty view) is reported apart from
@@ -72,6 +76,8 @@ Inside the repository's Nix environment, from the repository root:
 nix develop --no-write-lock-file --command bash misc/event-latency/prepare.sh
 # run.sh <v1|v8|local> <plain|memory|jdbc|jdbc-concurrent|jdbc-snapshot|jdbc-reference|plain-extensions|memory-extensions> <users> <clicks> <warmup> [thinkMs]
 nix develop --no-write-lock-file --command bash misc/event-latency/run.sh local memory 1 200 50
+nix develop --no-write-lock-file --command env BENCH_TRANSPORT=long-polling \
+  bash misc/event-latency/run.sh local plain 1 200 50
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 bash misc/event-latency/run.sh local jdbc 8 60 10 200
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # F2 real-service renderer acceptance: real standalone Scala service, real
 # HTML5 SSR and assembled client, pinned Chromium/WebKit, synthetic data.
-# Runs the full matrix, then one injected fault that the matrix must detect.
+# Runs the full matrix, then one injected fault that the matrix must detect,
+# then the cases of long polling that resumes (misc/long-polling-native-tests.cjs).
 set -euo pipefail
 if [[ -z "${IN_NIX_SHELL:-}" ]]; then
   printf '%s\n' 'Run through the repository nix develop environment.' >&2
@@ -103,4 +104,5 @@ nix develop .#browser --no-write-lock-file --command bash -c '
   fi
   grep "\"phase\":\"patched-dom\"" "$1"
   printf "%s\n" "PASS: injected name-truncation fault detected (status $status)"
+  timeout --kill-after=10s 300s node misc/long-polling-native-tests.cjs
 ' renderer-acceptance "$test_root/fault-probe.log"
