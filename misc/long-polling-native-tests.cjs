@@ -31,6 +31,26 @@ async function waitFor(condition, message, limit = 10000) {
 // Whether the page is ready. A page that is being reloaded is not.
 const ready = page => page.evaluate(() => window.Spoonbill && window.Spoonbill.ready === true).catch(() => false);
 
+/**
+ * Whether the page listens for clicks. On long polling `Spoonbill.ready` turns
+ * true with the first answer, and the frame that makes the client listen for
+ * clicks comes in a later one; a click before that frame is applied is never
+ * sent. On long polling the frame counts as applied once a later poll of the
+ * same page names it; on a WebSocket once it reached the newest socket.
+ */
+function listening(state, polling) {
+  const listen = body => body.startsWith('[2,"click"');
+  if (!polling) return (state.sockets.at(-1) || []).some(listen);
+  const last = state.polled.at(-1);
+  return last !== undefined && state.answers.some(answer => answer.page === last.page && listen(answer.body) &&
+    state.polled.some(poll => poll.page === last.page && poll.seen >= Number(answer.frame)));
+}
+
+/** Waits until the page is ready and listens for clicks. */
+async function usable(page, state, polling, message) {
+  await waitFor(async () => (await ready(page)) && listening(state, polling), message);
+}
+
 const subscribe = /\/bridge\/long-polling\/[^/]+\/subscribe/;
 const publish = /\/bridge\/long-polling\/[^/]+\/publish/;
 
@@ -45,12 +65,18 @@ async function open(browser, path, {polling = true, beforeLoad} = {}) {
   await control(context, 'start/resume/plain/none');
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
-  // `polled` holds the cursor of every poll: the last frame that the page had applied.
-  const state = {errors: [], answers: [], published: [], polled: [], loads: 0, dropNextDom: false,
+  // `polled` holds the page and the cursor of every poll: the last frame that
+  // the page had applied. `sockets` holds the frames of every WebSocket.
+  const state = {errors: [], answers: [], published: [], polled: [], sockets: [], loads: 0, dropNextDom: false,
     dropped: false, hold: null, held: false, heldFrame: null, block: false, finished: false};
   page.on('pageerror', error => state.errors.push(`pageerror ${clip(error.message)}`));
   page.on('load', () => { state.loads++; });
   page.on('request', request => { if (publish.test(request.url())) state.published.push(request.postData()); });
+  page.on('websocket', socket => {
+    const frames = [];
+    state.sockets.push(frames);
+    socket.on('framereceived', event => frames.push(String(event.payload)));
+  });
   await page.addInitScript(longPolling => {
     window.__ready = 0;
     window.addEventListener('SpoonbillReady', () => { window.__ready++; });
@@ -60,11 +86,13 @@ async function open(browser, path, {polling = true, beforeLoad} = {}) {
     // A route outlives its case: what comes after the end is ignored.
     const ignore = () => {};
     if (state.finished) return route.abort().catch(ignore);
-    state.polled.push(Number(new URL(route.request().url()).searchParams.get('seen')));
+    const query = new URL(route.request().url()).searchParams;
+    const pageId = query.get('page');
+    state.polled.push({page: pageId, seen: Number(query.get('seen'))});
     if (state.block) return route.abort('connectionreset').catch(ignore);
     let response, body;
     try { response = await route.fetch(); body = await response.text(); } catch (_) { return route.abort().catch(ignore); }
-    state.answers.push({status: response.status(), frame: response.headers()['spoonbill-frame'], body});
+    state.answers.push({page: pageId, status: response.status(), frame: response.headers()['spoonbill-frame'], body});
     if (state.dropNextDom && body.startsWith('[4')) {
       state.dropNextDom = false; state.dropped = true;
       return route.abort('connectionreset').catch(ignore);
@@ -78,7 +106,7 @@ async function open(browser, path, {polling = true, beforeLoad} = {}) {
   });
   if (beforeLoad) await beforeLoad(page, context, state);
   await page.goto(origin + path);
-  await waitFor(() => ready(page), 'The page never became ready');
+  await usable(page, state, polling, 'The page never became ready to take a click');
   return {context, page, state};
 }
 
@@ -94,7 +122,7 @@ const status = context => control(context, 'status');
  */
 async function counterApplied(state, since) {
   await waitFor(() => state.answers.slice(since).some(answer =>
-    answer.body.startsWith('[0,') && state.polled.some(seen => seen >= Number(answer.frame))),
+    answer.body.startsWith('[0,') && state.polled.some(poll => poll.page === answer.page && poll.seen >= Number(answer.frame))),
   'The event counter of the click never reached the page');
 }
 
@@ -186,7 +214,7 @@ async function backDuringPatch(browser) {
     await waitFor(() => state.published.some(body => /^\[7,"[0-9a-f-]+:\d+:3:/.test(body)), 'The history event was not sent');
     release();
     // Until the page has applied the held patch, it still shows stage 1.
-    await waitFor(() => state.polled.some(seen => seen >= state.heldFrame), 'The held patch was never applied');
+    await waitFor(() => state.polled.some(poll => poll.seen >= state.heldFrame), 'The held patch was never applied');
     await waitFor(async () => new URL(page.url()).pathname === backTo && (await stage(page)) === `stage ${backTo.split('/').pop()}`,
       'The page never showed the route that Back went to');
     assert.equal(state.loads, 1, 'The page reloaded');
@@ -204,7 +232,7 @@ async function viewEnds(browser) {
     await pause(7500);
     state.block = false;
     await waitFor(() => state.loads === 2, 'The page did not reload once its view had ended', 15000);
-    await waitFor(() => ready(page), 'The reloaded page never became ready');
+    await usable(page, state, true, 'The reloaded page never became ready to take a click');
     await page.click('#resume-act');
     await waitFor(async () => (await status(context)).clicks.length === 1, 'The reloaded page ran no handler');
     assert.equal(state.loads, 2, 'The page reloaded more than once');
@@ -235,7 +263,7 @@ async function lostState(browser, polling) {
   }});
   try {
     await waitFor(() => state.loads === 2, 'The page was not told to reload', 15000);
-    await waitFor(() => ready(page), 'The reloaded page never became ready');
+    await usable(page, state, polling, 'The reloaded page never became ready to take a click');
     assert.equal(await stage(page), 'stage 42');
     await page.click('#resume-act');
     await waitFor(async () => (await status(context)).clicks.length === 1, 'The reloaded page ran no handler');

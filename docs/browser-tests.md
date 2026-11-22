@@ -164,6 +164,10 @@ The server sends the event counter of a handled click in a frame after the
 patch, and drops a click that carries an old counter, on every transport. A
 case that clicks one button twice therefore waits until the page has applied
 that frame; without the wait the second click raced it on a fast runner.
+Likewise a case uses a page only once it listens for clicks: on long polling
+`Spoonbill.ready` turns true with the first answer, and the frame that makes
+the page listen comes in a later one. Both waits were checked by holding
+those frames for 600 ms, under which every case passes.
 
 ## Public authentication example and delivery loss
 
