@@ -721,13 +721,16 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * is written back: the next attach must not trust a state the browser
      * never saw. Every waiting attach gets the error.
      */
-    def abandon(error: Throwable): F[Unit] = {
-      // Fail the entry before it is removed, so the waiters get this error
-      // and not the removal.
-      val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
+    def abandon(): F[Unit] = {
+      // The table entry is left alone here. This attach fills it, and the
+      // fill ends with the error: the table then gives the error to every
+      // attach that waits. An entry that is failed or removed before the fill
+      // has ended is written again when it ends, and that failure would stay.
       created.get() match {
-        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, settle)
-        case None       => attempt(settle())
+        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
+        // Nothing was built, so nothing is retired. The machine still learns
+        // that this attach was rolled back.
+        case None => Effect[F].delay { transition(LegacySessionMachine.Event.NothingBuilt); () }
       }
     }
 
@@ -869,8 +872,20 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // session. Removing the entry would let a reconnect trust the stale DOM.
               apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
             case error =>
-              abandon(error).flatMap(_ => Effect[F].fail(error))
+              abandon().flatMap(_ => Effect[F].fail(error))
           }
+        }.recoverF { case error =>
+          // The fill has ended, and every attach that waited for it has its
+          // error. A view that was rolled back leaves nothing behind, so its
+          // failure must not answer the attaches that come later: the page
+          // reconnects, and that attach builds a view of its own. Only the
+          // attach that rolled back takes the entry out, once, and in the
+          // same step that a cancelled request cannot split. The machine
+          // knows which attach that is. An attach that only waited, and a
+          // terminal failure such as an invalid render context, leave it.
+          if (transition(LegacySessionMachine.Event.Published) == LegacySessionMachine.Command.Forget)
+            apps.remove(qsid).flatMap(_ => Effect[F].fail[App](error))
+          else Effect[F].fail[App](error)
         }
       }.map[SessionStart[F]](attached).recoverF { case error: DevMode.InvalidSavedRenderContext =>
         config.reporter.error(error.getMessage, error)

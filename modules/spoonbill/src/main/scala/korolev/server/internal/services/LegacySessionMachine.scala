@@ -5,6 +5,9 @@ package spoonbill.server.internal.services
  * fences extension setup after connection loss and selects one retirement.
  * Rollback and disconnected retirement retain distinct restore/registry
  * effects.
+ *
+ * A rollback has one step after its stages: its failure is taken out of the
+ * registry, once the registry has given it to the attaches that waited.
  */
 private[spoonbill] object LegacySessionMachine {
   enum Connection { case Open, Closed            }
@@ -17,6 +20,9 @@ private[spoonbill] object LegacySessionMachine {
     case Idle
     case Running(cause: Cause, stage: Stage)
     case Done(cause: Cause)
+
+    /** A rollback whose failure is out of the registry. */
+    case Forgotten
     case Failed(cause: Cause)
   }
   final case class State(connection: Connection = Connection.Open, retirement: Retirement = Retirement.Idle)
@@ -24,12 +30,27 @@ private[spoonbill] object LegacySessionMachine {
     case ConnectionClosed, Failed
     case Retire(cause: Cause)
     case Finished(stage: Stage)
+
+    /** The attach failed before it had a view. There is nothing to retire. */
+    case NothingBuilt
+
+    /** The registry has given the failure of an attach to every attach that waited for it. */
+    case Published
   }
   enum Command {
     case None
     case Run(stage: Stage)
+
+    /** Take the failure of this attach out of the registry. */
+    case Forget
   }
   def connectionClosed(state: State): Boolean = state.connection == Connection.Closed
+
+  /** This attach rolled back what it had built. A failure that it meets is its own, not one that it waited for. */
+  def rolledBack(state: State): Boolean = state.retirement match {
+    case Retirement.Done(Cause.Abandoned) | Retirement.Forgotten => true
+    case _                                                        => false
+  }
   private def after(stage: Stage): Option[Stage] = stage match {
     case Stage.StopExtensions     => Some(Stage.CancelInput)
     case Stage.CancelInput        => Some(Stage.CloseFrontend)
@@ -57,6 +78,15 @@ private[spoonbill] object LegacySessionMachine {
       state.retirement match {
         case Retirement.Running(cause, _) => (state.copy(retirement = Retirement.Failed(cause)), Command.None)
         case _                            => (state, Command.None)
+      }
+    case Event.NothingBuilt if state.retirement == Retirement.Idle =>
+      (state.copy(retirement = Retirement.Done(Cause.Abandoned)), Command.None)
+    case Event.Published =>
+      state.retirement match {
+        // Only the attach that rolled back takes the failure out, and once.
+        // An attach that only waited leaves the registry alone.
+        case Retirement.Done(Cause.Abandoned) => (state.copy(retirement = Retirement.Forgotten), Command.Forget)
+        case _                                => (state, Command.None)
       }
     case _ => (state, Command.None)
   }
