@@ -1398,9 +1398,10 @@ test('redesign client regressions against real source modules', { timeout: 10000
       connection._connectUsingConnectionType(ConnectionType.LONG_POLLING);
       const bridge = new Bridge({heartbeat: {interval: '25', limit: '2'}, ...options}, connection);
       const polls = () => requests.filter(request => request.method === 'GET');
-      const sent = () => requests.filter(request => request.method === 'POST').map(request => request.body);
+      const posts = () => requests.filter(request => request.method === 'POST');
+      const sent = () => posts().map(request => request.body);
       const page = new URL(polls()[0].url).searchParams.get('page');
-      return {connection, bridge, polls, sent, page, timers, intervals};
+      return {connection, bridge, polls, posts, sent, page, timers, intervals};
     };
     const timing = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'XMLHttpRequest'];
     const keepTiming = () => new Map(timing.map(name => [name, globalThis[name]]));
@@ -1455,31 +1456,115 @@ test('redesign client regressions against real source modules', { timeout: 10000
       }
     });
 
-    await t.test('a long-polling page polls again at the heartbeat limit, and sends no heartbeat while interrupted', () => {
+    // The answer to a request: its status, and readystatechange.
+    const answer = (request, status) => {
+      request.status = status; request.readyState = 4; request.dispatchEvent({type: 'readystatechange', target: request});
+    };
+    const heartbeat = JSON.stringify([CallbackType.HEARTBEAT]);
+
+    await t.test('a long-polling page whose heartbeats the server takes and does not answer polls again once, then reloads', () => {
       const saved = keepTiming();
       const { window } = browser();
       let reloads = 0;
       window.location.reload = () => { reloads++; };
       const lp = longPolling(window);
       try {
-        const heartbeats = () => lp.sent().filter(body => body === JSON.stringify([CallbackType.HEARTBEAT])).length;
         lp.intervals[0].callback();
+        assert.equal(lp.posts().at(-1).body, heartbeat);
+        answer(lp.posts().at(-1), 200);
+        // No reply by the next tick: the limit. The poll is given up and sent again, once.
         lp.intervals[0].callback();
-        assert.equal(heartbeats(), 1);
-        // The limit: the poll is given up and sent again, and the page does not reload.
-        assert.equal(reloads, 0);
         assert.equal(lp.polls()[0].aborted, true);
         assert.equal(lp.polls().length, 2);
-        // Two failed polls interrupt the link. No heartbeat goes out then.
-        for (const poll of [lp.polls()[1]]) {
-          poll.status = 500; poll.readyState = 4; poll.dispatchEvent({type: 'readystatechange', target: poll});
-        }
-        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
-        const second = lp.polls().at(-1);
-        second.status = 0; second.readyState = 4; second.dispatchEvent({type: 'readystatechange', target: second});
+        assert.equal(reloads, 0);
         lp.intervals[0].callback();
-        assert.equal(heartbeats(), 1);
+        answer(lp.posts().at(-1), 200);
+        // Still no reply at the next limit: the input of the view is dead.
+        lp.intervals[0].callback();
+        assert.equal(reloads, 1);
+        assert.equal(lp.polls().length, 2, 'no second re-poll');
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a long-polling page whose link hangs shows the notice, does not reload, and goes on when the link is back', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        // No heartbeat request is answered: each one is written off at the next tick, as a failed poll.
+        lp.intervals[0].callback();
+        lp.intervals[0].callback();
+        assert.deepEqual(events, []);
+        lp.intervals[0].callback();
+        assert.deepEqual(events, ['interrupt'], 'the notice at the second failure');
+        for (let tick = 0; tick < 6; tick++) lp.intervals[0].callback();
+        assert.equal(reloads, 0);
+        assert.equal(lp.polls().length, 1, 'no re-poll: no heartbeat was taken');
+        // The link is back: a heartbeat is taken, and its reply answers the poll that the server holds.
+        answer(lp.posts().at(-1), 200);
+        lp.polls()[0].frame(1, 0, '[16]');
+        assert.deepEqual(events, ['interrupt', 'resume']);
+        assert.equal(new URL(lp.polls().at(-1).url).searchParams.get('seen'), '1');
+        assert.equal(reloads, 0);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('the heartbeat goes on while long polling is interrupted, and its reply hides the notice', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        answer(lp.polls()[0], 500);
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        answer(lp.polls().at(-1), 0);
+        assert.deepEqual(events, ['interrupt']);
+        lp.timers.filter(timer => timer.delay === 400 && !timer.cleared).at(-1).callback();
+        // The third poll reaches the server and waits there. A heartbeat still goes out.
+        const before = lp.sent().filter(body => body === heartbeat).length;
+        lp.intervals[0].callback();
+        assert.equal(lp.sent().filter(body => body === heartbeat).length, before + 1);
+        answer(lp.posts().at(-1), 200);
+        lp.polls().at(-1).frame(1, 0, '[16]');
+        assert.deepEqual(events, ['interrupt', 'resume']);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('an unguarded WebSocket page whose reload waits sends no heartbeat, and its limit does not reload it', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const session = new Map();
+      window.sessionStorage = {getItem: key => session.get(key) ?? null, setItem: (key, value) => session.set(key, String(value)), removeItem: key => session.delete(key)};
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      globalThis.setTimeout = (callback, delay) => ({callback, delay});
+      globalThis.clearTimeout = () => {};
+      const intervals = [];
+      globalThis.setInterval = callback => { intervals.push(callback); return callback; };
+      globalThis.clearInterval = () => {};
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const connection = new Connection('synthetic-session', '/', window.location, {});
+          connection._connectUsingWebSocket();
+          const socket = WebSocketFake.instances.at(-1);
+          socket.protocol = 'json';
+          const bridge = new Bridge({heartbeat: {interval: '25', limit: '2'}}, connection);
+          connection.dispatcher.dispatchEvent({type: 'message', data: '[1]'});
+          if (attempt === 1) {
+            // The second reload in the window waits. The heartbeat stops, and its limit reloads nothing.
+            const sent = socket.sent.length;
+            for (let tick = 0; tick < 4; tick++) intervals.at(-1)();
+            assert.equal(reloads, 1);
+            assert.equal(socket.sent.length, sent);
+          }
+          bridge.destroy();
+        }
+      } finally { restoreTiming(saved); }
     });
 
     await t.test('the reload frame of an unguarded WebSocket page passes the reload guard; a guarded page reloads as before', () => {

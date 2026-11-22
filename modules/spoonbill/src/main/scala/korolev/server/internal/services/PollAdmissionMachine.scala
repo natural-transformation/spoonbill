@@ -94,6 +94,16 @@ private[spoonbill] object PollAdmissionMachine {
    * session, by what the claim answered. A record that is being released
    * refuses every attach: its state is being removed.
    */
+  /**
+   * How long a poll waits for a frame, in milliseconds: the setting, but never
+   * more than half the idle timeout, so that a quiet page makes progress at
+   * least twice in every idle period, and within 100 ms and 10 minutes, so
+   * that the client's deadline is a sound timer. The page configuration names
+   * the same number (`lpw`).
+   */
+  def pollWaitMillis(settingMillis: Long, idleTimeoutMillis: Long): Long =
+    math.max(100L, math.min(600000L, math.min(settingMillis, idleTimeoutMillis / 2)))
+
   def goesOn(transport: Transport, claim: SessionRegistryMachine.FreshClaim): Boolean = transport match {
     case Transport.Poll      => claim == SessionRegistryMachine.FreshClaim.Fresh
     case Transport.WebSocket => claim != SessionRegistryMachine.FreshClaim.Releasing

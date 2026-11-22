@@ -3,7 +3,7 @@ import { Procedure, CallbackType, PropertyType } from './protocol.js';
 import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
 import {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
-  acceptsSensitiveView, validBarrier} from './bridge-machine.js';
+  acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer} from './bridge-machine.js';
 
 const ProtocolDebugEnabledKey = "$bridge.protocolDebugEnabled";
 
@@ -36,37 +36,58 @@ export class Bridge {
     let interval = parseInt(config['heartbeat']['interval'], 10);
 
     if (interval > 0) {
-      if (config['heartbeat']['limit']) {
-        this._heartbeatLimit = parseInt(config['heartbeat']['limit'], 10)
-        this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
-      }
+      this._heartbeatLimit = config['heartbeat']['limit'] ? parseInt(config['heartbeat']['limit'], 10) : 0;
+      this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
 
       this._intervalId = setInterval(() => {
         // The bounded cookie handoff temporarily suspends socket callbacks.
         if (this._connection.authenticationPending) return;
-        // While long polling is interrupted no heartbeat is sent.
-        if (!this._connection.linkUp) return;
-        if (this._heartbeatLimit) {
-          this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-tick'});
-
-          if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit && this._connection.longPolling) {
-            // A poll that hangs is given up and sent again; the answer of the
-            // server decides the rest.
-            console.log('Too many lost heartbeats, polling again')
-            this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
+        // The machine decides: a heartbeat, a re-poll, a reload, or nothing
+        // once a reload has started. The heartbeat goes on while long polling
+        // is interrupted: its reply answers the poll that the server holds,
+        // so the notice hides soon after the link is back.
+        const out = heartbeatTick(this._lifecycle, this._heartbeatLimit, this._connection.longPolling,
+          this._connection.reloadStarted);
+        this._lifecycle = out.state;
+        if (out.failed) this._connection.messageFailed();
+        switch (out.command) {
+          case 'send':
+            this._sendHeartbeat(out.seq);
+            break;
+          case 'repoll':
+            console.log('Too many lost heartbeats, polling again');
             this._connection.repoll();
-          } else if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit) {
-            console.log('Too many lost heartbeats, reloading')
+            break;
+          case 'reload':
+            console.log('Too many lost heartbeats, reloading');
             this._connection.disconnect(false);
-            window.location.reload();
-          } else {
-            this._onCallback(CallbackType.HEARTBEAT)
-          }
-        } else {
-          this._onCallback(CallbackType.HEARTBEAT)
+            // A guarded page reloads in flows of its own; an unguarded page
+            // passes the reload guard, as on the reload frame.
+            if (this._guarded) window.location.reload();
+            else this._connection.reloadPage();
+            break;
         }
       }, interval);
     }
+  }
+
+  /**
+   * One heartbeat. On long polling (`seq` is its number) the transport says
+   * whether the server took it; one that could not be sent is a failed poll.
+   * @param {?number} seq
+   */
+  _sendHeartbeat(seq) {
+    const message = JSON.stringify([CallbackType.HEARTBEAT]);
+    if (protocolDebugEnabled)
+      console.log('<- callback', CallbackType.HEARTBEAT);
+    const onAnswer = seq === null ? undefined : sent => {
+      const out = heartbeatAnswer(this._lifecycle, seq, sent);
+      this._lifecycle = out.state;
+      if (out.failed) this._connection.messageFailed();
+    };
+    // A heartbeat that no transport took is not in flight.
+    if (!this._connection.send(message, onAnswer) && seq !== null)
+      this._lifecycle = heartbeatAnswer(this._lifecycle, seq, true).state;
   }
 
   /**

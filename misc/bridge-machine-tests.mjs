@@ -5,7 +5,8 @@ import test from 'node:test';
 const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/bridge-machine.js', import.meta.url), 'utf8');
 const {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
   initialSensitive, sensitiveStep, departurePending, navigationPending, sensitiveTerminal,
-  sensitiveBlocked, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable} =
+  sensitiveBlocked, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable,
+  heartbeatTick, heartbeatAnswer} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const connection = '11111111-1111-4111-8111-111111111111';
 const presentation = '22222222-2222-4222-8222-222222222222';
@@ -128,4 +129,58 @@ test('a long-polling bridge starts with the view of its page, and counts the DOM
   // A bridge without a view has nothing to count.
   const plain = initialBridge(false);
   assert.equal(bridgeStep(plain, {type: 'dom-frame'}), plain);
+});
+
+test('the heartbeat of long polling: a re-poll at the limit, a reload at the next one, and a reply starts again', () => {
+  let state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
+  const tick = () => { const out = heartbeatTick(state, 2, true, false); state = out.state; return out; };
+  const answered = seq => { const out = heartbeatAnswer(state, seq, true); state = out.state; return out; };
+  // A heartbeat is sent and the server takes it.
+  let out = tick();
+  assert.deepEqual([out.command, out.failed], ['send', false]);
+  answered(out.seq);
+  // No reply by the next tick: the limit. The page polls again once.
+  assert.deepEqual([tick().command, state.outstandingHeartbeats, state.repolled], ['repoll', 0, true]);
+  out = tick();
+  assert.equal(out.command, 'send');
+  answered(out.seq);
+  // Still no reply at the next limit: the input is dead, the page reloads.
+  assert.equal(tick().command, 'reload');
+  // A reply in between starts the count again, and never goes below zero.
+  state = bridgeStep(bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'}), {type: 'heartbeat-reply'});
+  assert.equal(state.outstandingHeartbeats, 0);
+  out = tick(); answered(out.seq);
+  assert.equal(tick().command, 'repoll');
+  state = bridgeStep(state, {type: 'heartbeat-reply'});
+  assert.deepEqual([state.repolled, state.outstandingHeartbeats], [false, 0]);
+  out = tick(); answered(out.seq);
+  assert.equal(tick().command, 'repoll');
+});
+
+test('a heartbeat that cannot be sent is a failed poll, not an unanswered heartbeat', () => {
+  let state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
+  // Its request fails.
+  let out = heartbeatTick(state, 2, true, false);
+  const failed = heartbeatAnswer(out.state, out.seq, false);
+  assert.deepEqual([failed.failed, failed.state.outstandingHeartbeats, failed.state.heartbeatInFlight], [true, 0, null]);
+  // Its request has no answer when the next heartbeat is due: written off at that tick, and the next one goes out.
+  state = failed.state;
+  out = heartbeatTick(state, 2, true, false);
+  const next = heartbeatTick(out.state, 2, true, false);
+  assert.deepEqual([next.command, next.failed, next.state.outstandingHeartbeats], ['send', true, 1]);
+  // A late answer of a heartbeat that was written off changes nothing.
+  assert.deepEqual(heartbeatAnswer(next.state, out.seq, true), {state: next.state, failed: false});
+  // The heartbeat goes on without a limit too, and still sees a request that hangs.
+  const free = heartbeatTick(bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'}), 0, true, false);
+  assert.equal(free.command, 'send');
+  assert.equal(heartbeatTick(free.state, 0, true, false).failed, true);
+});
+
+test('a WebSocket page reloads at the limit, and no heartbeat goes out once a reload has started', () => {
+  let state = bridgeStep(initialBridge(false), {type: 'heartbeat-configured'});
+  let out = heartbeatTick(state, 2, false, false);
+  assert.deepEqual([out.command, out.failed, out.state.heartbeatInFlight], ['send', false, null]);
+  assert.equal(heartbeatTick(out.state, 2, false, false).command, 'reload');
+  for (const longPolling of [true, false])
+    assert.deepEqual(heartbeatTick(state, 2, longPolling, true), {state, command: 'skip', failed: false});
 });

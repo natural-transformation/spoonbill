@@ -39,7 +39,7 @@ final class PageService[F[_]: Effect, S, M](config: SpoonbillServiceConfig[F, S,
       if (config.authenticationCompletion.exists(_.replacement.nonEmpty)) ",replacement:true" else ""
     // How long a long poll waits at most, in milliseconds. The client gives a
     // poll this long and a margin before it counts it as failed.
-    val pollWait = s",lpw:${(config.sessionIdleTimeout / 2).toMillis}"
+    val pollWait = s",lpw:${PollAdmissionMachine.pollWaitMillis(config.longPollingWait.toMillis, config.sessionIdleTimeout.toMillis)}"
     val kfg =
       s"window['kfg']={sid:'${qsid.sessionId}',r:'${(rp / "").mkString}',clw:'$clw',heartbeat:$heartbeat$presetIds$wsFlag$wsProtocolsFlag$wsCompressionFlag$authFlag$replacementFlag$pollWait}"
 

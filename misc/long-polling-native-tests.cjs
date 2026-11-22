@@ -60,15 +60,15 @@ const publish = /\/bridge\/long-polling\/[^/]+\/publish/;
  * has answered it, or hold its answer. `polling` removes WebSocket, so the
  * client uses long polling.
  */
-async function open(browser, path, {polling = true, beforeLoad} = {}) {
+async function open(browser, path, {polling = true, beforeLoad, scenario = 'resume'} = {}) {
   const context = await browser.newContext();
-  await control(context, 'start/resume/plain/none');
+  await control(context, `start/${scenario}/plain/none`);
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
   // `polled` holds the page and the cursor of every poll: the last frame that
   // the page had applied. `sockets` holds the frames of every WebSocket.
   const state = {errors: [], answers: [], published: [], polled: [], sockets: [], loads: 0, dropNextDom: false,
-    dropped: false, hold: null, held: false, heldFrame: null, block: false, finished: false};
+    dropped: false, hold: null, held: false, heldFrame: null, block: false, hang: null, finished: false};
   page.on('pageerror', error => state.errors.push(`pageerror ${clip(error.message)}`));
   page.on('load', () => { state.loads++; });
   page.on('request', request => { if (publish.test(request.url())) state.published.push(request.postData()); });
@@ -90,6 +90,8 @@ async function open(browser, path, {polling = true, beforeLoad} = {}) {
     const pageId = query.get('page');
     state.polled.push({page: pageId, seen: Number(query.get('seen'))});
     if (state.block) return route.abort('connectionreset').catch(ignore);
+    // A link that hangs: the request waits, unanswered, until the case lets it go.
+    if (state.hang) await state.hang;
     let response, body;
     try { response = await route.fetch(); body = await response.text(); } catch (_) { return route.abort().catch(ignore); }
     state.answers.push({page: pageId, status: response.status(), frame: response.headers()['spoonbill-frame'], body});
@@ -103,6 +105,10 @@ async function open(browser, path, {polling = true, beforeLoad} = {}) {
       await release;
     }
     return route.fulfill({response, body}).catch(ignore);
+  });
+  await page.route(publish, async route => {
+    if (state.hang) await state.hang;
+    return route.continue().catch(() => {});
   });
   if (beforeLoad) await beforeLoad(page, context, state);
   await page.goto(origin + path);
@@ -223,6 +229,30 @@ async function backDuringPatch(browser) {
   return state;
 }
 
+/**
+ * With the heartbeat of long polling on, the link hangs for a while: every
+ * poll and every message waits unanswered. The page shows the notice and does
+ * not reload; when the link is back the notice hides and a click works.
+ */
+async function hangingLink(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-heartbeat'});
+  const notice = () => page.evaluate(() => document.body.innerText.includes('Connection lost')).catch(() => false);
+  try {
+    let release;
+    state.hang = new Promise(resolve => { release = resolve; });
+    await waitFor(notice, 'The notice never showed while the link hung', 5000);
+    await pause(1500);
+    assert.equal(state.loads, 1, 'The page reloaded while the link hung');
+    state.hang = null;
+    release();
+    await waitFor(async () => !(await notice()), 'The notice stayed after the link was back', 5000);
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click after the hang ran no handler');
+    assert.equal(state.loads, 1, 'The page reloaded');
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
 /** The view ends while the polls fail: the page reloads once and works. */
 async function viewEnds(browser) {
   const {context, page, state} = await open(browser, '/orders/0');
@@ -282,6 +312,7 @@ const all = [
   ['kept-input', 'a field that was not touched keeps its focus and its input', keptInput],
   ['back', 'back during a patch: URL and page agree, and the page does not reload', backDuringPatch],
   ['view-ends', 'a page whose view ended reloads once and works', viewEnds],
+  ['hanging-link', 'with the heartbeat on, a link that hangs shows the notice, and the page goes on', hangingLink],
   ['lost-state-lp', 'a page at a route whose state is gone reloads once to it, on long polling', browser => lostState(browser, true)],
   ['lost-state-ws', 'a page at a route whose state is gone reloads once to it, on a WebSocket', browser => lostState(browser, false)]
 ];

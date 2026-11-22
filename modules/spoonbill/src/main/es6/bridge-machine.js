@@ -7,8 +7,13 @@ const NAME_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
  * revision, and every applied DOM frame adds one.
  */
 export function initialBridge(guarded, page = null) {
+  // `outstandingHeartbeats` counts the heartbeats that the server took and has
+  // not answered, `repolled` says that the limit gave a re-poll since the last
+  // reply, and `heartbeatInFlight` is the number of a long-polling heartbeat
+  // whose request has no answer yet.
   return {view: page === null ? null : {connection: page, revision: '0'}, gate: guarded ? 'waiting' : 'ready',
-    application: 'idle', navigationCounter: 0, outstandingHeartbeats: undefined};
+    application: 'idle', navigationCounter: 0, outstandingHeartbeats: undefined, repolled: false,
+    heartbeatInFlight: null, heartbeatSeq: 0};
 }
 
 export function bridgeStep(state, event) {
@@ -27,11 +32,55 @@ export function bridgeStep(state, event) {
       return state.view !== null ?
         {...state, view: {...state.view, revision: String(Number(state.view.revision) + 1)}} : state;
     case 'begin-navigation': return {...state, navigationCounter: state.navigationCounter + 1};
-    case 'heartbeat-configured': return {...state, outstandingHeartbeats: 0};
-    case 'heartbeat-tick': return {...state, outstandingHeartbeats: state.outstandingHeartbeats + 1};
-    case 'heartbeat-reply': return {...state, outstandingHeartbeats: state.outstandingHeartbeats - 1};
+    case 'heartbeat-configured': return {...state, outstandingHeartbeats: 0, repolled: false, heartbeatInFlight: null};
+    // A reply starts the count again. It never goes below zero: a reply to a
+    // heartbeat that was written off changes nothing more.
+    case 'heartbeat-reply':
+      return {...state, outstandingHeartbeats: Math.max(0, (state.outstandingHeartbeats || 0) - 1), repolled: false};
     default: return state;
   }
+}
+
+/**
+ * One tick of the heartbeat. `limit` is the heartbeat limit (0 for none),
+ * `longPolling` the transport, `reloading` whether a framework reload has
+ * started; then nothing goes out. On long polling a heartbeat whose request
+ * still has no answer when the next one is due could not be sent: it is a
+ * failed poll (`failed`), not an unanswered heartbeat. Below the limit a
+ * heartbeat is sent (`seq` names a long-polling one). At the limit a
+ * long-polling page polls again once and reloads at the next limit: a dead
+ * link shows the notice, and a dead input ends in a reload. A WebSocket page
+ * reloads at the limit. Decided by the user on 2026-11-22, after the review of
+ * PR 42.
+ */
+export function heartbeatTick(state, limit, longPolling, reloading) {
+  if (reloading) return {state, command: 'skip', failed: false};
+  const failed = longPolling && state.heartbeatInFlight !== null;
+  const counted = failed ?
+    {...state, heartbeatInFlight: null, outstandingHeartbeats: Math.max(0, state.outstandingHeartbeats - 1)} : state;
+  if (!(limit > 0)) return heartbeatSent(counted, longPolling, failed);
+  const outstanding = counted.outstandingHeartbeats + 1;
+  if (outstanding < limit) return heartbeatSent({...counted, outstandingHeartbeats: outstanding}, longPolling, failed);
+  if (longPolling && !counted.repolled) return {state: {...counted, outstandingHeartbeats: 0, repolled: true}, command: 'repoll', failed};
+  return {state: {...counted, outstandingHeartbeats: 0}, command: 'reload', failed};
+}
+
+function heartbeatSent(state, longPolling, failed) {
+  if (!longPolling) return {state, command: 'send', failed, seq: null};
+  const seq = state.heartbeatSeq + 1;
+  return {state: {...state, heartbeatSeq: seq, heartbeatInFlight: seq}, command: 'send', failed, seq};
+}
+
+/**
+ * The request of long-polling heartbeat `seq` has its answer. One that the
+ * server did not take is a failed poll and is not counted as unanswered; an
+ * answer of a heartbeat that was written off changes nothing.
+ */
+export function heartbeatAnswer(state, seq, sent) {
+  if (state.heartbeatInFlight !== seq) return {state, failed: false};
+  const next = {...state, heartbeatInFlight: null};
+  return sent ? {state: next, failed: false} :
+    {state: {...next, outstandingHeartbeats: Math.max(0, next.outstandingHeartbeats - 1)}, failed: true};
 }
 
 /** This decision does not allocate a transition for ordinary user callbacks. */

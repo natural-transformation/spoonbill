@@ -88,14 +88,16 @@ object RendererAcceptanceBrowserFixture {
   final class Run(val scenario: String, val presetIds: Boolean, val fault: String)(implicit ec: ExecutionContext) {
     val counters = new RendererAcceptanceDocuments.Counters
     val storage  = new ForgettingStorage
-    private val resume = scenario == "resume"
+    private val resume = scenario == "resume" || scenario == "resume-heartbeat"
     val service = spoonbillService(
       SpoonbillServiceConfig[Future, Int, Any](
         stateLoader = StateLoader.default(0),
         document = RendererAcceptanceDocuments.document(scenario, counters),
         router = if (resume) resumeRouter else Router.empty[Future, Int],
         presetIds = presetIds,
-        heartbeatInterval = 1.minute,
+        // `resume-heartbeat` runs the heartbeat of long polling: a tick every
+        // 500 ms and the default limit of two.
+        heartbeatInterval = if (scenario == "resume-heartbeat") 500.millis else 1.minute,
         // A short idle timeout lets a case end a view by blocking its polls.
         // A poll waits half of it.
         sessionIdleTimeout = if (resume) 6.seconds else 60.seconds,

@@ -76,12 +76,35 @@ export function frameKind(body) {
  */
 export function pollAnswer(state, status, frameHeader, domHeader, kind) {
   if (status === 204) return 'empty';
-  if (status === 0 || (status >= 500 && status < 600)) return 'failed';
+  if (requestFailed(status)) return 'failed';
   if (status !== 200 || kind === null) return 'reload';
   const frame = headerCount(frameHeader), dom = headerCount(domHeader);
   if (frame === null || dom === null) return 'reload';
   if (frame !== state.seen + 1 || dom !== state.dom + (kind === 'dom' ? 1 : 0)) return 'reload';
   return 'apply';
+}
+
+/**
+ * A request that did not reach the server, or that it asks to repeat later:
+ * no answer (status 0), a `5xx`, `408` and `429`. A poll so answered fails and
+ * is sent again after the back-off; it does not reload the page.
+ */
+function requestFailed(status) {
+  return status === 0 || status === 408 || status === 429 || (status >= 500 && status < 600);
+}
+
+/** Whether the server took a message, by the status of its request. */
+export const messageSent = status => !requestFailed(status);
+
+/**
+ * The deadline of a poll in milliseconds: the poll wait that the page
+ * configuration names (`lpw`), plus a margin of at most five seconds and at
+ * most half the wait. The server bounds the wait to half the idle timeout, so
+ * the deadline stays below the idle timeout, and below what a timer can hold.
+ */
+export function pollDeadline(wait) {
+  const lpw = Number.isFinite(wait) && wait > 0 ? wait : 15000;
+  return Math.min(lpw + Math.min(5000, Math.floor(lpw / 2)), 2147483647);
 }
 
 /**

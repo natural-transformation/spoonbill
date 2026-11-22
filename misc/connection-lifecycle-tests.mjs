@@ -316,7 +316,7 @@ test('a second long-polling transport of the document keeps its cursor, and the 
   assert.equal(query(second.url).seen, '2');
   assert.equal(query(second.url).page, query(first.url).page);
   // The deadline of the first transport is cleared, and a late run of it counts nothing.
-  const late = [...env.timers.values()].filter(entry => entry.delay === 6000);
+  const late = [...env.timers.values()].filter(entry => entry.delay === 1500);
   assert.equal(late.length, 1, 'only the deadline of the current poll is set');
   first.respond(0);
   assert.equal(connection.linkUp, true);
@@ -393,7 +393,7 @@ test('a frame that the bridge cannot apply makes the page reload, and it polls n
 test('a poll that is not answered by its deadline fails, and its late answer changes nothing', () => environment(async env => {
   const {events} = await polling(env, {lpw: 1000});
   const hanging = env.polls()[0];
-  runTimer(env, 6000);
+  runTimer(env, 1500);
   assert.equal(hanging.aborted, true);
   runTimer(env, 200);
   assert.equal(query(env.polls()[1].url).seen, '0');

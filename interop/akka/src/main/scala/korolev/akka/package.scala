@@ -63,8 +63,14 @@ package object akka {
         else config.copy(reporter = new LoggingReporter(actorSystem))
 
       val spoonbillServer = spoonbill.server.spoonbillService(actualConfig)
+      // A long poll waits on the server for its frame; its request outlasts
+      // that wait, so that a quiet poll gets its 204 and not the 503 of the
+      // request timeout (20 s by default).
+      val pollRequestTimeout = spoonbill.server.internal.services.PollAdmissionMachine
+        .pollWaitMillis(actualConfig.longPollingWait.toMillis, actualConfig.sessionIdleTimeout.toMillis)
+        .millis + 10.seconds
       val wsRouter      = configureWsRoute(spoonbillServer, akkaHttpConfig, actualConfig.reporter, wsLoggingEnabled)
-      val httpRoute     = configureHttpRoute(spoonbillServer)
+      val httpRoute     = configureHttpRoute(spoonbillServer, pollRequestTimeout)
 
       wsRouter ~ httpRoute
   }
@@ -337,23 +343,28 @@ package object akka {
   }
 
   private def configureHttpRoute[F[_]](
-    spoonbillServer: SpoonbillService[F]
+    spoonbillServer: SpoonbillService[F],
+    pollRequestTimeout: FiniteDuration
   )(implicit mat: Materializer, async: Effect[F], ec: ExecutionContext): Route =
     extractUnmatchedPath { path =>
-      extractRequest { request =>
-        val sink = Sink.spoonbillStream[F, Bytes]
-        val body =
-          if (request.method == HttpMethods.GET) {
-            Stream.empty[F, Bytes]
-          } else {
-            request.entity.dataBytes
-              .map(Bytes.wrap(_))
-              .toMat(sink)(Keep.right)
-              .run()
-          }
-        val spoonbillRequest = mkSpoonbillRequest(request, path.toString, body)
-        val responseF      = handleHttpResponse(spoonbillServer, spoonbillRequest)
-        complete(responseF)
+      // A long-polling subscribe waits on the server for its frame.
+      val polls = path.toString.contains("/bridge/long-polling/") && path.toString.endsWith("/subscribe")
+      (if (polls) withRequestTimeout(pollRequestTimeout) else pass) {
+        extractRequest { request =>
+          val sink = Sink.spoonbillStream[F, Bytes]
+          val body =
+            if (request.method == HttpMethods.GET) {
+              Stream.empty[F, Bytes]
+            } else {
+              request.entity.dataBytes
+                .map(Bytes.wrap(_))
+                .toMat(sink)(Keep.right)
+                .run()
+            }
+          val spoonbillRequest = mkSpoonbillRequest(request, path.toString, body)
+          val responseF        = handleHttpResponse(spoonbillServer, spoonbillRequest)
+          complete(responseF)
+        }
       }
     }
 

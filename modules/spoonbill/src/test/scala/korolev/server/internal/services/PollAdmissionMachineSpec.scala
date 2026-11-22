@@ -78,4 +78,18 @@ class PollAdmissionMachineSpec extends AnyFlatSpec with Matchers {
     // Not changed: two WebSockets of one session share a view, as before.
     output(Transport.WebSocket, built = false, Transport.WebSocket) shouldBe Output.Shared
   }
+
+  "The wait of a poll" should "be its setting, at most half the idle timeout, and a sound timer" in {
+    // (setting, idle timeout) -> wait, in milliseconds
+    val table = List(
+      (15000L, 60000L)                  -> 15000L, // the defaults
+      (15000L, 6000L)                   -> 3000L,  // a short idle timeout: half of it
+      (15000L, 100L * 86400000L)        -> 15000L, // a very long idle timeout: the setting
+      (100L * 86400000L, 400L * 86400000L) -> 600000L, // never more than 10 minutes
+      (0L, 60000L)                      -> 100L,   // never less than 100 ms
+      (15000L, 100L)                    -> 100L
+    )
+    for (((setting, idle), wait) <- table)
+      withClue((setting, idle))(PollAdmissionMachine.pollWaitMillis(setting, idle) shouldBe wait)
+  }
 }

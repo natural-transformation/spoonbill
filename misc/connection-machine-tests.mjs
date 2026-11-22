@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connectio
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, notesLongPolling,
-  frameKind, afterFrame, reloadStarted, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
+  frameKind, afterFrame, reloadStarted, messageSent, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
@@ -234,4 +234,21 @@ test('the counts belong to the document: a new transport keeps them, and a long-
   assert.deepEqual([polling.seen, polling.dom, polling.failures], [5, 2, 0]);
   const socket = step(counted, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
   assert.deepEqual([socket.seen, socket.dom, socket.failures], [5, 2, 1]);
+});
+
+test('408 and 429 are failed polls, and a message is sent unless its request failed so', () => {
+  const state = initialConnection();
+  for (const status of [408, 429])
+    assert.equal(pollAnswer(state, status, null, null, null), 'failed', String(status));
+  for (const status of [0, 408, 429, 500, 503]) assert.equal(messageSent(status), false, String(status));
+  for (const status of [200, 204, 400, 410]) assert.equal(messageSent(status), true, String(status));
+});
+
+test('the deadline of a poll is its wait and a margin, below twice the wait, and a sound timer', () => {
+  assert.equal(pollDeadline(15000), 20000);
+  // A short idle timeout: the wait is half of it, and the deadline stays below the idle timeout.
+  assert.equal(pollDeadline(3000), 4500);
+  assert.equal(pollDeadline(undefined), pollDeadline(15000));
+  assert.equal(pollDeadline(Number.NaN), pollDeadline(15000));
+  assert.ok(pollDeadline(1e12) <= 2147483647);
 });

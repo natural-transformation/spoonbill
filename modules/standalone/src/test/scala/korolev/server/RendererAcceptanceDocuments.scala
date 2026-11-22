@@ -20,7 +20,7 @@ import spoonbill.state.javaSerialization.*
  */
 object RendererAcceptanceDocuments {
 
-  val scenarios: Set[String] = Set("long-names", "collisions", "encoding", "first-patch", "resume")
+  val scenarios: Set[String] = Set("long-names", "collisions", "encoding", "first-patch", "resume", "resume-heartbeat")
 
   /** Handler invocations observed by the service; read through the status control. */
   final class Counters {
@@ -239,6 +239,8 @@ object RendererAcceptanceDocuments {
       case "encoding"    => encoding(stage)
       case "first-patch" => firstPatch(stage)
       case "resume"      => resume(run, stage)
+      // The same page, with a short heartbeat (see the fixture).
+      case "resume-heartbeat" => resume(run, stage)
     }
     frame(run, stage, content)
   }

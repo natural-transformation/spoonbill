@@ -1,15 +1,13 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, notesLongPolling, frameKind, afterFrame,
-  reloadStarted} from './connection-machine.js';
+  reloadStarted, messageSent, pollDeadline} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
 // The tab remembers its last framework reload and, after a fallback, its transport.
 const RELOAD_KEY = 'spoonbill:reload';
 const TRANSPORT_KEY = 'spoonbill:transport';
-// A poll that the server has not answered by its wait limit and this margin has failed.
-const POLL_DEADLINE_MARGIN = 5000;
 
 /** The sessionStorage of this tab, or null when the browser has none or refuses it. */
 function sessionStore() {
@@ -47,9 +45,11 @@ export class Connection {
     this._lifecycle = initialConnection();
     // The page id names this document for its whole life.
     this._lifecycle = connectionStep(this._lifecycle, {type: 'page', page: randomPageId()});
-    this._pollDeadline = (options && options['lpw'] ? Number(options['lpw']) : 30000) + POLL_DEADLINE_MARGIN;
+    this._pollDeadline = pollDeadline(options && options['lpw'] ? Number(options['lpw']) : undefined);
     /** Polls again at once, giving up the poll that waits. Only long polling has one. */
     this._repoll = () => {};
+    // The long-polling transport counts a message that could not be sent as a failed poll.
+    this._linkFailed = () => {};
     // The transport that is replaced gives up its poll and its deadline.
     this._retire = () => {};
     this._sessionId = sessionId;
@@ -119,7 +119,8 @@ export class Connection {
           this._lifecycle = connectionStep(this._lifecycle, {type: 'prefer-long-polling'});
       } catch (_) {}
     }
-    /** @type {?function(string)} */
+    // On long polling a send can say whether the server took the message.
+    /** @type {?function(string, function(boolean)=): *} */
     this._send = null;
     this._clearPendingSends = () => {};
     this._dispatcher = window.document.createDocumentFragment();
@@ -416,22 +417,31 @@ export class Connection {
       this._onReady();
     };
 
-    const failed = () => {
-      // A transport that was replaced counts nothing.
-      if (!isCurrent()) return;
+    // The link is interrupted: the notice shows from the second failure in a row.
+    const linkFailed = () => {
       const shown = noticeShown(this._lifecycle);
       this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-failed'});
       if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
+    };
+
+    const failed = () => {
+      // A transport that was replaced counts nothing.
+      if (!isCurrent()) return;
+      linkFailed();
       setTimeout(poll, pollDelay(this._lifecycle));
     };
 
     /** @type {function(string)} */
-    let publish = (data) => {
-      if (!isCurrent()) return;
+    let publish = (data, onAnswer) => {
+      if (!isCurrent()) return false;
 
       let onReadyStateChange = (event) => {
         let request = event.target;
-        if (!isCurrent() || request.readyState !== 4)
+        if (request.readyState !== 4)
+          return;
+        // Whether the server took the message, for a heartbeat.
+        if (onAnswer) onAnswer(messageSent(request.status));
+        if (!isCurrent())
           return;
         switch (request.status) {
           case 0:
@@ -447,10 +457,12 @@ export class Connection {
       request.setRequestHeader("Content-Type", "application/json");
       request.addEventListener('readystatechange', onReadyStateChange);
       request.send(data);
+      return true;
     }
 
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
+    this._linkFailed = () => { if (isCurrent()) linkFailed(); };
     this._retire = () => {
       if (pending === null) return;
       const request = pending;
@@ -648,10 +660,19 @@ export class Connection {
 
   /**
    * @param {string} data
+   * @param {function(boolean)} [onAnswer] on long polling: whether the server took it
+   * @return {boolean} whether a transport took the message
    */
-  send(data) {
-    if (!authenticationPending(this._lifecycle) && this._send) this._send(data);
+  send(data, onAnswer) {
+    if (authenticationPending(this._lifecycle) || !this._send) return false;
+    return Boolean(this._send(data, onAnswer));
   }
+
+  /** A message could not be sent: on long polling that is a failed poll. */
+  messageFailed() { this._linkFailed(); }
+
+  /** A framework reload has started; nothing is sent any more. */
+  get reloadStarted() { return reloadStarted(this._lifecycle); }
 
   /** Deliver only an opaque completion handle over HTTP, then rebind the same view. */
   async recoverAuthentication(ceremonyId) {
