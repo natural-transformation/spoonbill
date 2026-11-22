@@ -541,6 +541,10 @@ final class Frontend[F[_]: Effect](
         // activity watcher and raw connection alive. Output EOF drives the
         // transport release and the session's raw-input retirement signal.
         close().recover { case NonFatal(_) => () }.flatMap(_ => Effect[F].fail(error))
+      // A message that the view cannot read fails every lane. A view that
+      // resumes closes then, for the same reason.
+      case error if Connection.closesOnFailedInput(guarded, resumes) =>
+        close().recover { case NonFatal(_) => () }.flatMap(_ => Effect[F].fail(error))
     }
     def cancel(): F[Unit] = source.cancel()
   }
@@ -622,7 +626,8 @@ final class Frontend[F[_]: Effect](
       Effect[F]
         .delay(Frontend.decodeDomEvent(args).copy(renderRevision = revision, sensitiveDeparture = departure))
         .recoverF { case error =>
-          if (guarded) close().flatMap(_ => Effect[F].fail(error)) else Effect[F].fail(error)
+          if (Connection.closesOnFailedInput(guarded, resumes)) close().flatMap(_ => Effect[F].fail(error))
+          else Effect[F].fail(error)
         }
     }
 
@@ -638,7 +643,8 @@ final class Frontend[F[_]: Effect](
         sensitiveRuntime.clearAll(spoonbill.sensitive.ClearReason.Navigation).as(message)
       }.recoverF { case _ =>
         val error = new IllegalArgumentException("Invalid browser history message")
-        if (guarded) close().flatMap(_ => Effect[F].fail(error)) else Effect[F].fail(error)
+        if (Connection.closesOnFailedInput(guarded, resumes)) close().flatMap(_ => Effect[F].fail(error))
+        else Effect[F].fail(error)
       }
     }
 
@@ -1162,7 +1168,8 @@ final class Frontend[F[_]: Effect](
     case Incoming(callbackType, args, _, _) =>
       Effect[F].fail(UnknownCallbackException(callbackType, "<redacted>"))
   }.recoverF { case error =>
-    if (guarded) close().flatMap(_ => Effect[F].fail(error)) else Effect[F].fail(error)
+    if (Connection.closesOnFailedInput(guarded, resumes)) close().flatMap(_ => Effect[F].fail(error))
+    else Effect[F].fail(error)
   }.runAsyncForget
 
   private def departureCounter(args: String): Long = {

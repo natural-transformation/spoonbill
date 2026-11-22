@@ -271,6 +271,32 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     read(await(poll)).frame shouldBe Some(seen + 1L)
   }
 
+  "A view that a poll built" should "be retired as soon as its frontend closes, not by its idle timer" in {
+    val f                     = new LongPollingFixture()
+    val (page, seen, _, poll) = start(f)
+    // The frontend closes by itself: a routing overflow, a revision that the
+    // view never published, an output failure.
+    val app    = await(f.sessions.getApp(page.qsid)).getOrElse(fail("No view"))
+    val closed = app.frontend.close()
+    f.worker.drain()
+    await(closed)
+    read(await(poll)).body shouldBe "[1]"
+    // Without moving the clock: the view and its session are gone.
+    f.hasView(page) shouldBe false
+  }
+
+  it should "close when its input fails, so that its page reloads and does not stay deaf" in {
+    val f                     = new LongPollingFixture()
+    val (page, seen, _, poll) = start(f)
+    // An envelope that names another page: the view cannot read it.
+    val stranger = UUID.randomUUID()
+    await(f.publish(page, seen, s"""[7,"$stranger:0:0:0:x:click"]""")).status.code shouldBe 200
+    f.worker.drain()
+    withClue("the poll that waits is answered at once: ")(poll.isCompleted shouldBe true)
+    read(await(poll)).body shouldBe "[1]"
+    f.hasView(page) shouldBe false
+  }
+
   "A render" should "make a fresh-page record, and an attach makes none" in {
     val f = new LongPollingFixture()
     f.sessions.freshPageRecords shouldBe 0
@@ -332,7 +358,7 @@ class LongPollingDeliveryInterpreterSpec extends AnyFlatSpec with Matchers {
     val time   = new LongPollingFixture.ManualTime(worker)
     val frames = Queue[Future, Frontend.OutgoingFrame]()
     val delivery = new LongPollingDelivery[Future](5.seconds, time.poll, Reporter.PrintReporter)
-    await(delivery.own(frames.stream))
+    await(delivery.own(frames.stream, () => Future.unit))
     def poll(seen: Long): Future[PollAnswer] = { val answer = delivery.poll(seen); worker.drain(); answer }
   }
 
@@ -400,7 +426,7 @@ class LongPollingDeliveryInterpreterSpec extends AnyFlatSpec with Matchers {
       }
       val frames   = Queue[Future, Frontend.OutgoingFrame]()
       val delivery = new LongPollingDelivery[Future](30.seconds, timing, Reporter.PrintReporter)
-      await(delivery.own(frames.stream))
+      await(delivery.own(frames.stream, () => Future.unit))
       val polls = 20000
       for (seen <- 0 until polls) {
         val answer = delivery.poll(seen.toLong)

@@ -126,4 +126,16 @@ final class FrontendConnectionMachineSpec extends AnyFlatSpec with Matchers {
     for (((resumes, browserInput), checked) <- table)
       withClue((resumes, browserInput))(checkedBeforeRun(resumes, browserInput) shouldBe checked)
   }
+
+  it should "close a view whose input fails when it is guarded or resumes, and no other" in {
+    // (guarded, resumes) -> the view closes when its input fails
+    val table = List(
+      (true, false)  -> true,  // a guarded view, as on main
+      (false, true)  -> true,  // a view of a long-polling entry: else it stays deaf while its polls keep it
+      (false, false) -> false, // an unguarded WebSocket view keeps the failure in its input, as on main
+      (true, true)   -> true
+    )
+    for (((guarded, resumes), closes) <- table)
+      withClue((guarded, resumes))(closesOnFailedInput(guarded, resumes) shouldBe closes)
+  }
 }

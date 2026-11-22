@@ -981,8 +981,11 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       PollAdmissionMachine.output(owner, built, transport) match {
         case PollAdmissionMachine.Output.Owns if transport == PollAdmissionMachine.Transport.Poll =>
           val frames = app.frontend.outgoingFrames
+          // The delivery runs it when the frames end. The input is cancelled
+          // through its managed stream: a view whose input failed reads it no
+          // more, so only that cancel tells the watcher, and the view retires.
           val release = () =>
-            incomingStream.cancel().recover { case _ => () } *>
+            managedIncomingStream.cancel().recover { case _ => () } *>
               frames.cancel().recover { case _ => () }
           Effect[F].pure(SessionStart.Owned(frames, release))
         case PollAdmissionMachine.Output.Owns | PollAdmissionMachine.Output.Shared =>

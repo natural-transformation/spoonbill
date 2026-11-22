@@ -123,8 +123,8 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
               Some(created.delivery.progress)
             )
             .flatMap {
-              case SessionStart.Owned(frames, _) => created.delivery.own(frames).map(_ => FirstAttach.Owns)
-              case _                             => leave().map(_ => FirstAttach.Gone)
+              case SessionStart.Owned(frames, release) => created.delivery.own(frames, release).map(_ => FirstAttach.Owns)
+              case _                                   => leave().map(_ => FirstAttach.Gone)
             }
             .recoverF { case error => leave().flatMap(_ => Effect[F].fail[FirstAttach](error)) }
       }

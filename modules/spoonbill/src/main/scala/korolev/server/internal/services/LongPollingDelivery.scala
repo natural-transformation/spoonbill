@@ -12,9 +12,9 @@ import spoonbill.internal.Frontend
  *
  * The machine decides. This class keeps the handles: the frame that was
  * handed out last, the completion handle of each poll that waits, the timer of
- * each such poll, and the frames of the view once the entry owns one. They live
- * in one cell with the machine state and change in the same step, so no handle
- * outlives the poll that the machine settled. A frame is pulled from the view
+ * each such poll, and the frames and the release of the view once the entry
+ * owns one. They live in one cell with the machine state and change in the
+ * same step, so no handle outlives the poll that the machine settled. A frame is pulled from the view
  * only when the machine asks for it, so the view still drops a browser command
  * that expires while it waits in its queue.
  *
@@ -41,10 +41,11 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
     state: PollDeliveryMachine.State[Long],
     frame: Option[Frontend.OutgoingFrame],
     waiters: Map[Long, Waiter],
-    frames: Option[Frames]
+    frames: Option[Frames],
+    release: Option[() => F[Unit]]
   )
 
-  private val held = new StateCell(Held(PollDeliveryMachine.initial[Long], None, Map.empty, None))
+  private val held = new StateCell(Held(PollDeliveryMachine.initial[Long], None, Map.empty, None, None))
   private val ids  = new AtomicLong()
 
   // One element for each poll that is progress: it confirmed a frame, or the
@@ -54,13 +55,17 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
 
   /**
    * The entry owns the view. Its frames come from `frames` from now on, and a
-   * poll that joined the first attach gets its frame now.
+   * poll that joined the first attach gets its frame now. `release` retires the
+   * view; it runs once, when the frames end.
    */
-  def own(frames: Frames): F[Unit] = Effect[F].delay {
+  def own(frames: Frames, release: () => F[Unit]): F[Unit] = Effect[F].delay {
     val pull = held.modify { current =>
       val (next, result) = PollDeliveryMachine.step(current.state, Event.Owned())
       val owns           = next.owned && !current.state.owned
-      (current.copy(state = next, frames = if (owns) Some(frames) else current.frames), result == Result.Pull[Long]())
+      val owned =
+        if (owns) current.copy(state = next, frames = Some(frames), release = Some(release))
+        else current.copy(state = next)
+      (owned, result == Result.Pull[Long]())
     }
     if (pull) startPull(frames)
   }
@@ -90,7 +95,7 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
         }
         // A frame that the page confirmed is not kept any more.
         val frame = if (next.kept.isEmpty) None else current.frame
-        (Held(next, frame, waiters, current.frames), (result, frame, current.frames))
+        (current.copy(state = next, frame = frame, waiters = waiters), (result, frame, current.frames))
       }
       result match {
         case Result.Reload() => answer(Right(PollAnswer.Reload))
@@ -123,7 +128,7 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
       PollDeliveryMachine.step(current.state, Event.Pulled(kind(frame.kind))) match {
         case (next, Result.Answered(waiting, number, dom)) =>
           val waiters = waiting.flatMap(current.waiters.get)
-          (Held(next, Some(frame), current.waiters -- waiting, current.frames), waiters.map((_, number, dom)))
+          (current.copy(state = next, frame = Some(frame), waiters = current.waiters -- waiting), waiters.map((_, number, dom)))
         case _ => (current, Vector.empty)
       }
     }
@@ -134,14 +139,24 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
   }
 
   private def ended(): Unit = {
-    val reloaded = held.modify { current =>
+    val (reloaded, release) = held.modify { current =>
       val (next, result) = PollDeliveryMachine.step(current.state, Event.Ended())
       val waiting = result match {
         case Result.Reloaded(ids) => ids
         case _                    => Vector.empty
       }
-      (Held(next, None, current.waiters -- waiting, current.frames), waiting.flatMap(current.waiters.get))
+      // The release leaves the cell in this step, so it runs once.
+      (
+        current.copy(state = next, frame = None, waiters = current.waiters -- waiting, release = None),
+        (waiting.flatMap(current.waiters.get), current.release)
+      )
     }
+    // The view reads no input and sends no frame any more: it retires now, as
+    // on a WebSocket whose output ended, and not after its idle timeout.
+    release.foreach(retire => Effect[F].runAsync(retire()) {
+      case Left(error) => reporter.error("Unable to retire a long-polling view whose frames ended", error)
+      case Right(_)    => ()
+    })
     reloaded.foreach { waiter =>
       waiter.timer.foreach(_.unsafeCancel())
       waiter.answer(Right(PollAnswer.Reload))
@@ -156,7 +171,7 @@ private[services] final class LongPollingDelivery[F[_]: Effect](
       // The handles of a poll that no longer waits leave with it.
       val settled = if (next.waiting.contains(id)) None else current.waiters.get(id)
       val waiters = if (settled.isEmpty) current.waiters else current.waiters - id
-      (Held(next, current.frame, waiters, current.frames), (settled, result == Result.NoContent[Long]()))
+      (current.copy(state = next, waiters = waiters), (settled, result == Result.NoContent[Long]()))
     }
     settled.foreach { waiter =>
       waiter.timer.foreach(_.unsafeCancel())
