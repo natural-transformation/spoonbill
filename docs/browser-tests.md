@@ -160,6 +160,10 @@ set `SPOONBILL_LP_CASES` (keys from the table, comma-separated),
 A document that the test fulfils with `route.fulfill` loses its cookie and
 its `sessionStorage` in WebKit, so the test never fulfils a document: to
 remove a state before the page connects, it holds the client script instead.
+The server sends the event counter of a handled click in a frame after the
+patch, and drops a click that carries an old counter, on every transport. A
+case that clicks one button twice therefore waits until the page has applied
+that frame; without the wait the second click raced it on a fast runner.
 
 ## Public authentication example and delivery loss
 

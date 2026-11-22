@@ -85,14 +85,29 @@ async function open(browser, path, {polling = true, beforeLoad} = {}) {
 const stage = page => page.locator('#resume-stage').textContent();
 const status = context => control(context, 'status');
 
+/**
+ * The server sends the event counter of a handled click in a frame of its
+ * own, after the patch. A second click of that button before the page has
+ * applied it carries the old counter, and the server drops it as a repeat, as
+ * on every transport. So a case that clicks a button twice waits until the
+ * page has applied a counter frame answered after `since`.
+ */
+async function counterApplied(state, since) {
+  await waitFor(() => state.answers.slice(since).some(answer =>
+    answer.body.startsWith('[0,') && state.polled.some(seen => seen >= Number(answer.frame))),
+  'The event counter of the click never reached the page');
+}
+
 /** A poll fails: the page stays ready, keeps its bridge, and gets the lost frame and the frames after it. */
 async function lostFrame(browser) {
   const {context, page, state} = await open(browser, '/orders/0');
   try {
     state.dropNextDom = true;
+    const since = state.answers.length;
     await page.click('#resume-next');
     await waitFor(async () => (await stage(page)) === 'stage 1', 'The lost frame never arrived');
     assert.equal(state.dropped, true, 'The DOM frame was not dropped');
+    await counterApplied(state, since);
     await page.click('#resume-next');
     await waitFor(async () => (await stage(page)) === 'stage 2', 'The frame after it never arrived');
     assert.equal(await page.evaluate(() => window.__ready), 1, 'The bridge was built again');
@@ -155,8 +170,10 @@ async function keptInput(browser) {
 async function backDuringPatch(browser) {
   const {context, page, state} = await open(browser, '/orders/0');
   try {
+    const since = state.answers.length;
     await page.click('#resume-next');
     await waitFor(async () => (await stage(page)) === 'stage 1' && page.url().endsWith('/orders/1'), 'Stage 1 never arrived');
+    await counterApplied(state, since);
     let release;
     state.hold = new Promise(resolve => { release = resolve; });
     await page.click('#resume-next');
