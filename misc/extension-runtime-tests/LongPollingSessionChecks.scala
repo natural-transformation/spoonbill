@@ -54,7 +54,11 @@ object LongPollingSessionChecks {
    * @param storage
    *   the state storage, when a check holds it
    */
-  private final class Server[F[_]: Effect](setup: () => F[Unit], storage: Option[StateStorage[F, Int]] = None)(implicit
+  private final class Server[F[_]: Effect](
+    setup: () => F[Unit],
+    storage: Option[StateStorage[F, Int]] = None,
+    clock: () => Long = () => System.nanoTime()
+  )(implicit
     ec: ExecutionContext
   ) {
     private val F       = Effect[F]
@@ -70,7 +74,7 @@ object LongPollingSessionChecks {
         F.map(F.flatMap(F.delay(built.incrementAndGet()))(_ => setup()))(_ => Extension.Handlers[F, Int, Any]())
       })
     )
-    val sessions  = new SessionsService(config, new PageService(config))
+    val sessions  = new SessionsService(config, new PageService(config), nanoTime = clock)
     val messaging = new MessagingService[F](quiet, null.asInstanceOf[CommonService[F]], sessions, None, 30.seconds)
     val qsid      = Qsid("long-polling-checks", UUID.randomUUID().toString)
     val page      = UUID.randomUUID()
@@ -78,6 +82,7 @@ object LongPollingSessionChecks {
     private def request(path: String): Request[Unit] =
       Request(Request.Method.Get, PathAndQuery.fromString(path), Nil, None, ())
     def render(): F[Int] = sessions.initAppState(qsid, request("/"))
+    def render(other: Qsid): F[Int] = sessions.initAppState(other, request("/"))
     def poll(seen: Long): F[HttpResponse[F]] =
       messaging.longPollingSubscribe(qsid, request(s"/bridge/long-polling/x/subscribe?page=$page&seen=$seen"))
     def heartbeat(seen: Long): F[HttpResponse[F]] =
@@ -182,6 +187,54 @@ object LongPollingSessionChecks {
       }
     } finally {
       Try(run(release.putEither((), Right(()), silent = true)))
+      ()
+    }
+  }
+
+  /**
+   * A render is cancelled while its cleanup removes the state of a page that
+   * expired. The cleanup runs to its end: the record of that page is not left
+   * releasing, and no state stays live without a record or a view.
+   */
+  def cancelledCleanup[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F       = Effect[F]
+    val now     = new AtomicInteger()
+    val entered = new CountDownLatch(1)
+    val release = new CountDownLatch(1)
+    val removed = new AtomicInteger()
+    @volatile var holding = false
+    val local = new StateStorage[F, Int] {
+      private val underlying                                       = StateStorage[F, Int]()
+      override private[spoonbill] def localToProcess: Boolean      = true
+      def exists(device: String, session: String): F[Boolean]      = underlying.exists(device, session)
+      def get(device: String, session: String): F[StateManager[F]] = underlying.get(device, session)
+      def create(device: String, session: String, state: Int): F[StateManager[F]] = underlying.create(device, session, state)
+      def remove(device: String, session: String): Unit = {
+        if (holding) { entered.countDown(); release.await(10, TimeUnit.SECONDS) }
+        removed.incrementAndGet()
+        underlying.remove(device, session)
+      }
+    }
+    // One second of the clock for each step; the lifetime is the idle timeout, 60 s.
+    val server = new Server[F](() => F.unit, Some(local), () => now.get().toLong * 1000000000L)
+    run(server.render())
+    now.set(61)
+    holding = true
+    val later  = Qsid("long-polling-checks", UUID.randomUUID().toString)
+    val cancel = start(F.map(server.render(later))(_ => ()))
+    try {
+      assert(entered.await(10, TimeUnit.SECONDS), "The cleanup never removed")
+      val cancelling = request(cancel)
+      release.countDown()
+      Await.result(cancelling, 10.seconds)
+      holding = false
+      assert(removed.get() == 1, s"Removals: ${removed.get()}")
+      // The expired record ended; the cancelled render kept its own record.
+      assert(server.sessions.freshPageRecords == 1, s"Records: ${server.sessions.freshPageRecords}")
+      run(server.render(Qsid("long-polling-checks", UUID.randomUUID().toString)))
+      assert(server.sessions.freshPageRecords == 2, s"Records after a later render: ${server.sessions.freshPageRecords}")
+    } finally {
+      release.countDown()
       ()
     }
   }

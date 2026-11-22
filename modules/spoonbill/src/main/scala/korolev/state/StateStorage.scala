@@ -46,6 +46,16 @@ abstract class StateStorage[F[_]: Effect, S] {
    * Retrying a mark that already took effect must be safe.
    */
   def remove(deviceId: DeviceId, sessionId: SessionId): Unit
+
+  /**
+   * Whether this storage is local to this process: no other process can hold a
+   * view over one of its states, and `remove` has done its work when it
+   * returns. Only such a storage loses the state of an unguarded page that
+   * nothing has claimed. A storage that an application writes is not local,
+   * and a storage over a repository is not either: its `remove` returns when the
+   * deletion has only started, and another server can hold the view.
+   */
+  private[spoonbill] def localToProcess: Boolean = false
 }
 
 object StateStorage {
@@ -55,6 +65,10 @@ object StateStorage {
       extends StateStorage[F, S] {
 
     private def usesDevMode: Boolean = allowDevMode && DevMode.isActive
+
+    // The states are in the memory of this process, and `remove` moves a state
+    // into the for-deletion cache before it returns.
+    override private[spoonbill] def localToProcess: Boolean = true
 
     private val cache = TrieMap.empty[String, StateManager[F]]
     private val forDeletionCache = {

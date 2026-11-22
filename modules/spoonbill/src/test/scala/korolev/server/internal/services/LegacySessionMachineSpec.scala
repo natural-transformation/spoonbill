@@ -68,13 +68,21 @@ class LegacySessionMachineSpec extends AnyFlatSpec with Matchers {
   }
 
   it should "also be one when the attach failed before it had a view" in {
-    val (done, command) = step(State(), Event.NothingBuilt)
+    val (done, command) = step(State(), Event.NothingBuilt(removesState = false))
     command shouldBe Command.None
     done.retirement shouldBe Retirement.Done(Cause.Abandoned)
     step(done, Event.Published)._2 shouldBe Command.Forget
     // With a view there is a retirement to run, and this event changes nothing.
     val running = step(State(), Event.Retire(Cause.Abandoned))._1
-    step(running, Event.NothingBuilt) shouldBe (running, Command.None)
+    for (removes <- List(false, true)) step(running, Event.NothingBuilt(removes)) shouldBe (running, Command.None)
+  }
+
+  it should "remove the state of an attach that failed before it had a view, in a local storage only" in {
+    val (done, command) = step(State(), Event.NothingBuilt(removesState = true))
+    command shouldBe Command.RemoveState
+    done.retirement shouldBe Retirement.Done(Cause.Abandoned)
+    // Once only: a second report changes nothing.
+    step(done, Event.NothingBuilt(removesState = true)) shouldBe (done, Command.None)
   }
 
   "An attach that did not roll back" should "leave the registry alone when a failure is published" in {

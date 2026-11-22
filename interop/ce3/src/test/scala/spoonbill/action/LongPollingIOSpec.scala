@@ -31,4 +31,8 @@ class LongPollingIOSpec extends AnyFlatSpec {
   it should "not hang after a render that was cancelled between its record and its state" in {
     LongPollingSessionChecks.cancelledRender[IO](cancelable)
   }
+
+  it should "finish the cleanup of a render that was cancelled while it removed an expired state" in {
+    LongPollingSessionChecks.cancelledCleanup[IO](cancelable)
+  }
 }

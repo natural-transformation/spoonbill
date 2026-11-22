@@ -31,8 +31,14 @@ private[spoonbill] object LegacySessionMachine {
     case Retire(cause: Cause)
     case Finished(stage: Stage)
 
-    /** The attach failed before it had a view. There is nothing to retire. */
-    case NothingBuilt
+    /**
+     * The attach failed before it had a view. There is nothing to retire.
+     *
+     * @param removesState
+     *   whether the storage is local to this process: then the state of the
+     *   page goes, because no view owns it
+     */
+    case NothingBuilt(removesState: Boolean)
 
     /** The registry has given the failure of an attach to every attach that waited for it. */
     case Published
@@ -43,6 +49,9 @@ private[spoonbill] object LegacySessionMachine {
 
     /** Take the failure of this attach out of the registry. */
     case Forget
+
+    /** Remove the stored state of the session. */
+    case RemoveState
   }
   def connectionClosed(state: State): Boolean = state.connection == Connection.Closed
 
@@ -79,8 +88,8 @@ private[spoonbill] object LegacySessionMachine {
         case Retirement.Running(cause, _) => (state.copy(retirement = Retirement.Failed(cause)), Command.None)
         case _                            => (state, Command.None)
       }
-    case Event.NothingBuilt if state.retirement == Retirement.Idle =>
-      (state.copy(retirement = Retirement.Done(Cause.Abandoned)), Command.None)
+    case Event.NothingBuilt(removesState) if state.retirement == Retirement.Idle =>
+      (state.copy(retirement = Retirement.Done(Cause.Abandoned)), if (removesState) Command.RemoveState else Command.None)
     case Event.Published =>
       state.retirement match {
         // Only the attach that rolled back takes the failure out, and once.

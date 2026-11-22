@@ -158,7 +158,9 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                updateMetadata(metadata => SessionRegistryMachine.rendered(metadata, qsid, nanoTime()))
            }
       _ <- stateStorage.create(qsid.deviceId, qsid.sessionId, state)
-      _ <- Effect[F].delay(if (config.sessionAccessControl.isEmpty) expireFreshPages())
+      // The cleanup runs to its end: a record that it gave out for removal
+      // must not stay releasing because the render was cancelled.
+      _ <- Effect[F].uncancelable(Effect[F].delay(if (config.sessionAccessControl.isEmpty) expireFreshPages()))
       _ <- Effect[F].delay {
              bootstrapPath.foreach { path =>
                registryMonitor.synchronized {
@@ -179,12 +181,30 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
   /**
    * A render ends at most 100 records that nothing has claimed in their
-   * lifetime. It sets no timer. This step removes nothing from the storage.
+   * lifetime. It sets no timer. In a storage that is local to this process the
+   * state of each such record is removed: the record is releasing meanwhile,
+   * so every attach of its session is told to reload and no attach reads the
+   * storage. From any other storage nothing is removed.
    */
-  private def expireFreshPages(): Unit =
-    updateMetadata { metadata =>
-      SessionRegistryMachine.expireFresh(metadata, nanoTime(), freshLifetime, 100, removes = false)._1
+  private def expireFreshPages(): Unit = {
+    val removing = registryMonitor.synchronized {
+      val (next, keys) =
+        SessionRegistryMachine.expireFresh(metadata, nanoTime(), freshLifetime, 100, removes = stateStorage.localToProcess)
+      metadata = next
+      keys
     }
+    // Outside the monitor: a claim meanwhile finds the record releasing.
+    removing.foreach { qsid =>
+      try {
+        stateStorage.remove(qsid.deviceId, qsid.sessionId)
+        updateMetadata(metadata => SessionRegistryMachine.freshReleased(metadata, qsid))
+      } catch {
+        case scala.util.control.NonFatal(error) =>
+          config.reporter.error(s"Unable to remove the state of an unclaimed page $qsid", error)
+          updateMetadata(metadata => SessionRegistryMachine.freshRemovalFailed(metadata, qsid))
+      }
+    }
+  }
 
   /** An unguarded attach claims the fresh-page record of its session. */
   private def claimFresh(qsid: Qsid, transport: PollAdmissionMachine.Transport): SessionRegistryMachine.FreshClaim =
@@ -801,8 +821,18 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       created.get() match {
         case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
         // Nothing was built, so nothing is retired. The machine still learns
-        // that this attach was rolled back.
-        case None => Effect[F].delay { transition(LegacySessionMachine.Event.NothingBuilt); () }
+        // that this attach was rolled back. In a storage that is local to this
+        // process the state goes: this attach holds the place of the session in
+        // the table of views, so no other attach reads it meanwhile. A WebSocket
+        // that comes again takes it back from the for-deletion cache of the
+        // default storage; a poll that comes again is told to reload.
+        case None =>
+          Effect[F].delay {
+            transition(LegacySessionMachine.Event.NothingBuilt(removesState = stateStorage.localToProcess)) match {
+              case LegacySessionMachine.Command.RemoveState => stateStorage.remove(qsid.deviceId, qsid.sessionId)
+              case _                                        => ()
+            }
+          }
       }
     }
 

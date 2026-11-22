@@ -32,4 +32,8 @@ class LongPollingSpec extends AnyFlatSpec {
   it should "not hang after a render that was interrupted between its record and its state" in {
     LongPollingSessionChecks.cancelledRender[Task](interruptible)
   }
+
+  it should "finish the cleanup of a render that was interrupted while it removed an expired state" in {
+    LongPollingSessionChecks.cancelledCleanup[Task](interruptible)
+  }
 }
