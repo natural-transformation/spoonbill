@@ -116,7 +116,9 @@ package object server {
         commonService,
         sessionsService,
         config.compressionSupport,
-        config.sessionIdleTimeout,
+        // A long poll waits half the idle timeout, so a quiet page makes
+        // progress twice in every idle period.
+        config.sessionIdleTimeout / 2,
         config.webSocketCompressionEnabled
       )
     val formDataCodec = new FormDataCodec

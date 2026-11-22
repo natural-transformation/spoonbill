@@ -1,0 +1,188 @@
+package spoonbill.server.internal.services
+
+import avocet.dsl.*
+import avocet.dsl.html.*
+import java.util.UUID
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.duration.*
+import scala.util.Try
+import spoonbill.{Context, Extension, Qsid}
+import spoonbill.data.Bytes
+import spoonbill.effect.{AsyncTable, Effect, Reporter, Stream}
+import spoonbill.server.*
+import spoonbill.state.{StateManager, StateStorage}
+import spoonbill.state.javaSerialization.*
+import spoonbill.web.{PathAndQuery, Request}
+
+/**
+ * Long-polling cases that need an effect that can be cancelled. `Future`
+ * cannot be cancelled, so only the lazy-effect modules run them.
+ */
+object LongPollingSessionChecks {
+
+  private def run[F[_]: Effect, A](effect: F[A]): A = Await.result(Effect[F].toFuture(effect), 10.seconds)
+
+  private val quiet: Reporter = new Reporter {
+    def error(message: String, error: Throwable): Unit                = ()
+    def error(message: String): Unit                                  = ()
+    def warning(message: String, error: Throwable): Unit              = ()
+    def warning(message: String): Unit                                = ()
+    def info(message: String): Unit                                   = ()
+    def debug(message: String): Unit                                  = ()
+    def debug(message: String, arg1: Any): Unit                       = ()
+    def debug(message: String, arg1: Any, arg2: Any): Unit            = ()
+    def debug(message: String, arg1: Any, arg2: Any, arg3: Any): Unit = ()
+  }
+
+  /** Asks for the cancellation from another thread: a step that puts it off makes it wait. */
+  private def request(cancel: () => Unit)(implicit ec: ExecutionContext): Future[Unit] = {
+    val cancelling = Future(cancel())
+    Try(Await.ready(cancelling, 1.second))
+    cancelling
+  }
+
+  /** What a check reads from a poll answer. */
+  private final case class Answer(status: Int, frame: Option[Long], body: String)
+
+  /**
+   * One server with a counter page.
+   *
+   * @param setup
+   *   what the extension of a view waits for in its setup
+   * @param storage
+   *   the state storage, when a check holds it
+   */
+  private final class Server[F[_]: Effect](setup: () => F[Unit], storage: Option[StateStorage[F, Int]] = None)(implicit
+    ec: ExecutionContext
+  ) {
+    private val F       = Effect[F]
+    val built           = new AtomicInteger()
+    private val context = Context[F, Int, Any]
+    import context.*
+    private val config = SpoonbillServiceConfig[F, Int, Any](
+      stateLoader = StateLoader.default(0),
+      document = state => Html(body(button("Add", event("click")(access => access.transition(_ + 1))), p(s"count $state"))),
+      reporter = quiet,
+      stateStorage = storage.orNull,
+      extensions = List(Extension[F, Int, Any]("held") { _ =>
+        F.map(F.flatMap(F.delay(built.incrementAndGet()))(_ => setup()))(_ => Extension.Handlers[F, Int, Any]())
+      })
+    )
+    val sessions  = new SessionsService(config, new PageService(config))
+    val messaging = new MessagingService[F](quiet, null.asInstanceOf[CommonService[F]], sessions, None, 30.seconds)
+    val qsid      = Qsid("long-polling-checks", UUID.randomUUID().toString)
+    val page      = UUID.randomUUID()
+
+    private def request(path: String): Request[Unit] =
+      Request(Request.Method.Get, PathAndQuery.fromString(path), Nil, None, ())
+    def render(): F[Int] = sessions.initAppState(qsid, request("/"))
+    def poll(seen: Long): F[HttpResponse[F]] =
+      messaging.longPollingSubscribe(qsid, request(s"/bridge/long-polling/x/subscribe?page=$page&seen=$seen"))
+    def heartbeat(seen: Long): F[HttpResponse[F]] =
+      F.flatMap(Stream(Bytes.wrap("""[6,"0"]""".getBytes("UTF-8"))).mat[F]()) { body =>
+        messaging.longPollingPublish(qsid, request(s"/bridge/long-polling/x/publish?page=$page&seen=$seen"), body)
+      }
+    def read(response: HttpResponse[F]): Answer = {
+      val frame = response.headers.collectFirst { case (key, value) if key.equalsIgnoreCase("spoonbill-frame") => value.toLong }
+      Answer(response.status.code, frame, run(response.body.fold(Bytes.empty)(_ ++ _)).asUtf8String)
+    }
+
+    /** Applies the frames that a new view sends at once, and returns the cursor of the page. */
+    def settle(from: Long): Long = {
+      var seen = from
+      var next = Effect[F].toFuture(poll(seen))
+      while (Try(Await.ready(next, 2.seconds)).isSuccess) {
+        val answer = read(Await.result(next, 1.second))
+        if (answer.frame.isEmpty) throw new AssertionError(s"Expected a frame: $answer")
+        seen = answer.frame.get
+        next = Effect[F].toFuture(poll(seen))
+      }
+      seen
+    }
+  }
+
+  /**
+   * A second poll joins a first attach, and the first poll is cancelled while
+   * the attach is still in its setup. The attach runs to its end. The second
+   * poll gets the frames of the one view, and no second view is built.
+   */
+  def cancelledFirstPoll[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F            = Effect[F]
+    val setupStarted = new CountDownLatch(1)
+    val release      = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+    val server = new Server[F](() => F.flatMap(F.delay(setupStarted.countDown()))(_ => release.get(())))
+    run(server.render())
+    val cancel = start(F.map(server.poll(0L))(_ => ()))
+    try {
+      assert(setupStarted.await(10, TimeUnit.SECONDS), "The setup never started")
+      val joined     = Effect[F].toFuture(server.poll(0L))
+      val cancelling = request(cancel)
+      run(release.put((), ()))
+      Await.result(cancelling, 10.seconds)
+      val answer = server.read(Await.result(joined, 10.seconds))
+      assert(answer.status == 200 && answer.frame.contains(1L), s"The joined poll got $answer")
+      assert(server.built.get() == 1, s"Views built: ${server.built.get()}")
+    } finally {
+      Try(run(release.putEither((), Right(()), silent = true)))
+      ()
+    }
+  }
+
+  /**
+   * A poll waits, its pull is under way, and the poll is cancelled. The frame
+   * that comes is neither skipped nor handed out as two: the next poll of the
+   * same cursor gets it, and a poll of the cursor after it waits.
+   */
+  def cancelledAfterPull[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F      = Effect[F]
+    val server = new Server[F](() => F.unit)
+    run(server.render())
+    val seen   = server.settle(0L)
+    val cancel = start(F.map(server.poll(seen))(_ => ()))
+    // Let the poll register and start its pull.
+    Thread.sleep(200)
+    Await.result(request(cancel), 10.seconds)
+    assert(server.read(run(server.heartbeat(seen))).status == 200, "The heartbeat was not taken")
+    val again = server.read(run(server.poll(seen)))
+    assert(again.frame.contains(seen + 1L) && again.body == "[16]", s"The frame after the cancelled poll: $again")
+    val later = Effect[F].toFuture(server.poll(seen + 1L))
+    assert(Try(Await.ready(later, 1.second)).isFailure, "A poll of the next cursor got a frame: it was handed out twice")
+  }
+
+  /**
+   * A render is cancelled after it made the fresh-page record of its page and
+   * before the state is stored. The first poll of the page does not hang: it
+   * gets a view or a reload, and no view is built without a stored state.
+   */
+  def cancelledRender[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
+    val F       = Effect[F]
+    val entered = new CountDownLatch(1)
+    val release = AsyncTable.unsafeCreateEmpty[F, Unit, Unit]
+    val held = new StateStorage[F, Int] {
+      private val underlying                                         = StateStorage[F, Int]()
+      def exists(device: String, session: String): F[Boolean]        = underlying.exists(device, session)
+      def get(device: String, session: String): F[StateManager[F]]   = underlying.get(device, session)
+      def remove(device: String, session: String): Unit              = underlying.remove(device, session)
+      def create(device: String, session: String, state: Int): F[StateManager[F]] =
+        F.flatMap(F.delay(entered.countDown()))(_ => F.flatMap(release.get(()))(_ => underlying.create(device, session, state)))
+    }
+    val server = new Server[F](() => F.unit, Some(held))
+    val cancel = start(F.map(server.render())(_ => ()))
+    try {
+      assert(entered.await(10, TimeUnit.SECONDS), "The render never stored")
+      Await.result(request(cancel), 10.seconds)
+      val first = server.read(run(server.poll(0L)))
+      val stored = run(held.exists(server.qsid.deviceId, server.qsid.sessionId))
+      if (stored) assert(first.frame.contains(1L), s"A stored state, and the first poll got $first")
+      else {
+        assert(first.body == "[1]", s"No stored state, and the first poll got $first")
+        assert(server.built.get() == 0, "A view was built without a stored state")
+      }
+    } finally {
+      Try(run(release.putEither((), Right(()), silent = true)))
+      ()
+    }
+  }
+}

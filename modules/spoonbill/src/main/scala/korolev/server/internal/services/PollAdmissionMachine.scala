@@ -69,6 +69,15 @@ private[spoonbill] object PollAdmissionMachine {
     case (Some(_), None)                         => Route.Reload
   }
 
+  /**
+   * Whether a message may go to the topic entry of its session: the entry must
+   * be this page's. A message never makes an entry, so without one it is gone.
+   */
+  def accepts(cursor: Option[Cursor], entry: Option[UUID]): Boolean = (cursor, entry) match {
+    case (Some(request), Some(page)) => request.page == page
+    case _                           => false
+  }
+
   /** The transport of an attach. */
   enum Transport { case Poll, WebSocket }
 

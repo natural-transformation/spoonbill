@@ -49,6 +49,14 @@ class PollAdmissionMachineSpec extends AnyFlatSpec with Matchers {
     for ((request, entry, expected) <- rows) withClue((request, entry))(route(request, entry) shouldBe expected)
   }
 
+  "A message" should "go to the entry of its own page only" in {
+    accepts(Some(Cursor(page, 0L)), Some(page)) shouldBe true
+    accepts(Some(Cursor(page, 9L)), Some(page)) shouldBe true
+    accepts(Some(Cursor(page, 0L)), Some(other)) shouldBe false
+    accepts(Some(Cursor(page, 0L)), None) shouldBe false
+    accepts(None, Some(page)) shouldBe false
+  }
+
   "A claim of the fresh-page record" should "let a poll go on only when the record is fresh" in {
     for (claim <- FreshClaim.values)
       withClue(claim)(goesOn(Transport.Poll, claim) shouldBe (claim == FreshClaim.Fresh))

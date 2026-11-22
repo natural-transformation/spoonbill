@@ -1496,5 +1496,8 @@ object Frontend {
   final case class DownloadFileMeta[F[_]: Effect](stream: Stream[F, Bytes], size: Option[Long], mimeType: String)
 
   final val ReloadMessage: String     = "[1]"
+  // A frame that changes nothing. A long poll answers with it in place of a kept
+  // command that expired, under the same number.
+  final val KeepAliveMessage: String  = "[9]"
   final val HeavyRenderThresholdNanos = 50000000L
 }

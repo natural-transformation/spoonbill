@@ -29,47 +29,40 @@ import spoonbill.server.DeflateCompressionService
 import spoonbill.web.Request.Head
 import spoonbill.web.Response
 import spoonbill.web.Response.Status
-import java.util.concurrent.atomic.AtomicReference
-import scala.annotation.tailrec
+import java.util.UUID
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.FiniteDuration
 
+/**
+ * @param pollWait
+ *   how long a long poll waits for a frame at most, half the idle timeout of a
+ *   session. It is then answered with `204`.
+ */
 private[spoonbill] final class MessagingService[F[_]: Effect](
   reporter: Reporter,
   commonService: CommonService[F],
   sessionsService: SessionsService[F, _, _],
   compressionSupport: Option[DeflateCompressionService[F]],
-  orphanTopicTimeout: FiniteDuration,
+  pollWait: FiniteDuration,
   webSocketCompressionEnabled: Boolean = false,
-  orphanCleanupTiming: Option[MessagingService.OrphanCleanupTiming[F]] = None
+  pollTiming: Option[LongPollingDelivery.Timing[F]] = None
 ) {
 
   import MessagingService._
 
-  private final case class TopicEntry(
-    queue: Queue[F, String],
-    lifecycle: AtomicReference[OrphanTopicMachine.State],
-    orphanCleanup: AtomicReference[Option[Scheduler.JobHandler[F, Unit]]]
-  )
+  /**
+   * The long-polling entry of a session: its page, the input of its view, and
+   * the delivery of the view's frames. Only a first attach makes an entry; a
+   * message never does.
+   */
+  private final case class TopicEntry(page: UUID, incoming: Queue[F, String], delivery: LongPollingDelivery[F])
 
-  private val orphanTiming = orphanCleanupTiming.getOrElse(new OrphanCleanupTiming[F] {
+  private val timing = pollTiming.getOrElse(new LongPollingDelivery.Timing[F] {
     private val scheduler = Scheduler[F]
-    def nowMillis(): Long = System.currentTimeMillis()
     def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]] =
       scheduler.scheduleOnce(delay)(job)
   })
-  @tailrec private def advanceTopic(entry: TopicEntry, event: OrphanTopicMachine.Event): OrphanTopicMachine.Command = {
-    val before = entry.lifecycle.get()
-    val (next, command) = OrphanTopicMachine.step(before, event)
-    if ((next eq before) || entry.lifecycle.compareAndSet(before, next)) command
-    else advanceTopic(entry, event)
-  }
-  private def runAsyncForget(effect: F[Unit]): Unit =
-    Effect[F].runAsync(effect) {
-      case Left(err) => reporter.error("Unhandled error", err)
-      case Right(_)  => ()
-    }
 
   /**
    * Poll message from session's ongoing queue.
@@ -79,49 +72,107 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
       .dropWhile(_ == '[')
       .takeWhile(ch => ch != ',' && ch != ']' && !ch.isWhitespace)
 
-  def longPollingSubscribe(qsid: Qsid, rh: Head): F[HttpResponse[F]] =
-
-    for {
-      started <- sessionsService.createAppIfNeeded(qsid, rh, createTopic(qsid))
-      // The start result selects reload. A missing registry entry is not a
-      // second, implicit recovery path.
-      maybeMessage <- started match {
-                        case SessionStart.Attached(outgoing, _) => outgoing.pull()
-                        case SessionStart.Reload()              => SomeReloadMessageF
-                      }
-      response <- maybeMessage match {
-                    case None => Effect[F].pure(commonGoneResponse)
-                    case Some(message) =>
-                      Effect[F].delay {
-                        reporter.debug(
-                          s"Long-polling send to $qsid: code=${messageCode(message)} length=${message.length}"
-                        )
-                      } *>
-                      HttpResponse(
-                        status = Response.Status.Ok,
-            text = message,
-                        headers = commonResponseHeaders
-                      )
-                  }
-    } yield {
-      response
-    }
+  /** The page id and the cursor that a long-polling request names. */
+  private def cursor(rh: Head): Option[PollAdmissionMachine.Cursor] =
+    PollAdmissionMachine.cursor(rh.param("page"), rh.param("seen"))
 
   /**
-   * Push message to session's incoming queue.
+   * One poll. The page names itself and the last frame that it applied, and
+   * the delivery answers with the frame after it. Everything that does not fit
+   * is told to reload. See [[PollAdmissionMachine.route]].
    */
-  def longPollingPublish(qsid: Qsid, data: Stream[F, Bytes]): F[HttpResponse[F]] =
-    for {
-      entry   <- Effect[F].delay(getOrCreateTopicUnsafe(qsid))
-      _       <- scheduleOrphanCleanup(qsid, entry)
-      message <- data.fold(Bytes.empty)(_ ++ _).map(_.asUtf8String)
-      _ <- Effect[F].delay {
-             reporter.debug(
-               s"Long-polling publish received for $qsid: code=${messageCode(message)} length=${message.length}"
-             )
-           }
-      _ <- entry.queue.enqueue(message)
-    } yield commonOkResponse
+  def longPollingSubscribe(qsid: Qsid, rh: Head): F[HttpResponse[F]] = poll(qsid, rh, cursor(rh))
+
+  private def poll(qsid: Qsid, rh: Head, request: Option[PollAdmissionMachine.Cursor]): F[HttpResponse[F]] = {
+    val entry = longPollingTopics.get(qsid)
+    (PollAdmissionMachine.route(request, entry.map(_.page)), request, entry) match {
+      case (PollAdmissionMachine.Route.Deliver, Some(value), Some(current)) =>
+        current.delivery.poll(value.seen).flatMap(answer(qsid, _))
+      case (PollAdmissionMachine.Route.FirstAttach, Some(value), _) => firstAttach(qsid, rh, value)
+      case _                                                        => answer(qsid, LongPollingDelivery.PollAnswer.Reload)
+    }
+  }
+
+  /**
+   * A first attach: one step that a cancelled request cannot stop half way.
+   * The entry goes into the table first; a poll that loses that race decides
+   * again and finds it. The session service builds the view for the entry from
+   * the stored state, after it claimed the fresh-page record of the page. Every
+   * other outcome takes the entry out again, and the polls that joined it are
+   * told to reload.
+   */
+  private def firstAttach(qsid: Qsid, rh: Head, request: PollAdmissionMachine.Cursor): F[HttpResponse[F]] = {
+    val created = TopicEntry(request.page, Queue[F, String](), new LongPollingDelivery[F](pollWait, timing, reporter))
+    def leave(): F[Unit] =
+      Effect[F].delay { longPollingTopics.remove(qsid, created); () } *>
+        created.delivery.abandon() *>
+        created.incoming.close()
+    Effect[F].uncancelable {
+      Effect[F].delay(longPollingTopics.putIfAbsent(qsid, created)).flatMap {
+        case Some(_) => Effect[F].pure(FirstAttach.Lost)
+        case None =>
+          // The entry leaves the table when the view cancels its input, as before.
+          created.incoming.cancelSignal.runAsync(_ => longPollingTopics.remove(qsid, created))
+          sessionsService
+            .createAppIfNeeded(
+              qsid,
+              rh,
+              created.incoming.stream,
+              PollAdmissionMachine.Transport.Poll,
+              Some(request.page),
+              Some(created.delivery.progress)
+            )
+            .flatMap {
+              case SessionStart.Owned(frames, _) => created.delivery.own(frames).map(_ => FirstAttach.Owns)
+              case _                             => leave().map(_ => FirstAttach.Gone)
+            }
+            .recoverF { case error => leave().flatMap(_ => Effect[F].fail[FirstAttach](error)) }
+      }
+    }.flatMap {
+      case FirstAttach.Owns => created.delivery.poll(request.seen).flatMap(answer(qsid, _))
+      // The poll that lost the race decides again, with the entry that won.
+      case FirstAttach.Lost => poll(qsid, rh, Some(request))
+      case FirstAttach.Gone => answer(qsid, LongPollingDelivery.PollAnswer.Reload)
+    }
+  }
+
+  private def answer(qsid: Qsid, value: LongPollingDelivery.PollAnswer): F[HttpResponse[F]] = value match {
+    case LongPollingDelivery.PollAnswer.Frame(message, number, dom) =>
+      Effect[F].delay {
+        reporter.debug(s"Long-polling send to $qsid: frame=$number code=${messageCode(message)} length=${message.length}")
+      } *> HttpResponse(
+        status = Response.Status.Ok,
+        text = message,
+        headers = commonResponseHeaders ++ Seq(FrameHeader -> number.toString, DomHeader -> dom.toString)
+      )
+    case LongPollingDelivery.PollAnswer.Reload =>
+      HttpResponse(status = Response.Status.Ok, text = Frontend.ReloadMessage, headers = commonResponseHeaders)
+    case LongPollingDelivery.PollAnswer.Stale     => Effect[F].pure(commonGoneResponse)
+    case LongPollingDelivery.PollAnswer.NoContent => Effect[F].pure(commonNoContentResponse)
+  }
+
+  /**
+   * One message of a page. It goes to the view of the page's entry, and it
+   * never makes an entry. `410`: no view of this page can take it, its queue is
+   * closed, or it claims more frames than the view has handed out.
+   */
+  def longPollingPublish(qsid: Qsid, rh: Head, data: Stream[F, Bytes]): F[HttpResponse[F]] =
+    (cursor(rh), longPollingTopics.get(qsid)) match {
+      case (Some(request), Some(entry)) if PollAdmissionMachine.accepts(Some(request), Some(entry.page)) =>
+        for {
+          message <- data.fold(Bytes.empty)(_ ++ _).map(_.asUtf8String)
+          _ <- Effect[F].delay {
+                 reporter.debug(
+                   s"Long-polling publish received for $qsid: code=${messageCode(message)} length=${message.length}"
+                 )
+               }
+          taken <- entry.delivery.message(request.seen) match {
+                     case PollDeliveryMachine.Message.Deliver => entry.incoming.offer(message)
+                     case PollDeliveryMachine.Message.Gone    => Effect[F].pure(false)
+                   }
+        } yield if (taken) commonOkResponse else commonGoneResponse
+      case _ => data.cancel().recover { case NonFatal(_) => () }.map(_ => commonGoneResponse)
+    }
 
   private lazy val inflaters = ThreadLocal.withInitial(() => new Inflater(true))
   private lazy val deflaters = ThreadLocal.withInitial(() => new Deflater(Deflater.DEFAULT_COMPRESSION, true))
@@ -214,6 +265,17 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
         // so avoid canceling the same frontend a second time after cleanup.
         val release = WebSocketResponse.releaseOnce[F](releaseSession)
         Effect[F].pure(WebSocketResponse.Duplex(output, selectedProtocol, release))
+      case SessionStart.Refused() | SessionStart.Owned(_, _) =>
+        // A poll owns the view of this session. The socket gets nothing and
+        // closes; the view goes on.
+        Stream[String]().mat().map { messages =>
+          val output = messages.mapAsync(encoder)
+          val release = WebSocketResponse.releaseOnce[F](() =>
+            incoming.cancel().recover { case NonFatal(_) => () } *>
+              output.cancel().recover { case NonFatal(_) => () }
+          )
+          WebSocketResponse.SendThenClose(output, selectedProtocol, release)
+        }
       case SessionStart.Reload() =>
         // The view is gone after a restart, or guarded recovery declined it.
         // The finite reload frame is independent of application input.
@@ -255,6 +317,14 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     contentLength = Some(0L)
   )
 
+  /** A poll that is answered with nothing yet. The page polls again with the same cursor. */
+  private val commonNoContentResponse = Response(
+    status = Response.Status(204, "No Content"),
+    body = Stream.empty[F, Bytes],
+    headers = commonResponseHeaders,
+    contentLength = Some(0L)
+  )
+
   /**
    * Same response for all 'subscribe' requests where outgoing stream is
    * consumed.
@@ -266,76 +336,28 @@ private[spoonbill] final class MessagingService[F[_]: Effect](
     contentLength = Some(0L)
   )
 
-  private def getOrCreateTopicUnsafe(qsid: Qsid): TopicEntry =
-    longPollingTopics.get(qsid) match {
-      case Some(existing) =>
-        existing
-      case None =>
-        val entry = TopicEntry(
-          queue = Queue[F, String](),
-          lifecycle = new AtomicReference(OrphanTopicMachine.initial(orphanTiming.nowMillis())),
-          orphanCleanup = new AtomicReference(None)
-        )
-        longPollingTopics.putIfAbsent(qsid, entry) match {
-          case Some(existing) =>
-            existing
-          case None =>
-            reporter.debug(s"Create long-polling topic for $qsid")
-            entry.queue.cancelSignal.runAsync(_ => longPollingTopics.remove(qsid, entry))
-            entry
-        }
-    }
-
-  private[services] def createTopic(qsid: Qsid): Stream[F, String] = {
-    val entry = getOrCreateTopicUnsafe(qsid)
-    if (advanceTopic(entry, OrphanTopicMachine.Event.Subscribe) == OrphanTopicMachine.Command.CancelCleanup) {
-      runAsyncForget(cancelOrphanCleanup(entry))
-    }
-    entry.queue.stream
-  }
-
-  private def cancelOrphanCleanup(entry: TopicEntry): F[Unit] =
-    Effect[F].delay(entry.orphanCleanup.getAndSet(None)).flatMap {
-      case Some(job) => job.cancel()
-      case None      => Effect[F].unit
-    }
-
-  private def scheduleOrphanCleanup(qsid: Qsid, entry: TopicEntry): F[Unit] = {
-    if (!OrphanTopicMachine.shouldSchedule(entry.lifecycle.get(), orphanTopicTimeout.toMillis)) {
-      Effect[F].unit
-    } else {
-      for {
-        _   <- cancelOrphanCleanup(entry)
-        _   <- Effect[F].delay { advanceTopic(entry, OrphanTopicMachine.Event.Activity(orphanTiming.nowMillis())); () }
-        job <- orphanTiming.scheduleOnce(orphanTopicTimeout) {
-                 Effect[F].delay {
-                   if (!OrphanTopicMachine.subscribed(entry.lifecycle.get())) {
-                     // Preserve the clock-before-activity observation of an in-flight expiry.
-                     val now = orphanTiming.nowMillis()
-                     val lastActivity = entry.lifecycle.get().lastActivityMillis
-                     if (OrphanTopicMachine.due(lastActivity, now, orphanTopicTimeout.toMillis)) {
-                       reporter.debug(s"Remove orphan long-polling topic for $qsid")
-                       longPollingTopics.remove(qsid, entry)
-                       ()
-                     }
-                   }
-                 }
-               }
-        _ <- Effect[F].delay(entry.orphanCleanup.set(Some(job)))
-      } yield ()
-    }
-  }
 }
 
 private[spoonbill] object MessagingService {
 
-  /** Internal timing seam. Clock reads and scheduled callbacks must share the
-    * same timeline; tests can advance it without relying on wall-clock sleeps.
-    */
-  trait OrphanCleanupTiming[F[_]] {
-    def nowMillis(): Long
-    def scheduleOnce(delay: FiniteDuration)(job: => F[Unit]): F[Scheduler.JobHandler[F, Unit]]
+  /** How a first attach of a poll ended. */
+  private enum FirstAttach {
+
+    /** Another poll put its entry into the table first. */
+    case Lost
+
+    /** This entry owns the view that the attach built. */
+    case Owns
+
+    /** The attach built no view for this entry. The page reloads. */
+    case Gone
   }
+
+  /** The number of a frame of a long-polling answer. */
+  final val FrameHeader = "spoonbill-frame"
+
+  /** The DOM revision after that frame: what the page shows once it has applied it. */
+  final val DomHeader = "spoonbill-dom"
 
   private val ProtocolJsonDeflate = "json-deflate"
   private val ProtocolJson        = "json"

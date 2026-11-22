@@ -106,7 +106,7 @@ final class InvalidDevRenderContextSpec extends AnyFlatSpec with Matchers {
           commonService = new CommonService[Future],
           sessionsService = service,
           compressionSupport = None,
-          orphanTopicTimeout = 1.second
+          pollWait = 1.second
         )
         for {
           response <- messaging.webSocketMessaging(qsid, request, input, Seq("json"))
