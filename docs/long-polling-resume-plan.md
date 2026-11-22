@@ -1,14 +1,15 @@
 # Long polling that resumes: implementation plan
 
 Status: **second version**, 2026-11-22. For review. **Nothing is built.** This
-plan implements the design "Long polling that resumes", revision 4. The
+plan implements the [design](long-polling-resume-design.md), revision 4. The
 design says what and why; this file says in which order, in which files, and
 with which tests.
 
-**What is not in the repository.** The design, the reviews of the design and
-of this plan, and the reports of the defects that this plan names are working
-papers. This plan names them where it leans on them, and the record of its
-own review is at the end.
+**The papers around it.** The design and the
+[draft of ADR 0006](long-polling-resume-adr-0006-draft.md) are next to this
+file. The reviews of the design and of this plan, and the reports of the
+defects that the plan names, are working papers. They are not in the
+repository. The record of this plan's own review is at the end.
 
 **The idea in short.** A page on long polling loses a poll now and then. On
 `main` the page then builds a new bridge, the server keeps the old view, and
@@ -35,8 +36,8 @@ storage cleanup after that review. What changed against the first version:
 storage over a repository a WebSocket page reloads at every reconnect after a
 closed socket. With that in view the user confirmed it on 2026-11-22 and
 asked for an ADR, so that the decision can be revisited and redesigned later.
-The ADR is drafted. It comes into the repository in step 9, as the earlier
-ADRs came with their changes.
+The ADR is [drafted](long-polling-resume-adr-0006-draft.md). The draft
+becomes an ADR in step 9, as the earlier ADRs came with their changes.
 
 ## What is true when the plan is done
 
@@ -456,8 +457,8 @@ wider one in the tests.
 
 ### Step 9: words and checks
 
-- **ADR 0006.** The draft becomes
-  `docs/adr/0006-legacy-attach-needs-stored-state.md`. Its places marked
+- **ADR 0006.** The draft, `docs/long-polling-resume-adr-0006-draft.md`,
+  becomes `docs/adr/0006-legacy-attach-needs-stored-state.md`. Its places marked
   "at commit" get their links: the attach of step 4 and its cases, the
   counter, the reload guard of step 7. `docs/adr/README.md` gets its row:
   "A legacy attach, a missing session state, or when a page is told to
@@ -504,8 +505,9 @@ through.
   `launcher.js`.
 - **Changed, main, for decision 28:** `Metrics.scala`.
 - **New and changed, documents:**
-  `docs/adr/0006-legacy-attach-needs-stored-state.md`, `docs/adr/README.md`,
-  `CHANGELOG.md`, `docs/browser-tests.md`, and this plan.
+  `docs/adr/0006-legacy-attach-needs-stored-state.md` (the draft moves
+  there), `docs/adr/README.md`, `CHANGELOG.md`, `docs/browser-tests.md`, this
+  plan and the design.
 - **Removed, main:** `OrphanTopicMachine.scala`.
 - **New, tests:** `PollDeliveryMachineSpec`, `PollAdmissionMachineSpec`,
   `LongPollingFixture`, `LongPollingDeliverySpec`, `UnclaimedPageSpec`,
