@@ -62,12 +62,16 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
       reads.incrementAndGet()
       if (failReads) Future.failed(new IllegalStateException("the state cannot be read")) else underlying.get(device, session)
     }
-    def remove(device: String, session: String): Unit = {
+    // A removal, or a drop at the expiry: both can be held, can fail, and are counted.
+    private def removing(device: String, session: String)(end: => Unit): Unit = {
       hold.foreach { case (entered, release) => entered.countDown(); release.await(10, TimeUnit.SECONDS) }
       if (failNext) { failNext = false; throw new IllegalStateException("the removal failed") }
       removed.updateWith(s"$device-$session")(count => Some(count.getOrElse(0) + 1))
-      underlying.remove(device, session)
+      end
     }
+    def remove(device: String, session: String): Unit = removing(device, session)(underlying.remove(device, session))
+    override private[spoonbill] def drop(device: String, session: String): Unit =
+      removing(device, session)(underlying.drop(device, session))
     def live(device: String, session: String): Boolean = Await(underlying.exists(device, session))
   }
   private def Await[A](value: Future[A]): A = scala.concurrent.Await.result(value, 5.seconds)
@@ -125,10 +129,43 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
     for (_ <- 1 to 11) { f.advance(1.second); keepPolling() }
     f.hasView(viewed) shouldBe true
     f.render()
-    // The for-deletion cache of the default storage holds two: the three oldest are gone.
-    expired.map(page => storage.live(page.qsid.deviceId, page.qsid.sessionId)) shouldBe Vector(false, false, false, true, true)
+    // The expired states are dropped for good, past the for-deletion cache.
+    expired.map(page => storage.live(page.qsid.deviceId, page.qsid.sessionId)) shouldBe Vector.fill(5)(false)
     storage.live(viewed.qsid.deviceId, viewed.qsid.sessionId) shouldBe true
     storage.removed.keySet should not contain s"${viewed.qsid.deviceId}-${viewed.qsid.sessionId}"
+  }
+
+  it should "keep the state of a WebSocket page that is away while more pages expire than the for-deletion cache holds" in {
+    // The default storage with a for-deletion cache of 2, so that 3 expired pages would be enough.
+    val storage = new StateStorage.DefaultStateStorage[Future, Int](2, allowDevMode = false)
+    val f       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    val page    = f.render()
+    val input   = Queue[Future, String]()
+    f.webSocket(page, input).value.exists(_.isSuccess) shouldBe true
+    // The socket closes (a laptop sleeps): the view retires and its state goes to the for-deletion cache.
+    await(input.close())
+    f.worker.drain()
+    f.hasView(page) shouldBe false
+    // Meanwhile pages are rendered that never connect. They expire, and a later render cleans up.
+    Vector.fill(3)(f.render())
+    f.advance(11.seconds)
+    f.render()
+    f.webSocket(page).value match {
+      case Some(scala.util.Success(SessionStart.Attached(_, release))) => await(release())
+      case other                                                       => fail(s"The page that came back got $other")
+    }
+  }
+
+  it should "tell a WebSocket page that first connects after the cleanup of its record to reload" in {
+    val storage = new StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
+    val f       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    val page    = f.render()
+    f.advance(11.seconds)
+    f.render()
+    f.webSocket(page).value match {
+      case Some(scala.util.Success(SessionStart.Reload())) => ()
+      case other                                          => fail(s"A late first attach got $other")
+    }
   }
 
   it should "refuse a claim while a removal runs, without reading the storage" in {

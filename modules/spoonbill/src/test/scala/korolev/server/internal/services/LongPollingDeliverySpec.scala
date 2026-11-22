@@ -282,7 +282,7 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     f.sessions.freshPageRecords shouldBe 0
   }
 
-  it should "end at most 100 expired records of pages that never connect, and remove none of their states" in {
+  it should "end at most 100 expired records of pages that never connect at each render, and drop their states for good" in {
     // In memory whatever the development-mode switch of the JVM says: in that
     // mode a removed state stays in its file, and this case would prove nothing.
     val storage = new spoonbill.state.StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
@@ -293,8 +293,9 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     val counts = Vector.fill(3) { f.render(); f.sessions.freshPageRecords }
     // Each render ends up to 100 records and makes its own.
     counts shouldBe Vector(151, 52, 3)
-    // Nothing is removed from a storage in this step.
-    pages.foreach(page => await(storage.exists(page.qsid.deviceId, page.qsid.sessionId)) shouldBe true)
+    // The default storage is local, so their states are dropped: not kept in
+    // the for-deletion cache, which belongs to the states of views that retired.
+    pages.foreach(page => await(storage.exists(page.qsid.deviceId, page.qsid.sessionId)) shouldBe false)
   }
 }
 

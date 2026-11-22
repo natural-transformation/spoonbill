@@ -196,7 +196,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     // Outside the monitor: a claim meanwhile finds the record releasing.
     removing.foreach { qsid =>
       try {
-        stateStorage.remove(qsid.deviceId, qsid.sessionId)
+        // Dropped for good: an unclaimed state does not go to a for-deletion cache.
+        stateStorage.drop(qsid.deviceId, qsid.sessionId)
         updateMetadata(metadata => SessionRegistryMachine.freshReleased(metadata, qsid))
       } catch {
         case scala.util.control.NonFatal(error) =>

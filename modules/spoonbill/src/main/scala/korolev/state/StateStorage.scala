@@ -56,6 +56,16 @@ abstract class StateStorage[F[_]: Effect, S] {
    * deletion has only started, and another server can hold the view.
    */
   private[spoonbill] def localToProcess: Boolean = false
+
+  /**
+   * Ends the state of a page that nothing claimed, for good. Only the framework
+   * calls it, at the expiry of a fresh-page record and only for a storage that
+   * is local to this process. By default it is `remove`. The default storage
+   * does not keep such a state in its for-deletion cache, which belongs to the
+   * states of views that retired: unclaimed pages would push those out.
+   * (Decided by the user on 2026-11-22, after the review of PR 42.)
+   */
+  private[spoonbill] def drop(deviceId: DeviceId, sessionId: SessionId): Unit = remove(deviceId, sessionId)
 }
 
 object StateStorage {
@@ -141,6 +151,14 @@ object StateStorage {
           forDeletionCache.put(key, sm)
         }
       }
+    }
+
+    // Past the for-deletion cache. In development mode the files stay, as after `remove`.
+    override private[spoonbill] def drop(deviceId: DeviceId, sessionId: SessionId): Unit = {
+      val key = mkKey(deviceId, sessionId)
+      cache.remove(key)
+      forDeletionCache.synchronized(forDeletionCache.remove(key))
+      ()
     }
   }
 
