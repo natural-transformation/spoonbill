@@ -175,6 +175,21 @@ test('redesign client regressions against real source modules', { timeout: 10000
       assert.ok(!('1_11' in client.els) && !('1_31' in client.els) && !('1_91' in client.els), 'no concatenated ids');
     });
 
+    await t.test('a removal whose child the page never had counts as applied; a missing parent does not', () => {
+      // The page renderer writes an empty text as nothing, so the parsed page
+      // has no node for it. When the view later removes that text, the patch
+      // names a child that the page never had, and the page is still in step.
+      const removed = [];
+      const parent = {nodeType: 1, childNodes: [], removeChild: child => removed.push(child)};
+      const span = {nodeType: 1, childNodes: []};
+      const client = Object.assign(Object.create(Spoonbill.prototype), {els: {'1': parent, '1_1': span}});
+      assert.equal(client.modifyDom([2, '1', '1_2']), true, 'the empty text 1_2 has no node');
+      assert.deepEqual(removed, []);
+      assert.equal(client.modifyDom([2, '1', '1_1']), true);
+      assert.deepEqual(removed, [span]);
+      assert.equal(client.modifyDom([2, '9', '9_1']), false, 'a missing parent');
+    });
+
     await t.test('explicit native form submits without a callback or retained submit event despite named-control shadowing', () => {
       const form = new FormFake([], {});
       form.fields = null;

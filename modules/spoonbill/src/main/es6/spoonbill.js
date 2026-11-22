@@ -320,6 +320,9 @@ export class Spoonbill {
     var parent = this.els[id],
       child = this.els[childId];
     if (!parent) return false;
+    // A missing child still counts as applied. The page renderer writes an
+    // empty text as nothing, so the parsed page has no node for it, and the
+    // view may remove that text later. The renderer removes each node once.
     if (child) {
       parent.removeChild(child);
     }
