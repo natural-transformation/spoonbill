@@ -104,6 +104,53 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - Internal: `AsyncTable.settled` completes when a key is no longer being
   filled.
 
+- **Long polling resumes after a failed poll.** A long-polling page keeps its
+  bridge, its view and what the user typed when a poll fails, and polls again
+  after the reconnect back-off. Every poll and message names the page (a
+  UUID that the page makes) and the last frame that it applied:
+  `?page=<id>&seen=<n>`. The server answers `seen=n` only with frame `n + 1`
+  of the view that this page owns, names its number and the DOM revision
+  after it in the headers `spoonbill-frame` and `spoonbill-dom`, and keeps
+  the frame until the page confirms it. A poll waits half of
+  `sessionIdleTimeout` and is then answered with `204`. A click or a custom
+  callback made on an older display than the view's runs no handler and is
+  counted in `obsolete-browser-events`; a history event is always handled.
+  The page reloads only when its view is gone or an answer does not fit. The
+  connection-lost notice shows from the second failed poll in a row until
+  the next answer. A message that no view can take is answered with `410`.
+- A framework reload of an unguarded page happens at most once in 30 seconds
+  for a tab, on both transports. A second one shows the connection-lost
+  notice and waits for the end of that time; meanwhile the page sends,
+  polls and reconnects nothing. Without `sessionStorage` the page reloads at
+  once.
+- **A missing stored state means reload.** An unguarded attach whose stored
+  state is missing no longer builds a state from its bridge request, which
+  matches no route and gave the view of the default route. The page is told
+  to reload, on a WebSocket and on long polling, and is rendered again from
+  its own address. `missing-state-reloads` counts these reloads.
+  [ADR 0006](docs/adr/0006-legacy-attach-needs-stored-state.md) records the
+  decision, its cost and when to revisit it.
+- The stored state of an unguarded page that no view claimed within
+  `sessionIdleTimeout` is removed at a later render, and the state of an
+  attach that failed before it had a view is removed at once. Only the
+  built-in default storage, which is local to the process, removes anything:
+  a storage over a repository and a storage that an application wrote are
+  never asked to delete.
+- An attach that failed and was rolled back no longer fails the attaches of
+  that session that come after it.
+
+**For deployments.**
+
+- The long-polling protocol changed on both sides. A long-polling page that
+  an earlier version rendered is told to reload when it reaches a server of
+  this version.
+- With `StateStorage.fromRepository` the retirement of a view removes its
+  row, so every reconnect after a closed WebSocket now reloads the page. With
+  the default storage a page reloads after a restart of the server. With
+  several servers that share no repository and have no sticky routing, a page
+  reloads until its render and its attach meet on one server. Watch
+  `missing-state-reloads`; ADR 0006 says what a redesign has to keep.
+
 ## 10.0.1 — 2026-11-12
 
 Upgrade all Spoonbill modules together to `10.0.1` and align explicit Avocet

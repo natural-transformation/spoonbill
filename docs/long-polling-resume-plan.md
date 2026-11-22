@@ -1,15 +1,18 @@
 # Long polling that resumes: implementation plan
 
-Status: **second version**, 2026-11-22. For review. **Nothing is built.** This
-plan implements the [design](long-polling-resume-design.md), revision 4. The
-design says what and why; this file says in which order, in which files, and
-with which tests.
+Status: **built**, 2026-11-22, in the nine steps below, one commit each,
+and two more commits after step 8: one from an audit for hidden state, and
+one that keeps two test cases independent of development mode. This plan
+implements the [design](long-polling-resume-design.md), revision 4.
+The design says what and why; this file says in which order, in which files,
+and with which tests. [What was built](#what-was-built) says where the work
+differs from the plan.
 
-**The papers around it.** The design and the
-[draft of ADR 0006](long-polling-resume-adr-0006-draft.md) are next to this
-file. The reviews of the design and of this plan, and the reports of the
-defects that the plan names, are working papers. They are not in the
-repository. The record of this plan's own review is at the end.
+**The papers around it.** The design is next to this file, and
+[ADR 0006](adr/0006-legacy-attach-needs-stored-state.md) records its one
+decision with a known cost. The reviews of the design and of this plan, and
+the reports of the defects that the plan names, are working papers. They are
+not in the repository. The record of this plan's own review is at the end.
 
 **The idea in short.** A page on long polling loses a poll now and then. On
 `main` the page then builds a new bridge, the server keeps the old view, and
@@ -36,8 +39,86 @@ storage cleanup after that review. What changed against the first version:
 storage over a repository a WebSocket page reloads at every reconnect after a
 closed socket. With that in view the user confirmed it on 2026-11-22 and
 asked for an ADR, so that the decision can be revisited and redesigned later.
-The ADR is [drafted](long-polling-resume-adr-0006-draft.md). The draft
-becomes an ADR in step 9, as the earlier ADRs came with their changes.
+The ADR was drafted next to this plan and became
+[ADR 0006](adr/0006-legacy-attach-needs-stored-state.md) in step 9, as the earlier ADRs came with their changes.
+
+## What was built
+
+Every step was built as planned, tests first. Where the work differs:
+
+- **Step 3.** Its ADR 0004 controls did not run after the step: the machine
+  was not quiet (a load average of 6 to 8 on 16 cores). They ran at the end
+  with the long-polling measurement; see the last two points below.
+- **Step 4.** `SessionsServiceSpec` used a fixed session id, and a
+  development-mode directory of an earlier run made its case pass without a
+  rebuild while another suite had development mode on. The case now has a
+  session id of its own. The defect is on `main`.
+- **Step 5.** The keep-alive frame for a kept command that has expired is
+  tested in the delivery (`LongPollingDeliveryInterpreterSpec`) and in the
+  machine, not through an `evalJs` of a view. Of the lazy-effect cases, two
+  have no check of their own, because the code leaves no place for them. The
+  first attach is one uncancelable step (`MessagingService.firstAttach`): a
+  cancel right after the entry went into the table, or before the record is
+  claimed, cannot stop it, and `cancelledFirstPoll` shows that such a step
+  runs to its end. A poll decides to wait and registers its waiter in one
+  step of the cell (`LongPollingDelivery.poll`), so no frame can be made
+  between the two.
+- **Step 6.** In development mode the default storage keeps each state in a
+  file as well, and a removal leaves the file; this was so before. So the
+  cleanup frees the memory of an unclaimed page there, and its file stays.
+  Development mode is one switch for the whole JVM: two cases of steps 5
+  and 6 failed, or proved nothing, when a suite that turns it on ran beside
+  them. Their storage now keeps development mode off.
+- **Step 8.**
+  - The view ends by its idle timeout while every poll fails, not by a
+    control of the fixture. The fixture has one control, the one that makes
+    the storage forget the state of a session.
+  - A document that the test fulfils loses its cookie and its
+    `sessionStorage` in WebKit. The lost-state cases hold the client script
+    instead, until the state is forgotten.
+  - The Back case passed at first under its mutation, an old history event
+    that is discarded: it judged before the held patch was applied, and it
+    could release the patch before the history event had left. It now waits
+    for both and requires the route that Back went to. It fails under the
+    mutation.
+  - The event-latency client got a long-polling transport
+    (`BENCH_TRANSPORT=long-polling`) for the measurement.
+- **An audit after step 8, and one more commit.** Asked whether the work
+  kept every phase in a pure machine, a review of steps 1 to 8 found that it
+  did not everywhere. The timer of a waiting poll was kept in a map beside
+  the cell and decided by a separate look at the machine state: a stress
+  case left 49 of 20,000 timers set after their poll was answered. Whether
+  an entry owns its view was known only from a table that a pull waited on.
+  On long polling a reload that waited for the end of its window was a timer
+  that the connection machine did not know, and the page still sent clicks.
+  Two rules were plain conditions, and the end of every request was stepped
+  as a cancellation. The commit after step 8 puts all of these into the
+  machines, with tests that failed first.
+- **The long-polling measurement.** Declared before the first run: the
+  event-latency harness, a plain page, `main` against the change, five
+  alternated pairs for each setting; a loss is a median p50 or p99 of the
+  time from a click to its patch above 110% of `main`. After step 8, one user
+  on long polling measured 110.1% at p50 (0.89 against 0.98 ms), so the work
+  stopped for a decision. A repeat, kept apart, measured 106.8%. A throwaway
+  experiment with marks in both servers found about 8 µs more in the intake
+  of a click and about 19 µs more in the delivery of the patch, on one
+  thread; the timer of each poll and the step at the end of each request are
+  about 7 µs of it. The user accepted the cost on 2026-11-22 because `main`
+  has the defects that this change removes: in a browser, on `main`, a lost
+  poll answer loses its patch and the next click, a click on an older display
+  runs the handler of the newer one, and a page whose stored state is gone
+  runs a handler of another route. Where `main` does better: when a view
+  ends while every poll fails, `main` goes on from the stored state, and the
+  change reloads once. At the end, with the commit of the audit, the same
+  runs measured: long polling one user 106.5% p50 and 98.9% p99, eight users
+  101.5% and 98.6%; WebSocket, plain page 100.0% and 108.8%, guarded page
+  101.1% and 100.0%. The load average was 5 to 8 on 16 cores.
+- **The controls of ADR 0004** ran at the end, not after step 3. The four
+  workloads of the gate, three alternated pairs of five seconds against
+  `main`, passed: throughput 100.5%, 103.0%, 100.3% and 100.0%; delivery p99
+  95.0%, 81.5%, 95.7% and 100.8%; allocation 100.0% in each (isolated,
+  contended, extensions, backlog). The load average was 7 to 11, so these
+  numbers are weaker evidence than a quiet machine would give.
 
 ## What is true when the plan is done
 

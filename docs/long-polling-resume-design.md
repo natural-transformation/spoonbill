@@ -1,12 +1,14 @@
 # Long polling that resumes: design
 
-Status: **revision 4**, 2026-11-22. For review. **Nothing of it is built.**
-Three throwaway trials, one inventory run and a few probes ran; every change
-was undone. Their results are in [Evidence](#evidence). Everything else is
-read from the code or reasoned, and marked so.
+Status: **revision 4**, 2026-11-22. **Built** on 2026-11-22; the
+[plan](long-polling-resume-plan.md#what-was-built) says where the work
+differs. Before that, three throwaway trials, one inventory run and a few
+probes ran; every change was undone. Their results are in
+[Evidence](#evidence). Everything else is read from the code or reasoned, and
+marked so.
 
 The [implementation plan](long-polling-resume-plan.md) says in which order it
-is built, and the [draft of ADR 0006](long-polling-resume-adr-0006-draft.md)
+is built, and [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md)
 records its one decision with a known cost. The reviews of this design and
 the reports of the defects that it names are working papers. They are not in
 the repository; this text says in short what it takes from them.
@@ -767,9 +769,8 @@ Each is the user's. The recommendation is first. Changed against revision 3:
     its branch.
 18. **An ADR entry for the delivery rule** when it is built. Not written
     before the user says so. **ADR 0006 is another matter:** the user asked
-    for it on 2026-11-22, for decision 25 only. Its
-    [draft](long-polling-resume-adr-0006-draft.md) becomes an ADR with the
-    implementation.
+    for it on 2026-11-22, for decision 25 only. It came into the
+    repository with the implementation: [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md).
 
 **About stored state.**
 
@@ -812,7 +813,7 @@ Each is the user's. The recommendation is first. Changed against revision 3:
     sticky routing is hit too: on `main` each server builds a state. With
     that in view the user kept the rule, and asked for an ADR so that the
     decision can be revisited and redesigned later. The
-    [draft of ADR 0006](long-polling-resume-adr-0006-draft.md) has the
+    [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md) has the
     decision, its cost, when to revisit it, and what a redesign has to keep.
     *Not taken:* the rule only where this change removes states, that is for
     a poll, and for a WebSocket with a local storage. It would leave the
@@ -1041,4 +1042,4 @@ and all of them hold.
   the storage cleanup after that review (revision 4).
 - On 2026-11-22 the user confirmed decision 25 with its larger consequence in
   view, and asked for an ADR for it:
-  [the draft](long-polling-resume-adr-0006-draft.md).
+  [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md).
