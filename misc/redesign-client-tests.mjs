@@ -1438,6 +1438,21 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('a command that throws on long polling is delivered once: no reload, and the next poll carries the next cursor', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        // evalJs whose result cannot be written as JSON: a cyclic object.
+        lp.polls()[0].frame(1, 0, JSON.stringify([10, '7', '(function(){var a={};a.a=a;return a})()']));
+        assert.equal(reloads, 0);
+        assert.equal(lp.polls().length, 2);
+        assert.equal(new URL(lp.polls()[1].url).searchParams.get('seen'), '1');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a DOM frame whose node is missing, or that throws, makes a long-polling page reload', () => {
       for (const patch of [
         JSON.stringify([4, 0, 'missing-parent', 'missing-parent_1', 0, 'div']),

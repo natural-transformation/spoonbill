@@ -108,12 +108,16 @@ export function pollDeadline(wait) {
 }
 
 /**
- * After the transport handed a frame to the bridge. Applied means applied: a
- * frame that applied in full is counted and the next poll goes out; one that
- * did not makes the page reload, and nothing is counted.
+ * After the transport handed a frame to the bridge. Only a DOM patch must
+ * apply: one that did not makes the page reload, and nothing is counted. Every
+ * other frame is delivered once, also one that threw in the bridge (a command
+ * whose result cannot be sent, a property of an element that is gone), as on a
+ * WebSocket: it is counted and the next poll goes out. Decided by the user on
+ * 2026-11-22, after the review of PR 42.
  */
 export function afterFrame(state, applied, domFrame) {
-  return applied ? {state: connectionStep(state, {type: 'frame-applied', domFrame}), next: 'poll'} : {state, next: 'reload'};
+  return applied || !domFrame ?
+    {state: connectionStep(state, {type: 'frame-applied', domFrame}), next: 'poll'} : {state, next: 'reload'};
 }
 
 /**

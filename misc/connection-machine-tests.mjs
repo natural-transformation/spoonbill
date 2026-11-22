@@ -148,16 +148,19 @@ test('the body of an answer is a DOM frame, another frame, or not a frame', () =
     assert.equal(frameKind(body), null, body);
 });
 
-test('a frame that applied is counted and the next poll goes out; one that did not makes the page reload', () => {
+test('a frame that applied is counted and the next poll goes out; a DOM frame that did not makes the page reload', () => {
   const state = {...initialConnection(), seen: 3, dom: 2};
   const dom = afterFrame(state, true, true);
   assert.equal(dom.next, 'poll');
   assert.deepEqual([dom.state.seen, dom.state.dom], [4, 3]);
   const other = afterFrame(state, true, false);
   assert.deepEqual([other.next, other.state.seen, other.state.dom], ['poll', 4, 2]);
-  // Nothing is counted for a frame that did not apply in full.
-  for (const domFrame of [true, false])
-    assert.deepEqual(afterFrame(state, false, domFrame), {state, next: 'reload'});
+  // Only a DOM patch must apply. Nothing is counted for one that did not.
+  assert.deepEqual(afterFrame(state, false, true), {state, next: 'reload'});
+  // Another frame that throws (a command, a property read) is delivered once,
+  // as on a WebSocket: it is counted, and the next poll goes out.
+  const thrown = afterFrame(state, false, false);
+  assert.deepEqual([thrown.next, thrown.state.seen, thrown.state.dom], ['poll', 4, 2]);
 });
 
 test('failed polls interrupt the link, show the notice from the second one, and back off', () => {
