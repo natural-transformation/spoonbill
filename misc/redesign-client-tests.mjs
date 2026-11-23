@@ -175,6 +175,21 @@ test('redesign client regressions against real source modules', { timeout: 10000
       assert.ok(!('1_11' in client.els) && !('1_31' in client.els) && !('1_91' in client.els), 'no concatenated ids');
     });
 
+    await t.test('a removal whose child the page never had counts as applied; a missing parent does not', () => {
+      // The page renderer writes an empty text as nothing, so the parsed page
+      // has no node for it. When the view later removes that text, the patch
+      // names a child that the page never had, and the page is still in step.
+      const removed = [];
+      const parent = {nodeType: 1, childNodes: [], removeChild: child => removed.push(child)};
+      const span = {nodeType: 1, childNodes: []};
+      const client = Object.assign(Object.create(Spoonbill.prototype), {els: {'1': parent, '1_1': span}});
+      assert.equal(client.modifyDom([2, '1', '1_2']), true, 'the empty text 1_2 has no node');
+      assert.deepEqual(removed, []);
+      assert.equal(client.modifyDom([2, '1', '1_1']), true);
+      assert.deepEqual(removed, [span]);
+      assert.equal(client.modifyDom([2, '9', '9_1']), false, 'a missing parent');
+    });
+
     await t.test('explicit native form submits without a callback or retained submit event despite named-control shadowing', () => {
       const form = new FormFake([], {});
       form.fields = null;
@@ -1369,6 +1384,401 @@ test('redesign client regressions against real source modules', { timeout: 10000
         globalThis.fetch = originalFetch;
         globalThis.setTimeout = originalSetTimeout;
         globalThis.clearTimeout = originalClearTimeout;
+      }
+    });
+
+    // Long polling that resumes, with the bridge on top of the transport.
+    const longPolling = (window, options = {}) => {
+      const requests = [];
+      globalThis.XMLHttpRequest = class extends EventTargetFake {
+        constructor() { super(); this.headers = {}; requests.push(this); }
+        open(method, url) { this.method = method; this.url = url; }
+        setRequestHeader() {}
+        send(body) { this.body = body; }
+        abort() { this.aborted = true; }
+        getResponseHeader(name) { return this.responseHeaders?.[name.toLowerCase()] ?? null; }
+        frame(number, dom, body) {
+          this.status = 200; this.responseText = body; this.readyState = 4;
+          this.responseHeaders = {'spoonbill-frame': String(number), 'spoonbill-dom': String(dom)};
+          this.dispatchEvent({type: 'readystatechange', target: this});
+        }
+      };
+      const timers = [];
+      globalThis.setTimeout = (callback, delay) => { const timer = {callback, delay}; timers.push(timer); return timer; };
+      globalThis.clearTimeout = timer => { if (timer) timer.cleared = true; };
+      const intervals = [];
+      globalThis.setInterval = (callback, delay) => { const interval = {callback, delay}; intervals.push(interval); return interval; };
+      globalThis.clearInterval = () => {};
+      const connection = new Connection('synthetic-session', '/', window.location, {ws: false, lpw: 1000, ...options});
+      connection._connectUsingConnectionType(ConnectionType.LONG_POLLING);
+      const bridge = new Bridge({heartbeat: {interval: '25', limit: '2'}, ...options}, connection);
+      const polls = () => requests.filter(request => request.method === 'GET');
+      const posts = () => requests.filter(request => request.method === 'POST');
+      const sent = () => posts().map(request => request.body);
+      const page = new URL(polls()[0].url).searchParams.get('page');
+      return {connection, bridge, polls, posts, sent, page, timers, intervals};
+    };
+    const timing = ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'XMLHttpRequest'];
+    const keepTiming = () => new Map(timing.map(name => [name, globalThis[name]]));
+    const restoreTiming = saved => { for (const [name, value] of saved) globalThis[name] = value; };
+
+    await t.test('a user event of a long-polling page travels in the envelope with the page id and DOM revision', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        lp.bridge._onCallback(CallbackType.DOM_EVENT, '0:1_1:click');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:0:${CallbackType.DOM_EVENT}:0:1_1:click`]));
+        // A DOM frame is one more revision of the page; another frame is not.
+        lp.polls()[0].frame(1, 0, '[9]');
+        lp.polls()[1].frame(2, 1, '[4]');
+        lp.bridge._onCallback(CallbackType.DOM_EVENT, '0:1_1:click');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:1:${CallbackType.DOM_EVENT}:0:1_1:click`]));
+        assert.equal(new URL(lp.polls()[2].url).searchParams.get('seen'), '2');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('an event that the page sends while it applies a DOM frame names the revision of that frame', () => {
+      // A custom element that a patch inserts can call back from its
+      // connectedCallback; the event belongs to the display that the frame makes.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        lp.bridge._spoonbill.modifyDom = () => { lp.bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'ready:1'); return true; };
+        lp.polls()[0].frame(1, 1, '[4]');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:1:${CallbackType.CUSTOM_CALLBACK}:ready:1`]));
+        lp.bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'later:1');
+        assert.equal(lp.sent().at(-1), JSON.stringify([CallbackType.VIEW_EVENT, `${lp.page}:1:${CallbackType.CUSTOM_CALLBACK}:later:1`]));
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a command that throws on long polling is delivered once: no reload, and the next poll carries the next cursor', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        // evalJs whose result cannot be written as JSON: a cyclic object.
+        lp.polls()[0].frame(1, 0, JSON.stringify([10, '7', '(function(){var a={};a.a=a;return a})()']));
+        assert.equal(reloads, 0);
+        assert.equal(lp.polls().length, 2);
+        assert.equal(new URL(lp.polls()[1].url).searchParams.get('seen'), '1');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a DOM frame whose node is missing, or that throws, makes a long-polling page reload', () => {
+      for (const patch of [
+        JSON.stringify([4, 0, 'missing-parent', 'missing-parent_1', 0, 'div']),
+        JSON.stringify([4, 3, 'missing-element', 0, 'title', 'x', false])
+      ]) {
+        const saved = keepTiming();
+        const { window } = browser();
+        let reloads = 0;
+        window.location.reload = () => { reloads++; };
+        const lp = longPolling(window);
+        try {
+          lp.polls()[0].frame(1, 1, patch);
+          assert.equal(reloads, 1, patch);
+          assert.equal(lp.polls().length, 1, 'no poll for the frame after it');
+        } finally { lp.bridge.destroy(); restoreTiming(saved); }
+      }
+    });
+
+    // The answer to a request: its status, and readystatechange.
+    const answer = (request, status) => {
+      request.status = status; request.readyState = 4; request.dispatchEvent({type: 'readystatechange', target: request});
+    };
+    const heartbeat = JSON.stringify([CallbackType.HEARTBEAT]);
+
+    await t.test('a long-polling page whose heartbeats the server takes and does not answer polls again once, then reloads', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        lp.intervals[0].callback();
+        assert.equal(lp.posts().at(-1).body, heartbeat);
+        answer(lp.posts().at(-1), 200);
+        // No reply by the next tick: the limit. The poll is given up and sent again, once.
+        lp.intervals[0].callback();
+        assert.equal(lp.polls()[0].aborted, true);
+        assert.equal(lp.polls().length, 2);
+        assert.equal(reloads, 0);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        // Still no reply at the next limit: the input of the view is dead.
+        lp.intervals[0].callback();
+        assert.equal(reloads, 1);
+        assert.equal(lp.polls().length, 2, 'no second re-poll');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('after an outage a heartbeat that the server takes replaces the poll that hangs, and the page does not reload', () => {
+      // The second review of PR 42, probe 1A: the reply to a heartbeat is lost,
+      // the page polls again, and that poll goes out while the link is down.
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 2, 'the re-poll at the limit');
+        // The link is down: the next heartbeat fails, and the second poll hangs.
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 0);
+        // The link is back: the server takes a heartbeat. The poll that hangs is replaced at once.
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls()[1].aborted, true);
+        assert.equal(lp.polls().length, 3);
+        lp.polls()[2].frame(1, 0, '[16]');
+        for (let tick = 0; tick < 3; tick++) lp.intervals[0].callback();
+        assert.equal(reloads, 0);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('after an interruption only the first message that the server takes replaces the poll, so a quiet poll reaches its 204', () => {
+      // The review at 82baf17a, finding 2: without a heartbeat limit the server
+      // sends no reply, and every taken heartbeat aborted the poll for good.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window, {heartbeat: {interval: '25'}});
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        answer(lp.polls()[0], 503);
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        answer(lp.polls().at(-1), 503);
+        assert.deepEqual(events, ['interrupt']);
+        // The poll after the back-off goes out, and the link is back.
+        lp.timers.filter(timer => timer.delay === 400 && !timer.cleared).at(-1).callback();
+        const quiet = lp.polls().length;
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, quiet + 1, 'the first taken message replaces the poll');
+        for (let tick = 0; tick < 4; tick++) {
+          lp.intervals[0].callback();
+          answer(lp.posts().at(-1), 200);
+        }
+        assert.equal(lp.polls().length, quiet + 1, 'the later ones leave the new poll alone');
+        assert.notEqual(lp.polls().at(-1).aborted, true);
+        answer(lp.polls().at(-1), 204);
+        assert.deepEqual(events, ['interrupt', 'resume']);
+        assert.equal(lp.connection.linkUp, true);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a heartbeat that fails counts for the notice, but does not let the next one replace a sound poll', () => {
+      // The review at fe313e1a, finding 1: heartbeats that alternate between
+      // 200 and 503 aborted the replacement poll every other interval, so it
+      // never reached its 204 and the notice stayed.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window, {heartbeat: {interval: '25'}});
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        answer(lp.polls()[0], 503);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, 2, 'the back-off is replaced by a poll at once');
+        for (let tick = 0; tick < 6; tick++) {
+          lp.intervals[0].callback();
+          answer(lp.posts().at(-1), tick % 2 === 0 ? 503 : 200);
+        }
+        assert.deepEqual(events, ['interrupt'], 'a failed heartbeat still counts for the notice');
+        assert.equal(lp.polls().length, 2, 'the replacement poll is left alone');
+        assert.notEqual(lp.polls()[1].aborted, true);
+        answer(lp.polls()[1], 204);
+        assert.deepEqual(events, ['interrupt', 'resume']);
+        assert.equal(lp.connection.linkUp, true);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a failed poll lets the next taken message replace the poll again', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window, {heartbeat: {interval: '25'}});
+      try {
+        answer(lp.polls()[0], 503);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, 2, 'the back-off is replaced by a poll at once');
+        // That poll fails too: the next taken message replaces its back-off again.
+        answer(lp.polls().at(-1), 503);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, 3);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a re-poll while the poll waits out its back-off polls at once', () => {
+      // Probe 1B: the bridge spends its one re-poll, so the re-poll must not be lost.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        answer(lp.polls()[0], 503);
+        const backOff = lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1);
+        assert.ok(backOff, 'the poll waits out its back-off');
+        lp.connection.repoll();
+        assert.equal(lp.polls().length, 2, 'the poll goes at once');
+        assert.equal(backOff.cleared, true, 'and not a second time when the back-off ends');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('on a hanging link a heartbeat that is written off is given up, so requests do not pile up', () => {
+      // Probe 2: a browser opens about six requests to one origin at a time.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      try {
+        for (let tick = 0; tick < 6; tick++) lp.intervals[0].callback();
+        const heartbeats = lp.posts().filter(request => request.body === heartbeat);
+        assert.equal(heartbeats.length, 6);
+        assert.deepEqual(heartbeats.map(request => request.aborted === true), [true, true, true, true, true, false]);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a long-polling heartbeat that no transport takes is not counted, and is no failed poll', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        // The transport refuses every message: no request goes out.
+        const send = lp.connection.send;
+        lp.connection.send = () => false;
+        for (let tick = 0; tick < 4; tick++) lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 1, 'no re-poll for heartbeats that never went out');
+        assert.notEqual(lp.polls()[0].aborted, true);
+        assert.deepEqual([events, reloads], [[], 0]);
+        // The transport takes messages again: the heartbeat goes out with its full allowance.
+        lp.connection.send = send;
+        lp.intervals[0].callback();
+        assert.equal(lp.posts().at(-1).body, heartbeat);
+        answer(lp.posts().at(-1), 200);
+        lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 2, 'then the limit counts as usual');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a long-polling page whose link hangs shows the notice, does not reload, and goes on when the link is back', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        // No heartbeat request is answered: each one is written off at the next tick, as a failed poll.
+        lp.intervals[0].callback();
+        lp.intervals[0].callback();
+        assert.deepEqual(events, []);
+        lp.intervals[0].callback();
+        assert.deepEqual(events, ['interrupt'], 'the notice at the second failure');
+        for (let tick = 0; tick < 6; tick++) lp.intervals[0].callback();
+        assert.equal(reloads, 0);
+        assert.equal(lp.polls().length, 1, 'no re-poll: no heartbeat was taken');
+        // The link is back: a heartbeat is taken. The poll from before is
+        // replaced at once, since it may hang on the broken link, and the
+        // reply answers the new one.
+        answer(lp.posts().at(-1), 200);
+        assert.deepEqual([lp.polls()[0].aborted, lp.polls().length], [true, 2]);
+        lp.polls()[1].frame(1, 0, '[16]');
+        assert.deepEqual(events, ['interrupt', 'resume']);
+        assert.equal(new URL(lp.polls().at(-1).url).searchParams.get('seen'), '1');
+        assert.equal(reloads, 0);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('the heartbeat goes on while long polling is interrupted, and its reply hides the notice', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window);
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        answer(lp.polls()[0], 500);
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        answer(lp.polls().at(-1), 0);
+        assert.deepEqual(events, ['interrupt']);
+        lp.timers.filter(timer => timer.delay === 400 && !timer.cleared).at(-1).callback();
+        // The third poll reaches the server and waits there. A heartbeat still goes out.
+        const before = lp.sent().filter(body => body === heartbeat).length;
+        lp.intervals[0].callback();
+        assert.equal(lp.sent().filter(body => body === heartbeat).length, before + 1);
+        answer(lp.posts().at(-1), 200);
+        lp.polls().at(-1).frame(1, 0, '[16]');
+        assert.deepEqual(events, ['interrupt', 'resume']);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('an unguarded WebSocket page whose reload waits sends no heartbeat, and its limit does not reload it', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const session = new Map();
+      window.sessionStorage = {getItem: key => session.get(key) ?? null, setItem: (key, value) => session.set(key, String(value)), removeItem: key => session.delete(key)};
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      globalThis.setTimeout = (callback, delay) => ({callback, delay});
+      globalThis.clearTimeout = () => {};
+      const intervals = [];
+      globalThis.setInterval = callback => { intervals.push(callback); return callback; };
+      globalThis.clearInterval = () => {};
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const connection = new Connection('synthetic-session', '/', window.location, {});
+          connection._connectUsingWebSocket();
+          const socket = WebSocketFake.instances.at(-1);
+          socket.protocol = 'json';
+          const bridge = new Bridge({heartbeat: {interval: '25', limit: '2'}}, connection);
+          connection.dispatcher.dispatchEvent({type: 'message', data: '[1]'});
+          if (attempt === 1) {
+            // The second reload in the window waits. The heartbeat stops, and its limit reloads nothing.
+            const sent = socket.sent.length;
+            for (let tick = 0; tick < 4; tick++) intervals.at(-1)();
+            assert.equal(reloads, 1);
+            assert.equal(socket.sent.length, sent);
+          }
+          bridge.destroy();
+        }
+      } finally { restoreTiming(saved); }
+    });
+
+    await t.test('the reload frame of an unguarded WebSocket page passes the reload guard; a guarded page reloads as before', () => {
+      for (const guarded of [false, true]) {
+        const saved = keepTiming();
+        const { window } = browser();
+        const session = new Map();
+        window.sessionStorage = {getItem: key => session.get(key) ?? null, setItem: (key, value) => session.set(key, String(value)), removeItem: key => session.delete(key)};
+        let reloads = 0;
+        window.location.reload = () => { reloads++; };
+        const timers = [];
+        globalThis.setTimeout = (callback, delay) => { const timer = {callback, delay}; timers.push(timer); return timer; };
+        globalThis.clearTimeout = () => {};
+        try {
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const connection = new Connection('synthetic-session', '/', window.location, guarded ? {auth: true} : {});
+            connection._connectUsingWebSocket();
+            WebSocketFake.instances.at(-1).protocol = 'json';
+            const bridge = new Bridge(guarded ? {auth: true, heartbeat: {interval: '0'}} : {heartbeat: {interval: '0'}}, connection);
+            connection.dispatcher.dispatchEvent({type: 'message', data: '[1]'});
+            bridge.destroy();
+          }
+          assert.equal(reloads, guarded ? 2 : 1, `guarded: ${guarded}`);
+          if (!guarded) assert.ok(timers.some(timer => timer.delay > 25000 && timer.delay <= 30000));
+        } finally { restoreTiming(saved); }
       }
     });
   } finally {

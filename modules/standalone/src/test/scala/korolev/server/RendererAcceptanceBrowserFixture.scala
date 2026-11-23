@@ -9,11 +9,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
+import spoonbill.Router
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Reporter, Stream}
 import spoonbill.effect.io.ServerSocket
+import spoonbill.state.{StateManager, StateStorage}
 import spoonbill.state.javaSerialization.*
-import spoonbill.web.Request
+import spoonbill.web.{PathAndQuery, Request}
 
 /**
  * Synthetic, loopback-only Spoonbill service used by
@@ -54,14 +56,52 @@ object RendererAcceptanceBrowserFixture {
     }
   }
 
+  /**
+   * The default storage, and the sessions that a control made it forget: a
+   * page whose stored state is gone before it connects. As with a state that
+   * was removed, a later `create` of that session stores a new one.
+   */
+  final class ForgettingStorage extends StateStorage[Future, Int] {
+    private val underlying                                  = StateStorage[Future, Int]()
+    private val forgotten                                   = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
+    override private[spoonbill] def localToProcess: Boolean = true
+    def forget(session: String): Unit                       = { forgotten.add(session); () }
+    def exists(device: String, session: String): Future[Boolean] =
+      if (forgotten.contains(session)) Future.successful(false) else underlying.exists(device, session)
+    def get(device: String, session: String): Future[StateManager[Future]] =
+      if (forgotten.contains(session)) Future.failed(new NoSuchElementException("Forgotten by the fixture"))
+      else underlying.get(device, session)
+    def create(device: String, session: String, state: Int): Future[StateManager[Future]] = {
+      forgotten.remove(session)
+      underlying.create(device, session, state)
+    }
+    def remove(device: String, session: String): Unit = underlying.remove(device, session)
+  }
+
+  /** The route of the `resume` scenario: `/orders/<stage>`. */
+  private val orders = "/orders/([0-9]{1,6})".r
+  private val resumeRouter = Router[Future, Int](
+    { case stage => PathAndQuery.fromString(s"/orders/$stage") },
+    { case path if orders.matches(path.mkString) => _ => Future.successful(path.mkString.stripPrefix("/orders/").toInt) }
+  )
+
   final class Run(val scenario: String, val presetIds: Boolean, val fault: String)(implicit ec: ExecutionContext) {
     val counters = new RendererAcceptanceDocuments.Counters
+    val storage  = new ForgettingStorage
+    private val resume = scenario == "resume" || scenario == "resume-heartbeat"
     val service = spoonbillService(
       SpoonbillServiceConfig[Future, Int, Any](
         stateLoader = StateLoader.default(0),
         document = RendererAcceptanceDocuments.document(scenario, counters),
+        router = if (resume) resumeRouter else Router.empty[Future, Int],
         presetIds = presetIds,
-        heartbeatInterval = 1.minute,
+        // `resume-heartbeat` runs the heartbeat of long polling: a tick every
+        // 500 ms and the default limit of two.
+        heartbeatInterval = if (scenario == "resume-heartbeat") 500.millis else 1.minute,
+        // A short idle timeout lets a case end a view by blocking its polls.
+        // A poll waits half of it.
+        sessionIdleTimeout = if (resume) 6.seconds else 60.seconds,
+        stateStorage = storage,
         reporter = silentReporter
       )
     )
@@ -96,7 +136,11 @@ object RendererAcceptanceBrowserFixture {
             case _ => Future.failed(new IllegalArgumentException("Unknown fixture run"))
           }
         } else if (path == "/fixture/status") HttpResponse.ok[Future](active.metadata)
-        else active.service.http(request)
+        else if (path.startsWith("/fixture/forget/") && request.method == Request.Method.Post) {
+          // The stored state of this session is gone, as after a removal.
+          active.storage.forget(path.stripPrefix("/fixture/forget/"))
+          HttpResponse.ok[Future]("forgotten")
+        } else active.service.http(request)
       }
       def ws(request: WebSocketRequest[Future]): Future[WebSocketResponse[Future]] = {
         val run = active

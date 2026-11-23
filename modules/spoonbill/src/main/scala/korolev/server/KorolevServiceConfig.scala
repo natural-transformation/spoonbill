@@ -53,7 +53,11 @@ case class SpoonbillServiceConfig[F[_], S, M](
   authenticationCompletion: Option[AuthenticationCompletionConfig[F]] = None,
   private[spoonbill] val browserSecurityInstallation: Option[spoonbill.auth.BrowserSecurityInstallation[F, S]] = None,
   staticResourceLimits: StaticResourceLimits = StaticResourceLimits(),
-  timerSettings: spoonbill.timer.TimerSettings = spoonbill.timer.TimerSettings()
+  timerSettings: spoonbill.timer.TimerSettings = spoonbill.timer.TimerSettings(),
+  // How long a long poll waits for a frame at most before it is answered with
+  // 204. Never more than half of sessionIdleTimeout. A proxy whose read timeout
+  // is shorter than this wait breaks long polling: set this below it.
+  longPollingWait: FiniteDuration = 15.seconds
 )(implicit val executionContext: ExecutionContext)
 
 object SpoonbillServiceConfig {

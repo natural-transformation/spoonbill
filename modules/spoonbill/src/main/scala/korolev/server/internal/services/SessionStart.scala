@@ -1,6 +1,7 @@
 package spoonbill.server.internal.services
 
 import spoonbill.effect.Stream
+import spoonbill.internal.Frontend
 
 /** Explicit result of preparing one connection. Callers choose reload or a live
   * session from this value, not from a later registry lookup or from whether
@@ -21,4 +22,14 @@ private[spoonbill] object SessionStart {
     * when a guard had been acquired. The caller sends the finite reload frame.
     */
   final case class Reload[F[_]]() extends SessionStart[F]
+
+  /** The view that this poll built. Its frames are the long-polling entry's,
+    * and nobody else's: no other transport gets them.
+    */
+  final case class Owned[F[_]](frames: Stream[F, Frontend.OutgoingFrame], release: () => F[Unit]) extends SessionStart[F]
+
+  /** A WebSocket that came after a poll built the view of its session. It gets
+    * nothing and is closed; the view goes on.
+    */
+  final case class Refused[F[_]]() extends SessionStart[F]
 }

@@ -49,4 +49,49 @@ class LegacySessionMachineSpec extends AnyFlatSpec with Matchers {
     step(failed, Event.Retire(Cause.Disconnected)) shouldBe (failed, Command.None)
     for (stage <- Stage.values) step(failed, Event.Finished(stage)) shouldBe (failed, Command.None)
   }
+
+  /** A retirement of `cause` that has run every stage before `stage`. */
+  private def at(cause: Cause, stage: Stage): State =
+    Stage.values.takeWhile(_ != stage).foldLeft(step(State(), Event.Retire(cause))._1) { (state, done) =>
+      step(state, Event.Finished(done))._1
+    }
+  private def retired(cause: Cause): State = step(at(cause, Stage.SettleRegistry), Event.Finished(Stage.SettleRegistry))._1
+
+  "A rollback" should "take its failure out of the registry once, after the registry has published it" in {
+    val done = retired(Cause.Abandoned)
+    val (forgotten, command) = step(done, Event.Published)
+    command shouldBe Command.Forget
+    forgotten.retirement shouldBe Retirement.Forgotten
+    step(forgotten, Event.Published) shouldBe (forgotten, Command.None)
+  }
+
+  it should "also be one when the attach failed before it had a view" in {
+    val (done, command) = step(State(), Event.NothingBuilt(removesState = false))
+    command shouldBe Command.None
+    done.retirement shouldBe Retirement.Done(Cause.Abandoned)
+    step(done, Event.Published)._2 shouldBe Command.Forget
+    // With a view there is a retirement to run, and this event changes nothing.
+    val running = step(State(), Event.Retire(Cause.Abandoned))._1
+    for (removes <- List(false, true)) step(running, Event.NothingBuilt(removes)) shouldBe (running, Command.None)
+  }
+
+  it should "remove the state of an attach that failed before it had a view, in a local storage only" in {
+    val (done, command) = step(State(), Event.NothingBuilt(removesState = true))
+    command shouldBe Command.RemoveState
+    done.retirement shouldBe Retirement.Done(Cause.Abandoned)
+    // Once only: a second report changes nothing.
+    step(done, Event.NothingBuilt(removesState = true)) shouldBe (done, Command.None)
+  }
+
+  "An attach that did not roll back" should "leave the registry alone when a failure is published" in {
+    val states = List(
+      State(),                                                  // it only waited for another attach
+      at(Cause.Abandoned, Stage.Restore),                       // its rollback still runs
+      retired(Cause.Disconnected),                              // its view was retired after a disconnect
+      step(at(Cause.Abandoned, Stage.Restore), Event.Failed)._1 // its rollback failed
+    )
+    for (state <- states) {
+      step(state, Event.Published) shouldBe (state, Command.None)
+    }
+  }
 }

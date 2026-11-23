@@ -62,8 +62,12 @@ class IO3Effect(runtime: IORuntime) extends KEffect[IO] {
       }
     }
 
+  // A wait that can be cancelled, as on the cats-effect that the build pins.
+  // From cats-effect 3.5 on `async_` cannot be cancelled while it waits; a
+  // finalizer that does nothing keeps the wait cancelable there too. A long
+  // poll whose request is cancelled leaves its wait this way.
   def promise[A](cb: (Either[Throwable, A] => Unit) => Unit): IO[A] =
-    IO.async_(cb)
+    IO.async[A](resume => IO.delay { cb(resume); Some(IO.unit) })
 
   def promiseF[A](cb: (Either[Throwable, A] => Unit) => IO[Unit]): IO[A] =
     Async[IO].async(cb(_).as(None))

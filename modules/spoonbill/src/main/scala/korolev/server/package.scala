@@ -18,6 +18,7 @@ package spoonbill
 
 import java.nio.charset.StandardCharsets
 import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.*
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Stream}
 import spoonbill.effect.syntax.*
@@ -116,7 +117,8 @@ package object server {
         commonService,
         sessionsService,
         config.compressionSupport,
-        config.sessionIdleTimeout,
+        // How long a long poll waits: one rule, which the page configuration names too.
+        PollAdmissionMachine.pollWaitMillis(config.longPollingWait.toMillis, config.sessionIdleTimeout.toMillis).millis,
         config.webSocketCompressionEnabled
       )
     val formDataCodec = new FormDataCodec

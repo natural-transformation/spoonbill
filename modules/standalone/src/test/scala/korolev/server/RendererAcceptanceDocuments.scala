@@ -20,7 +20,7 @@ import spoonbill.state.javaSerialization.*
  */
 object RendererAcceptanceDocuments {
 
-  val scenarios: Set[String] = Set("long-names", "collisions", "encoding", "first-patch")
+  val scenarios: Set[String] = Set("long-names", "collisions", "encoding", "first-patch", "resume", "resume-heartbeat")
 
   /** Handler invocations observed by the service; read through the status control. */
   final class Counters {
@@ -28,8 +28,12 @@ object RendererAcceptanceDocuments {
     val previous  = new AtomicInteger()
     val current   = new AtomicInteger()
     val component = new AtomicInteger()
-    def json: String =
-      s""""advance":${advance.get()},"previous":${previous.get()},"current":${current.get()},"component":${component.get()}"""
+    // The stages whose `resume-act` handler ran, in order.
+    val clicks = new java.util.concurrent.ConcurrentLinkedQueue[Integer]()
+    def json: String = {
+      val ran = clicks.toArray.mkString(",")
+      s""""advance":${advance.get()},"previous":${previous.get()},"current":${current.get()},"component":${component.get()},"clicks":[$ran]"""
+    }
   }
 
   // Former Avocet 1.x fixed-header limits: 10-char tags, 29-char attribute names.
@@ -208,6 +212,25 @@ object RendererAcceptanceDocuments {
       p(id := "fp-last", AttrDef("data-stage") := stage.toString, "last")
     )
 
+  /**
+   * Long polling that resumes (`misc/long-polling-native-tests.cjs`). A field
+   * that a patch must not disturb, a button that moves the stage on, and one
+   * whose handler records the stage that it was rendered for. The route of the
+   * page is `/orders/<stage>` (see the fixture).
+   */
+  private def resume(counters: Counters, stage: Int): Node =
+    div(
+      id := "resume",
+      p(id := "resume-stage", s"stage $stage"),
+      input(id := "resume-input", AttrDef("type") := "text"),
+      button(id := "resume-next", "Next", event("click")(access => access.transition(_ + 1))),
+      button(
+        id := "resume-act",
+        "Act",
+        event("click") { _ => counters.clicks.add(stage); Future.unit }
+      )
+    )
+
   def document(scenario: String, run: Counters)(stage: Int): Node = {
     activeCounters.set(Some(run))
     val content = scenario match {
@@ -215,6 +238,9 @@ object RendererAcceptanceDocuments {
       case "collisions"  => collisions(stage)
       case "encoding"    => encoding(stage)
       case "first-patch" => firstPatch(stage)
+      case "resume"      => resume(run, stage)
+      // The same page, with a short heartbeat (see the fixture).
+      case "resume-heartbeat" => resume(run, stage)
     }
     frame(run, stage, content)
   }

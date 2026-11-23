@@ -82,4 +82,60 @@ final class FrontendConnectionMachineSpec extends AnyFlatSpec with Matchers {
     registry.remove("two") shouldBe None
     registry.put("late", "third") shouldBe false
   }
+
+  "An unguarded view that resumes" should "publish its first render as revision 0 and count each DOM frame" in {
+    // The accepted first render of a view of a long-polling entry is the page's
+    // display 0: the page was rendered by the server, and nothing is sent.
+    val first = published(initial, reset = true)
+    first.view shouldBe View.Published(0L)
+    revision(first, 0L) shouldBe Revision.Current
+    val frames = (1 to 3).scanLeft(first)((state, _) => published(state, reset = false))
+    frames.map(_.view) shouldBe Vector(0L, 1L, 2L, 3L).map(View.Published(_))
+    val third = frames.last
+    // A user event names the revision that the page showed.
+    revision(third, 3L) shouldBe Revision.Current
+    revision(third, 2L) shouldBe Revision.Obsolete
+    revision(third, 0L) shouldBe Revision.Obsolete
+    revision(third, 4L) shouldBe Revision.Denied
+    revision(third, -1L) shouldBe Revision.Denied
+    // Before its first render a view has no handlers to select.
+    revision(initial, 0L) shouldBe Revision.Denied
+  }
+
+  it should "refuse browser input that names no revision, and nothing else" in {
+    // (resumes, browser input, revision) -> refused as unrevised
+    val table = List(
+      (true, true, None)        -> true,
+      (true, true, Some(3L))    -> false,
+      (true, false, None)       -> false, // history and programmatic transitions
+      (false, true, None)       -> false, // a view that does not resume
+      (false, false, None)      -> false
+    )
+    for (((resumes, browserInput, expected), refused) <- table)
+      withClue((resumes, browserInput, expected))(unrevised(resumes, browserInput, expected) shouldBe refused)
+  }
+
+  it should "check a browser callback against its revision right before it runs, and run any other action" in {
+    // (resumes, browser input) -> checked right before it runs
+    val table = List(
+      (true, true)   -> true,
+      (true, false)  -> false, // history and programmatic transitions always run
+      (false, true)  -> false, // a view that does not resume runs its callbacks directly
+      (false, false) -> false
+    )
+    for (((resumes, browserInput), checked) <- table)
+      withClue((resumes, browserInput))(checkedBeforeRun(resumes, browserInput) shouldBe checked)
+  }
+
+  it should "close a view whose input fails when it is guarded or resumes, and no other" in {
+    // (guarded, resumes) -> the view closes when its input fails
+    val table = List(
+      (true, false)  -> true,  // a guarded view, as on main
+      (false, true)  -> true,  // a view of a long-polling entry: else it stays deaf while its polls keep it
+      (false, false) -> false, // an unguarded WebSocket view keeps the failure in its input, as on main
+      (true, true)   -> true
+    )
+    for (((guarded, resumes), closes) <- table)
+      withClue((guarded, resumes))(closesOnFailedInput(guarded, resumes) shouldBe closes)
+  }
 }

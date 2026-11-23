@@ -21,6 +21,13 @@
 //                      apart from steady-state saves.
 //   BENCH_RECONNECT=1  after warmup every user drops its socket and reconnects
 //                      to the same view, which restores the saved projection.
+//
+// BENCH_TRANSPORT=long-polling uses long polling instead of the WebSocket, as
+// a browser does when its WebSocket is blocked (unguarded pages only). A page
+// whose configuration names a poll wait (`lpw:`) polls with its page id and
+// the number of the last frame it applied, and sends its events in the
+// envelope with its DOM revision, as the bridge of long polling that resumes
+// does; any other page polls as the bridge before that change did.
 import { readFileSync } from 'node:fs';
 const [base, usersArg = '1', clicksArg = '300', warmupArg = '50', thinkArg = '0'] = process.argv.slice(2);
 const users = Number(usersArg), clicks = Number(clicksArg), warmup = Number(warmupArg), think = Number(thinkArg);
@@ -28,6 +35,8 @@ const login = process.env.BENCH_LOGIN === '1';
 const phased = process.env.BENCH_PHASES === '1';
 const reconnectAfterWarmup = process.env.BENCH_RECONNECT === '1';
 const countFile = process.env.BENCH_COUNT_FILE;
+const polling = process.env.BENCH_TRANSPORT === 'long-polling';
+if (polling && (login || reconnectAfterWarmup)) throw new Error('Long polling is measured on unguarded pages only');
 const BUTTON = '1_2_1';
 const decoder = new TextDecoder();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -61,7 +70,7 @@ async function loadPage(cookie) {
   if (response.status !== 200) throw new Error(`page status ${response.status}`);
   const sid = /sid:'([^']+)'/.exec(html)[1];
   // Unguarded apps are ready at open; guarded apps announce readiness (21).
-  return { sid, cookie: withCookies(cookie, response), guarded: html.includes(',auth:true') };
+  return { sid, cookie: withCookies(cookie, response), guarded: html.includes(',auth:true'), resumes: /lpw:\d+/.test(html) };
 }
 
 // A reconnect tells the server the page's current location, as the bridge
@@ -72,26 +81,67 @@ async function connect(page, reconnecting = false) {
     { protocols: ['json'], headers: { Cookie: page.cookie, Origin: base } });
   ws.binaryType = 'arraybuffer';
   const session = { ws, counters: new Map(), view: null, revision: null, ready: false, waiters: [], closed: false,
-    lastText: '', shownCount: null };
-  ws.onmessage = event => {
-    const text = typeof event.data === 'string' ? event.data : decoder.decode(event.data);
-    session.lastText = text;
-    const shown = /count=(\d+)/.exec(text);
-    if (shown) session.shownCount = Number(shown[1]);
-    const frame = JSON.parse(text);
-    switch (frame[0]) {
-      case 0: session.counters.set(frame[1] + ':' + frame[2], frame[3]); break;
-      case 17: session.counters.clear(); break;
-      case 19: session.view = frame[2]; session.revision = frame[3]; break;
-      case 20: session.revision = frame[3]; break;
-      case 21: session.ready = true; break;
-      case 1: session.closed = true; break;
-    }
-    for (const waiter of session.waiters.splice(0)) waiter(text, frame);
-  };
-  ws.onclose = () => { session.closed = true; for (const waiter of session.waiters.splice(0)) waiter(null, null); };
+    lastText: '', shownCount: null, send: text => ws.send(text), close: () => ws.close() };
+  ws.onmessage = event => receive(session, typeof event.data === 'string' ? event.data : decoder.decode(event.data));
+  ws.onclose = () => ended(session);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('socket error')); });
   if (page.guarded) await until(session, () => session.ready, 10000);
+  return session;
+}
+
+// One frame from the server, by either transport.
+function receive(session, text) {
+  session.lastText = text;
+  const shown = /count=(\d+)/.exec(text);
+  if (shown) session.shownCount = Number(shown[1]);
+  const frame = JSON.parse(text);
+  switch (frame[0]) {
+    case 0: session.counters.set(frame[1] + ':' + frame[2], frame[3]); break;
+    case 17: session.counters.clear(); break;
+    case 19: session.view = frame[2]; session.revision = frame[3]; break;
+    case 20: session.revision = frame[3]; break;
+    case 21: session.ready = true; break;
+    case 1: session.closed = true; break;
+  }
+  for (const waiter of session.waiters.splice(0)) waiter(text, frame);
+}
+
+function ended(session) {
+  session.closed = true;
+  for (const waiter of session.waiters.splice(0)) waiter(null, null);
+}
+
+// Long polling: one poll waits at a time and every answer carries one frame.
+// The connection is open once the first frame has arrived.
+async function connectPolling(page) {
+  const prefix = `${base}/bridge/long-polling/${page.sid}/`;
+  const headers = { Cookie: page.cookie, Origin: base };
+  const id = page.resumes ? crypto.randomUUID() : null;
+  const session = { counters: new Map(), view: id, revision: id ? 0 : null, ready: false, waiters: [], closed: false,
+    lastText: '', shownCount: null, seen: 0, frames: 0 };
+  const cursor = () => (id ? `?page=${id}&seen=${session.seen}` : '');
+  session.send = text => fetch(prefix + 'publish' + cursor(),
+    { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: text })
+    .then(response => response.arrayBuffer());
+  // Closing aborts the poll that waits, so that nothing keeps the process alive.
+  const aborted = new AbortController();
+  session.close = () => { ended(session); aborted.abort(); };
+  (async () => {
+    while (!session.closed) {
+      const response = await fetch(prefix + 'subscribe' + cursor(), { headers, signal: aborted.signal });
+      const text = await response.text();
+      // The server answers an idle poll after its wait without a frame.
+      if (response.status === 204) continue;
+      if (response.status !== 200) throw new Error(`poll status ${response.status}`);
+      if (id) {
+        session.seen = Number(response.headers.get('spoonbill-frame'));
+        session.revision = Number(response.headers.get('spoonbill-dom'));
+      }
+      session.frames += 1;
+      receive(session, text);
+    }
+  })().catch(() => ended(session));
+  await until(session, () => session.frames > 0, 10000);
   return session;
 }
 
@@ -122,7 +172,7 @@ async function click(session, expected) {
     if (!patched && session.lastText.includes(marker)) { patched = true; patchAt = performance.now(); }
     return patched && (session.counters.get(key) ?? 0) > counter;
   }, 15000);
-  session.ws.send(message);
+  session.send(message);
   await done;
   return { patch: patchAt - started, ready: performance.now() - started };
 }
@@ -133,7 +183,7 @@ async function click(session, expected) {
 async function open() {
   const started = performance.now();
   const page = await loadPage(login ? await signIn() : '');
-  const session = await connect(page);
+  const session = polling ? await connectPolling(page) : await connect(page);
   totals.openMs.push(performance.now() - started);
   return { page, session };
 }
@@ -180,6 +230,7 @@ async function run(opened, results) {
       if (error.message !== 'closed') throw error;
       // The server closed the socket, as it does for a denied or rejected check.
       // Reconnect to the same view and adopt the count it shows now.
+      if (polling) throw error;
       const started = performance.now();
       session = await connect(page);
       totals.reconnects += 1;
@@ -189,7 +240,7 @@ async function run(opened, results) {
     }
     if (think > 0) await sleep(think);
   }
-  session.ws.close();
+  session.close();
 }
 
 // The server's counters and the proxy's round-trip count at a phase boundary.
@@ -219,7 +270,7 @@ const summary = values => {
     mean: values.reduce((sum, value) => sum + value, 0) / values.length };
 };
 const round = object => object && Object.fromEntries(Object.entries(object).map(([key, value]) => [key, Math.round(value * 100) / 100]));
-console.log(JSON.stringify({ base, users, clicksPerUser: clicks, warmup, thinkMs: think, samples: results.length,
+console.log(JSON.stringify({ base, transport: polling ? 'long-polling' : 'web-socket', users, clicksPerUser: clicks, warmup, thinkMs: think, samples: results.length,
   clicksPerSecond: Math.round(results.length / elapsed), reconnects: totals.reconnects,
   reconnectMs: round(summary(totals.reconnectMs)),
   openMs: round(summary(totals.openMs)), restores: totals.restoreMs.length, restoreAttempts: totals.restoreAttempts,

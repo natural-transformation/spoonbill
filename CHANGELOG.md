@@ -104,14 +104,94 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - Internal: `AsyncTable.settled` completes when a key is no longer being
   filled.
 
+- **Long polling resumes after a failed poll.** A long-polling page keeps its
+  bridge, its view and what the user typed when a poll fails, and polls again
+  after the reconnect back-off. Every poll and message names the page (a
+  UUID that the page makes) and the last frame that it applied:
+  `?page=<id>&seen=<n>`. The server answers `seen=n` only with frame `n + 1`
+  of the view that this page owns, names its number and the DOM revision
+  after it in the headers `spoonbill-frame` and `spoonbill-dom`, and keeps
+  the frame until the page confirms it. A poll waits `longPollingWait` (new,
+  15 seconds by default, at most half of `sessionIdleTimeout`) and is then
+  answered with `204`; the Akka and Pekko poll routes raise their request
+  timeout above that wait. A click or a custom
+  callback made on an older display than the view's runs no handler and is
+  counted in `obsolete-browser-events`; a history event is always handled.
+  The page reloads only when its view is gone or an answer does not fit;
+  `408` and `429` are failed polls. The connection-lost notice shows from the
+  second failed poll in a row until the next answer. A message that no view
+  can take is answered with `410`. Only a DOM patch must apply: another
+  frame that throws is delivered once, as on a WebSocket.
+- On long polling the heartbeat goes on while the link is interrupted. A
+  heartbeat that cannot be sent is a failed poll, so a link that hangs shows
+  the notice; heartbeats that the server takes and does not answer give one
+  re-poll, then a reload through the reload guard. A heartbeat that fails
+  gives that re-poll back, and a heartbeat that is written off gives up its
+  request. The first message that the server takes while the link is
+  interrupted replaces a poll that hangs or waits out its back-off at once;
+  the poll that it starts waits for its answer. A WebSocket
+  of a session whose view a poll owns gets the reload frame.
+- A framework reload of an unguarded page happens at most once in 30 seconds
+  for a tab, on both transports. A second one shows the connection-lost
+  notice and waits for the end of that time; meanwhile the page sends,
+  polls and reconnects nothing. Without `sessionStorage` the page reloads at
+  once.
+- **A missing stored state means reload.** An unguarded attach whose stored
+  state is missing no longer builds a state from its bridge request, which
+  matches no route and gave the view of the default route. The page is told
+  to reload, on a WebSocket and on long polling, and is rendered again from
+  its own address. `missing-state-reloads` counts these reloads.
+  [ADR 0006](docs/adr/0006-legacy-attach-needs-stored-state.md) records the
+  decision, its cost and when to revisit it.
+- The stored state of an unguarded page that no view claimed within
+  `sessionIdleTimeout` is removed at a later render, and the state of an
+  attach that failed before it had a view is removed at once. Only the
+  built-in default storage, which is local to the process, removes anything:
+  a storage over a repository and a storage that an application wrote are
+  never asked to delete.
+- An attach that failed and was rolled back no longer fails the attaches of
+  that session that come after it.
+- A long-polling view whose frames end, or whose input fails (a message that
+  it cannot read), retires at once, and its page is told to reload. Before,
+  it lived until its idle timeout and handled nothing.
+- An unguarded attach is one effect from the claim of its fresh-page record
+  to its end. A storage whose `exists` throws, instead of failing its effect,
+  no longer leaves a long-polling entry without a view, whose polls only got
+  `204`; with cats-effect and ZIO a cancelled WebSocket attach no longer
+  leaves a stored state without its record or a view.
+- The cleanup of unclaimed pages steps every record that it took, also when
+  a removal fails and its report throws. An attach that failed before it had
+  a view keeps its own error when the removal of its state fails too.
+- cats-effect: `Effect.promise` can be cancelled also with cats-effect 3.5 or
+  newer, where `IO.async_` cannot be cancelled while it waits. A long poll
+  whose request is cancelled leaves its wait there too.
+
 - Fix: the browser client keeps one connection at a time. A
   `Spoonbill.connect()` while an attempt is pending starts no second attempt,
   and a new transport closes the one it replaces. Two quick calls used to open
   two WebSockets, and a call on an open connection left the old socket open.
-- Fix: `Spoonbill.disconnect()` ends a long-polling connection. It aborts the
-  outstanding request and reports the closed connection once, as with a
-  WebSocket; it reconnects only when asked to. The page used to go on polling
-  and applying frames.
+- Fix: `Spoonbill.disconnect()` stops long polling. The poll that waits is
+  given up and the page sends nothing more, but it keeps its bridge and its
+  view: a later `Spoonbill.connect()` goes on with the same page and the
+  frame that it applied last, and the page reloads only if its view has
+  ended meanwhile. `disconnect(true)` polls again at once. The page used to
+  go on polling and applying frames.
+
+**For deployments.**
+
+- The long-polling protocol changed on both sides. A long-polling page that
+  an earlier version rendered is told to reload when it reaches a server of
+  this version.
+- With `StateStorage.fromRepository` the retirement of a view removes its
+  row, so every reconnect after a closed WebSocket now reloads the page. With
+  the default storage a page reloads after a restart of the server. With
+  several servers that share no repository and have no sticky routing, a page
+  reloads until its render and its attach meet on one server. Watch
+  `missing-state-reloads`; ADR 0006 says what a redesign has to keep. It
+  counts the reloads where the storage was asked: a WebSocket attach, and the
+  first poll of a page that this server rendered. A long-polling page after a
+  restart of the server, or on another server, is told to reload before that,
+  for its missing fresh-page record, and is not counted.
 
 ## 10.0.1 — 2026-11-12
 

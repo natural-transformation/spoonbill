@@ -3,7 +3,7 @@ import { Procedure, CallbackType, PropertyType } from './protocol.js';
 import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
 import {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
-  acceptsSensitiveView, validBarrier} from './bridge-machine.js';
+  acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer, heartbeatRefused} from './bridge-machine.js';
 
 const ProtocolDebugEnabledKey = "$bridge.protocolDebugEnabled";
 
@@ -18,7 +18,9 @@ export class Bridge {
     this._spoonbill = new Spoonbill(config, this._onCallback.bind(this));
     this._spoonbill.registerRoot(document.children[0]);
     this._connection = connection;
-    this._lifecycle = initialBridge(config['auth'] === true);
+    // A long-polling bridge starts with the view of its page: its user events
+    // carry the page id and the DOM revision that the page shows.
+    this._lifecycle = initialBridge(config['auth'] === true, connection.longPolling ? connection.page : null);
     this._guarded = config['auth'] === true;
     this._messageHandler = this._onMessage.bind(this);
     this._sensitive = new SensitiveRegions(
@@ -34,29 +36,62 @@ export class Bridge {
     let interval = parseInt(config['heartbeat']['interval'], 10);
 
     if (interval > 0) {
-      if (config['heartbeat']['limit']) {
-        this._heartbeatLimit = parseInt(config['heartbeat']['limit'], 10)
-        this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
-      }
+      this._heartbeatLimit = config['heartbeat']['limit'] ? parseInt(config['heartbeat']['limit'], 10) : 0;
+      this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-configured'});
 
       this._intervalId = setInterval(() => {
         // The bounded cookie handoff temporarily suspends socket callbacks.
         if (this._connection.authenticationPending) return;
-        if (this._heartbeatLimit) {
-          this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-tick'});
-
-          if (this._lifecycle.outstandingHeartbeats === this._heartbeatLimit) {
-            console.log('Too many lost heartbeats, reloading')
+        // The machine decides: a heartbeat, a re-poll, a reload, or nothing
+        // once a reload has started. The heartbeat goes on while long polling
+        // is interrupted: its reply answers the poll that the server holds,
+        // so the notice hides soon after the link is back.
+        const out = heartbeatTick(this._lifecycle, this._heartbeatLimit, this._connection.longPolling,
+          this._connection.reloadStarted);
+        this._lifecycle = out.state;
+        if (out.failed) {
+          // The heartbeat that was written off gives up its request.
+          this._connection.abortHeartbeat();
+          this._connection.messageFailed();
+        }
+        switch (out.command) {
+          case 'send':
+            this._sendHeartbeat(out.seq);
+            break;
+          case 'repoll':
+            console.log('Too many lost heartbeats, polling again');
+            this._connection.repoll();
+            break;
+          case 'reload':
+            console.log('Too many lost heartbeats, reloading');
             this._connection.disconnect(false);
-            window.location.reload();
-          } else {
-            this._onCallback(CallbackType.HEARTBEAT)
-          }
-        } else {
-          this._onCallback(CallbackType.HEARTBEAT)
+            // A guarded page reloads in flows of its own; an unguarded page
+            // passes the reload guard, as on the reload frame.
+            if (this._guarded) window.location.reload();
+            else this._connection.reloadPage();
+            break;
         }
       }, interval);
     }
+  }
+
+  /**
+   * One heartbeat. On long polling (`seq` is its number) the transport says
+   * whether the server took it; one that could not be sent is a failed poll.
+   * @param {?number} seq
+   */
+  _sendHeartbeat(seq) {
+    const message = JSON.stringify([CallbackType.HEARTBEAT]);
+    if (protocolDebugEnabled)
+      console.log('<- callback', CallbackType.HEARTBEAT);
+    const onAnswer = seq === null ? undefined : sent => {
+      const out = heartbeatAnswer(this._lifecycle, seq, sent);
+      this._lifecycle = out.state;
+      if (out.failed) this._connection.messageFailed();
+    };
+    // A heartbeat that no transport took is not in flight, not counted, and no failed poll.
+    if (!this._connection.send(message, onAnswer) && seq !== null)
+      this._lifecycle = heartbeatRefused(this._lifecycle, seq);
   }
 
   /**
@@ -111,10 +146,12 @@ export class Bridge {
     }
   }
 
+  /** @return {boolean} Every command found its node. */
   _modifyDom(commands) {
     this._sensitive.beforePatch(commands);
-    this._spoonbill.modifyDom(commands);
+    const complete = this._spoonbill.modifyDom(commands);
     this._sensitive.reconcile();
+    return complete;
   }
 
   _onMessage(event) {
@@ -129,11 +166,20 @@ export class Bridge {
         case Procedure.RELOAD:
           this._sensitive.clearAll();
           this._connection.disconnect(false);
-          window.location.reload();
+          // A guarded page reloads in flows of its own. An unguarded page
+          // passes the reload guard, on both transports.
+          if (this._guarded) window.location.reload();
+          else this._connection.reloadPage();
           break;
         case Procedure.LISTEN_EVENT: k.listenEvent.apply(k, commands); break;
         case Procedure.EXTRACT_PROPERTY: k.extractProperty.apply(k, commands); break;
-        case Procedure.MODIFY_DOM: this._modifyDom(commands); break;
+        case Procedure.MODIFY_DOM:
+          // The revision of the frame is the view's from the start of the
+          // patch. The transport learns whether the frame was applied; a
+          // long-polling page reloads after one that was not.
+          this._lifecycle = bridgeStep(this._lifecycle, {type: 'dom-frame'});
+          if (!this._modifyDom(commands)) event.applied = false;
+          break;
         case Procedure.FOCUS: k.focus.apply(k, commands); break;
         case Procedure.CHANGE_PAGE_URL: {
           // The router may emit an equivalent raw Unicode/space URL on every
@@ -223,6 +269,7 @@ export class Bridge {
         default: console.error(`Procedure ${pCode} is undefined`);
       }
     } catch (error) {
+      event.applied = false;
       if (pCode === Procedure.PRESENT_SENSITIVE || pCode === Procedure.CLEAR_SENSITIVE) {
         this._sensitive.clearAll(false);
         console.error('Sensitive presentation failed');

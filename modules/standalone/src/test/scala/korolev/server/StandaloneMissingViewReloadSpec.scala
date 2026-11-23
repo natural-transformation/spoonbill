@@ -103,7 +103,8 @@ final class StandaloneMissingViewReloadSpec extends AnyFlatSpec with Matchers {
         .join()
       done.get(8, TimeUnit.SECONDS)
       frames.asScala.toList shouldBe List("[1]")
-      rebuilds.get() shouldBe (if (control.isEmpty) 1 else 0)
+      // An attach never builds a state, so the state loader is not called.
+      rebuilds.get() shouldBe 0
       control.foreach { probe =>
         probe.opened.get() shouldBe 0
         probe.resumed.get() shouldBe 1
@@ -114,7 +115,7 @@ final class StandaloneMissingViewReloadSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  "Missing local view over the standalone socket" should "send reload and close when rebuild fails" in {
+  "Missing local view over the standalone socket" should "send reload and close when the stored state is missing" in {
     expectReload(None)
   }
 
