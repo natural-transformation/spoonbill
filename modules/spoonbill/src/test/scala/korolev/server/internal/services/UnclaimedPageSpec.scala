@@ -212,6 +212,47 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
     storage.removed.get(s"${page.qsid.deviceId}-${page.qsid.sessionId}") shouldBe Some(1)
   }
 
+  it should "leave no reservation when the storage fails, also when it throws before it returns an effect" in {
+    // The review at b6194262: fromRepository calls the serializer and the
+    // snapshot callback while it builds its effect, so a callback that throws
+    // throws out of create itself.
+    val rows = TrieMap.empty[String, Map[Id, Array[Byte]]]
+    @volatile var writes: String = "fail"
+    val storage = StateStorage.fromRepository[Future, Int](
+      repositoryExists = key => Future.successful(rows.contains(key)),
+      loadSnapshot = key => Future.successful(rows.getOrElse(key, Map.empty)),
+      createSnapshot = (key, snapshot) =>
+        writes match {
+          case "fail"  => Future.failed(new IllegalStateException("the database is down"))
+          case "throw" => throw new IllegalStateException("the database driver threw")
+          case _       => Future.successful { rows.put(key, snapshot); () }
+        },
+      writeNode = (key, node, bytes) => Future.successful { rows.updateWith(key)(_.map(_.updated(node, bytes))); () },
+      deleteNode = (_, _) => Future.unit,
+      removeRepository = key => Future.successful { rows.remove(key); () }
+    )
+    val f = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    def renderFails(): Unit = {
+      val rendered = f.sessions.initAppState(
+        spoonbill.Qsid("long-polling", java.util.UUID.randomUUID().toString),
+        spoonbill.web.Request(spoonbill.web.Request.Method.Get, spoonbill.web.PathAndQuery.Root, Nil, None, ())
+      )
+      f.worker.drain()
+      rendered.value.exists(_.isFailure) shouldBe true
+    }
+    for (mode <- List("fail", "throw")) {
+      writes = mode
+      for (_ <- 1 to 10) renderFails()
+      withClue(s"after writes that $mode: ")(f.sessions.freshPageRecords shouldBe 0)
+    }
+    // Later the writes succeed: the expiry and an attach leave nothing behind.
+    writes = "ok"
+    f.advance(2.minutes)
+    val page = f.render()
+    read(await(f.poll(page, 0L))).frame shouldBe Some(1L)
+    f.sessions.freshPageRecords shouldBe 0
+  }
+
   /** A render whose write ends only when the returned promise is completed, and its page. */
   private def slowRender(f: LongPollingFixture, storage: Local): (f.Page, Promise[Unit], Future[Int]) = {
     val page  = f.Page(spoonbill.Qsid("long-polling", java.util.UUID.randomUUID().toString))

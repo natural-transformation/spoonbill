@@ -157,17 +157,21 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       // runs. The record and its lifetime start when the state is stored. A
       // write that fails or is cancelled ends the reservation, and a state
       // that it left in a storage local to this process is dropped; a
-      // repository is never asked to delete (the review at fe313e1a).
-      _ <- Effect[F].delay {
-             if (config.sessionAccessControl.isEmpty) updateMetadata(SessionRegistryMachine.storing(_, qsid))
-           }
+      // repository is never asked to delete (the review at fe313e1a). The
+      // reservation and the call of the storage are inside the scope of the
+      // finalizer: a storage that throws before it returns an effect, as a
+      // repository's callback may, and a cancel right after the reservation
+      // end it as well (the review at b6194262).
       _ <- Effect[F].guarantee(
-             stateStorage.create(qsid.deviceId, qsid.sessionId, state).flatMap { _ =>
-               Effect[F].delay {
-                 if (config.sessionAccessControl.isEmpty)
-                   updateMetadata(metadata => SessionRegistryMachine.rendered(metadata, qsid, nanoTime()))
+             Effect[F]
+               .delay(if (config.sessionAccessControl.isEmpty) updateMetadata(SessionRegistryMachine.storing(_, qsid)))
+               .flatMap(_ => Effect[F].delayAsync(stateStorage.create(qsid.deviceId, qsid.sessionId, state)))
+               .flatMap { _ =>
+                 Effect[F].delay {
+                   if (config.sessionAccessControl.isEmpty)
+                     updateMetadata(metadata => SessionRegistryMachine.rendered(metadata, qsid, nanoTime()))
+                 }
                }
-             }
            )(Effect[F].delay(if (config.sessionAccessControl.isEmpty) endReservation(qsid)))
       // The cleanup runs to its end: a record that it gave out for removal
       // must not stay releasing because the render was cancelled.
