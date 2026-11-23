@@ -348,7 +348,7 @@ package object pekko {
   )(implicit mat: Materializer, async: Effect[F], ec: ExecutionContext): Route =
     extractUnmatchedPath { path =>
       // A long-polling subscribe waits on the server for its frame.
-      val polls = path.toString.contains("/bridge/long-polling/") && path.toString.endsWith("/subscribe")
+      val polls = spoonbill.server.internal.services.PollAdmissionMachine.subscribePath(path.toString)
       (if (polls) withRequestTimeout(pollRequestTimeout) else pass) {
         extractRequest { request =>
           val sink = Sink.spoonbillStream[F, Bytes]

@@ -102,6 +102,20 @@ private[spoonbill] object PollAdmissionMachine {
    * that the client's deadline is a sound timer. The page configuration names
    * the same number (`lpw`).
    */
+  /**
+   * Whether a request path, relative to where the service is mounted, is the
+   * subscribe endpoint of long polling: `/bridge/long-polling/<session>/subscribe`,
+   * the route of `KorolevServiceImpl`. The Akka and Pekko adapters give only
+   * that route the request timeout of a poll; an application route with a
+   * like name keeps the timeout of the server (the review at `fe313e1a`).
+   */
+  def subscribePath(path: String): Boolean =
+    // A limit of -1 keeps a trailing empty segment, so `…/subscribe/` is no poll.
+    path.split("/", -1).toList match {
+      case "" :: "bridge" :: "long-polling" :: session :: "subscribe" :: Nil => session.nonEmpty
+      case _                                                                  => false
+    }
+
   def pollWaitMillis(settingMillis: Long, idleTimeoutMillis: Long): Long =
     math.max(100L, math.min(600000L, math.min(settingMillis, idleTimeoutMillis / 2)))
 

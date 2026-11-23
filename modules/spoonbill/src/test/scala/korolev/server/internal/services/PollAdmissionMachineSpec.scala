@@ -97,4 +97,19 @@ class PollAdmissionMachineSpec extends AnyFlatSpec with Matchers {
     for (((setting, idle), wait) <- table)
       withClue((setting, idle))(PollAdmissionMachine.pollWaitMillis(setting, idle) shouldBe wait)
   }
+
+  it should "name as a poll only the subscribe endpoint, by its segments" in {
+    // path, relative to where the service is mounted -> a poll
+    val table = List(
+      "/bridge/long-polling/9f2c/subscribe"            -> true,
+      "/reports/bridge/long-polling/archive/subscribe" -> false, // an application route with a like name
+      "/bridge/long-polling/9f2c/publish"              -> false,
+      "/bridge/long-polling/subscribe"                 -> false,
+      "/bridge/long-polling//subscribe"                -> false,
+      "/bridge/long-polling/9f2c/subscribe/"           -> false,
+      "/bridge/long-polling/9f2c/more/subscribe"       -> false,
+      "bridge/long-polling/9f2c/subscribe"             -> false
+    )
+    for ((path, polls) <- table) withClue(path)(PollAdmissionMachine.subscribePath(path) shouldBe polls)
+  }
 }

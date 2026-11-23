@@ -79,4 +79,32 @@ final class PekkoLongPollWaitSpec extends AnyFreeSpec with Matchers with BeforeA
       } finally Await.result(binding.unbind(), timeout)
     }
   }
+
+  "An application route whose path only looks like a poll" - {
+    "keeps the request timeout of the server" in {
+      // Its render takes 2 s, more than the 1 s request timeout of this server
+      // and less than the timeout of a poll.
+      val config = SpoonbillServiceConfig[Future, String, Any](
+        stateLoader = StateLoader.default("quiet"),
+        router = spoonbill.Router[Future, String](
+          { case _ => spoonbill.web.PathAndQuery.Root },
+          {
+            case path if path.mkString.startsWith("/reports") =>
+              _ => Future(scala.concurrent.blocking { Thread.sleep(2000); "slow" })
+          }
+        ),
+        document = state => Html(body(p(state))),
+        stateStorage = StateStorage.ephemeral[Future, String](16),
+        sessionIdleTimeout = 4.seconds,
+        heartbeatLimit = None
+      )
+      val route   = pekkoHttpService(config).apply(PekkoHttpServerConfig())
+      val binding = Await.result(Http().newServerAt("127.0.0.1", 0).bind(route), timeout)
+      try {
+        val base             = s"http://127.0.0.1:${binding.localAddress.getPort}"
+        val (response, _, _) = get(base + "/reports/bridge/long-polling/archive/subscribe")
+        response.status.intValue shouldBe 503
+      } finally Await.result(binding.unbind(), timeout)
+    }
+  }
 }
