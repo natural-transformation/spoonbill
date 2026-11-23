@@ -7,8 +7,9 @@ import scala.collection.immutable.TreeMap
  * the application table. Storage retirement executes outside the metadata
  * monitor, while the exact attachment owner retains the local fence.
  *
- * An unguarded page has a fresh-page record: made when the page is rendered,
- * before its state is stored, and taken once by the attach of its session.
+ * An unguarded page has a fresh-page record: reserved while its state is
+ * stored, made when the state is stored, and taken once by the attach of its
+ * session. A write that fails or is cancelled ends the reservation.
  * It is positive evidence that the stored state is the one that the page
  * shows. A record ends in one of three steps of this one state, so only one
  * can win: a claim takes it, or an expiry takes it at a later render, or the
@@ -19,6 +20,13 @@ private[spoonbill] object SessionRegistryMachine {
 
   /** The fresh-page record of an unguarded page, with the time when the page was rendered. */
   enum FreshPage {
+
+    /**
+     * Reserved while the state of the page is stored. It is not in the order
+     * of the renders, so no expiry takes it, and a claim finds no record: no
+     * browser has the page yet. Added after the review at `fe313e1a`.
+     */
+    case Storing
 
     /** Rendered, and not claimed. */
     case Waiting(rendered: Long)
@@ -135,9 +143,32 @@ private[spoonbill] object SessionRegistryMachine {
     withFresh(state.copy(freshOrder = state.freshOrder.removed(key)), key, None)
 
   /**
-   * A page of the session was rendered at `now`. It is made before the state is
-   * stored, so that no stored state is without a record. A record whose state is
-   * being removed stays as it is.
+   * The state of a page is being stored: its record is reserved, so that no
+   * stored state is without a record, and no expiry can take the record of a
+   * write that is still running. A record whose state is being removed stays
+   * as it is.
+   */
+  def storing[K, C, P](state: State[K, C, P], key: K): State[K, C, P] =
+    slot(state, key).fresh match {
+      case Some(FreshPage.Releasing(_)) => state
+      case _                            => withFresh(state.copy(freshOrder = state.freshOrder.removed(key)), key, Some(FreshPage.Storing))
+    }
+
+  /**
+   * The write of a reserved record has ended without the record: it failed or
+   * was cancelled. The reservation ends, and the answer says whether there was
+   * one, so that a state that the write left in a local storage is dropped.
+   */
+  def storeEnded[K, C, P](state: State[K, C, P], key: K): (State[K, C, P], Boolean) =
+    slot(state, key).fresh match {
+      case Some(FreshPage.Storing) => (withFresh(state, key, None), true)
+      case _                       => (state, false)
+    }
+
+  /**
+   * The state of a page of the session is stored at `now`: its record waits
+   * from then on, at the end of the order. A record whose state is being
+   * removed stays as it is.
    */
   def rendered[K, C, P](state: State[K, C, P], key: K, now: Long): State[K, C, P] =
     slot(state, key).fresh match {
@@ -162,6 +193,7 @@ private[spoonbill] object SessionRegistryMachine {
   ): (State[K, C, P], FreshClaim) =
     slot(state, key).fresh match {
       case None                         => (state, FreshClaim.Absent)
+      case Some(FreshPage.Storing)      => (state, FreshClaim.Absent)
       case Some(FreshPage.Releasing(_)) => (state, FreshClaim.Releasing)
       case Some(FreshPage.Waiting(rendered)) =>
         if (fresh(rendered, now, lifetimeNanos)) (withoutFresh(state, key), FreshClaim.Fresh)

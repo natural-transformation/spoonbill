@@ -151,13 +151,24 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                  .fold(Effect[F].pure(defaultState))(f => f(defaultState))
       _ <- config.sessionAccessControl.fold(Effect[F].unit)(control => required(control.authorizeHttp(rh, state)))
       _ <- config.sessionAccessControl.flatMap(_.prepareHttp(qsid, rh, state)).fold(Effect[F].unit)(required(_))
-      // An unguarded page gets its fresh-page record before its state is
-      // stored, so that no stored state is without a record.
+      // An unguarded page reserves its fresh-page record while its state is
+      // stored, so that no stored state is without a record. A reservation
+      // does not expire: no sweep can take the record of a write that still
+      // runs. The record and its lifetime start when the state is stored. A
+      // write that fails or is cancelled ends the reservation, and a state
+      // that it left in a storage local to this process is dropped; a
+      // repository is never asked to delete (the review at fe313e1a).
       _ <- Effect[F].delay {
-             if (config.sessionAccessControl.isEmpty)
-               updateMetadata(metadata => SessionRegistryMachine.rendered(metadata, qsid, nanoTime()))
+             if (config.sessionAccessControl.isEmpty) updateMetadata(SessionRegistryMachine.storing(_, qsid))
            }
-      _ <- stateStorage.create(qsid.deviceId, qsid.sessionId, state)
+      _ <- Effect[F].guarantee(
+             stateStorage.create(qsid.deviceId, qsid.sessionId, state).flatMap { _ =>
+               Effect[F].delay {
+                 if (config.sessionAccessControl.isEmpty)
+                   updateMetadata(metadata => SessionRegistryMachine.rendered(metadata, qsid, nanoTime()))
+               }
+             }
+           )(Effect[F].delay(if (config.sessionAccessControl.isEmpty) endReservation(qsid)))
       // The cleanup runs to its end: a record that it gave out for removal
       // must not stay releasing because the render was cancelled.
       _ <- Effect[F].uncancelable(Effect[F].delay(if (config.sessionAccessControl.isEmpty) expireFreshPages()))
@@ -173,8 +184,29 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   def getApp(qsid: Qsid): F[Option[App]] =
     apps.getImmediately(qsid)
 
-  /** The fresh-page records that this service holds. Only for tests. */
-  private[services] def freshPageRecords: Int = registryMonitor.synchronized(metadata.freshOrder.size)
+  /** The fresh-page records that this service holds, reservations too. Only for tests. */
+  private[services] def freshPageRecords: Int = registryMonitor.synchronized(metadata.slots.values.count(_.fresh.nonEmpty))
+
+  /**
+   * The write of a render has ended. A reservation that is still there was not
+   * stored: it ends, and a state that the write left in a storage local to
+   * this process is dropped, since no browser has its page. A storage over a
+   * repository is never asked to delete.
+   */
+  private def endReservation(qsid: Qsid): Unit = {
+    val reserved = registryMonitor.synchronized {
+      val (next, ended) = SessionRegistryMachine.storeEnded(metadata, qsid)
+      metadata = next
+      ended
+    }
+    if (reserved && stateStorage.localToProcess)
+      try stateStorage.drop(qsid.deviceId, qsid.sessionId)
+      catch {
+        case scala.util.control.NonFatal(error) =>
+          try config.reporter.error(s"Unable to drop the state of a render that was not stored $qsid", error)
+          catch { case scala.util.control.NonFatal(_) => () }
+      }
+  }
 
   /** How long an unguarded page has for its first poll: the idle timeout of a session. */
   private def freshLifetime: Long = config.sessionIdleTimeout.toNanos

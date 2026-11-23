@@ -169,9 +169,10 @@ object LongPollingSessionChecks {
   }
 
   /**
-   * A render is cancelled after it made the fresh-page record of its page and
-   * before the state is stored. The first poll of the page does not hang: it
-   * gets a view or a reload, and no view is built without a stored state.
+   * A render is cancelled after it reserved the fresh-page record of its page
+   * and before the state is stored. The reservation ends, the first poll of
+   * the page does not hang: it gets a view or a reload, and no view is built
+   * without a stored state.
    */
   def cancelledRender[F[_]: Effect](start: F[Unit] => () => Unit)(implicit ec: ExecutionContext): Unit = {
     val F       = Effect[F]
@@ -190,8 +191,11 @@ object LongPollingSessionChecks {
     try {
       assert(entered.await(10, TimeUnit.SECONDS), "The render never stored")
       Await.result(request(cancel), 10.seconds)
-      val first = server.read(run(server.poll(0L)))
       val stored = run(held.exists(server.qsid.deviceId, server.qsid.sessionId))
+      // A write that was cancelled ends its reservation: no record is left
+      // for a page that no browser has (the review at fe313e1a).
+      if (!stored) assert(server.sessions.freshPageRecords == 0, s"Records after a cancelled render: ${server.sessions.freshPageRecords}")
+      val first = server.read(run(server.poll(0L)))
       if (stored) assert(first.frame.contains(1L), s"A stored state, and the first poll got $first")
       else {
         assert(first.body == "[1]", s"No stored state, and the first poll got $first")

@@ -55,9 +55,14 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
     val removed            = TrieMap.empty[String, Int]
     @volatile var failNext = false
     @volatile var hold: Option[(CountDownLatch, CountDownLatch)] = None // (entered, release)
+    // A write that ends only when the case completes this promise.
+    @volatile var holdCreate: Option[Promise[Unit]] = None
     override private[spoonbill] def localToProcess: Boolean = true
     def exists(device: String, session: String): Future[Boolean] = { reads.incrementAndGet(); underlying.exists(device, session) }
-    def create(device: String, session: String, state: Int): Future[StateManager[Future]] = underlying.create(device, session, state)
+    def create(device: String, session: String, state: Int): Future[StateManager[Future]] =
+      holdCreate.fold(underlying.create(device, session, state))(held =>
+        held.future.flatMap(_ => underlying.create(device, session, state))(ExecutionContext.parasitic)
+      )
     def get(device: String, session: String): Future[StateManager[Future]] = {
       reads.incrementAndGet()
       if (failReads) Future.failed(new IllegalStateException("the state cannot be read")) else underlying.get(device, session)
@@ -205,6 +210,51 @@ class UnclaimedPageSpec extends AnyFlatSpec with Matchers {
     storage.removed.get(s"${page.qsid.deviceId}-${page.qsid.sessionId}") shouldBe None
     f.render()
     storage.removed.get(s"${page.qsid.deviceId}-${page.qsid.sessionId}") shouldBe Some(1)
+  }
+
+  /** A render whose write ends only when the returned promise is completed, and its page. */
+  private def slowRender(f: LongPollingFixture, storage: Local): (f.Page, Promise[Unit], Future[Int]) = {
+    val page  = f.Page(spoonbill.Qsid("long-polling", java.util.UUID.randomUUID().toString))
+    val write = Promise[Unit]()
+    storage.holdCreate = Some(write)
+    val rendering = f.sessions.initAppState(
+      page.qsid,
+      spoonbill.web.Request(spoonbill.web.Request.Method.Get, spoonbill.web.PathAndQuery.Root, Nil, None, ())
+    )
+    f.worker.drain()
+    storage.holdCreate = None
+    (page, write, rendering)
+  }
+
+  it should "keep the record of a write that ends after a sweep, so that its page gets its view" in {
+    // The review at fe313e1a, finding 2: the write takes longer than the
+    // lifetime of a record, and another render sweeps meanwhile.
+    val storage                 = new Local()
+    val f                       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    val (page, write, rendering) = slowRender(f, storage)
+    f.advance(11.seconds)
+    f.render()
+    write.success(())
+    f.worker.drain()
+    Await(rendering)
+    storage.live(page.qsid.deviceId, page.qsid.sessionId) shouldBe true
+    // The page reaches the browser only now, and its first poll gets its view.
+    read(await(f.poll(page, 0L))).frame shouldBe Some(1L)
+  }
+
+  it should "remove the state of a write that ended after a sweep, once its own lifetime is over" in {
+    val storage                 = new Local()
+    val f                       = new LongPollingFixture(idleTimeout = 10.seconds, storage = Some(storage))
+    val (page, write, rendering) = slowRender(f, storage)
+    f.advance(11.seconds)
+    f.render()
+    write.success(())
+    f.worker.drain()
+    Await(rendering)
+    // Its page never connects: a render after its lifetime removes its state.
+    f.advance(11.seconds)
+    f.render()
+    storage.live(page.qsid.deviceId, page.qsid.sessionId) shouldBe false
   }
 
   it should "step every record of a batch when the report of a failed removal throws" in {

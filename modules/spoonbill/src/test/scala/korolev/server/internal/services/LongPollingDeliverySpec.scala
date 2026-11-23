@@ -330,9 +330,9 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     f.sessions.freshPageRecords shouldBe 0
   }
 
-  it should "leave its record and no state when its storage write fails, and the page is then told to reload" in {
-    // The record is made before the state is stored, so no stored state is
-    // without a record. A write that fails leaves a record without a state.
+  it should "leave no record and no state when its storage write fails, and the page is then told to reload" in {
+    // The record is reserved while the state is stored. A write that fails
+    // ends the reservation: no record and no state (the review at fe313e1a).
     val failing = new spoonbill.state.StateStorage[Future, Int] {
       private val underlying = new spoonbill.state.StateStorage.DefaultStateStorage[Future, Int](5000, allowDevMode = false)
       def exists(device: String, session: String): Future[Boolean] = underlying.exists(device, session)
@@ -346,11 +346,22 @@ class LongPollingDeliverySpec extends AnyFlatSpec with Matchers {
     val rendered = f.sessions.initAppState(page.qsid, spoonbill.web.Request(spoonbill.web.Request.Method.Get, spoonbill.web.PathAndQuery.Root, Nil, None, ()))
     f.worker.drain()
     rendered.value.exists(_.isFailure) shouldBe true
-    f.sessions.freshPageRecords shouldBe 1
+    f.sessions.freshPageRecords shouldBe 0
     await(failing.exists(page.qsid.deviceId, page.qsid.sessionId)) shouldBe false
-    // The first poll claims the record and finds no state.
+    // A poll of that session, which no browser has, finds no record.
     read(await(f.poll(page, 0L))).body shouldBe "[1]"
     f.hasView(page) shouldBe false
+    // Writes that keep failing, as with a repository that is down, leave no
+    // record each: nothing piles up until a render succeeds.
+    for (_ <- 1 to 100) {
+      val failed = f.sessions.initAppState(
+        spoonbill.Qsid("long-polling", java.util.UUID.randomUUID().toString),
+        spoonbill.web.Request(spoonbill.web.Request.Method.Get, spoonbill.web.PathAndQuery.Root, Nil, None, ())
+      )
+      f.worker.drain()
+      f.advance(2.seconds)
+      failed.value.exists(_.isFailure) shouldBe true
+    }
     f.sessions.freshPageRecords shouldBe 0
   }
 

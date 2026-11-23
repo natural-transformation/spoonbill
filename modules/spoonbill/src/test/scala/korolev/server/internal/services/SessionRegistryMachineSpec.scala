@@ -121,6 +121,29 @@ class SessionRegistryMachineSpec extends AnyFlatSpec with Matchers {
     claimFresh(ended, "a", 120L, lifetime, takeExpired = true)._2 shouldBe FreshClaim.Absent
   }
 
+  it should "be reserved while its state is stored: no expiry takes it, a claim finds none, and only a stored state makes it a record" in {
+    // The review at fe313e1a, finding 2.
+    val reserved = storing(renderedAt("old" -> 100L), "p")
+    record(reserved, "p") shouldBe Some(FreshPage.Storing)
+    reserved.freshOrder.keys.toVector shouldBe Vector("old")
+    // An expiry takes the old record and never the reservation, however late.
+    expireFresh(reserved, 10000L, lifetime, 100, removes = true)._2 shouldBe Vector("old")
+    // A claim finds no record, and leaves the reservation.
+    claimFresh(reserved, "p", 101L, lifetime, takeExpired = true) shouldBe (reserved, FreshClaim.Absent)
+    // The state is stored: the record and its lifetime start then.
+    val made = rendered(reserved, "p", 5000L)
+    record(made, "p") shouldBe Some(FreshPage.Waiting(5000L))
+    made.freshOrder.keys.toVector shouldBe Vector("old", "p")
+    storeEnded(made, "p") shouldBe (made, false)
+    // The store failed or was cancelled: the reservation ends, and says so once.
+    val (ended, wasReserved) = storeEnded(reserved, "p")
+    (record(ended, "p"), wasReserved) shouldBe (None, true)
+    storeEnded(ended, "p") shouldBe (ended, false)
+    // A record whose state is being removed is not reserved again.
+    val (releasing, _) = expireFresh(renderedAt("p" -> 100L), 500L, lifetime, 100, removes = true)
+    storing(releasing, "p") shouldBe releasing
+  }
+
   it should "not be pushed out by any number of other records" in {
     val many = (1 to 20000).foldLeft(renderedAt("first" -> 0L)) { (state, n) => rendered(state, s"p$n", n.toLong) }
     claimFresh(many, "first", 5L, lifetime, takeExpired = false)._2 shouldBe FreshClaim.Fresh
