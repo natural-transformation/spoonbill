@@ -275,6 +275,9 @@ test('a message that the server took while the link is interrupted replaces the 
   const replaced = step(interrupted, {type: 'poll-replaced'});
   assert.equal(replaced.replaced, true);
   assert.equal(step(replaced, {type: 'poll-failed'}).replaced, false);
+  // A message that failed counts for the notice, and leaves the mark: the poll that waits has not failed.
+  const messageFailed = step(replaced, {type: 'message-failed'});
+  assert.deepEqual([messageFailed.failures, messageFailed.replaced], [replaced.failures + 1, true]);
   assert.deepEqual([step(replaced, {type: 'poll-answered'}).replaced, step(replaced, {type: 'poll-answered'}).failures], [false, 0]);
   assert.equal(step(replaced, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}}).replaced, false);
   // An answer on a sound link is the same state.

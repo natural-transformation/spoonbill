@@ -427,17 +427,19 @@ export class Connection {
       this._onReady();
     };
 
-    // The link is interrupted: the notice shows from the second failure in a row.
-    const linkFailed = () => {
+    // The link is interrupted: the notice shows from the second failure in a
+    // row. `type` says what failed: a poll, or a message (a heartbeat), which
+    // leaves the mark of a replaced poll alone.
+    const linkFailed = type => {
       const shown = noticeShown(this._lifecycle);
-      this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-failed'});
+      this._lifecycle = connectionStep(this._lifecycle, {type});
       if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
     };
 
     const failed = () => {
       // A transport that was replaced counts nothing.
       if (!isCurrent()) return;
-      linkFailed();
+      linkFailed('poll-failed');
       retry = setTimeout(() => { retry = null; poll(); }, pollDelay(this._lifecycle));
     };
 
@@ -480,7 +482,7 @@ export class Connection {
 
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
-    this._linkFailed = () => { if (isCurrent()) linkFailed(); };
+    this._linkFailed = () => { if (isCurrent()) linkFailed('message-failed'); };
     this._retire = () => {
       clearTimeout(retry);
       retry = null;

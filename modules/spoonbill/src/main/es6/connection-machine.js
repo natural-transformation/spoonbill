@@ -241,6 +241,11 @@ export function connectionStep(state, event) {
       return {...state, failures: state.failures + 1, replaced: false};
     case 'poll-replaced':
       return {...state, replaced: true};
+    case 'message-failed':
+      // A message that failed counts for the notice, as a failed poll does.
+      // The poll that waits has not failed, so the mark stays (the review at
+      // fe313e1a).
+      return {...state, failures: state.failures + 1};
     case 'reload':
       // Once only. The transport is no one's any more, and nothing reconnects.
       if (state.reloading !== null) return state;

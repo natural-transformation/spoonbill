@@ -1574,6 +1574,33 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('a heartbeat that fails counts for the notice, but does not let the next one replace a sound poll', () => {
+      // The review at fe313e1a, finding 1: heartbeats that alternate between
+      // 200 and 503 aborted the replacement poll every other interval, so it
+      // never reached its 204 and the notice stayed.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window, {heartbeat: {interval: '25'}});
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        answer(lp.polls()[0], 503);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, 2, 'the back-off is replaced by a poll at once');
+        for (let tick = 0; tick < 6; tick++) {
+          lp.intervals[0].callback();
+          answer(lp.posts().at(-1), tick % 2 === 0 ? 503 : 200);
+        }
+        assert.deepEqual(events, ['interrupt'], 'a failed heartbeat still counts for the notice');
+        assert.equal(lp.polls().length, 2, 'the replacement poll is left alone');
+        assert.notEqual(lp.polls()[1].aborted, true);
+        answer(lp.polls()[1], 204);
+        assert.deepEqual(events, ['interrupt', 'resume']);
+        assert.equal(lp.connection.linkUp, true);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a failed poll lets the next taken message replace the poll again', () => {
       const saved = keepTiming();
       const { window } = browser();
