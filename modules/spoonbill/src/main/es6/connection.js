@@ -1,7 +1,7 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, transportNote, frameKind, afterFrame,
-  reloadStarted, messageSent, repollsAfterMessage, pollDeadline} from './connection-machine.js';
+  reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, pollDeadline} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
@@ -158,6 +158,13 @@ export class Connection {
    * @private
    */
   _connectUsingConnectionType(connectionType) {
+    // A page that the user navigated while its long polling was paused does
+    // not resume: the server never heard of that navigation, so the page
+    // reloads at its new URL.
+    if (!resumes(this._lifecycle, this._locationKey())) {
+      this.reloadPage();
+      return;
+    }
     // One transport at a time. The one that this attempt replaces is retired
     // after the new one is installed: it is stale by then, so its close or a
     // late answer reaches no lifecycle.
@@ -539,6 +546,29 @@ export class Connection {
   /** @return {string} The page id of this document. */
   get page() { return this._lifecycle.page; }
 
+  /**
+   * The transport that is current, as an opaque identity, or null when there
+   * is none, as while long polling is paused. The heartbeat counts for one.
+   * @return {?Object}
+   */
+  get transportEpoch() { return this._lifecycle.epoch; }
+
+  /** @private @return {string} The path and query of the page now. */
+  _locationKey() { return (this._location.pathname || '/') + (this._location.search || ''); }
+
+  /**
+   * @private
+   * @return {string} 'none' without a socket transport, else whether its socket is connecting, open or closed.
+   */
+  _socketState() {
+    if (this._lifecycle.transport !== ConnectionType.WEB_SOCKET || this._webSocket == null) return 'none';
+    switch (this._webSocket.readyState) {
+      case WebSocket.CONNECTING: return 'connecting';
+      case WebSocket.OPEN: return 'open';
+      default: return 'closed';
+    }
+  }
+
   /** @return {boolean} The connection runs on long polling. */
   get longPolling() { return this._lifecycle.transport === ConnectionType.LONG_POLLING; }
 
@@ -797,7 +827,8 @@ export class Connection {
    */
   async disconnect(reconnect = true) {
     const longPolling = this._lifecycle.transport === ConnectionType.LONG_POLLING;
-    this._lifecycle = connectionStep(this._lifecycle, {type: 'disconnect', reconnect, scheduleEpoch: {}});
+    this._lifecycle = connectionStep(this._lifecycle,
+      {type: 'disconnect', reconnect, scheduleEpoch: {}, location: this._locationKey()});
     if (!reconnect && this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -811,6 +842,9 @@ export class Connection {
       // view has ended meanwhile.
       this._retire();
       this._retire = () => {};
+      // The heartbeat in flight is given up too; the bridge starts its count
+      // over, since no transport is current.
+      this._abortHeartbeat();
       if (reconnect) this.connect();
     } else if (this._webSocket != null) {
         this._webSocket.close();
@@ -830,8 +864,9 @@ export class Connection {
 
   connect() {
 
-    // One connection attempt at a time: a pending attempt takes this call.
-    if (this._reconnectTimer !== null) return;
+    // One connection at a time: a pending attempt, or a socket that is
+    // connecting or open, takes this call.
+    if (!connectStarts(this._reconnectTimer !== null, this._socketState())) return;
 
     if (connectionOpened(this._lifecycle))
       console.log('Reconnecting...');

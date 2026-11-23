@@ -1646,6 +1646,34 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('a page paused with a heartbeat outstanding and its re-poll spent does not reload, and resumes with a fresh allowance', () => {
+      // The review of PR 39 at f55be0f2, finding 1.
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        lp.intervals[0].callback();
+        assert.equal(lp.polls().length, 2, 'the re-poll at the limit');
+        lp.intervals[0].callback();
+        const outstanding = lp.posts().at(-1);
+        lp.connection.disconnect(false);
+        assert.equal(outstanding.aborted, true, 'the heartbeat in flight is given up');
+        const posts = lp.posts().length;
+        for (let tick = 0; tick < 4; tick++) lp.intervals[0].callback();
+        assert.deepEqual([reloads, lp.posts().length], [0, posts], 'paused: no heartbeat, no reload');
+        lp.connection.connect();
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        lp.intervals[0].callback();
+        assert.equal(reloads, 0, 'a fresh allowance: the limit gives a re-poll first');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a long-polling heartbeat that no transport takes is not counted, and is no failed poll', () => {
       const saved = keepTiming();
       const { window } = browser();

@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connectio
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, transportNote,
-  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
+  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
@@ -241,12 +241,14 @@ test('header counts are digits without sign or leading zeros, up to a safe integ
     assert.equal(headerCount(value), null, String(value));
 });
 
-test('the counts belong to the document: a new transport keeps them, and a long-polling one starts with a sound link', () => {
-  const counted = {...initialConnection(), seen: 5, dom: 2, failures: 1};
+test('the counts belong to the document: a new transport keeps them, failures too', () => {
+  // A new long-polling transport does not prove the link: the notice that
+  // shows stays until a poll is answered (the review of PR 39 at f55be0f2).
+  const counted = {...initialConnection(), seen: 5, dom: 2, failures: 2, replaced: true};
   const polling = step(counted, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
-  assert.deepEqual([polling.seen, polling.dom, polling.failures], [5, 2, 0]);
+  assert.deepEqual([polling.seen, polling.dom, polling.failures, polling.replaced], [5, 2, 2, false]);
   const socket = step(counted, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
-  assert.deepEqual([socket.seen, socket.dom, socket.failures], [5, 2, 1]);
+  assert.deepEqual([socket.seen, socket.dom, socket.failures], [5, 2, 2]);
 });
 
 test('408 and 429 are failed polls, and a message is sent unless its request failed so', () => {
@@ -283,6 +285,40 @@ test('a message that the server took while the link is interrupted replaces the 
   // An answer on a sound link is the same state.
   const sound = initialConnection();
   assert.equal(step(sound, {type: 'poll-answered'}), sound);
+});
+
+test('a disconnect pauses long polling at its location, and only a connect() at that location resumes', () => {
+  // The review of PR 39 at f55be0f2, finding 2.
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(resumes(polling, '/orders/1'), true, 'not paused: nothing to reconcile');
+  const paused = step(polling, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/1'});
+  assert.deepEqual([paused.paused, paused.pausedAt], [true, '/orders/1']);
+  assert.equal(resumes(paused, '/orders/1'), true);
+  assert.equal(resumes(paused, '/orders/0'), false, 'the URL changed while paused: reload');
+  const resumed = step(paused, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.deepEqual([resumed.paused, resumed.pausedAt], [false, null]);
+  // A WebSocket is not paused: its close ends it.
+  const socket = step(initialConnection(), {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  assert.equal(step(socket, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/x'}).paused, false);
+});
+
+test('an answered poll resets the reconnect back-off', () => {
+  // The review of PR 39 at f55be0f2: a page that keeps its bridge has no open
+  // event, which resets it on a WebSocket.
+  const grown = {...initialConnection(), reconnectDelay: 3200, failures: 1};
+  assert.equal(step(grown, {type: 'poll-answered'}).reconnectDelay, MIN_RECONNECT_TIMEOUT);
+  const sound = initialConnection();
+  assert.equal(step(sound, {type: 'poll-answered'}), sound);
+});
+
+test('a connect() starts nothing while an attempt is pending or a socket is connecting or open', () => {
+  // (attempt pending, socket) -> connect() starts an attempt. The review of PR 39 at f55be0f2, finding 3.
+  const table = [
+    [false, 'none', true], [false, 'closed', true],
+    [true, 'none', false], [false, 'connecting', false], [false, 'open', false], [true, 'open', false]
+  ];
+  for (const [pending, socket, starts] of table)
+    assert.equal(connectStarts(pending, socket), starts, String([pending, socket]));
 });
 
 test('a disconnect ends a long-polling transport, and a WebSocket waits for its close', () => {

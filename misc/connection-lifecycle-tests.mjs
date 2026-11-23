@@ -10,7 +10,7 @@ const moduleFile = join(directory, 'connection.mjs');
 writeFileSync(join(directory, 'package.json'), '{"type":"module"}');
 writeFileSync(join(directory, 'connection-machine.js'), readFileSync(new URL('../modules/spoonbill/src/main/es6/connection-machine.js', import.meta.url)));
 writeFileSync(moduleFile, readFileSync(new URL('../modules/spoonbill/src/main/es6/connection.js', import.meta.url)));
-const {Connection} = await import(pathToFileURL(moduleFile));
+const {Connection, ConnectionType} = await import(pathToFileURL(moduleFile));
 after(() => rmSync(directory, {recursive: true, force: true}));
 
 async function environment(check, {session = new Map()} = {}) {
@@ -226,7 +226,10 @@ test('an old socket decoder cannot let later frames overtake a new socket decode
     connection.connect(); env.nextTimer(); env.sockets[0].open();
     env.sockets[0].message(old.blob);
     await env.flush();
-    connection.connect(); env.nextTimer(); env.sockets[1].open();
+    // A second socket while the decoder of the first is pending. No public
+    // path makes one any more: connect() leaves an open socket alone, and a
+    // close waits for the decoder before it reconnects. The guard stays.
+    connection._connectUsingConnectionType(ConnectionType.WEB_SOCKET); env.sockets[1].open();
     env.sockets[1].message(first.blob);
     await env.flush();
     old.complete('stale');
@@ -562,18 +565,25 @@ test('a connect() while an attempt is pending starts no second attempt', () => e
   assert.equal(env.sockets.length, 1);
 }));
 
-test('a connect() on an open connection closes the socket it replaces without a close lifecycle', () => environment(async env => {
+test('a connect() while a socket is open or connecting starts nothing', () => environment(async env => {
+  // The review of PR 39 at f55be0f2, finding 3: a second socket got a new view,
+  // which announced its listeners to the old bridge, and a click went out twice.
   const connection = env.create();
   const events = [];
   for (const name of ['open', 'close', 'error'])
     connection.dispatcher.addEventListener(name, () => events.push(name));
-  connection.connect(); env.nextTimer(); env.sockets[0].open();
   connection.connect(); env.nextTimer();
-  assert.equal(env.sockets.length, 2);
-  assert.equal(env.sockets[0].readyState, WebSocket.CLOSED);
+  // Connecting: the handshake is not closed, and nothing falls back to long polling.
+  connection.connect();
+  assert.equal(env.timers.size, 0);
+  env.sockets[0].open();
+  connection.connect();
+  assert.equal(env.timers.size, 0);
+  assert.equal(env.sockets.length, 1);
+  assert.equal(env.requests.length, 0);
+  assert.equal(env.sockets[0].readyState, WebSocket.OPEN);
   await env.flush();
-  assert.deepEqual(events, ['open'], 'the replaced socket reports no close of the connection');
-  assert.equal(env.timers.size, 0, 'the replaced socket schedules no reconnect');
+  assert.deepEqual(events, ['open']);
 }));
 
 test('a new transport aborts the long-poll subscription it replaces', () => environment(async env => {
@@ -644,4 +654,45 @@ test('a connect() after the view has ended makes the page reload once', () => en
   // The view ended while the page did not poll: the server sends the reload frame.
   env.polls().at(-1).respond(200, '[1]');
   assert.equal(env.reloads.count, 1);
+}));
+
+test('a connect() after Back during a pause reloads the page at its new URL, and does not resume', () => environment(async env => {
+  // The review of PR 39 at f55be0f2, finding 2: the server never heard of the
+  // Back, so the resumed view would run the handlers of the old route.
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  connection._location.pathname = '/app/orders/1';
+  await connection.disconnect(false);
+  connection._location.pathname = '/app/orders/0';
+  const polls = env.polls().length;
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 1);
+  assert.equal(env.polls().length, polls, 'no poll resumes the old route');
+}));
+
+test('a pause and a connect() at the same URL resume, and the notice that showed hides at the next answer', () => environment(async env => {
+  // The review of PR 39 at f55be0f2: installing the transport cleared the
+  // failures, so the answer never hid the notice.
+  const {connection, events} = await polling(env);
+  env.polls()[0].respond(500);
+  runTimer(env, 200);
+  env.polls()[1].respond(500);
+  assert.deepEqual(events.filter(name => name === 'interrupt'), ['interrupt']);
+  await connection.disconnect(false);
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 0);
+  env.polls().at(-1).respond(204);
+  assert.deepEqual(events.filter(name => name === 'interrupt' || name === 'resume'), ['interrupt', 'resume']);
+  assert.equal(connection.linkUp, true);
+}));
+
+test('re-polls by disconnect(true) on a sound link do not grow the back-off', () => environment(async env => {
+  // The review of PR 39 at f55be0f2: 200, 400, 800 ms and on, for re-polls that were answered.
+  const {connection} = await polling(env);
+  for (let round = 0; round < 6; round++) {
+    env.polls().at(-1).respond(204);
+    await connection.disconnect(true);
+    runTimer(env, 200);
+  }
+  assert.equal(env.reloads.count, 0);
 }));

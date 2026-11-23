@@ -53,8 +53,18 @@ export function bridgeStep(state, event) {
  * reloads at the limit. Decided by the user on 2026-11-22, after the review of
  * PR 42.
  */
-export function heartbeatTick(state, limit, longPolling, reloading) {
+export function heartbeatTick(state, limit, longPolling, reloading, transport = state.heartbeatTransport) {
   if (reloading) return {state, command: 'skip', failed: false};
+  // Heartbeats count for one transport. A page whose long polling is paused
+  // has none: it sends nothing and spends nothing, and the count starts over,
+  // as it does on a new transport (the review of PR 39 at f55be0f2).
+  const current = state.heartbeatTransport === transport ? state :
+    {...state, heartbeatTransport: transport, heartbeatInFlight: null, outstandingHeartbeats: 0, repolled: false};
+  if (transport === null) return {state: current, command: 'skip', failed: false};
+  return heartbeatCounted(current, limit, longPolling);
+}
+
+function heartbeatCounted(state, limit, longPolling) {
   const failed = longPolling && state.heartbeatInFlight !== null;
   // A heartbeat that failed gives the re-poll back: what the page knew of
   // its poll before the link failed says nothing about the poll after it.

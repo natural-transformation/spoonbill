@@ -195,6 +195,32 @@ test('a heartbeat that fails gives the re-poll back: the next limit polls again,
   assert.equal(heartbeatTick(state, 2, true, false).command, 'repoll');
 });
 
+test('heartbeats count for one transport: a paused page skips and starts over, and so does a new transport', () => {
+  // The review of PR 39 at f55be0f2, finding 1: a page paused with a heartbeat
+  // taken and its re-poll spent reloaded at the next tick.
+  const transport = {};
+  let state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
+  let out = heartbeatTick(state, 2, true, false, transport);
+  state = heartbeatAnswer(out.state, out.seq, true).state;
+  out = heartbeatTick(state, 2, true, false, transport);
+  assert.equal(out.command, 'repoll');
+  out = heartbeatTick(out.state, 2, true, false, transport);
+  const outstanding = heartbeatAnswer(out.state, out.seq, true).state;
+  assert.deepEqual([outstanding.outstandingHeartbeats, outstanding.repolled], [1, true]);
+  // Paused: no transport. Nothing is sent, nothing is spent, and the count starts over.
+  const paused = heartbeatTick(outstanding, 2, true, false, null);
+  assert.deepEqual([paused.command, paused.failed], ['skip', false]);
+  assert.deepEqual([paused.state.outstandingHeartbeats, paused.state.heartbeatInFlight, paused.state.repolled], [0, null, false]);
+  assert.equal(heartbeatTick(paused.state, 2, true, false, null).command, 'skip');
+  // Resumed on a new transport: a fresh allowance.
+  const resumed = heartbeatTick(paused.state, 2, true, false, {});
+  assert.deepEqual([resumed.command, resumed.failed, resumed.state.outstandingHeartbeats], ['send', false, 1]);
+  // A heartbeat in flight when the transport changes is written off without a failure.
+  const flying = heartbeatTick(outstanding, 2, true, false, transport);
+  const moved = heartbeatTick(flying.state, 2, true, false, {});
+  assert.deepEqual([moved.failed, moved.command], [false, 'send']);
+});
+
 test('a heartbeat that no transport takes is neither counted nor a failed poll', () => {
   const state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
   const out = heartbeatTick(state, 2, true, false);

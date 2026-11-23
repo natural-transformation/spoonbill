@@ -47,7 +47,7 @@ export class Bridge {
         // is interrupted: its reply answers the poll that the server holds,
         // so the notice hides soon after the link is back.
         const out = heartbeatTick(this._lifecycle, this._heartbeatLimit, this._connection.longPolling,
-          this._connection.reloadStarted);
+          this._connection.reloadStarted, this._connection.transportEpoch);
         this._lifecycle = out.state;
         if (out.failed) {
           // The heartbeat that was written off gives up its request.
