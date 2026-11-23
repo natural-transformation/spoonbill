@@ -257,17 +257,29 @@ test('408 and 429 are failed polls, and a message is sent unless its request fai
   for (const status of [200, 204, 400, 410]) assert.equal(messageSent(status), true, String(status));
 });
 
-test('a message that the server took while the link is interrupted replaces the poll, and no other', () => {
-  // (failures, sent) -> poll again at once
+test('a message that the server took while the link is interrupted replaces the poll, once for each interruption', () => {
+  // (failures, replaced, sent) -> poll again at once
   const table = [
-    [0, true, false],  // the link is up: the poll that waits is sound
-    [1, true, true],   // the link is back: a poll that hangs or waits out its back-off goes now
-    [2, true, true],
-    [1, false, false], // the message failed too: the link is still down
-    [0, false, false]
+    [0, false, true, false],  // the link is up: the poll that waits is sound
+    [1, false, true, true],   // the link is back: a poll that hangs or waits out its back-off goes now
+    [2, false, true, true],
+    [1, true, true, false],   // replaced once already: the new poll waits for its answer
+    [1, false, false, false], // the message failed too: the link is still down
+    [0, false, false, false]
   ];
-  for (const [failures, sent, repolls] of table)
-    assert.equal(repollsAfterMessage({...initialConnection(), failures}, sent), repolls, String([failures, sent]));
+  for (const [failures, replaced, sent, repolls] of table)
+    assert.equal(repollsAfterMessage({...initialConnection(), failures, replaced}, sent), repolls,
+      String([failures, replaced, sent]));
+  // The mark: set by the replacement, and gone at the next failed poll, at an answer, and with a new transport.
+  const interrupted = step(initialConnection(), {type: 'poll-failed'});
+  const replaced = step(interrupted, {type: 'poll-replaced'});
+  assert.equal(replaced.replaced, true);
+  assert.equal(step(replaced, {type: 'poll-failed'}).replaced, false);
+  assert.deepEqual([step(replaced, {type: 'poll-answered'}).replaced, step(replaced, {type: 'poll-answered'}).failures], [false, 0]);
+  assert.equal(step(replaced, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}}).replaced, false);
+  // An answer on a sound link is the same state.
+  const sound = initialConnection();
+  assert.equal(step(sound, {type: 'poll-answered'}), sound);
 });
 
 test('the deadline of a poll is its wait and a margin, below twice the wait, and a sound timer', () => {

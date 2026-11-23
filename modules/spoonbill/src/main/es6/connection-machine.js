@@ -29,6 +29,9 @@ export function initialConnection() {
     seen: 0,
     dom: 0,
     failures: 0,
+    // A message that the server took has replaced the poll of this
+    // interruption. Only once: the poll that it started waits for its answer.
+    replaced: false,
     // A framework reload of an unguarded page has started: 'now', or 'waiting'
     // for the end of the reload window. From then on no transport is current.
     reloading: null,
@@ -103,9 +106,12 @@ export const messageSent = status => !requestFailed(status);
 /**
  * A message that the server took while the link is interrupted: the link is
  * back, so a poll that hangs on the broken link or waits out its back-off is
- * replaced at once. Added after the second review of PR 42.
+ * replaced at once. Once for each interruption: the poll that this started is
+ * left alone until it is answered or fails, else every taken heartbeat would
+ * abort it and a quiet poll would never reach its `204`. Added after the
+ * second review of PR 42, and made once-only after the review at `82baf17a`.
  */
-export const repollsAfterMessage = (state, sent) => sent && !linkUp(state);
+export const repollsAfterMessage = (state, sent) => sent && !linkUp(state) && !state.replaced;
 
 /**
  * The deadline of a poll in milliseconds: the poll wait that the page
@@ -183,7 +189,7 @@ export function connectionStep(state, event) {
       // The page id and the counts belong to the document: a second transport
       // of it, after a connect(), goes on from the frame that it has applied.
       return event.transport === ConnectionType.LONG_POLLING ?
-        {...state, transport: event.transport, epoch: event.epoch, failures: 0} :
+        {...state, transport: event.transport, epoch: event.epoch, failures: 0, replaced: false} :
         {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null, triedWebSocket: true};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;
@@ -227,11 +233,14 @@ export function connectionStep(state, event) {
     case 'prefer-long-polling':
       return state.selected === null ? {...state, selected: ConnectionType.LONG_POLLING, fromNote: true} : state;
     case 'poll-answered':
-      return state.failures === 0 ? state : {...state, failures: 0};
+      return state.failures === 0 ? state : {...state, failures: 0, replaced: false};
     case 'frame-applied':
       return {...state, seen: state.seen + 1, dom: state.dom + (event.domFrame ? 1 : 0)};
     case 'poll-failed':
-      return {...state, failures: state.failures + 1};
+      // A poll that fails ends the mark: the next taken message may replace it again.
+      return {...state, failures: state.failures + 1, replaced: false};
+    case 'poll-replaced':
+      return {...state, replaced: true};
     case 'reload':
       // Once only. The transport is no one's any more, and nothing reconnects.
       if (state.reloading !== null) return state;

@@ -1543,6 +1543,54 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('after an interruption only the first message that the server takes replaces the poll, so a quiet poll reaches its 204', () => {
+      // The review at 82baf17a, finding 2: without a heartbeat limit the server
+      // sends no reply, and every taken heartbeat aborted the poll for good.
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window, {heartbeat: {interval: '25'}});
+      const events = [];
+      for (const name of ['interrupt', 'resume']) lp.connection.dispatcher.addEventListener(name, () => events.push(name));
+      try {
+        answer(lp.polls()[0], 503);
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        answer(lp.polls().at(-1), 503);
+        assert.deepEqual(events, ['interrupt']);
+        // The poll after the back-off goes out, and the link is back.
+        lp.timers.filter(timer => timer.delay === 400 && !timer.cleared).at(-1).callback();
+        const quiet = lp.polls().length;
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, quiet + 1, 'the first taken message replaces the poll');
+        for (let tick = 0; tick < 4; tick++) {
+          lp.intervals[0].callback();
+          answer(lp.posts().at(-1), 200);
+        }
+        assert.equal(lp.polls().length, quiet + 1, 'the later ones leave the new poll alone');
+        assert.notEqual(lp.polls().at(-1).aborted, true);
+        answer(lp.polls().at(-1), 204);
+        assert.deepEqual(events, ['interrupt', 'resume']);
+        assert.equal(lp.connection.linkUp, true);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a failed poll lets the next taken message replace the poll again', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      const lp = longPolling(window, {heartbeat: {interval: '25'}});
+      try {
+        answer(lp.polls()[0], 503);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, 2, 'the back-off is replaced by a poll at once');
+        // That poll fails too: the next taken message replaces its back-off again.
+        answer(lp.polls().at(-1), 503);
+        lp.intervals[0].callback();
+        answer(lp.posts().at(-1), 200);
+        assert.equal(lp.polls().length, 3);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a re-poll while the poll waits out its back-off polls at once', () => {
       // Probe 1B: the bridge spends its one re-poll, so the re-poll must not be lost.
       const saved = keepTiming();

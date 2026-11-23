@@ -557,12 +557,12 @@ bridge and holds for both transports of an unguarded page.
 | The bridge could not apply a DOM frame | none | Reload |
 | Another frame throws in the bridge: a command, a property read, a history call | `seen + 1` | Logged; poll again, as on a WebSocket |
 | A poll is answered with `204` | `failures = 0`, link up | Poll again |
-| A poll fails: status 0, 5xx, `408`, `429`, or no answer by the deadline | `failures + 1`, link interrupted | Poll again after the back-off; show the notice when `failures` is 2 |
+| A poll fails: status 0, 5xx, `408`, `429`, or no answer by the deadline | `failures + 1`, link interrupted, `replaced` ends | Poll again after the back-off; show the notice when `failures` is 2 |
 | A poll is answered with any other status | none | Reload |
 | The reload frame arrives | none | Reload |
 | A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted | As a failed poll; the heartbeat is not counted as unanswered, and the re-poll is given back. A request that is written off at the next heartbeat is aborted, so that requests do not pile up on a link that hangs (the last two added after the second review of PR 42) |
 | No transport takes a heartbeat, so no request goes out (added after the second review of PR 42) | none | Not counted as unanswered, and no failed poll |
-| A message that the server took while the link is interrupted (added after the second review of PR 42) | none | The link is back: give up the current poll, which may hang on the broken link, or its back-off, and poll again |
+| A message that the server took while the link is interrupted, the first since the last failed poll (added after the second review of PR 42, once-only after the review at `82baf17a`) | `replaced` | The link is back: give up the current poll, which may hang on the broken link, or its back-off, and poll again. A later taken message leaves the new poll alone until it is answered or fails, so a quiet poll still reaches its `204` |
 | The heartbeat limit is reached, for the first time since a reply or a failed heartbeat | none | Give up the current poll, or its back-off, and poll again |
 | The heartbeat limit is reached again, and the heartbeats that the server took are still unanswered | none | Reload, through the reload guard |
 

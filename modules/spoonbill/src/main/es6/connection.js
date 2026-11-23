@@ -455,7 +455,10 @@ export class Connection {
         if (onAnswer) onAnswer(sent);
         if (!isCurrent())
           return;
-        if (repollsAfterMessage(this._lifecycle, sent)) this._repoll();
+        if (repollsAfterMessage(this._lifecycle, sent)) {
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-replaced'});
+          this._repoll();
+        }
         switch (request.status) {
           case 0:
           case 400:
