@@ -1,12 +1,16 @@
 # Long polling that resumes: design
 
-Status: **revision 4**, 2026-11-22. For review. **Nothing of it is built.**
-Three throwaway trials, one inventory run and a few probes ran; every change
-was undone. Their results are in [Evidence](#evidence). Everything else is
-read from the code or reasoned, and marked so.
+Status: **revision 5**, 2026-11-22: revision 4, which was built, with the
+seven decisions that the user made after the review of pull request 42; see
+[Changes after the review of PR 42](#changes-after-the-review-of-pr-42). The
+[plan](long-polling-resume-plan.md#what-was-built) says where the work
+differs. Before that, three throwaway trials, one inventory run and a few
+probes ran; every change was undone. Their results are in
+[Evidence](#evidence). Everything else is read from the code or reasoned, and
+marked so.
 
 The [implementation plan](long-polling-resume-plan.md) says in which order it
-is built, and the [draft of ADR 0006](long-polling-resume-adr-0006-draft.md)
+is built, and [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md)
 records its one decision with a known cost. The reviews of this design and
 the reports of the defects that it names are working papers. They are not in
 the repository; this text says in short what it takes from them.
@@ -146,7 +150,7 @@ parser for it.
 | --- | --- |
 | `200` with a frame, `spoonbill-frame: <n>` and `spoonbill-dom: <r>` | Frame `n` of the view of this page. `r` is the number of DOM frames among frames 1 to `n`: what the page shows after this frame |
 | `200` with the reload frame `[1]` | This page cannot go on. It reloads |
-| `204` | Nothing yet. The page polls again with the same cursor |
+| `204` | Nothing yet, at the end of the poll wait. The page polls again with the same cursor |
 | `410` | A request that nobody waits for: its cursor is older than what the page has confirmed |
 
 Every answer carries `cache-control: no-cache`, as the poll answers of `main`
@@ -205,7 +209,11 @@ Every Reload of these steps removes the entry again. An attach that fails
 does the same: the poll that built gets the failure, as on `main`, and the
 polls that wait are told to reload.
 
-- **The fresh-page record** is made when the page is rendered. Every
+- **The fresh-page record** is reserved while the state of a rendered page
+  is stored, and made when it is stored; its lifetime starts then. No expiry
+  takes a reservation, so a write that runs long keeps its record, and a
+  write that fails or is cancelled ends it and leaves nothing behind (after
+  the review at `fe313e1a`). Every
   unguarded attach claims it, whichever transport it comes through. It is
   positive evidence that the stored state is the one the page shows. Where it
   lives and how it ends is in
@@ -226,8 +234,13 @@ polls that wait are told to reload.
   stream as the first, and closing it closes the stream (read; it is the root
   of a known defect, a `connect()` that opens a second socket). Here a
   WebSocket that arrives late for a session whose view belongs to a
-  long-polling entry is closed and gets nothing, and a poll never joins the
-  view of a WebSocket.
+  long-polling entry gets the reload frame and is closed, and a poll never
+  joins the view of a WebSocket. A second document with the same session id
+  so reloads once, into a session of its own, through the reload guard; the
+  page that moved on to long polling ignores the frame, because its socket is
+  not its transport any more. (Decided by the user on 2026-11-22, after the review of PR 42.) Before, such a socket was
+  closed with nothing, and a document whose WebSocket works reconnected
+  every 200 ms.
 
 ### An attach needs its stored state
 
@@ -275,7 +288,12 @@ decision 25, and the user confirmed it with this row in view.
 **In which order an attach looks.** First the claim of the fresh-page record,
 then the storage, then the view. The claim is a step of a pure machine, and
 the expiry can only take a record that nobody has claimed. So the storage is
-never read for a session whose state the expiry is removing. The other
+never read for a session whose state the expiry is removing. The three steps
+are one effect, which a cancelled request cannot stop half way: a stop
+between the claim and the view would leave a state without record or view.
+A storage that throws instead of failing its effect fails that effect, and
+the entry of a poll leaves the table. (Added after the review of PR 42,
+finding 13.) The other
 removal of this change is made by a failed attach itself, while it holds the
 place of the session in the table of views; see
 [A page without a view](#a-page-without-a-view-its-record-and-its-state).
@@ -288,7 +306,8 @@ asks for one frame when a poll needs one that is not there.
 State: `confirmed` (frames that the page has confirmed), `dom` (the DOM
 frames among them), `kept` (the frame `confirmed + 1` when it was handed out
 and is not confirmed, with its kind: a DOM frame, a command, or another
-frame), `pulling`, `waiting` (the polls that wait, by id), `ended`. With
+frame), `pulling`, `waiting` (the polls that wait, by id), `ended`, and
+`owned` (the entry owns its view, so frames can be asked for). With
 `handed = confirmed + 1` if a frame is kept and `handed = confirmed` if not,
 the first row that fits decides:
 
@@ -299,11 +318,15 @@ the first row that fits decides:
 | | `seen > handed` | none | Reload |
 | | `seen = confirmed + 1` | confirm the kept frame: `confirmed + 1`, and `dom + 1` if it was a DOM frame. Then go on with the rows below | progress |
 | | `seen = confirmed`, a frame is kept | none | Answer with the kept frame |
-| | nothing kept, `pulling` | add `id` to `waiting` | Wait; progress |
-| | nothing kept, not `pulling` | add `id`, `pulling` | Pull one frame; wait; progress |
-| `Pulled(frame, kind)` | | `kept = frame`, not `pulling`, `waiting` empty | Answer every poll that waited |
+| | nothing kept, `pulling` or not `owned` | add `id` to `waiting` | Wait; progress |
+| | nothing kept, not `pulling`, `owned` | add `id`, `pulling` | Pull one frame; wait; progress |
+| `Owned` | not `owned`, not `ended`, polls wait | `owned`, `pulling` | Pull one frame |
+| | not `owned`, not `ended`, no poll waits | `owned` | none |
+| | otherwise | none | none |
+| `Pulled(frame, kind)` | `pulling`, not `ended` | `kept = frame`, not `pulling`, `waiting` empty | Answer every poll that waited |
+| | otherwise | none | Nothing: the frame was not asked for, and is dropped |
 | `Ended` | | `ended`, `waiting` empty | Reload for every poll that waited |
-| `TimedOut(id)`, `Cancelled(id)` | `id` waits | remove `id` | `204` for a timeout, nothing for a cancellation |
+| `TimedOut(id)`, `RequestEnded(id)` | `id` waits | remove `id` | `204` for a timeout, nothing for the end of a request |
 | | `id` does not wait | none | Nothing: it was settled already |
 | `Message(seen)` | `ended` | none | Gone: `410` |
 | | `seen > handed` | none | Gone: `410` |
@@ -322,15 +345,37 @@ the first row that fits decides:
   kept command that has expired gets a keep-alive frame under the same number
   (decision 3). It is not a DOM frame, so the revision stays. A DOM frame
   never expires.
-- **Each waiter is settled once:** by the frame, by its timeout, or by its
-  cancellation, whichever the machine sees first. The interpreter keeps the
-  completion handle for each id and completes it when the machine says so.
+- **Each waiter is settled once:** by the frame, by its timeout, or by the
+  end of its request, whichever the machine sees first. The end of a request
+  (`RequestEnded`) comes for every poll, answered or cancelled; for an
+  answered one it changes nothing. The interpreter keeps the completion
+  handle and the timer of each id in the same cell as this state, and
+  completes the handle when the machine says so. A timer that the scheduler
+  gives back is kept only while its poll waits (`keepsTimer`); otherwise it
+  is cancelled in the same step. (Added after the audit for hidden state.)
+- **Before the entry owns its view** a poll only waits. The frames of the
+  view come with `Owned`, and a poll that joined the first attach is then
+  answered.
 - **The pull belongs to the entry, not to a request.** A poll that is
   cancelled does not stop it. A second poll that joined the first is answered
   when the frame comes, also when the first one was cancelled.
 - **The end of a view** is the end of its frame stream: after an idle timeout
   the retirement closes the frontend (read). The entry leaves the map when
   the view cancels its input, as on `main`.
+- **A view whose frames end retires at once.** The frontend can close by
+  itself: a routing overflow, a revision that the view never published, an
+  output failure. Then the delivery runs the release of its view, as a
+  WebSocket adapter does when the output ends, and the view does not wait
+  for its idle timeout. The release cancels the input through the stream
+  that the close watcher sees. (Added after the review of PR 42, finding 12.)
+- **A view whose input fails closes.** A message that the view cannot read,
+  or a reply that it cannot take, fails its input. A view that resumes then
+  closes its frontend, as a guarded view does, so its page is told to
+  reload; else its polls keep it alive while it handles nothing. An
+  unguarded WebSocket view keeps the failure in its input, as on `main`
+  (`FrontendConnectionMachine.closesOnFailedInput`). Admission takes a page
+  id in lower case only, as the view compares it. (Added after the review of
+  PR 42, finding 14.)
 - **A message never creates an entry.** So no entry can be an orphan, and the
   orphan timer of `main` has no job left; see decision 9.
 
@@ -393,8 +438,20 @@ page that never moves its cursor would keep its view alive by its heartbeats.
   Revision 3 added progress to the messages; the review showed that this
   keeps the old behaviour.
 - **A WebSocket view is not changed:** its messages reset the timer.
-- **A poll waits for half the idle timeout at most.** Then it is answered
-  with `204`. A quiet page so makes progress twice in every idle period.
+- **A poll has a wait of its own:** a setting, 15 seconds by default, and
+  never more than half the idle timeout. Then it is answered with `204`. A
+  quiet page so makes progress at least twice in every idle period. Akka HTTP
+  and Pekko HTTP end a request after 20 seconds with `503` by default, so
+  their poll route raises its request timeout above that wait. Only that
+  route: `/bridge/long-polling/<session>/subscribe`, parsed and matched as
+  the service routes it, so an application route with a like name keeps its
+  own timeout, and a spelling that the service routes there, such as a
+  trailing slash, gets the timeout of a poll (after the reviews at
+  `fe313e1a` and `b6194262`). A proxy with
+  a shorter read timeout than the wait still gives failed polls; the setting
+  is for such a deployment. (Decided by the user on 2026-11-22, after the review of PR 42.) Before, a poll waited half the idle
+  timeout, 30 seconds by default, and on Akka and Pekko every quiet poll
+  ended in a `503`.
 - These rules are a matter of the transport. They decide nothing about the
   state of a view.
 
@@ -410,16 +467,20 @@ that is made at the render and taken once at the attach: the `bootstrap` of
 same thing for an unguarded page and lives in that machine, as a field of its
 own: when the page was rendered, in the order of the renders.
 
-- **Only a page render makes a record,** and it makes it **before** it stores
-  the state. So no stored state is without a record. A render that fails or
-  is cancelled in between leaves a record without a state; it ends like any
-  other, and there is nothing to remove.
+- **Only a page render makes a record.** It reserves the record **before**
+  it stores the state (`Storing`), so no stored state is without a record,
+  and makes it when the state is stored: the record waits from then on, in
+  the order of the renders. A reservation is not in that order, so no expiry
+  takes it while the write runs. A write that fails, throws, or is cancelled
+  ends the reservation in a finalizer that also covers the reservation step
+  itself, and a state that it left in a local storage is dropped; nothing is
+  left behind (after the reviews at `fe313e1a` and `b6194262`).
 - **A record ends in one of these steps.** All are steps of the one machine
   state, so only one can win.
 
 | Step | When | What follows |
 | --- | --- | --- |
-| `Claim` | An unguarded attach of the session. The machine answers `Fresh`, `Expired`, `Absent` or `Releasing` | A poll goes on only with `Fresh`, and takes the record. A WebSocket takes the record at any age and goes on with `Fresh`, `Expired` and `Absent`: it needs only the stored state. `Releasing` means Reload for both. An expired record that a poll finds stays where it is |
+| `Claim` | An unguarded attach of the session. The machine answers `Fresh`, `Expired`, `Absent` or `Releasing`; a reservation is `Absent`, since no browser has the page yet | A poll goes on only with `Fresh`, and takes the record. A WebSocket takes the record at any age and goes on with `Fresh`, `Expired` and `Absent`: it needs only the stored state. `Releasing` means Reload for both. An expired record that a poll finds stays where it is |
 | `Expire` | A later render finds the record older than its lifetime | Local storage: the record becomes `Releasing` and its state is removed. Another storage: the record ends and nothing is removed |
 | `Released` | The removal has returned | The record is gone. A removal that fails puts the record back, and a later render tries again |
 
@@ -448,11 +509,16 @@ not local either. How the session service knows is decision 26.
 
 **Who removes.** Two paths, and only for a local storage:
 
-1. **The expiry** of a record that nothing claimed.
+1. **The expiry** of a record that nothing claimed. Every record that it
+   takes leaves its releasing step, released or back for a later expiry,
+   also when a removal fails and its report throws.
 2. **An attach that fails before it has a view** (decision 24). On `main`
    nothing removes the state in this case (read: `abandon`, line 724). The
    removal runs while the failed attach still holds the place of the session
-   in the table of views.
+   in the table of views. A removal that fails is reported, and the attach
+   keeps its own error.
+
+(The two last sentences were added after the review of PR 42, finding 18.)
 
 **What became of decision 20.** The user decided on 2026-11-22 that a session
 whose page is told to reload, and which has no view, gives up its stored
@@ -464,22 +530,28 @@ it had a view, or was moved to the for-deletion cache when its view retired.
 After a restart a local storage holds nothing in memory. So a reload removes
 nothing by itself, and no code is needed for it.
 
-**What the default storage keeps after a removal** (run). It moves the state
-into its for-deletion cache, which holds 5,000: of 10,000 states of unclaimed
-pages, 5,000 stayed. In development mode it also keeps its files, as it does
-on `main` after a retirement (read).
+**What the default storage keeps after a removal** (run). `remove` moves the
+state into its for-deletion cache, which holds 5,000, and a WebSocket page
+whose socket closed takes its state back from there. Unclaimed pages shared
+that cache until the review of PR 42: 5,000 expired pages pushed out the
+state of a page that was away. So **the expiry drops the state for good,**
+past the for-deletion cache, with an operation of the default storage that
+only the framework sees. (Decided by the user on 2026-11-22, after the review of PR 42.) The cache then holds the states of
+views that retired, as on `main`, and of an attach that failed before it had
+a view (decision 24 keeps `remove` for it). In development mode the files of
+a state stay, as before.
 
 **A WebSocket that first attaches late.** With the default storage it finds
-its state among the live ones, or takes it back from the for-deletion cache;
-the page has applied nothing, so page and state agree. If the state has left
-the cache, the page reloads. With another storage the row is still there, and
-the page connects.
+its state while the record lives; the page has applied nothing, so page and
+state agree. After the cleanup of its record the state is gone for good, and
+the page reloads once. (Decided by the user on 2026-11-22, after the review of PR 42.) With another storage the row is still
+there, and the page connects.
 
 **Who ends a stored state.**
 
 | The stored state of an unguarded session | Default storage | Another storage |
 | --- | --- | --- |
-| Its page was rendered and nothing has claimed it | The expiry, at a render after its lifetime | Nobody, as on `main`. The record ends, the row stays |
+| Its page was rendered and nothing has claimed it | The expiry, at a render after its lifetime; the state is dropped for good, not moved to the for-deletion cache | Nobody, as on `main`. The record ends, the row stays |
 | A view owns it | The retirement of that view, as on `main` | The same. Its deletion can outlive the retirement, as on `main`: a reconnect that is faster than the deletion loses its row |
 | An attach failed after it had built a view | Its rollback, as on `main` (read: `LegacySessionMachine`) | The same |
 | An attach failed before it had a view | That attach (decision 24) | Nobody, as on `main` |
@@ -496,29 +568,64 @@ bridge and holds for both transports of an unguarded page.
 | A `200` names another frame or another revision, or none | none | Reload |
 | The bridge has applied the frame | `seen + 1`; `dom + 1` after a DOM frame | Poll again |
 | The bridge could not apply a DOM frame | none | Reload |
+| Another frame throws in the bridge: a command, a property read, a history call | `seen + 1` | Logged; poll again, as on a WebSocket |
 | A poll is answered with `204` | `failures = 0`, link up | Poll again |
-| A poll fails: status 0, 5xx, or no answer by the deadline | `failures + 1`, link interrupted | Poll again after the back-off; show the notice when `failures` is 2 |
+| A poll fails: status 0, 5xx, `408`, `429`, or no answer by the deadline | `failures + 1`, link interrupted, `replaced` ends | Poll again after the back-off; show the notice when `failures` is 2 |
 | A poll is answered with any other status | none | Reload |
 | The reload frame arrives | none | Reload |
-| The heartbeat limit is reached | none | Give up the current poll and poll again |
+| A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted; `replaced` stays, since the poll has not failed | As a failed poll; the heartbeat is not counted as unanswered, and the re-poll is given back. A request that is written off at the next heartbeat is aborted, so that requests do not pile up on a link that hangs (the last two added after the second review of PR 42) |
+| No transport takes a heartbeat, so no request goes out (added after the second review of PR 42) | none | Not counted as unanswered, and no failed poll |
+| A message that the server took while the link is interrupted, the first since the last failed poll; a failed heartbeat is no failed poll here (added after the second review of PR 42, once-only after the review at `82baf17a`, the heartbeat after the review at `fe313e1a`) | `replaced` | The link is back: give up the current poll, which may hang on the broken link, or its back-off, and poll again. A later taken message leaves the new poll alone until it is answered or fails, so a quiet poll still reaches its `204` |
+| The heartbeat limit is reached, for the first time since a reply or a failed heartbeat | none | Give up the current poll, or its back-off, and poll again |
+| The heartbeat limit is reached again, and the heartbeats that the server took are still unanswered | none | Reload, through the reload guard |
 
 - **Applied means applied.** The bridge reports the result of a frame to the
   transport. A DOM frame counts only when every command found its node: today
   the bridge catches a failed patch and only logs it, and `create`,
   `createText` and `remove` skip a missing parent without any error (read:
   `bridge.js`, `spoonbill.js`).
+- **A missing child is allowed in `remove`.** The page renderer writes an
+  empty text as nothing, so the parsed page has no node for it, and the view
+  may remove that text later. Such a patch names a child that the page never
+  had, and the page is still in step. The diff of the renderer removes each
+  node once, and never a node inside one that it removes (read: Avocet
+  2.0.1, `DiffRenderContext.deleteLoop`). So `remove` fails only for a
+  missing parent. (Checked after the review of PR 42, finding 17.)
 - **A failed poll keeps the bridge.** No `close` event. Two new events,
   `interrupt` and `resume`, show and hide the connection-lost notice. It
   appears when the first retry fails too. Every answered poll hides it again,
-  a `204` too, and the heartbeat goes on. `Spoonbill.ready` stays true and
+  a `204` too. The heartbeat goes on through an interruption (see below). `Spoonbill.ready` stays true and
   `SpoonbillReady` is not sent again.
-- **A poll has a deadline in the client:** the wait limit of the server, which
-  the page configuration names, plus a margin. A response that hangs is then
-  a failed poll, and not a silent stop.
-- **A lost heartbeat makes the page poll again.** `heartbeatLimit` is 2 by
-  default, and on `main` the page reloads when it is reached (read). On long
-  polling the page gives up its poll and asks again first; the answer of the
-  server decides the rest. The heartbeat pauses while the link is interrupted.
+- **A poll has a deadline in the client:** the poll wait, which the page
+  configuration names, plus a margin, and always below the idle timeout. A
+  response that hangs is then a failed poll, and not a silent stop, and the
+  page notices it while its view still lives. (Decided by the user on 2026-11-22, after the review of PR 42.)
+  The retry goes out after the deadline and the first back-off of 200 ms.
+  The deadline is at most three quarters of the idle timeout, so the retry
+  comes in time for an idle timeout of about one second or more; below that,
+  a response that hangs ends the view, and the page reloads once (after the
+  review at `fe313e1a`).
+- **The heartbeat on long polling tells a dead link from a dead input.**
+  (Decided by the user on 2026-11-22, after the review of PR 42.) `heartbeatLimit` is 2 by default, and on `main` the page
+  reloads when it is reached (read).
+  1. The heartbeat goes on while the link is interrupted. Its reply answers
+     the poll that the server holds, so the notice hides within one
+     heartbeat interval after the link is back.
+  2. The page looks at the answer to each heartbeat message. One that cannot
+     be sent counts as a failed poll, not as an unanswered heartbeat. So a
+     link that hangs shows the notice at the second failure, and the page
+     goes on with its state when the link is back.
+  3. A heartbeat that the server took and did not answer is counted. At the
+     limit the page gives up its poll and polls again, once. If the
+     heartbeats that the server took are still unanswered at the next limit,
+     the input of the view is dead, and the page reloads through the reload
+     guard: about 20 seconds with the defaults. A heartbeat reply in between
+     starts the count again.
+  4. The count does not go below zero: a reply to a heartbeat that was
+     written off changes nothing.
+
+  Before, the limit only polled again: a link that hangs gave no sign, and a
+  page whose messages did not arrive stayed deaf.
 - **`503` is a failure,** with the back-off. On `main` the client polls again
   at once (read).
 - **An answer to a request that the transport gave up is ignored.**
@@ -535,9 +642,18 @@ bridge and holds for both transports of an unguarded page.
 - **The transport is remembered when it has to be.** A proxy can pass a
   WebSocket request on to the server and then break the socket. The server
   has then built a view that the page never had, and that view has taken the
-  fresh-page record. So a page that fell back to long polling and whose first
-  poll is told to reload notes "start with long polling" in `sessionStorage`
-  before it reloads.
+  fresh-page record. So a document that tried a WebSocket first, fell back
+  to long polling, and is told to reload before it applied a frame notes
+  "start with long polling" in `sessionStorage` before it reloads. Only such
+  a document writes the note. (Decided by the user on 2026-11-22, after the review of PR 42.)
+  - **The note ends** when a document that started with long polling because
+    of it is told to reload before it applied a frame. The next document
+    then tries a WebSocket again, which ends the loop on a network where
+    long polling is what fails. Otherwise it stays for the life of the tab.
+  - The keys of the note and of the reload guard are named after the root
+    path of the application, so that two applications on one origin do not
+    share them, and the time of the last reload is read in a `try` of its
+    own.
 - **Without `sessionStorage`** the page can note nothing. It then reloads as
   `main` does on a reload frame, without a guard and without the remembered
   transport.
@@ -551,7 +667,8 @@ with.
 - **Start.** A poll builds a view only for a page with `seen = 0` whose
   fresh-page record is `Fresh`. The page shows the server render of the
   stored state, and no view has changed that state.
-- **Step.** The page applies frame `seen + 1` completely, or it reloads. It
+- **Step.** The page applies a DOM frame `seen + 1` completely, or it
+  reloads; every other frame is delivered once. (Decided by the user on 2026-11-22, after the review of PR 42.) It
   knows the number and the revision from the answer and compares both with
   its own counts. The server answers `seen = k` only with frame `k + 1` of
   the view that this page id owns.
@@ -639,7 +756,7 @@ Each case is written first and must fail without its part of the change.
 | | **Two servers, one repository.** A poll reaches the server that has no view of the session: Reload. The row is intact in the repository itself, and the view on the other server goes on | service spec with two services |
 | | A default storage with a for-deletion cache of 2. Five pages expire, and one more has a view: the three oldest states are gone, the view keeps its state | service spec with a clock |
 | | 250 pages expire: three renders clean them up, 100 at a time | service spec with a clock |
-| | A render is cancelled after its record is made and before the state is stored; and right after it has selected expired records: afterwards no state is live without a record or a view | checks with a lazy effect |
+| | A render is cancelled after its record is reserved and before the state is stored; and right after it has selected expired records: afterwards no state is live without a record or a view, and no reservation is left | checks with a lazy effect |
 | | An attach makes no record | service spec |
 | | An attach fails before it has a view, and its page never comes back: the state leaves the live states of the default storage | service spec |
 
@@ -726,7 +843,9 @@ Each is the user's. The recommendation is first. Changed against revision 3:
    transports.
 6. **A request without a cursor is told to reload.** *Alternative:* serve it
    as `main` does, on a second code path that trusts the page.
-7. **A patch that does not apply reloads the page** on long polling.
+7. **A patch that does not apply reloads the page** on long polling. Only a
+   DOM patch: a command that throws is logged and delivered, as on a
+   WebSocket. (Decided by the user on 2026-11-22, after the review of PR 42.)
 8. **A message before the first poll gets `410`.** *Alternative:* keep the
    topic that `main` makes for it, with its orphan timer.
 9. **Remove the orphan timer and `OrphanTopicMachine`.** *Alternative:* leave
@@ -740,11 +859,22 @@ Each is the user's. The recommendation is first. Changed against revision 3:
 11. **No cap in bytes now.** What waits for a page that does not move on is
     bounded by the idle timeout, as on `main`. *Alternative:* end a view whose
     queue passes a size. That is a new policy for unguarded views.
-12. **A poll waits half the idle timeout; the client's deadline is that plus
-    five seconds.** *Alternative:* other values.
-13. **On long polling a reached heartbeat limit polls again; it does not
-    reload.** *Alternative:* reload as on `main`. Then a hanging response
-    costs the page its state.
+12. **A poll has a wait of its own, 15 seconds by default and at most half
+    the idle timeout; the client's deadline is that plus a margin, below the
+    idle timeout.** (Decided by the user on 2026-11-22, after the review of PR 42.) *Not taken:* only raising the request
+    timeout of the two adapters (a proxy with a shorter read timeout runs
+    into the same loop, and a long idle timeout gives a wait of hours); a
+    `503` that means "poll again", as on `main` (a real outage then shows no
+    notice). The cost: a quiet page with the heartbeat off asks every 15 s.
+    Revision 4 had half the idle timeout and a deadline five seconds above.
+13. **On long polling the heartbeat shows the notice for a dead link, and
+    reloads for a dead input.** A heartbeat that cannot be sent is a failed
+    poll; heartbeats that the server took and did not answer give one
+    re-poll at the limit, and a reload through the guard at the next one.
+    (Decided by the user on 2026-11-22, after the review of PR 42.) *Not taken:* reload at the limit as on `main` (a 10 s
+    stall of the network then costs the page its state); poll again and
+    nothing more, as revision 4 said (a dead link gives no sign, and a deaf
+    page never recovers).
 14. **The reload guard allows one framework reload in 30 seconds for a tab,
     on both transports of an unguarded page. A second one waits, with the
     notice, until the window is over.** *Alternative:* the second one does
@@ -767,16 +897,18 @@ Each is the user's. The recommendation is first. Changed against revision 3:
     its branch.
 18. **An ADR entry for the delivery rule** when it is built. Not written
     before the user says so. **ADR 0006 is another matter:** the user asked
-    for it on 2026-11-22, for decision 25 only. Its
-    [draft](long-polling-resume-adr-0006-draft.md) becomes an ADR with the
-    implementation.
+    for it on 2026-11-22, for decision 25 only. It came into the
+    repository with the implementation: [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md).
 
 **About stored state.**
 
 19. **Decided by the user on 2026-11-22: a page that nothing has claimed
     expires. Narrowed by the user the same day:** its state is removed only
     from a storage that is local to this process. With another storage the
-    record ends and the row stays.
+    record ends and the row stays. **After the review of PR 42** the state
+    is dropped for good, past the for-deletion cache, so that unclaimed
+    pages do not push out the states of pages that are away. (Decided by the user on 2026-11-22, after the review of PR 42.)
+    *Not taken:* keep sharing the cache; a cache of their own.
 20. **Decided by the user on 2026-11-22: a session whose page is told to
     reload, and which has no view, gives up its stored state. Narrowed the
     same day:** nothing is deleted from a repository because this server has
@@ -812,7 +944,7 @@ Each is the user's. The recommendation is first. Changed against revision 3:
     sticky routing is hit too: on `main` each server builds a state. With
     that in view the user kept the rule, and asked for an ADR so that the
     decision can be revisited and redesigned later. The
-    [draft of ADR 0006](long-polling-resume-adr-0006-draft.md) has the
+    [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md) has the
     decision, its cost, when to revisit it, and what a redesign has to keep.
     *Not taken:* the rule only where this change removes states, that is for
     a poll, and for a WebSocket with a local storage. It would leave the
@@ -846,6 +978,22 @@ Each is the user's. The recommendation is first. Changed against revision 3:
     line where the reload is answered. It is proposed with the ADR and is not
     decided. *Alternative:* no counter. Then the debug line of the reporter is
     the only trace, and the ADR says so.
+29. **"Start with long polling" is noted only after a fallback, and ends at a
+    reload.** Only a document that tried a WebSocket first, fell back and is
+    told to reload before it applied a frame writes the note; a document that
+    started with long polling because of the note and is told to reload
+    before its first frame takes it away. Decided by the user on 2026-11-22,
+    after the review of PR 42. *Not taken:* an expiry after a time (on a
+    network that breaks WebSockets it costs one more reload at each expiry);
+    leaving it as revision 4 had it, written at every reload at cursor 0 and
+    never removed.
+30. **A WebSocket for a session whose view a poll owns gets the reload
+    frame.** Decided by the user on 2026-11-22, after the review of PR 42.
+    *Not taken:* closing it with nothing, as revision 4 said; a second
+    document whose WebSocket works then reconnects every 200 ms.
+31. **Pull request 41, the plan and this design, is merged before pull
+    request 42.** Decided by the user on 2026-11-22. The branch of PR 42 then
+    takes `main` in; its versions of the three documents are the newer ones.
 
 ## Steps
 
@@ -970,6 +1118,38 @@ The trial code and the probes were scratch files. They are not kept in the
 repository. Step 4 of the plan turns the two probes for a missing state into
 test cases.
 
+## Changes after the review of PR 42
+
+The review of pull request 42 (2026-11-22) found six gaps of this design, and
+the user decided each on the same day. They change:
+
+| Decision | Before (revision 4) | Now |
+| --- | --- | --- |
+| 12 | A poll waits half the idle timeout; on Akka and Pekko a quiet poll ends in `503` after 20 s, a failed poll | A wait of its own, 15 s by default, at most half the idle timeout; the two adapters raise their request timeout for the poll route; `408` and `429` are failed polls |
+| 13 | At the heartbeat limit the page polls again, nothing more; the heartbeat pauses while the link is interrupted | A heartbeat that cannot be sent is a failed poll; unanswered heartbeats give one re-poll, then a reload through the guard; the heartbeat goes on during an interruption |
+| 19 | The expiry moves an unclaimed state into the for-deletion cache | The expiry drops it for good |
+| 7 | Every frame that throws reloads the page | Only a DOM patch must apply |
+| 29 (new) | The transport note is written at every reload at cursor 0 and never removed | Only after a fallback, and it ends at a reload |
+| 30 (new) | A refused WebSocket is closed with nothing | It gets the reload frame |
+| 31 (new) | | PR 41 is merged first |
+
+The same review found plain fixes, which needed no decision. Those that add
+a rule to this design are written where the rule belongs, each marked
+"after the review of PR 42": a view whose frames end retires at once (finding
+12); the attach is one effect from the claim on (13); a view that resumes
+closes when its input fails, and admission takes a page id in lower case
+only (14); `remove` allows a missing child (17, checked, no change of code);
+the cleanup steps every record that it takes (18). With cats-effect 3.5 or
+newer a waiting poll could not be cancelled (21); `promise` of that instance
+can be cancelled now, as on the version that the build pins.
+
+The reviews after it (at `92d73daf`, `82baf17a` and `fe313e1a`) found client
+rules of the heartbeat and of the recovery after an outage, which the client
+table above now has, and three more points that the text above has: the
+reservation of the fresh-page record while its state is stored, the request
+timeout of the poll route only, and when the retry after a hanging response
+comes in time.
+
 ## Changes from revision 3
 
 After the review of the implementation plan, and after the user narrowed the
@@ -1041,4 +1221,4 @@ and all of them hold.
   the storage cleanup after that review (revision 4).
 - On 2026-11-22 the user confirmed decision 25 with its larger consequence in
   view, and asked for an ADR for it:
-  [the draft](long-polling-resume-adr-0006-draft.md).
+  [ADR 0006](adr/0006-legacy-attach-needs-stored-state.md).

@@ -231,22 +231,27 @@ export class Spoonbill {
   /**
    * @param {Array} data
    */
+  /** @return {boolean} Every command found its node. */
   modifyDom(data) {
     // Reverse data to use pop() instead of shift()
     // pop() faster than shift()
     let atad = data.reverse();
     let r = atad.pop.bind(atad);
+    // The structural commands skip a missing parent. Record that the patch
+    // did not apply in full.
+    let complete = true;
     while (data.length > 0) {
       switch (r()) {
-        case ModifyDomProcedure.CREATE: this.create(r(), r(), r(), r()); break;
-        case ModifyDomProcedure.CREATE_TEXT: this.createText(r(), r(), r()); break;
-        case ModifyDomProcedure.REMOVE: this.remove(r(), r()); break;
+        case ModifyDomProcedure.CREATE: complete = this.create(r(), r(), r(), r()) && complete; break;
+        case ModifyDomProcedure.CREATE_TEXT: complete = this.createText(r(), r(), r()) && complete; break;
+        case ModifyDomProcedure.REMOVE: complete = this.remove(r(), r()) && complete; break;
         case ModifyDomProcedure.SET_ATTR: this.setAttr(r(), r(), r(), r(), r()); break;
         case ModifyDomProcedure.REMOVE_ATTR: this.removeAttr(r(), r(), r(), r()); break;
         case ModifyDomProcedure.SET_STYLE: this.setStyle(r(), r(), r()); break;
         case ModifyDomProcedure.REMOVE_STYLE: this.removeStyle(r(), r()); break;
       }
     }
+    return complete;
   }
 
    /**
@@ -258,7 +263,7 @@ export class Spoonbill {
     var parent = this.els[id],
       child = this.els[childId],
       newElement;
-    if (!parent) return;
+    if (!parent) return false;
     if (xmlNs === 0) {
       if (this._resettingView && tag.toLowerCase() === 'script') {
         // Parsed script nodes are inert. Rebuilding the head must not execute
@@ -283,6 +288,7 @@ export class Spoonbill {
       parent.appendChild(newElement);
     }
     this.els[childId] = newElement;
+    return true;
   }
 
    /**
@@ -294,7 +300,7 @@ export class Spoonbill {
     var parent = this.els[id],
       child = this.els[childId],
       newElement;
-    if (!parent) return;
+    if (!parent) return false;
     newElement = document.createTextNode(text);
     newElement.vId = childId;
     if (child && child.parentNode === parent) {
@@ -303,6 +309,7 @@ export class Spoonbill {
       parent.appendChild(newElement);
     }
     this.els[childId] = newElement;
+    return true;
   }
 
    /**
@@ -312,10 +319,14 @@ export class Spoonbill {
   remove(id, childId) {
     var parent = this.els[id],
       child = this.els[childId];
-    if (!parent) return;
+    if (!parent) return false;
+    // A missing child still counts as applied. The page renderer writes an
+    // empty text as nothing, so the parsed page has no node for it, and the
+    // view may remove that text later. The renderer removes each node once.
     if (child) {
       parent.removeChild(child);
     }
+    return true;
   }
 
    /**

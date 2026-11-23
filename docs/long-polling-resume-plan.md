@@ -1,15 +1,18 @@
 # Long polling that resumes: implementation plan
 
-Status: **second version**, 2026-11-22. For review. **Nothing is built.** This
-plan implements the [design](long-polling-resume-design.md), revision 4. The
-design says what and why; this file says in which order, in which files, and
-with which tests.
+Status: **built**, 2026-11-22, in the nine steps below, one commit each,
+and two more commits after step 8: one from an audit for hidden state, and
+one that keeps two test cases independent of development mode. This plan
+implements the [design](long-polling-resume-design.md), revision 4.
+The design says what and why; this file says in which order, in which files,
+and with which tests. [What was built](#what-was-built) says where the work
+differs from the plan.
 
-**The papers around it.** The design and the
-[draft of ADR 0006](long-polling-resume-adr-0006-draft.md) are next to this
-file. The reviews of the design and of this plan, and the reports of the
-defects that the plan names, are working papers. They are not in the
-repository. The record of this plan's own review is at the end.
+**The papers around it.** The design is next to this file, and
+[ADR 0006](adr/0006-legacy-attach-needs-stored-state.md) records its one
+decision with a known cost. The reviews of the design and of this plan, and
+the reports of the defects that the plan names, are working papers. They are
+not in the repository. The record of this plan's own review is at the end.
 
 **The idea in short.** A page on long polling loses a poll now and then. On
 `main` the page then builds a new bridge, the server keeps the old view, and
@@ -36,8 +39,171 @@ storage cleanup after that review. What changed against the first version:
 storage over a repository a WebSocket page reloads at every reconnect after a
 closed socket. With that in view the user confirmed it on 2026-11-22 and
 asked for an ADR, so that the decision can be revisited and redesigned later.
-The ADR is [drafted](long-polling-resume-adr-0006-draft.md). The draft
-becomes an ADR in step 9, as the earlier ADRs came with their changes.
+The ADR was drafted next to this plan and became
+[ADR 0006](adr/0006-legacy-attach-needs-stored-state.md) in step 9, as the earlier ADRs came with their changes.
+
+## What was built
+
+Every step was built as planned, tests first. Where the work differs:
+
+- **Step 3.** Its ADR 0004 controls did not run after the step: the machine
+  was not quiet (a load average of 6 to 8 on 16 cores). They ran at the end
+  with the long-polling measurement; see the last two points below.
+- **Step 4.** `SessionsServiceSpec` used a fixed session id, and a
+  development-mode directory of an earlier run made its case pass without a
+  rebuild while another suite had development mode on. The case now has a
+  session id of its own. The defect is on `main`.
+- **Step 5.** The keep-alive frame for a kept command that has expired is
+  tested in the delivery (`LongPollingDeliveryInterpreterSpec`) and in the
+  machine, not through an `evalJs` of a view. Of the lazy-effect cases, two
+  have no check of their own, because the code leaves no place for them. The
+  first attach is one uncancelable step (`MessagingService.firstAttach`): a
+  cancel right after the entry went into the table, or before the record is
+  claimed, cannot stop it, and `cancelledFirstPoll` shows that such a step
+  runs to its end. A poll decides to wait and registers its waiter in one
+  step of the cell (`LongPollingDelivery.poll`), so no frame can be made
+  between the two.
+- **Step 6.** In development mode the default storage keeps each state in a
+  file as well, and a removal leaves the file; this was so before. So the
+  cleanup frees the memory of an unclaimed page there, and its file stays.
+  Development mode is one switch for the whole JVM: two cases of steps 5
+  and 6 failed, or proved nothing, when a suite that turns it on ran beside
+  them. Their storage now keeps development mode off.
+- **Step 8.**
+  - The view ends by its idle timeout while every poll fails, not by a
+    control of the fixture. The fixture has one control, the one that makes
+    the storage forget the state of a session.
+  - A document that the test fulfils loses its cookie and its
+    `sessionStorage` in WebKit. The lost-state cases hold the client script
+    instead, until the state is forgotten.
+  - The Back case passed at first under its mutation, an old history event
+    that is discarded: it judged before the held patch was applied, and it
+    could release the patch before the history event had left. It now waits
+    for both and requires the route that Back went to. It fails under the
+    mutation.
+  - The event-latency client got a long-polling transport
+    (`BENCH_TRANSPORT=long-polling`) for the measurement.
+- **An audit after step 8, and one more commit.** Asked whether the work
+  kept every phase in a pure machine, a review of steps 1 to 8 found that it
+  did not everywhere. The timer of a waiting poll was kept in a map beside
+  the cell and decided by a separate look at the machine state: a stress
+  case left 49 of 20,000 timers set after their poll was answered. Whether
+  an entry owns its view was known only from a table that a pull waited on.
+  On long polling a reload that waited for the end of its window was a timer
+  that the connection machine did not know, and the page still sent clicks.
+  Two rules were plain conditions, and the end of every request was stepped
+  as a cancellation. The commit after step 8 puts all of these into the
+  machines, with tests that failed first.
+- **The long-polling measurement.** Declared before the first run: the
+  event-latency harness, a plain page, `main` against the change, five
+  alternated pairs for each setting; a loss is a median p50 or p99 of the
+  time from a click to its patch above 110% of `main`. After step 8, one user
+  on long polling measured 110.1% at p50 (0.89 against 0.98 ms), so the work
+  stopped for a decision. A repeat, kept apart, measured 106.8%. A throwaway
+  experiment with marks in both servers found about 8 µs more in the intake
+  of a click and about 19 µs more in the delivery of the patch, on one
+  thread; the timer of each poll and the step at the end of each request are
+  about 7 µs of it. The user accepted the cost on 2026-11-22 because `main`
+  has the defects that this change removes: in a browser, on `main`, a lost
+  poll answer loses its patch and the next click, a click on an older display
+  runs the handler of the newer one, and a page whose stored state is gone
+  runs a handler of another route. Where `main` does better: when a view
+  ends while every poll fails, `main` goes on from the stored state, and the
+  change reloads once. At the end, with the commit of the audit, the same
+  runs measured: long polling one user 106.5% p50 and 98.9% p99, eight users
+  101.5% and 98.6%; WebSocket, plain page 100.0% and 108.8%, guarded page
+  101.1% and 100.0%. The load average was 5 to 8 on 16 cores.
+
+  **What was measured, in absolute values** (added after the review of PR
+  42, for ADR 0004). `main` is `82aa5dbd`. The change is the commit of
+  step 8, `e31e4cb1`, in the first two collections, and the commit of the
+  audit, `8cd93aea`, in the last. The review round of PR 42 was not measured
+  again. Each value is `patchMs`, the time from a click to its patch in
+  milliseconds: the median of the per-run p50 or p99 over five alternated
+  pairs, with the range of the five runs in brackets. Each collection ran in
+  one Nix shell (Zulu 21.0.8) on a host with 16 cores.
+
+  After step 8, 2026-11-22 10:24:13 to 10:25:45 UTC, load averages 7.89,
+  7.22, 6.95 at the start and 5.22, 6.48, 6.68 at the end:
+
+  | Setting | `main` p50 | Change p50 | `main` p99 | Change p99 | Change / `main`, p50 and p99 |
+  | --- | --- | --- | --- | --- | --- |
+  | Long polling, one user | 0.89 (0.87–1.00) | 0.98 (0.92–1.00) | 1.71 (1.58–2.59) | 1.85 (1.65–1.89) | 110.1%, 108.2% |
+  | Long polling, eight users | 1.22 (1.17–1.35) | 1.28 (1.20–1.39) | 3.46 (3.27–3.71) | 3.62 (3.19–3.92) | 104.9%, 104.6% |
+  | WebSocket, plain page | 0.73 (0.72–0.81) | 0.76 (0.74–0.77) | 1.33 (1.30–1.61) | 1.34 (1.19–1.49) | 104.1%, 100.8% |
+  | WebSocket, guarded page | 0.90 (0.85–0.96) | 0.89 (0.88–0.92) | 1.62 (1.56–1.72) | 1.69 (1.59–1.79) | 98.9%, 104.3% |
+
+  The repeat, kept apart, 10:26:27 to 10:26:50 UTC, load averages 6.05,
+  6.51, 6.68 at the start and 6.93, 6.66, 6.73 at the end:
+
+  | Setting | `main` p50 | Change p50 | `main` p99 | Change p99 | Change / `main`, p50 and p99 |
+  | --- | --- | --- | --- | --- | --- |
+  | Long polling, one user | 0.88 (0.85–0.89) | 0.94 (0.94–0.97) | 1.65 (1.55–1.89) | 1.76 (1.64–1.95) | 106.8%, 106.7% |
+
+  At the end, 11:44:38 to 11:46:10 UTC, load averages 5.70, 7.70, 8.09 at
+  the start and 8.28, 8.00, 8.16 at the end:
+
+  | Setting | `main` p50 | Change p50 | `main` p99 | Change p99 | Change / `main`, p50 and p99 |
+  | --- | --- | --- | --- | --- | --- |
+  | Long polling, one user | 0.92 (0.91–0.93) | 0.98 (0.96–1.05) | 1.78 (1.48–2.13) | 1.76 (1.68–2.10) | 106.5%, 98.9% |
+  | Long polling, eight users | 1.31 (1.21–1.45) | 1.33 (1.28–1.45) | 3.45 (3.42–4.05) | 3.40 (3.35–3.71) | 101.5%, 98.6% |
+  | WebSocket, plain page | 0.75 (0.71–0.76) | 0.75 (0.73–0.79) | 1.36 (1.28–1.45) | 1.48 (1.32–1.51) | 100.0%, 108.8% |
+  | WebSocket, guarded page | 0.89 (0.88–0.93) | 0.90 (0.87–0.92) | 1.65 (1.59–1.67) | 1.65 (1.50–1.89) | 101.1%, 100.0% |
+- **The controls of ADR 0004** ran at the end, not after step 3, at the
+  commit of the audit, `8cd93aea`, against `main` `82aa5dbd`. The four
+  workloads of the gate, three alternated pairs of five seconds, each trial
+  its own JVM (Zulu 21.0.8, `-Xms256m -Xmx256m -XX:+UseG1GC
+  -XX:ActiveProcessorCount=8`), 2026-11-22 11:46:44 to 11:50:53 UTC, passed:
+  throughput 100.5%, 103.0%, 100.3% and 100.0%; delivery p99 95.0%, 81.5%,
+  95.7% and 100.8%; allocation 100.0% in each (isolated, contended,
+  extensions, backlog). The load averages were 6.94, 7.71, 8.04 at the start
+  and 9.17, 10.76, 9.61 at the end, so these numbers are weaker evidence than
+  a quiet machine would give.
+
+  **The result is a control** (added after the review of PR 42). The
+  extension runtime, the sources that it imports, the effect module and the
+  fixture are the same at both revisions: none of them is among the 23 main
+  sources that the change touched before that commit, and their hashes are
+  equal. So both sides ran the same sources, and the ratios show the noise of
+  the machine. The class files of the candidate were compiled again later,
+  so no class hashes were kept. The 24 rows, the load averages and the
+  hashes of the recordings are in
+  [the evidence file](../misc/extension-contention/evidence/2026-11-22-8cd93aea-main.json);
+  the recordings themselves stay outside the repository. The median of the
+  three trials, with their range:
+
+  | Workload | Value | `main` | Change | Change / `main` |
+  | --- | --- | --- | --- | --- |
+  | isolated | Throughput, notifications per second | 1,232,049 (1,210,336–1,250,864) | 1,238,514 (1,204,399–1,248,696) | 100.5% |
+  | isolated | Delivery p99, ms | 2.962 (2.910–2.975) | 2.813 (2.793–2.839) | 95.0% |
+  | isolated | Bytes per notification | 1071.1 (1071.1–1071.7) | 1071.3 (1070.8–1071.8) | 100.0% |
+  | contended | Throughput, notifications per second | 2,399,813 (2,343,517–2,452,924) | 2,472,413 (2,360,950–2,483,967) | 103.0% |
+  | contended | Delivery p99, ms | 0.917 (0.884–1.003) | 0.747 (0.625–0.931) | 81.5% |
+  | contended | Bytes per notification | 1066.3 (1066.3–1066.4) | 1066.3 (1066.2–1066.4) | 100.0% |
+  | extensions | Throughput, notifications per second | 108,433 (107,833–108,502) | 108,806 (104,879–108,838) | 100.3% |
+  | extensions | Delivery p99, ms | 23.3 (22.4–24.3) | 22.3 (22.1–24.3) | 95.7% |
+  | extensions | Bytes per notification | 2377.8 (2377.6–2378.5) | 2377.9 (2373.9–2378.0) | 100.0% |
+  | backlog | Throughput, notifications per second | 142,685 (142,482–142,741) | 142,651 (142,279–142,983) | 100.0% |
+  | backlog | Delivery p99, ms | 63.7 (63.3–66.1) | 64.2 (63.8–65.5) | 100.8% |
+  | backlog | Bytes per notification | 1089.1 (1088.7–1089.9) | 1088.6 (1088.1–1089.2) | 100.0% |
+
+- **The review of PR 42** (2026-11-22) found 21 points. The user decided the
+  seven that changed the design (revision 5 records them), and the commits
+  after step 9 build them: the poll wait and the heartbeat rules, the state
+  of an unclaimed page dropped for good, only a DOM patch must apply, the
+  transport note, the reload frame for a refused WebSocket; and the plain
+  fixes: the order of the records, the revision of a frame from its start,
+  the cursor across transports, the weak cases, and the tidying. Then the
+  notes, each with a case that failed first: a view whose frames end retires
+  at once; the attach is one effect from the claim on; a view that resumes
+  closes when its input fails; the cleanup steps every record that it takes;
+  `promise` of the cats-effect instance can be cancelled on cats-effect 3.5
+  too. A `remove` whose child is missing stays applied: the renderer writes
+  an empty text as nothing, and a client case pins it. At the user's word,
+  after the reviewer's recommendation: ADR 0005 has a row for the poll wait
+  in place of the orphan timer that this change removes, and the
+  measurements above give the absolute values, the measured commits and the
+  rows that ADR 0004 asks for.
 
 ## What is true when the plan is done
 

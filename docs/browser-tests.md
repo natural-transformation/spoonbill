@@ -116,12 +116,58 @@ against the server's ids, click once and check the first patch, then prove that
 the current handlers run exactly once. The cases cover long element and
 attribute names, fixed hash-collision witnesses, quote- and delimiter-bearing
 data, and identity across the first patch, with default and preset ids. The
-script ends with an injected name-truncation fault that the runner must detect.
+script then runs an injected name-truncation fault that the runner must
+detect, and ends with the cases of long polling that resumes (below).
 The native CI job runs it after the sensitive acknowledgement step; its first
 Linux run passed with the preset-id defect as a recorded expected failure, and
 the run after the fix passed every case.
 [Renderer acceptance](renderer-acceptance.md) describes the assertions, bounds,
 the preset-id client defect it found (now fixed) and the recorded runs.
+
+## Long polling that resumes against the Scala service
+
+`scripts/test-renderer-acceptance.sh` ends with
+[`misc/long-polling-native-tests.cjs`](../misc/long-polling-native-tests.cjs),
+on the same fixture, in its `resume` scenario: a page at `/orders/<stage>`
+with a field, a button that moves the stage on, and one whose handler records
+the stage that it was rendered for. The fixture's idle timeout is 6 seconds
+in this scenario, so a poll waits 3 seconds. Every poll of the page passes
+through the test, which can fail all of them for a while, drop a DOM frame
+after the server has answered it, or hold that answer. The page has no
+WebSocket, so it uses long polling, except in the one case that tests a
+WebSocket. In Chromium and WebKit:
+
+| Case | What must hold |
+| --- | --- |
+| `lost-frame` | A DOM frame is lost: the page stays ready, keeps its bridge, gets the lost frame and the frame after it, and does not reload |
+| `stale-dropped`, `stale-held` | The DOM patch is lost, or held, and the user clicks before the retry: no handler runs. After the catch-up the click runs the handler of the new stage |
+| `kept-input` | After the catch-up a field that the patch did not touch keeps its focus and its unsent input |
+| `back` | Back is pressed while a patch is held, and the history event leaves before the patch arrives: the page ends at the route that Back went to, without a reload |
+| `view-ends` | Every poll fails for longer than the idle timeout: the page reloads once and works |
+| `lost-state-lp`, `lost-state-ws` | The stored state of a page at `/orders/42` is gone before it connects, by long polling and by WebSocket: the page reloads once, shows its route, and a click runs its handler |
+
+Each case was proved by a mutation that it must catch, put in and taken out
+again: a click from an older display that runs a handler (`stale-*`), a
+failed poll that reloads (`lost-frame`, `kept-input`, `stale-dropped`), a
+missing state that is built from the bridge request (`lost-state-*`), a reload
+answer taken as a failed poll (`view-ends`), and an old history event that is
+discarded (`back`).
+
+To run some cases, or more rounds, start the fixture as the script does and
+set `SPOONBILL_LP_CASES` (keys from the table, comma-separated),
+`SPOONBILL_LP_ENGINES` (`chromium,webkit`) and `SPOONBILL_LP_ROUNDS`.
+
+A document that the test fulfils with `route.fulfill` loses its cookie and
+its `sessionStorage` in WebKit, so the test never fulfils a document: to
+remove a state before the page connects, it holds the client script instead.
+The server sends the event counter of a handled click in a frame after the
+patch, and drops a click that carries an old counter, on every transport. A
+case that clicks one button twice therefore waits until the page has applied
+that frame; without the wait the second click raced it on a fast runner.
+Likewise a case uses a page only once it listens for clicks: on long polling
+`Spoonbill.ready` turns true with the first answer, and the frame that makes
+the page listen comes in a later one. Both waits were checked by holding
+those frames for 600 ms, under which every case passes.
 
 ## Public authentication example and delivery loss
 

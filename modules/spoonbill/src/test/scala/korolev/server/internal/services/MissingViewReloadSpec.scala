@@ -54,7 +54,7 @@ final class MissingViewReloadSpec extends AnyFlatSpec with Matchers {
       commonService = new CommonService[Future],
       sessionsService = sessions,
       compressionSupport = None,
-      orphanTopicTimeout = 1.second
+      pollWait = 1.second
     )
     val qsid = Qsid("device", "missing-view")
     val request = Request(Request.Method.Get, PathAndQuery.fromString("/bridge/web-socket/missing-view"), Nil, None, ())

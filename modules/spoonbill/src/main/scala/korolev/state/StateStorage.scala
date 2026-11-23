@@ -46,6 +46,26 @@ abstract class StateStorage[F[_]: Effect, S] {
    * Retrying a mark that already took effect must be safe.
    */
   def remove(deviceId: DeviceId, sessionId: SessionId): Unit
+
+  /**
+   * Whether this storage is local to this process: no other process can hold a
+   * view over one of its states, and `remove` has done its work when it
+   * returns. Only such a storage loses the state of an unguarded page that
+   * nothing has claimed. A storage that an application writes is not local,
+   * and a storage over a repository is not either: its `remove` returns when the
+   * deletion has only started, and another server can hold the view.
+   */
+  private[spoonbill] def localToProcess: Boolean = false
+
+  /**
+   * Ends the state of a page that nothing claimed, for good. Only the framework
+   * calls it, at the expiry of a fresh-page record and only for a storage that
+   * is local to this process. By default it is `remove`. The default storage
+   * does not keep such a state in its for-deletion cache, which belongs to the
+   * states of views that retired: unclaimed pages would push those out.
+   * (Decided by the user on 2026-11-22, after the review of PR 42.)
+   */
+  private[spoonbill] def drop(deviceId: DeviceId, sessionId: SessionId): Unit = remove(deviceId, sessionId)
 }
 
 object StateStorage {
@@ -55,6 +75,10 @@ object StateStorage {
       extends StateStorage[F, S] {
 
     private def usesDevMode: Boolean = allowDevMode && DevMode.isActive
+
+    // The states are in the memory of this process, and `remove` moves a state
+    // into the for-deletion cache before it returns.
+    override private[spoonbill] def localToProcess: Boolean = true
 
     private val cache = TrieMap.empty[String, StateManager[F]]
     private val forDeletionCache = {
@@ -127,6 +151,14 @@ object StateStorage {
           forDeletionCache.put(key, sm)
         }
       }
+    }
+
+    // Past the for-deletion cache. In development mode the files stay, as after `remove`.
+    override private[spoonbill] def drop(deviceId: DeviceId, sessionId: SessionId): Unit = {
+      val key = mkKey(deviceId, sessionId)
+      cache.remove(key)
+      forDeletionCache.synchronized(forDeletionCache.remove(key))
+      ()
     }
   }
 

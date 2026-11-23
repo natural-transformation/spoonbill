@@ -31,7 +31,7 @@ Other timers are deliberately different:
 | --- | --- |
 | Required-operation wait | A first-winner permit arbitrates completion and timeout; it is not a completion-time elapsed-clock check. Resource-owning callers handle late acquisition. |
 | Guarded/legacy session idle | Rearming preserves each interpreter's cancellation order. A canceled callback already dispatched can still win terminal publication; replacing it with assembly-ticket rules changes behavior. |
-| Orphan topic idle | Expiry checks current subscription and elapsed activity, then removes only the exact topic entry. Later activity can make an old callback inert. |
+| Long-poll wait | The delivery machine settles each poll once, by the first event it sees: a frame, the wait limit or the end of the request. A frame that arrives after the bound still answers the poll. Expiry answers `204` and closes nothing; a callback for a settled poll is inert. |
 | Standalone upgrade setup | Attachment retains response cleanup until physical termination. Repeated attachment succeeds; rejection after attachment is inert. Timer expiry closes transport, while its reserved close notification performs application cleanup. |
 
 Keep [standalone SetupDeadline](../../modules/standalone/src/main/scala/korolev/server/SetupDeadline.scala)
@@ -41,8 +41,11 @@ Akka, Pekko and the zio-http adapter share Waiting/Prepared/Attached/Abandoned
 transfer decisions; their timers and failure policies stay adapter-owned.
 Attachment transfers ownership once in that machine, whereas standalone retains
 cleanup. The standalone
-[ownership tests](../../modules/standalone/src/test/scala/korolev/server/StandaloneSetupDeadlineSpec.scala)
-and the [session idle tests](../../modules/spoonbill/src/test/scala/korolev/server/internal/services/SessionIdleTimingSpec.scala)
+[ownership tests](../../modules/standalone/src/test/scala/korolev/server/StandaloneSetupDeadlineSpec.scala),
+the [session idle tests](../../modules/spoonbill/src/test/scala/korolev/server/internal/services/SessionIdleTimingSpec.scala)
+and the long-poll wait tests
+([machine](../../modules/spoonbill/src/test/scala/korolev/server/internal/services/PollDeliveryMachineSpec.scala),
+[delivery](../../modules/spoonbill/src/test/scala/korolev/server/internal/services/LongPollingDeliverySpec.scala))
 pin these differences.
 
 ### Keep the zio-http wire boundary inside its derived runtime

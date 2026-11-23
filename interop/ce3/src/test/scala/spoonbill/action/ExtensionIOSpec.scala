@@ -59,6 +59,10 @@ class ExtensionIOSpec extends AnyFlatSpec {
     ExtensionSessionChecks.cancelledRelease[IO](cancelable)
   }
 
+  it should "take the failure of an unguarded attach out of the session when the attach is cancelled meanwhile" in {
+    ExtensionSessionChecks.cancelledLegacyRollback[IO](cancelable)
+  }
+
   // Ten seconds of real time: the bound of the setup has to expire.
   it should "finish a rollback after a timeout that is cancelled meanwhile, and destroy the late setup result" in {
     ExtensionSessionChecks.cancelledTimeoutRollback[IO](cancelable)

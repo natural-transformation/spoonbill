@@ -1,8 +1,35 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
-  currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep} from './connection-machine.js';
+  currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
+  linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, transportNote, frameKind, afterFrame,
+  reloadStarted, messageSent, repollsAfterMessage, pollDeadline} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
+// The tab remembers its last framework reload and, after a fallback, its
+// transport. The keys carry the root path of the application, so that two
+// applications on one origin keep theirs apart.
+const RELOAD_KEY = 'spoonbill:reload:';
+const TRANSPORT_KEY = 'spoonbill:transport:';
+
+/** The sessionStorage of this tab, or null when the browser has none or refuses it. */
+function sessionStore() {
+  try {
+    const storage = window.sessionStorage;
+    return storage ? storage : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** A random UUID for this document. getRandomValues also works outside secure contexts. */
+function randomPageId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) hex += (bytes[i] + 0x100).toString(16).slice(1);
+  return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+}
 
 /**
  * Reconnectable WebSocket connection
@@ -18,6 +45,17 @@ export class Connection {
    */
   constructor(sessionId, serverRootPath, location, options) {
     this._lifecycle = initialConnection();
+    // The page id names this document for its whole life.
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'page', page: randomPageId()});
+    this._pollDeadline = pollDeadline(options && options['lpw'] ? Number(options['lpw']) : undefined);
+    /** Polls again at once, giving up the poll that waits. Only long polling has one. */
+    this._repoll = () => {};
+    /** Gives up the request of the heartbeat in flight. Only long polling has one. */
+    this._abortHeartbeat = () => {};
+    // The long-polling transport counts a message that could not be sent as a failed poll.
+    this._linkFailed = () => {};
+    // The transport that is replaced gives up its poll and its deadline.
+    this._retire = () => {};
     this._sessionId = sessionId;
     this._serverRootPath = serverRootPath;
 
@@ -77,7 +115,18 @@ export class Connection {
       });
     }
     this._webSocketsSupported = wsEnabled && window.WebSocket !== undefined;
-    /** @type {?function(string)} */
+    this._reloadKey = RELOAD_KEY + serverRootPath;
+    this._transportKey = TRANSPORT_KEY + serverRootPath;
+    // A page that fell back to long polling and was told to reload starts with it.
+    if (!this._guarded) {
+      const storage = sessionStore();
+      try {
+        if (storage !== null && storage.getItem(this._transportKey) === 'long-polling')
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'prefer-long-polling'});
+      } catch (_) {}
+    }
+    // On long polling a send can say whether the server took the message.
+    /** @type {?function(string, function(boolean)=): *} */
     this._send = null;
     this._clearPendingSends = () => {};
     this._dispatcher = window.document.createDocumentFragment();
@@ -106,6 +155,8 @@ export class Connection {
    * @private
    */
   _connectUsingConnectionType(connectionType) {
+    this._retire();
+    this._retire = () => {};
     switch (connectionType) {
       case ConnectionType.LONG_POLLING:
         if (this._guarded) this._onError();
@@ -294,7 +345,13 @@ export class Connection {
     console.log(`Trying to open connection to ${url + path} using WebSocket`);
   }
 
-  /** @private */
+  /**
+   * Long polling that resumes. Every request names the page and the last frame
+   * that it applied, and the server answers with exactly the next one. A
+   * failed poll is not a closed connection: the page polls again after the
+   * back-off and keeps its bridge. Everything uncertain ends in a reload.
+   * @private
+   */
   _connectUsingLongPolling() {
 
     this._clearPendingSends();
@@ -305,48 +362,105 @@ export class Connection {
     let url = (this._useSSL ? "https://" : "http://") + this._hostPort;
     let path = this._serverRootPath + `bridge/long-polling/${this._sessionId}/`;
     let uriPrefix = url + path;
+    const cursor = () => `page=${this._lifecycle.page}&seen=${this._lifecycle.seen}`;
 
-    /** @type {function(boolean)} */
-    let subscribe = (firstTime) => {
+    // The poll that this transport waits for and its deadline, the timer of a
+    // poll that waits out its back-off, and the request of the heartbeat in
+    // flight with its listener: handles only. An answer to a request that was
+    // given up changes nothing.
+    let pending = null;
+    let deadline = null;
+    let retry = null;
+    let heartbeat = null;
+
+    const poll = () => {
       if (!isCurrent()) return;
-
-      let onReadyStateChange = (event) => {
-        let request = event.target;
-        if (!isCurrent() || request.readyState !== 4)
-          return;
-        switch (request.status) {
-          case 200:
-            if (firstTime)
-              this._onOpen();
-            if (!isCurrent()) return;
-            this._onReady();
-            if (!isCurrent()) return;
-            this._onMessage(request.responseText);
-          case 503:
-            // Poll again
-            subscribe(false);
-            break;
-          default:
-            this._onError();
-            if (isCurrent()) this._onClose();
-            break;
-        }
-      };
-
-      let request = new XMLHttpRequest();
-      request.addEventListener('readystatechange', onReadyStateChange);
-      request.open('GET', uriPrefix + 'subscribe', true);
+      const request = new XMLHttpRequest();
+      pending = request;
+      deadline = setTimeout(() => {
+        if (pending !== request || !isCurrent()) return;
+        pending = null;
+        request.abort();
+        failed();
+      }, this._pollDeadline);
+      request.addEventListener('readystatechange', () => {
+        if (request.readyState !== 4 || pending !== request || !isCurrent()) return;
+        pending = null;
+        clearTimeout(deadline);
+        answered(request);
+      });
+      request.open('GET', uriPrefix + 'subscribe?' + cursor(), true);
       request.send('');
     };
 
-    /** @type {function(string)} */
-    let publish = (data) => {
+    const answered = request => {
+      const body = request.responseText;
+      const kind = request.status === 200 ? frameKind(body) : null;
+      switch (pollAnswer(this._lifecycle, request.status, request.getResponseHeader('spoonbill-frame'),
+          request.getResponseHeader('spoonbill-dom'), kind)) {
+        case 'apply': {
+          resumed();
+          if (!isCurrent()) return;
+          // Applied means applied: a frame that the bridge could not apply reloads.
+          // The bridge may change the lifecycle while it applies, so it is read after.
+          const applied = this._deliver(body);
+          const {state, next} = afterFrame(this._lifecycle, applied, kind === 'dom');
+          this._lifecycle = state;
+          return next === 'poll' ? poll() : this.reloadPage();
+        }
+        case 'empty':
+          resumed();
+          return poll();
+        case 'failed':
+          return failed();
+        default:
+          // The reload frame, another status, or numbers that do not fit.
+          return this.reloadPage();
+      }
+    };
+
+    // Any answer ends an interruption.
+    const resumed = () => {
+      const shown = noticeShown(this._lifecycle);
+      this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-answered'});
+      if (shown) this._dispatcher.dispatchEvent(this._createEvent('resume'));
+      this._onReady();
+    };
+
+    // The link is interrupted: the notice shows from the second failure in a
+    // row. `type` says what failed: a poll, or a message (a heartbeat), which
+    // leaves the mark of a replaced poll alone.
+    const linkFailed = type => {
+      const shown = noticeShown(this._lifecycle);
+      this._lifecycle = connectionStep(this._lifecycle, {type});
+      if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
+    };
+
+    const failed = () => {
+      // A transport that was replaced counts nothing.
       if (!isCurrent()) return;
+      linkFailed('poll-failed');
+      retry = setTimeout(() => { retry = null; poll(); }, pollDelay(this._lifecycle));
+    };
+
+    /** @type {function(string)} */
+    let publish = (data, onAnswer) => {
+      if (!isCurrent()) return false;
 
       let onReadyStateChange = (event) => {
         let request = event.target;
-        if (!isCurrent() || request.readyState !== 4)
+        if (request.readyState !== 4)
           return;
+        if (heartbeat !== null && heartbeat.request === request) heartbeat = null;
+        // Whether the server took the message, for a heartbeat.
+        const sent = messageSent(request.status);
+        if (onAnswer) onAnswer(sent);
+        if (!isCurrent())
+          return;
+        if (repollsAfterMessage(this._lifecycle, sent)) {
+          this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-replaced'});
+          this._repoll();
+        }
         switch (request.status) {
           case 0:
           case 400:
@@ -357,20 +471,133 @@ export class Connection {
 
       let request = new XMLHttpRequest();
 
-      request.open('POST', uriPrefix + 'publish', true);
+      request.open('POST', uriPrefix + 'publish?' + cursor(), true);
       request.setRequestHeader("Content-Type", "application/json");
       request.addEventListener('readystatechange', onReadyStateChange);
       request.send(data);
+      // Only a heartbeat has an answer callback.
+      if (onAnswer) heartbeat = {request, listener: onReadyStateChange};
+      return true;
     }
 
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
+    this._linkFailed = () => { if (isCurrent()) linkFailed('message-failed'); };
+    this._retire = () => {
+      clearTimeout(retry);
+      retry = null;
+      if (pending === null) return;
+      const request = pending;
+      pending = null;
+      clearTimeout(deadline);
+      request.abort();
+    };
+    this._abortHeartbeat = () => {
+      if (heartbeat === null) return;
+      const {request, listener} = heartbeat;
+      heartbeat = null;
+      request.removeEventListener('readystatechange', listener);
+      request.abort();
+    };
+    this._repoll = () => {
+      if (!isCurrent()) return;
+      // A poll that waits out its back-off goes now, and only once.
+      if (retry !== null) {
+        clearTimeout(retry);
+        retry = null;
+        poll();
+        return;
+      }
+      if (pending === null) return;
+      const request = pending;
+      pending = null;
+      clearTimeout(deadline);
+      request.abort();
+      poll();
+    };
 
-    subscribe(true);
+    poll();
     // Treat long-polling as connected immediately so Spoonbill can attach listeners
     // before the first subscribe response arrives.
     this._onOpen();
     console.log(`Trying to open connection to ${uriPrefix} using long polling`);
+  }
+
+  /** @return {string} The page id of this document. */
+  get page() { return this._lifecycle.page; }
+
+  /** @return {boolean} The connection runs on long polling. */
+  get longPolling() { return this._lifecycle.transport === ConnectionType.LONG_POLLING; }
+
+  /** @return {boolean} No poll failed since the last answer. */
+  get linkUp() { return linkUp(this._lifecycle); }
+
+  /** Gives up the poll that waits, and polls again with the same cursor. */
+  repoll() { this._repoll(); }
+
+  /**
+   * Gives up the request of the heartbeat in flight, which the bridge wrote
+   * off, so that requests do not pile up on a link that hangs. Its listener
+   * goes first: an answer that comes all the same changes nothing.
+   */
+  abortHeartbeat() { this._abortHeartbeat(); }
+
+  /**
+   * Gives a frame to the bridge, and says whether the bridge applied it.
+   * @param {string} data
+   * @return {boolean}
+   * @private
+   */
+  _deliver(data) {
+    const event = this._createEvent('message');
+    event.data = data;
+    event.applied = true;
+    this._dispatcher.dispatchEvent(event);
+    return event.applied !== false;
+  }
+
+  /**
+   * A reload that the framework starts for an unguarded page. The guard allows
+   * one in its window for this tab; a second one shows the notice and waits for
+   * the end of the window. Without sessionStorage the page reloads at once.
+   */
+  reloadPage() {
+    // A page reloads once: another word to reload while one waits changes nothing.
+    if (reloadStarted(this._lifecycle)) return;
+    const storage = sessionStore();
+    let wait = 0;
+    // The note and the time of the last reload, each in a try of its own.
+    try {
+      if (storage !== null) {
+        const note = transportNote(this._lifecycle);
+        if (note === 'write') storage.setItem(this._transportKey, 'long-polling');
+        else if (note === 'remove') storage.removeItem(this._transportKey);
+      }
+    } catch (_) {}
+    try {
+      if (storage !== null) {
+        const stored = storage.getItem(this._reloadKey);
+        wait = reloadWait(stored === null ? null : Number(stored), Date.now());
+      }
+    } catch (_) {
+      wait = 0;
+    }
+    const shown = noticeShown(this._lifecycle);
+    // From now on no transport is current: nothing is sent, polled or reconnected.
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'reload', wait, scheduleEpoch: {}});
+    if (this._reconnectTimer !== null) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._clearPendingSends();
+    if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
+    const reload = () => {
+      try { if (storage !== null) storage.setItem(this._reloadKey, String(Date.now())); } catch (_) {}
+      window.location.reload();
+    };
+    // The timer is only the handle of the wait; the machine knows that the page waits.
+    if (wait === 0) reload();
+    else setTimeout(reload, wait);
   }
 
   /** @private */
@@ -484,10 +711,19 @@ export class Connection {
 
   /**
    * @param {string} data
+   * @param {function(boolean)} [onAnswer] on long polling: whether the server took it
+   * @return {boolean} whether a transport took the message
    */
-  send(data) {
-    if (!authenticationPending(this._lifecycle) && this._send) this._send(data);
+  send(data, onAnswer) {
+    if (authenticationPending(this._lifecycle) || !this._send) return false;
+    return Boolean(this._send(data, onAnswer));
   }
+
+  /** A message could not be sent: on long polling that is a failed poll. */
+  messageFailed() { this._linkFailed(); }
+
+  /** A framework reload has started; nothing is sent any more. */
+  get reloadStarted() { return reloadStarted(this._lifecycle); }
 
   /** Deliver only an opaque completion handle over HTTP, then rebind the same view. */
   async recoverAuthentication(ceremonyId) {

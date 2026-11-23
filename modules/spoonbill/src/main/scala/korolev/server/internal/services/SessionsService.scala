@@ -21,7 +21,7 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.annotation.tailrec
 import scala.concurrent.duration.*
-import spoonbill.Qsid
+import spoonbill.{Metrics, Qsid}
 import spoonbill.effect.{AsyncTable, Effect, Hub, LateHandleMachine, Scheduler, Stream, Var}
 import spoonbill.effect.syntax.*
 import spoonbill.internal.{ApplicationInstance, DevMode, ExtensionRuntime, Frontend, SensitiveAuthorization}
@@ -42,7 +42,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   config: SpoonbillServiceConfig[F, S, M],
   pageService: PageService[F, S, M],
   requiredTiming: Option[SessionsService.RequiredTiming[F]] = None,
-  idleTiming: Option[SessionsService.IdleTiming[F]] = None
+  idleTiming: Option[SessionsService.IdleTiming[F]] = None,
+  // The clock of the fresh-page records. It chooses between a view and a
+  // reload; it never decides that a removal is safe.
+  nanoTime: () => Long = () => System.nanoTime()
 ) {
 
   import config.executionContext
@@ -135,6 +138,10 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       Qsid(deviceId, sessionId)
     }
 
+  /**
+   * Builds and stores the state of a session for a page render, the only
+   * caller. An attach never builds a state: see [[createLegacy]].
+   */
   def initAppState(qsid: Qsid, rh: Head): F[S] =
     for {
       bootstrapPath <- Effect[F].delay(Option.when(config.sessionAccessControl.nonEmpty)(checkedApplicationPath(rh.pq)))
@@ -144,7 +151,31 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                  .fold(Effect[F].pure(defaultState))(f => f(defaultState))
       _ <- config.sessionAccessControl.fold(Effect[F].unit)(control => required(control.authorizeHttp(rh, state)))
       _ <- config.sessionAccessControl.flatMap(_.prepareHttp(qsid, rh, state)).fold(Effect[F].unit)(required(_))
-      _ <- stateStorage.create(qsid.deviceId, qsid.sessionId, state)
+      // An unguarded page reserves its fresh-page record while its state is
+      // stored, so that no stored state is without a record. A reservation
+      // does not expire: no sweep can take the record of a write that still
+      // runs. The record and its lifetime start when the state is stored. A
+      // write that fails or is cancelled ends the reservation, and a state
+      // that it left in a storage local to this process is dropped; a
+      // repository is never asked to delete (the review at fe313e1a). The
+      // reservation and the call of the storage are inside the scope of the
+      // finalizer: a storage that throws before it returns an effect, as a
+      // repository's callback may, and a cancel right after the reservation
+      // end it as well (the review at b6194262).
+      _ <- Effect[F].guarantee(
+             Effect[F]
+               .delay(if (config.sessionAccessControl.isEmpty) updateMetadata(SessionRegistryMachine.storing(_, qsid)))
+               .flatMap(_ => Effect[F].delayAsync(stateStorage.create(qsid.deviceId, qsid.sessionId, state)))
+               .flatMap { _ =>
+                 Effect[F].delay {
+                   if (config.sessionAccessControl.isEmpty)
+                     updateMetadata(metadata => SessionRegistryMachine.rendered(metadata, qsid, nanoTime()))
+                 }
+               }
+           )(Effect[F].delay(if (config.sessionAccessControl.isEmpty) endReservation(qsid)))
+      // The cleanup runs to its end: a record that it gave out for removal
+      // must not stay releasing because the render was cancelled.
+      _ <- Effect[F].uncancelable(Effect[F].delay(if (config.sessionAccessControl.isEmpty) expireFreshPages()))
       _ <- Effect[F].delay {
              bootstrapPath.foreach { path =>
                registryMonitor.synchronized {
@@ -157,10 +188,108 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
   def getApp(qsid: Qsid): F[Option[App]] =
     apps.getImmediately(qsid)
 
-  def createAppIfNeeded(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[SessionStart[F]] =
+  /** The fresh-page records that this service holds, reservations too. Only for tests. */
+  private[services] def freshPageRecords: Int = registryMonitor.synchronized(metadata.slots.values.count(_.fresh.nonEmpty))
+
+  /**
+   * The write of a render has ended. A reservation that is still there was not
+   * stored: it ends, and a state that the write left in a storage local to
+   * this process is dropped, since no browser has its page. A storage over a
+   * repository is never asked to delete.
+   */
+  private def endReservation(qsid: Qsid): Unit = {
+    val reserved = registryMonitor.synchronized {
+      val (next, ended) = SessionRegistryMachine.storeEnded(metadata, qsid)
+      metadata = next
+      ended
+    }
+    if (reserved && stateStorage.localToProcess)
+      try stateStorage.drop(qsid.deviceId, qsid.sessionId)
+      catch {
+        case scala.util.control.NonFatal(error) =>
+          try config.reporter.error(s"Unable to drop the state of a render that was not stored $qsid", error)
+          catch { case scala.util.control.NonFatal(_) => () }
+      }
+  }
+
+  /** How long an unguarded page has for its first poll: the idle timeout of a session. */
+  private def freshLifetime: Long = config.sessionIdleTimeout.toNanos
+
+  /**
+   * A render ends at most 100 records that nothing has claimed in their
+   * lifetime. It sets no timer. In a storage that is local to this process the
+   * state of each such record is removed: the record is releasing meanwhile,
+   * so every attach of its session is told to reload and no attach reads the
+   * storage. From any other storage nothing is removed.
+   */
+  private def expireFreshPages(): Unit = {
+    val removing = registryMonitor.synchronized {
+      val (next, keys) =
+        SessionRegistryMachine.expireFresh(metadata, nanoTime(), freshLifetime, 100, removes = stateStorage.localToProcess)
+      metadata = next
+      keys
+    }
+    // Outside the monitor: a claim meanwhile finds the record releasing.
+    removing.foreach { qsid =>
+      // Dropped for good: an unclaimed state does not go to a for-deletion cache.
+      val dropped = scala.util.Try(stateStorage.drop(qsid.deviceId, qsid.sessionId))
+      try
+        dropped.failed.foreach { error =>
+          // A report that throws stops nothing: it has a try of its own.
+          try config.reporter.error(s"Unable to remove the state of an unclaimed page $qsid", error)
+          catch { case scala.util.control.NonFatal(_) => () }
+        }
+      finally
+        // Every key that was given out leaves its releasing step, released or
+        // back for a later expiry. A key left releasing would refuse every
+        // attach of its session for good.
+        updateMetadata(metadata =>
+          if (dropped.isSuccess) SessionRegistryMachine.freshReleased(metadata, qsid)
+          else SessionRegistryMachine.freshRemovalFailed(metadata, qsid)
+        )
+    }
+  }
+
+  /** An unguarded attach claims the fresh-page record of its session. */
+  private def claimFresh(qsid: Qsid, transport: PollAdmissionMachine.Transport): SessionRegistryMachine.FreshClaim =
+    registryMonitor.synchronized {
+      val (next, claim) = SessionRegistryMachine.claimFresh(
+        metadata,
+        qsid,
+        nanoTime(),
+        freshLifetime,
+        PollAdmissionMachine.takesExpired(transport)
+      )
+      metadata = next
+      claim
+    }
+
+  /**
+   * @param transport
+   *   the transport of the attach. A poll gets the view only when it builds it.
+   * @param page
+   *   the page id of a poll. The view takes it as its connection id.
+   * @param activity
+   *   for a poll, the progress of its delivery: what resets the idle timer of
+   *   the view, in place of the incoming messages
+   */
+  def createAppIfNeeded(
+    qsid: Qsid,
+    rh: Head,
+    incomingStream: Stream[F, String],
+    transport: PollAdmissionMachine.Transport = PollAdmissionMachine.Transport.WebSocket,
+    page: Option[UUID] = None,
+    activity: Option[Stream[F, Unit]] = None
+  ): F[SessionStart[F]] =
     config.sessionAccessControl match {
+      // A guarded page has no fresh-page record, so its claim finds none, and a
+      // poll never builds its view.
+      case Some(_)
+          if transport == PollAdmissionMachine.Transport.Poll &&
+            !PollAdmissionMachine.goesOn(transport, claimFresh(qsid, transport)) =>
+        incomingStream.cancel().recover { case _ => () }.map(_ => SessionStart.Reload[F](): SessionStart[F])
       case Some(control) => createGuarded(qsid, rh, incomingStream, control)
-      case None          => createLegacy(qsid, rh, incomingStream)
+      case None          => createLegacy(qsid, rh, incomingStream, transport, page, activity)
     }
 
   /**
@@ -652,7 +781,14 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
     }
   }
 
-  private def createLegacy(qsid: Qsid, rh: Head, incomingStream: Stream[F, String]): F[SessionStart[F]] = {
+  private def createLegacy(
+    qsid: Qsid,
+    rh: Head,
+    incomingStream: Stream[F, String],
+    transport: PollAdmissionMachine.Transport,
+    page: Option[UUID],
+    activity: Option[Stream[F, Unit]]
+  ): F[SessionStart[F]] = {
     val (incomingConsumed, managedIncomingStream) = incomingStream.handleConsumed
     val incomingHub: Hub[F, String]               = Hub(managedIncomingStream)
 
@@ -721,13 +857,26 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
      * is written back: the next attach must not trust a state the browser
      * never saw. Every waiting attach gets the error.
      */
-    def abandon(error: Throwable): F[Unit] = {
-      // Fail the entry before it is removed, so the waiters get this error
-      // and not the removal.
-      val settle = () => apps.fail(qsid, error).flatMap(_ => apps.remove(qsid))
+    def abandon(): F[Unit] = {
+      // The table entry is left alone here. This attach fills it, and the
+      // fill ends with the error: the table then gives the error to every
+      // attach that waits. An entry that is failed or removed before the fill
+      // has ended is written again when it ends, and that failure would stay.
       created.get() match {
-        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, settle)
-        case None       => attempt(settle())
+        case Some(view) => retire(view, LegacySessionMachine.Cause.Abandoned)(view.restore, () => Effect[F].unit)
+        // Nothing was built, so nothing is retired. The machine still learns
+        // that this attach was rolled back. In a storage that is local to this
+        // process the state goes: this attach holds the place of the session in
+        // the table of views, so no other attach reads it meanwhile. A WebSocket
+        // that comes again takes it back from the for-deletion cache of the
+        // default storage; a poll that comes again is told to reload.
+        case None =>
+          // A removal that fails is reported, as in a retirement: the attach
+          // keeps its own error.
+          Effect[F].delay(transition(LegacySessionMachine.Event.NothingBuilt(removesState = stateStorage.localToProcess))).flatMap {
+            case LegacySessionMachine.Command.RemoveState => attempt(Effect[F].delay(stateStorage.remove(qsid.deviceId, qsid.sessionId)))
+            case _                                        => Effect[F].unit
+          }
       }
     }
 
@@ -742,27 +891,36 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
           }
 
         def handleCommunicationTimeout(): F[Unit] = {
-          def createTimeout(stream: Stream[F, String]): F[Scheduler.JobHandler[F, Unit]] =
+          def createTimeout[A](stream: Stream[F, A]): F[Scheduler.JobHandler[F, Unit]] =
             scheduleIdle {
               invokeOnce("session idle timeout")(Right(()))
               stream.cancel()
             }
 
-          for {
-            in             <- incomingHub.newStream()
-            initialTimeout <- createTimeout(in)
-            _               = config.reporter.debug(s"Create idle timeout for $qsid")
-            schedulerVar    = Var[F, Scheduler.JobHandler[F, Unit]](initialTimeout)
-            _ <- in.foreach { _ =>
-                   config.reporter.debug(s"Reset idle timeout for $qsid")
-                   for {
-                     currentTimer <- schedulerVar.get
-                     _            <- currentTimer.cancel()
-                     timeout      <- createTimeout(in)
-                     _            <- schedulerVar.set(timeout)
-                   } yield ()
-                 }
-          } yield ()
+          // Every element of `in` is a sign of life and resets the timer.
+          def watch[A](in: Stream[F, A]): F[Unit] =
+            for {
+              initialTimeout <- createTimeout(in)
+              _               = config.reporter.debug(s"Create idle timeout for $qsid")
+              schedulerVar    = Var[F, Scheduler.JobHandler[F, Unit]](initialTimeout)
+              _ <- in.foreach { _ =>
+                     config.reporter.debug(s"Reset idle timeout for $qsid")
+                     for {
+                       currentTimer <- schedulerVar.get
+                       _            <- currentTimer.cancel()
+                       timeout      <- createTimeout(in)
+                       _            <- schedulerVar.set(timeout)
+                     } yield ()
+                   }
+            } yield ()
+
+          // A WebSocket view lives while its messages come. A poll's view
+          // lives while its page makes progress: a page that sends heartbeats
+          // and clicks but never moves its cursor does not keep it.
+          activity match {
+            case Some(progress) => watch(progress)
+            case None           => incomingHub.newStream().flatMap(watch(_))
+          }
         }
 
         handleCommunicationTimeout().runAsyncForget
@@ -795,7 +953,12 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
             Effect[F].fail[S](BadRequestException(s"Top level state should exists. Snapshot for $qsid is corrupted"))
           )(Effect[F].pure(_))
         in      <- incomingHub.newStream()
-        frontend = new Frontend[F](in, config.heartbeatLimit)
+        frontend = new Frontend[F](
+                     in,
+                     config.heartbeatLimit,
+                     connectionId = page.map(ConnectionId.fromUuid),
+                     resumes = transport == PollAdmissionMachine.Transport.Poll
+                   )
         // One runtime owns the extensions of this view, as in a guarded
         // session. A legacy session has no checks before a delivery.
         extensions = Option.when(config.extensions.nonEmpty) {
@@ -849,12 +1012,34 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
 
     // Canceling this connection's input is the legacy close signal. Keep the
     // thunk lazy: eager effects would otherwise drop the stream at construction.
-    def attached(app: App): SessionStart[F] = {
-      val outgoing = app.frontend.outgoingMessages
-      val release = () =>
-        incomingStream.cancel().recover { case _ => () } *>
-          outgoing.cancel().recover { case _ => () }
-      SessionStart.Attached(outgoing, release)
+    //
+    // Who may have the output of the view: see PollAdmissionMachine.output. A
+    // view that a poll built is the one whose frontend resumes, and this attach
+    // built it when its own `create` made it.
+    def attached(app: App): F[SessionStart[F]] = {
+      val owner = if (app.frontend.resuming) PollAdmissionMachine.Transport.Poll else PollAdmissionMachine.Transport.WebSocket
+      val built = created.get().exists(_.app eq app)
+      def leave(start: SessionStart[F]): F[SessionStart[F]] =
+        incomingStream.cancel().recover { case _ => () }.map(_ => start)
+      PollAdmissionMachine.output(owner, built, transport) match {
+        case PollAdmissionMachine.Output.Owns if transport == PollAdmissionMachine.Transport.Poll =>
+          val frames = app.frontend.outgoingFrames
+          // The delivery runs it when the frames end. The input is cancelled
+          // through its managed stream: a view whose input failed reads it no
+          // more, so only that cancel tells the watcher, and the view retires.
+          val release = () =>
+            managedIncomingStream.cancel().recover { case _ => () } *>
+              frames.cancel().recover { case _ => () }
+          Effect[F].pure(SessionStart.Owned(frames, release))
+        case PollAdmissionMachine.Output.Owns | PollAdmissionMachine.Output.Shared =>
+          val outgoing = app.frontend.outgoingMessages
+          val release = () =>
+            incomingStream.cancel().recover { case _ => () } *>
+              outgoing.cancel().recover { case _ => () }
+          Effect[F].pure(SessionStart.Attached(outgoing, release))
+        case PollAdmissionMachine.Output.Refused => leave(SessionStart.Refused())
+        case PollAdmissionMachine.Output.Reload  => leave(SessionStart.Reload())
+      }
     }
 
     def attachOrReload(): F[SessionStart[F]] =
@@ -869,10 +1054,22 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
               // session. Removing the entry would let a reconnect trust the stale DOM.
               apps.fail(qsid, error).flatMap(_ => Effect[F].fail(error))
             case error =>
-              abandon(error).flatMap(_ => Effect[F].fail(error))
+              abandon().flatMap(_ => Effect[F].fail(error))
           }
+        }.recoverF { case error =>
+          // The fill has ended, and every attach that waited for it has its
+          // error. A view that was rolled back leaves nothing behind, so its
+          // failure must not answer the attaches that come later: the page
+          // reconnects, and that attach builds a view of its own. Only the
+          // attach that rolled back takes the entry out, once, and in the
+          // same step that a cancelled request cannot split. The machine
+          // knows which attach that is. An attach that only waited, and a
+          // terminal failure such as an invalid render context, leave it.
+          if (transition(LegacySessionMachine.Event.Published) == LegacySessionMachine.Command.Forget)
+            apps.remove(qsid).flatMap(_ => Effect[F].fail[App](error))
+          else Effect[F].fail[App](error)
         }
-      }.map[SessionStart[F]](attached).recoverF { case error: DevMode.InvalidSavedRenderContext =>
+      }.flatMap(attached).recoverF { case error: DevMode.InvalidSavedRenderContext =>
         config.reporter.error(error.getMessage, error)
         incomingStream.cancel().recover { case cleanupError =>
           config.reporter.error(s"Unable to close invalid development session $qsid", cleanupError)
@@ -880,28 +1077,42 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
         }.map(_ => SessionStart.Reload[F](): SessionStart[F])
       }
 
-    stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
+    def withRecord(attach: => F[SessionStart[F]]): F[SessionStart[F]] =
+      if (PollAdmissionMachine.goesOn(transport, claimFresh(qsid, transport))) attach
+      else
+        // A poll goes on only for a page that this server rendered and that
+        // nothing has claimed in its lifetime. A record whose state is being
+        // removed refuses every attach.
+        Effect[F].delay(config.reporter.debug(s"No fresh page for $qsid; the page is told to reload")) *>
+          incomingStream.cancel().recover { case _ => () }.map(_ => SessionStart.Reload[F](): SessionStart[F])
+
+    // The claim of the record, the look into the storage and the attach are
+    // steps of one effect: a throw on the way is a failed effect that the
+    // caller sees, and a cancelled request cannot stop it between the claim
+    // and the attach, which would leave a state without record or view.
+    Effect[F].uncancelable(Effect[F].delayAsync(withRecord(stateStorage.exists(qsid.deviceId, qsid.sessionId) flatMap {
       case true =>
         // State exists because it was created on static page
         // rendering phase (see ServerSideRenderingService)
         attachOrReload()
       case false =>
-        // State can be missing after a restart; rebuild it from the request.
-        // A failed rebuild is the recognized reload recovery, not an access failure.
-        config.reporter.debug(s"State is missing for $qsid. Rebuilding from request.")
-        initAppState(qsid, rh)
-          .map(_ => true)
-          .recover { case error =>
-            config.reporter.error(s"Unable to rebuild state for $qsid", error)
-            false
-          }
-          .flatMap {
-            // A failed attach is not a failed rebuild. It fails here as it
-            // does when the state exists: a reload would only repeat it.
-            case true  => attachOrReload()
-            case false => Effect[F].pure[SessionStart[F]](SessionStart.Reload())
-          }
-    }
+        // An unguarded attach never builds a state. Its request is the bridge
+        // request, which matches no route of the application, so a state built
+        // from it would show another page than the one in the browser. The
+        // state is missing after a restart, after a removal, or with a storage
+        // over a repository after the view before retired. The page is told to
+        // reload: it is rendered again from its own address, under a new
+        // session. ADR 0006 records this decision, its cost and when to
+        // revisit it.
+        // Like every rejected session, it releases its input first.
+        Effect[F].delay {
+          Metrics.MissingStateReloads.update(_ + 1)
+          config.reporter.debug(s"State is missing for $qsid; the page is told to reload")
+        } *> incomingStream.cancel().recover { case cleanupError =>
+          config.reporter.error(s"Unable to close session $qsid without a stored state", cleanupError)
+          ()
+        }.map(_ => SessionStart.Reload[F](): SessionStart[F])
+    })))
   }
 
   private val stateStorage =

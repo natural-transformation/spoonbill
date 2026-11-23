@@ -13,7 +13,7 @@ writeFileSync(moduleFile, readFileSync(new URL('../modules/spoonbill/src/main/es
 const {Connection} = await import(pathToFileURL(moduleFile));
 after(() => rmSync(directory, {recursive: true, force: true}));
 
-async function environment(check) {
+async function environment(check, {session = new Map()} = {}) {
   const keys = ['window', 'document', 'WebSocket', 'XMLHttpRequest', 'FileReader', 'setTimeout', 'clearTimeout'];
   const previous = new Map(keys.map(key => [key, {present: Object.hasOwn(globalThis, key), value: globalThis[key]}]));
   const sockets = [], requests = [], connections = [], timers = new Map();
@@ -37,14 +37,32 @@ async function environment(check) {
     open(method, url, async) { this.method = method; this.url = url; this.async = async; }
     setRequestHeader(name, value) { this.headers.set(name, value); }
     send(body) { this.body = body; }
-    respond(status, responseText = '') {
-      this.status = status; this.responseText = responseText; this.readyState = 4;
+    getResponseHeader(name) { return this.responseHeaders?.[name.toLowerCase()] ?? null; }
+    // As the XHR standard says: aborting a sent request moves it to DONE with
+    // status 0 and fires readystatechange; aborting a done request fires nothing.
+    abort() {
+      this.aborted = true;
+      if (this.readyState === 4) return;
+      this.status = 0; this.responseText = ''; this.readyState = 4;
       this.dispatchEvent(new Event('readystatechange'));
     }
+    respond(status, responseText = '', responseHeaders = {}) {
+      this.status = status; this.responseText = responseText; this.responseHeaders = responseHeaders; this.readyState = 4;
+      this.dispatchEvent(new Event('readystatechange'));
+    }
+    /** A frame of a long-polling view: its number and the DOM revision after it. */
+    frame(number, dom, body) { this.respond(200, body, {'spoonbill-frame': String(number), 'spoonbill-dom': String(dom)}); }
   }
   const document = {createDocumentFragment: () => new EventTarget(), visibilityState: 'visible'};
   const window = new EventTarget();
-  Object.assign(window, {document, WebSocket: Socket});
+  const reloads = {count: 0};
+  // A tab's sessionStorage; `null` means a browser without one.
+  const sessionStorage = session === null ? undefined : {
+    getItem: key => session.has(key) ? session.get(key) : null,
+    setItem: (key, value) => { session.set(key, String(value)); },
+    removeItem: key => { session.delete(key); }
+  };
+  Object.assign(window, {document, WebSocket: Socket, sessionStorage, location: {reload: () => { reloads.count++; }}});
   Object.assign(globalThis, {window, document, WebSocket: Socket, XMLHttpRequest: Request,
     setTimeout: (callback, delay) => { const id = ++serial; timers.set(id, {callback, delay}); return id; },
     clearTimeout: id => timers.delete(id)});
@@ -60,7 +78,8 @@ async function environment(check) {
     connections.push(connection);
     return connection;
   };
-  try { await check({create, sockets, requests, timers, nextTimer, flush}); }
+  const polls = () => requests.filter(request => request.method === 'GET');
+  try { await check({create, sockets, requests, polls, timers, nextTimer, flush, reloads, session}); }
   finally {
     timers.clear();
     for (const connection of connections) await connection.disconnect(false);
@@ -71,6 +90,15 @@ async function environment(check) {
   }
 }
 
+const PAGE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const query = url => Object.fromEntries(new URL(url).searchParams);
+/** The pending timer with this delay, run. */
+const runTimer = (env, delay) => {
+  const entry = [...env.timers.entries()].find(([, timer]) => timer.delay === delay);
+  assert.ok(entry, `Expected a timer of ${delay} ms, found ${[...env.timers.values()].map(t => t.delay)}`);
+  env.timers.delete(entry[0]); entry[1].callback();
+};
+
 test('legacy transport selection, long-poll renewal and publish use observable requests', () => environment(async env => {
   const connection = env.create({ws: false});
   const events = [];
@@ -80,18 +108,22 @@ test('legacy transport selection, long-poll renewal and publish use observable r
   assert.equal(env.nextTimer(), 200);
   assert.equal(env.sockets.length, 0);
   assert.equal(env.requests[0].method, 'GET');
-  assert.equal(env.requests[0].url, 'http://example.test/app/bridge/long-polling/session/subscribe');
+  // Every request names its page and the last frame that it applied.
+  const first = new URL(env.requests[0].url);
+  assert.equal(first.origin + first.pathname, 'http://example.test/app/bridge/long-polling/session/subscribe');
+  assert.match(query(env.requests[0].url).page, PAGE);
+  assert.equal(query(env.requests[0].url).seen, '0');
   assert.deepEqual(events, ['open']);
-  env.requests[0].respond(503);
-  assert.equal(env.requests.length, 2);
-  assert.deepEqual(events, ['open']);
-  env.requests[1].respond(200, 'frame');
-  assert.deepEqual(events, ['open', 'ready', 'frame']);
-  assert.equal(env.requests.length, 3);
+  env.requests[0].frame(1, 0, '["frame"]');
+  assert.deepEqual(events, ['open', 'ready', '["frame"]']);
+  assert.equal(env.polls().length, 2);
+  assert.equal(query(env.polls()[1].url).seen, '1');
+  assert.equal(query(env.polls()[1].url).page, query(env.requests[0].url).page);
   connection.send('callback');
-  const published = env.requests[3];
+  const published = env.requests.at(-1);
   assert.equal(published.method, 'POST');
   assert.equal(published.body, 'callback');
+  assert.deepEqual(query(published.url), {page: query(env.requests[0].url).page, seen: '1'});
   assert.equal(published.headers.get('Content-Type'), 'application/json');
 }));
 
@@ -256,14 +288,42 @@ test('a superseded long-poll response cannot publish or renew its old subscripti
   connection.dispatcher.addEventListener('message', event => received.push(event.data));
   connection.connect(); env.nextTimer();
   const old = env.requests[0];
-  connection.connect(); env.nextTimer();
+  // Long polling opens at once, and an open transport resets the back-off.
+  connection.connect(); runTimer(env, 200);
   const current = env.requests[1];
-  old.respond(200, 'stale');
+  old.frame(1, 0, '["stale"]');
   assert.deepEqual(received, []);
   assert.equal(env.requests.length, 2);
-  current.respond(200, 'current');
-  assert.deepEqual(received, ['current']);
+  current.frame(1, 0, '["current"]');
+  assert.deepEqual(received, ['["current"]']);
   assert.equal(env.requests.length, 3);
+}));
+
+test('a second long-polling transport of the document keeps its cursor, and the first one counts nothing', () => environment(async env => {
+  const {connection, events} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  env.polls()[1].frame(2, 0, '["two"]');
+  const first = env.polls()[2];
+  assert.equal(query(first.url).seen, '2');
+  // A page script reconnects, for example on the online event.
+  connection.connect();
+  for (const [id, timer] of [...env.timers.entries()].filter(([, entry]) => entry.delay <= 200)) {
+    env.timers.delete(id); timer.callback();
+  }
+  const second = env.polls().at(-1);
+  assert.notEqual(second, first);
+  // The cursor and the page id belong to the document, not to the transport.
+  assert.equal(query(second.url).seen, '2');
+  assert.equal(query(second.url).page, query(first.url).page);
+  // The deadline of the first transport is cleared, and a late run of it counts nothing.
+  const late = [...env.timers.values()].filter(entry => entry.delay === 1500);
+  assert.equal(late.length, 1, 'only the deadline of the current poll is set');
+  first.respond(0);
+  assert.equal(connection.linkUp, true);
+  assert.equal(events.includes('interrupt'), false);
+  second.frame(3, 0, '["three"]');
+  assert.deepEqual(events.filter(name => name.startsWith('[')), ['["one"]', '["two"]', '["three"]']);
+  assert.equal(env.reloads.count, 0);
 }));
 
 test('a websocket superseded by long polling cannot publish late frames', () => environment(async env => {
@@ -276,7 +336,217 @@ test('a websocket superseded by long polling cannot publish late frames', () => 
   env.nextTimer();
   assert.equal(env.requests.length, 1);
   old.message('stale'); await env.flush();
+  // A reload frame of a socket that is not current changes nothing either: the
+  // server answers a late WebSocket of a session whose view a poll owns so.
+  old.message('[1]'); await env.flush();
   assert.deepEqual(received, []);
-  env.requests[0].respond(200, 'current');
-  assert.deepEqual(received, ['current']);
+  assert.equal(env.reloads.count, 0);
+  env.requests[0].frame(1, 0, '["current"]');
+  assert.deepEqual(received, ['["current"]']);
+}));
+
+// Long polling that resumes: the page keeps its bridge after a failed poll,
+// and every poll says which frame the page has applied.
+async function polling(env, options = {}) {
+  const connection = env.create({ws: false, lpw: 1000, ...options});
+  const events = [];
+  for (const name of ['open', 'ready', 'close', 'error', 'interrupt', 'resume', 'message'])
+    connection.dispatcher.addEventListener(name, event => events.push(name === 'message' ? event.data : name));
+  connection.connect(); env.nextTimer();
+  return {connection, events};
+}
+
+test('a failed poll keeps the bridge, and the next poll carries the same cursor after the back-off', () => environment(async env => {
+  const {events} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  env.polls()[1].respond(500);
+  assert.equal(events.includes('close'), false);
+  assert.equal(env.polls().length, 2, 'the next poll waits for the back-off');
+  runTimer(env, 200);
+  assert.equal(query(env.polls()[2].url).seen, '1');
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('an answer without fitting frame numbers makes the page reload and applies nothing', () => environment(async env => {
+  for (const respond of [
+    request => request.respond(200, '[4]'),
+    request => request.frame(2, 0, '["two"]'),
+    request => request.frame(1, 1, '["not a DOM frame"]'),
+    request => request.frame(1, 0, '[4]'),
+    request => request.respond(404),
+    request => request.respond(200, '[1]')
+  ]) {
+    const {events} = await polling(env);
+    const before = env.reloads.count;
+    respond(env.polls().at(-1));
+    assert.equal(env.reloads.count, before + 1);
+    assert.equal(events.filter(name => name.startsWith('[')).length, 0);
+    env.session.clear();
+  }
+}));
+
+test('a frame that the bridge cannot apply makes the page reload, and it polls no more', () => environment(async env => {
+  const {connection} = await polling(env);
+  connection.dispatcher.addEventListener('message', event => { event.applied = false; });
+  const polls = env.polls().length;
+  env.polls()[0].frame(1, 1, '[4]');
+  assert.equal(env.reloads.count, 1);
+  assert.equal(env.polls().length, polls, 'no poll for the next frame');
+}));
+
+test('a poll that is not answered by its deadline fails, and its late answer changes nothing', () => environment(async env => {
+  const {events} = await polling(env, {lpw: 1000});
+  const hanging = env.polls()[0];
+  runTimer(env, 1500);
+  assert.equal(hanging.aborted, true);
+  runTimer(env, 200);
+  assert.equal(query(env.polls()[1].url).seen, '0');
+  hanging.respond(200, '["late"]', {'spoonbill-frame': '1', 'spoonbill-dom': '0'});
+  assert.equal(events.filter(name => name.startsWith('[')).length, 0);
+}));
+
+test('503 again and again retries with the back-off, and the notice shows at the second one', () => environment(async env => {
+  const {events} = await polling(env);
+  for (const [delay, notices] of [[200, 0], [400, 1], [800, 1]]) {
+    env.polls().at(-1).respond(503);
+    assert.equal(events.filter(name => name === 'interrupt').length, notices, `after the ${delay} ms back-off`);
+    runTimer(env, delay);
+  }
+  assert.equal(env.polls().length, 4);
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('a frame that arrives while the notice shows is applied, and the notice hides', () => environment(async env => {
+  const {events} = await polling(env);
+  env.polls().at(-1).respond(500);
+  runTimer(env, 200);
+  env.polls().at(-1).respond(0);
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+  runTimer(env, 400);
+  // The link is back: the next poll gets the first frame.
+  env.polls().at(-1).frame(1, 0, '["one"]');
+  assert.deepEqual(events.filter(name => name.startsWith('[')), ['["one"]']);
+  assert.equal(events.filter(name => name === 'resume').length, 1);
+  assert.equal(query(env.polls().at(-1).url).seen, '1');
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('the notice shows at the second failure in a row and hides at the next answer, a 204 too', () => environment(async env => {
+  const {events} = await polling(env);
+  env.polls().at(-1).respond(500);
+  assert.equal(events.includes('interrupt'), false);
+  runTimer(env, 200);
+  env.polls().at(-1).respond(0);
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+  runTimer(env, 400);
+  env.polls().at(-1).respond(204);
+  assert.equal(events.filter(name => name === 'resume').length, 1);
+  assert.equal(events.includes('close'), false);
+  assert.equal(query(env.polls().at(-1).url).seen, '0');
+}));
+
+test('an unguarded page reloads at once, and a second reload in the window waits for its end', () => environment(async env => {
+  await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  // The reloaded page of the same tab is told to reload again at once.
+  const {events} = await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1, 'the second reload waits');
+  assert.equal(events.includes('interrupt'), true);
+  const [id, timer] = [...env.timers.entries()].find(([, entry]) => entry.delay > 25000 && entry.delay <= 30000);
+  env.timers.delete(id); timer.callback();
+  assert.equal(env.reloads.count, 2);
+}));
+
+test('while a reload waits, the page sends and polls nothing, and a second reload schedules no other', () => environment(async env => {
+  await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  const {connection, events} = await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1, 'the second reload waits');
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+  const sent = env.requests.length;
+  // The user clicks while the page waits for its reload.
+  connection.send('["click"]');
+  assert.equal(env.requests.length, sent, 'a request left while the reload waits');
+  // The server says reload once more, on another path: still one reload.
+  connection.reloadPage();
+  const waiting = [...env.timers.values()].filter(timer => timer.delay > 25000 && timer.delay <= 30000);
+  assert.equal(waiting.length, 1, 'a second reload was scheduled');
+  assert.equal(events.filter(name => name === 'interrupt').length, 1);
+}));
+
+test('a page without sessionStorage reloads at once', () => environment(async env => {
+  await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 2);
+}, {session: null}));
+
+test('a page that fell back and is told to reload starts with long polling after the reload', () => environment(async env => {
+  const connection = env.create({lpw: 1000});
+  connection.connect(); env.nextTimer();
+  // The WebSocket closes before it opens: the page falls back to long polling.
+  env.sockets[0].close(); await env.flush();
+  runTimer(env, 400);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  const reloaded = env.create({lpw: 1000});
+  reloaded.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 1, 'no WebSocket after the reload');
+  assert.equal(env.polls().length, 2);
+}));
+
+test('a page without a WebSocket that reloads at its first poll notes nothing', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  assert.equal([...env.session.keys()].some(key => key.startsWith('spoonbill:transport')), false);
+}));
+
+test('a noted page that is told to reload at its first poll ends the note, and the next document opens a WebSocket', () => environment(async env => {
+  // The note of a fallback.
+  const first = env.create({lpw: 1000});
+  first.connect(); env.nextTimer();
+  env.sockets[0].close(); await env.flush();
+  runTimer(env, 400);
+  env.polls().at(-1).respond(200, '[1]');
+  // The next document starts with long polling, and is told to reload at once: long polling is what fails here.
+  const noted = env.create({lpw: 1000});
+  noted.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 1, 'the noted document starts with long polling');
+  env.polls().at(-1).respond(200, '[1]');
+  for (const [id, timer] of [...env.timers.entries()].filter(([, entry]) => entry.delay > 25000)) { env.timers.delete(id); timer.callback(); }
+  const next = env.create({lpw: 1000});
+  next.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 2, 'the document after it tries a WebSocket again');
+}));
+
+test('two applications on one origin keep their notes apart', () => environment(async env => {
+  const connection = env.create({lpw: 1000});
+  connection.connect(); env.nextTimer();
+  env.sockets[0].close(); await env.flush();
+  runTimer(env, 400);
+  env.polls().at(-1).respond(200, '[1]');
+  // The application at /app/ noted long polling; a document of the one at /other/ did not.
+  const other = new Connection('session', '/other/', {host: 'example.test', protocol: 'http:', pathname: '/other/', search: ''}, {lpw: 1000});
+  other.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 2, 'the other application tries a WebSocket');
+  await other.disconnect(false);
+}));
+
+test('a page whose fallback works notes nothing', () => environment(async env => {
+  const connection = env.create({lpw: 1000});
+  connection.connect(); env.nextTimer();
+  env.sockets[0].close(); await env.flush();
+  runTimer(env, 400);
+  env.polls().at(-1).frame(1, 0, '["one"]');
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+  const reloaded = env.create({lpw: 1000});
+  reloaded.connect(); env.nextTimer();
+  assert.equal(env.sockets.length, 2, 'the reloaded page tries a WebSocket first');
 }));

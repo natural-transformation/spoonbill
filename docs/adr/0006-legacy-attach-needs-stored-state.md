@@ -1,17 +1,9 @@
-> **Draft, 2026-11-22. Not in effect.** This text becomes
-> `docs/adr/0006-legacy-attach-needs-stored-state.md`, with a row in
-> `docs/adr/README.md`, in the pull request that implements the
-> [plan](long-polling-resume-plan.md), in its step 9. The earlier ADRs came
-> into the repository in the same way, with the change that they describe.
-> Places marked **[at commit]** name code and tests that do not exist yet.
-> The two links to the code are written from `docs/`; the move to `docs/adr/`
-> changes them. The [design](long-polling-resume-design.md) has the full
-> reasoning.
-
 # ADR 0006 — A legacy attach needs its stored state
 
 Status: accepted on 2026-11-22 as an interim rule with a known cost. To be
-revisited; see the last section.
+revisited; see the last section. The
+[design of long polling that resumes](../long-polling-resume-design.md), which
+came with this decision, has the full reasoning.
 
 ## Context
 
@@ -63,18 +55,29 @@ storage. The page loads again, is rendered from its own address and gets a new
 session. For a legacy session a page render is the only place that stores its
 first state.
 
-The server counts these reloads in `Metrics`, so that the cost of this rule
-can be seen in a deployment. **[at commit: only if the user takes the counter
-that the plan proposes in step 4.]**
+The server counts these reloads in
+[`Metrics.MissingStateReloads`](../../modules/spoonbill/src/main/scala/korolev/Metrics.scala)
+(`missing-state-reloads`), so that the cost of this rule can be seen in a
+deployment.
 
 Guarded sessions are not changed. The rule gives a legacy attach the answer
 that a guarded attach already gives when it cannot know what the page shows.
 
-See the [attach of a legacy session](../modules/spoonbill/src/main/scala/korolev/server/internal/services/SessionsService.scala),
-the [storage](../modules/spoonbill/src/main/scala/korolev/state/StateStorage.scala)
-and the tests that pin the rule. **[at commit: links to the cases of step 4:
-a page at a route whose row is gone, the reconnect with a repository, two
-attaches without a state, and the missing-view specs of the three adapters.]**
+See the [attach of a legacy session](../../modules/spoonbill/src/main/scala/korolev/server/internal/services/SessionsService.scala)
+(`createLegacy`), the [storage](../../modules/spoonbill/src/main/scala/korolev/state/StateStorage.scala)
+and the tests that pin the rule:
+
+- [`MissingStateReloadSpec`](../../modules/spoonbill/src/test/scala/korolev/server/internal/services/MissingStateReloadSpec.scala):
+  a page rendered at a route whose stored state is gone, the reconnect of a
+  WebSocket page with a repository and with the default storage, two attaches
+  without a state, and an attach that finds its state.
+- The missing-view specs of the three adapters:
+  [Akka](../../interop/akka/src/test/scala/AkkaMissingLocalViewReloadSpec.scala),
+  [Pekko](../../interop/pekko/src/test/scala/PekkoMissingLocalViewReloadSpec.scala)
+  and [standalone](../../modules/standalone/src/test/scala/korolev/server/StandaloneMissingViewReloadSpec.scala).
+- In Chromium and WebKit, a page at a route whose state is gone before it
+  connects, by WebSocket and by long polling: it reloads once and shows its
+  route ([`misc/long-polling-native-tests.cjs`](../../misc/long-polling-native-tests.cjs)).
 
 ## Alternatives and consequences
 
@@ -97,7 +100,9 @@ used to go on in silence with a view that might not match:
 A reload loses what only the session held, and what the user had typed. The
 client limits how often a legacy page reloads on the word of the server: once
 in 30 seconds for a tab. A second reload waits for the end of that time, with
-the connection-lost notice. **[at commit: link to the guard in the client.]**
+the connection-lost notice (`reloadPage` in
+[`connection.js`](../../modules/spoonbill/src/main/es6/connection.js), and
+`reloadWait` in [`connection-machine.js`](../../modules/spoonbill/src/main/es6/connection-machine.js)).
 
 The user accepted this cost on 2026-11-22. The wrong view gave no sign, and
 with what the code can do today the reload is the only variant after which
@@ -123,8 +128,11 @@ the page and its view agree.
 Revisit this rule when one of these holds:
 
 - A deployment with a repository, or one that restarts often, finds the
-  reloads too costly. **[at commit, with the counter:** it says how often a
-  deployment pays for this rule.**]**
+  reloads too costly. The counter `missing-state-reloads` says how often a
+  deployment pays for this rule where the storage is asked: at a WebSocket
+  attach, and at the first poll of a page that this server rendered. A
+  long-polling page after a restart, or on another server, is told to reload
+  before that, for its missing fresh-page record, and is not counted.
 - The WebSocket transport gets the delivery rules that long polling has since
   this change.
 - A legacy view can send a whole document.

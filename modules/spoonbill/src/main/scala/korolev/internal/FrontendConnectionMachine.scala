@@ -38,6 +38,32 @@ private[internal] object FrontendConnectionMachine {
   }
 
   /**
+   * Browser input (a DOM event or a custom callback) of a view that resumes
+   * must name the revision that its page shows: input that names none could
+   * run a handler of any display, so it runs nothing. Other input that names
+   * no revision is not compared.
+   */
+  def unrevised(resumes: Boolean, browserInput: Boolean, expected: Option[Long]): Boolean =
+    resumes && browserInput && expected.isEmpty
+
+  /**
+   * An unguarded view runs a user action directly, except a browser callback
+   * of a view that resumes: that one is checked against the published
+   * revision right before it runs, as a DOM event is. History and programmatic
+   * transitions always run.
+   */
+  def checkedBeforeRun(resumes: Boolean, browserInput: Boolean): Boolean = resumes && browserInput
+
+  /**
+   * Whether a view closes when its input fails: a message that it cannot read,
+   * or a reply that it cannot take. A guarded view closes. So does a view that
+   * resumes: its polls would keep it alive while it handles nothing, and its
+   * page would stay deaf; once it closes, its page is told to reload. An
+   * unguarded WebSocket view keeps the failure in its input, as on `main`.
+   */
+  def closesOnFailedInput(guarded: Boolean, resumes: Boolean): Boolean = guarded || resumes
+
+  /**
    * Validate before offering output; update publication only after acceptance.
    */
   def canPublish(state: State, reset: Boolean): Boolean =

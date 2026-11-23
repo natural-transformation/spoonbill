@@ -114,7 +114,8 @@ final class PekkoMissingLocalViewReloadSpec extends AnyFreeSpec with Matchers wi
     try {
       val (status, outcome) = exchange()
       status shouldBe StatusCodes.SwitchingProtocols.intValue
-      rebuilds.get() shouldBe (if (control.isEmpty) 1 else 0)
+      // An attach never builds a state, so the state loader is not called.
+      rebuilds.get() shouldBe 0
       control.foreach { probe =>
         probe.opened.get() shouldBe 0
         probe.resumed.get() shouldBe 1
@@ -135,7 +136,7 @@ final class PekkoMissingLocalViewReloadSpec extends AnyFreeSpec with Matchers wi
   }
 
   "Missing local view over the official Pekko adapter" - {
-    "sends reload when an unguarded missing view cannot be rebuilt (control)" in {
+    "sends reload when an unguarded view has no stored state (control)" in {
       expectReload(None)
     }
 
