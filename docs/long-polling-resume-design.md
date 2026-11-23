@@ -209,7 +209,11 @@ Every Reload of these steps removes the entry again. An attach that fails
 does the same: the poll that built gets the failure, as on `main`, and the
 polls that wait are told to reload.
 
-- **The fresh-page record** is made when the page is rendered. Every
+- **The fresh-page record** is reserved while the state of a rendered page
+  is stored, and made when it is stored; its lifetime starts then. No expiry
+  takes a reservation, so a write that runs long keeps its record, and a
+  write that fails or is cancelled ends it and leaves nothing behind (after
+  the review at `fe313e1a`). Every
   unguarded attach claims it, whichever transport it comes through. It is
   positive evidence that the stored state is the one the page shows. Where it
   lives and how it ends is in
@@ -438,7 +442,10 @@ page that never moves its cursor would keep its view alive by its heartbeats.
   never more than half the idle timeout. Then it is answered with `204`. A
   quiet page so makes progress at least twice in every idle period. Akka HTTP
   and Pekko HTTP end a request after 20 seconds with `503` by default, so
-  their poll route raises its request timeout above that wait. A proxy with
+  their poll route raises its request timeout above that wait. Only that
+  route: `/bridge/long-polling/<session>/subscribe`, matched by its segments,
+  so an application route with a like name keeps its own timeout (after the
+  review at `fe313e1a`). A proxy with
   a shorter read timeout than the wait still gives failed polls; the setting
   is for such a deployment. (Decided by the user on 2026-11-22, after the review of PR 42.) Before, a poll waited half the idle
   timeout, 30 seconds by default, and on Akka and Pekko every quiet poll
@@ -560,9 +567,9 @@ bridge and holds for both transports of an unguarded page.
 | A poll fails: status 0, 5xx, `408`, `429`, or no answer by the deadline | `failures + 1`, link interrupted, `replaced` ends | Poll again after the back-off; show the notice when `failures` is 2 |
 | A poll is answered with any other status | none | Reload |
 | The reload frame arrives | none | Reload |
-| A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted | As a failed poll; the heartbeat is not counted as unanswered, and the re-poll is given back. A request that is written off at the next heartbeat is aborted, so that requests do not pile up on a link that hangs (the last two added after the second review of PR 42) |
+| A heartbeat message cannot be sent: its request fails, is answered with a `5xx`, or has no answer when the next heartbeat is due | `failures + 1`, link interrupted; `replaced` stays, since the poll has not failed | As a failed poll; the heartbeat is not counted as unanswered, and the re-poll is given back. A request that is written off at the next heartbeat is aborted, so that requests do not pile up on a link that hangs (the last two added after the second review of PR 42) |
 | No transport takes a heartbeat, so no request goes out (added after the second review of PR 42) | none | Not counted as unanswered, and no failed poll |
-| A message that the server took while the link is interrupted, the first since the last failed poll (added after the second review of PR 42, once-only after the review at `82baf17a`) | `replaced` | The link is back: give up the current poll, which may hang on the broken link, or its back-off, and poll again. A later taken message leaves the new poll alone until it is answered or fails, so a quiet poll still reaches its `204` |
+| A message that the server took while the link is interrupted, the first since the last failed poll; a failed heartbeat is no failed poll here (added after the second review of PR 42, once-only after the review at `82baf17a`, the heartbeat after the review at `fe313e1a`) | `replaced` | The link is back: give up the current poll, which may hang on the broken link, or its back-off, and poll again. A later taken message leaves the new poll alone until it is answered or fails, so a quiet poll still reaches its `204` |
 | The heartbeat limit is reached, for the first time since a reply or a failed heartbeat | none | Give up the current poll, or its back-off, and poll again |
 | The heartbeat limit is reached again, and the heartbeats that the server took are still unanswered | none | Reload, through the reload guard |
 
@@ -587,6 +594,11 @@ bridge and holds for both transports of an unguarded page.
   configuration names, plus a margin, and always below the idle timeout. A
   response that hangs is then a failed poll, and not a silent stop, and the
   page notices it while its view still lives. (Decided by the user on 2026-11-22, after the review of PR 42.)
+  The retry goes out after the deadline and the first back-off of 200 ms.
+  The deadline is at most three quarters of the idle timeout, so the retry
+  comes in time for an idle timeout of about one second or more; below that,
+  a response that hangs ends the view, and the page reloads once (after the
+  review at `fe313e1a`).
 - **The heartbeat on long polling tells a dead link from a dead input.**
   (Decided by the user on 2026-11-22, after the review of PR 42.) `heartbeatLimit` is 2 by default, and on `main` the page
   reloads when it is reached (read).
@@ -738,7 +750,7 @@ Each case is written first and must fail without its part of the change.
 | | **Two servers, one repository.** A poll reaches the server that has no view of the session: Reload. The row is intact in the repository itself, and the view on the other server goes on | service spec with two services |
 | | A default storage with a for-deletion cache of 2. Five pages expire, and one more has a view: the three oldest states are gone, the view keeps its state | service spec with a clock |
 | | 250 pages expire: three renders clean them up, 100 at a time | service spec with a clock |
-| | A render is cancelled after its record is made and before the state is stored; and right after it has selected expired records: afterwards no state is live without a record or a view | checks with a lazy effect |
+| | A render is cancelled after its record is reserved and before the state is stored; and right after it has selected expired records: afterwards no state is live without a record or a view, and no reservation is left | checks with a lazy effect |
 | | An attach makes no record | service spec |
 | | An attach fails before it has a view, and its page never comes back: the state leaves the live states of the default storage | service spec |
 
@@ -1124,6 +1136,13 @@ only (14); `remove` allows a missing child (17, checked, no change of code);
 the cleanup steps every record that it takes (18). With cats-effect 3.5 or
 newer a waiting poll could not be cancelled (21); `promise` of that instance
 can be cancelled now, as on the version that the build pins.
+
+The reviews after it (at `92d73daf`, `82baf17a` and `fe313e1a`) found client
+rules of the heartbeat and of the recovery after an outage, which the client
+table above now has, and three more points that the text above has: the
+reservation of the fresh-page record while its state is stored, the request
+timeout of the poll route only, and when the retry after a hanging response
+comes in time.
 
 ## Changes from revision 3
 
