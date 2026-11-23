@@ -1,6 +1,7 @@
 package spoonbill.server.internal.services
 
 import java.util.UUID
+import spoonbill.web.PathAndQuery
 
 /**
  * Which long-polling request may build a view, and who may have the output of
@@ -104,17 +105,21 @@ private[spoonbill] object PollAdmissionMachine {
    */
   /**
    * Whether a request path, relative to where the service is mounted, is the
-   * subscribe endpoint of long polling: `/bridge/long-polling/<session>/subscribe`,
-   * the route of `KorolevServiceImpl`. The Akka and Pekko adapters give only
-   * that route the request timeout of a poll; an application route with a
-   * like name keeps the timeout of the server (the review at `fe313e1a`).
+   * subscribe endpoint of long polling: `/bridge/long-polling/<session>/subscribe`.
+   * It parses the path as the service does and matches the pattern of the
+   * route in `KorolevServiceImpl`, so the two agree on every spelling: a
+   * trailing slash and an empty segment are dropped by both (the review at
+   * `b6194262`). The Akka and Pekko adapters give only that route the request
+   * timeout of a poll; an application route with a like name keeps the
+   * timeout of the server (the review at `fe313e1a`).
    */
-  def subscribePath(path: String): Boolean =
-    // A limit of -1 keeps a trailing empty segment, so `…/subscribe/` is no poll.
-    path.split("/", -1).toList match {
-      case "" :: "bridge" :: "long-polling" :: session :: "subscribe" :: Nil => session.nonEmpty
-      case _                                                                  => false
+  def subscribePath(path: String): Boolean = {
+    import PathAndQuery.*
+    PathAndQuery.fromString(path) match {
+      case Root / "bridge" / "long-polling" / _ / "subscribe" => true
+      case _                                                    => false
     }
+  }
 
   def pollWaitMillis(settingMillis: Long, idleTimeoutMillis: Long): Long =
     math.max(100L, math.min(600000L, math.min(settingMillis, idleTimeoutMillis / 2)))

@@ -76,6 +76,13 @@ final class AkkaLongPollWaitSpec extends AnyFreeSpec with Matchers with BeforeAn
           status shouldBe 204
           elapsed should be >= 1500L
         }
+        // The service routes a trailing slash to the same handler, so it gets
+        // the same timeout (the review at b6194262).
+        val (slashed, _, slashElapsed) = get(s"$base/bridge/long-polling/$session/subscribe/?page=$page&seen=$seen")
+        withClue(s"the quiet poll with a trailing slash after $slashElapsed ms: ") {
+          slashed.status.intValue shouldBe 204
+          slashElapsed should be >= 1500L
+        }
       } finally Await.result(binding.unbind(), timeout)
     }
   }
