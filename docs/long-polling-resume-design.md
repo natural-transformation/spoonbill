@@ -443,9 +443,11 @@ page that never moves its cursor would keep its view alive by its heartbeats.
   quiet page so makes progress at least twice in every idle period. Akka HTTP
   and Pekko HTTP end a request after 20 seconds with `503` by default, so
   their poll route raises its request timeout above that wait. Only that
-  route: `/bridge/long-polling/<session>/subscribe`, matched by its segments,
-  so an application route with a like name keeps its own timeout (after the
-  review at `fe313e1a`). A proxy with
+  route: `/bridge/long-polling/<session>/subscribe`, parsed and matched as
+  the service routes it, so an application route with a like name keeps its
+  own timeout, and a spelling that the service routes there, such as a
+  trailing slash, gets the timeout of a poll (after the reviews at
+  `fe313e1a` and `b6194262`). A proxy with
   a shorter read timeout than the wait still gives failed polls; the setting
   is for such a deployment. (Decided by the user on 2026-11-22, after the review of PR 42.) Before, a poll waited half the idle
   timeout, 30 seconds by default, and on Akka and Pekko every quiet poll
@@ -465,16 +467,20 @@ that is made at the render and taken once at the attach: the `bootstrap` of
 same thing for an unguarded page and lives in that machine, as a field of its
 own: when the page was rendered, in the order of the renders.
 
-- **Only a page render makes a record,** and it makes it **before** it stores
-  the state. So no stored state is without a record. A render that fails or
-  is cancelled in between leaves a record without a state; it ends like any
-  other, and there is nothing to remove.
+- **Only a page render makes a record.** It reserves the record **before**
+  it stores the state (`Storing`), so no stored state is without a record,
+  and makes it when the state is stored: the record waits from then on, in
+  the order of the renders. A reservation is not in that order, so no expiry
+  takes it while the write runs. A write that fails, throws, or is cancelled
+  ends the reservation in a finalizer that also covers the reservation step
+  itself, and a state that it left in a local storage is dropped; nothing is
+  left behind (after the reviews at `fe313e1a` and `b6194262`).
 - **A record ends in one of these steps.** All are steps of the one machine
   state, so only one can win.
 
 | Step | When | What follows |
 | --- | --- | --- |
-| `Claim` | An unguarded attach of the session. The machine answers `Fresh`, `Expired`, `Absent` or `Releasing` | A poll goes on only with `Fresh`, and takes the record. A WebSocket takes the record at any age and goes on with `Fresh`, `Expired` and `Absent`: it needs only the stored state. `Releasing` means Reload for both. An expired record that a poll finds stays where it is |
+| `Claim` | An unguarded attach of the session. The machine answers `Fresh`, `Expired`, `Absent` or `Releasing`; a reservation is `Absent`, since no browser has the page yet | A poll goes on only with `Fresh`, and takes the record. A WebSocket takes the record at any age and goes on with `Fresh`, `Expired` and `Absent`: it needs only the stored state. `Releasing` means Reload for both. An expired record that a poll finds stays where it is |
 | `Expire` | A later render finds the record older than its lifetime | Local storage: the record becomes `Releasing` and its state is removed. Another storage: the record ends and nothing is removed |
 | `Released` | The removal has returned | The record is gone. A removal that fails puts the record back, and a later render tries again |
 
