@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 11.0.0 — 2026-11-24
 
-The next major release changes the extension contract, Future effect instances
+Spoonbill 11.0.0 changes the extension contract, Future effect instances
 and stream behavior. See the [migration guide](docs/migration-v11.md).
 
 - **Breaking:** Replace direct construction or subclassing of `Effect.FutureEffect`
