@@ -462,7 +462,11 @@ export class Spoonbill {
     *   that the page shows, rather than adding one (pageUrlEntry)
     */
   changePageUrl(path, replace = false) {
-    if (path === window.location.pathname + window.location.search) return;
+    const target = new URL(path, document.baseURI);
+    const current = window.location;
+    // A path-and-query render of the current route keeps the tab's fragment and Forward entry.
+    if (target.origin === current.origin && target.pathname === current.pathname &&
+        target.search === current.search && !path.includes('#')) return;
     if (replace) window.history.replaceState(path, '', path);
     else window.history.pushState(path, '', path);
   }

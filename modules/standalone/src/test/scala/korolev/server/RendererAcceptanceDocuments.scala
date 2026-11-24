@@ -21,7 +21,7 @@ import spoonbill.state.javaSerialization.*
 object RendererAcceptanceDocuments {
 
   val scenarios: Set[String] =
-    Set("long-names", "collisions", "encoding", "first-patch", "resume", "resume-heartbeat", "resume-long", "resume-unicode")
+    Set("long-names", "collisions", "encoding", "first-patch", "resume", "resume-heartbeat", "resume-long", "resume-unicode", "resume-unicode-query")
 
   /** Handler invocations observed by the service; read through the status control. */
   final class Counters {
@@ -263,7 +263,7 @@ object RendererAcceptanceDocuments {
       // The same page, with a long idle timeout (see the fixture).
       case "resume-long" => resume(run, stage)
       // The same page at `/café/<stage>`, with a long idle timeout (see the fixture).
-      case "resume-unicode" => resume(run, stage)
+      case "resume-unicode" | "resume-unicode-query" => resume(run, stage)
     }
     frame(run, stage, content)
   }
