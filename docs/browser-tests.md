@@ -148,6 +148,9 @@ WebSocket. In Chromium and WebKit:
 | `pause-heartbeat` | With the heartbeat on and its replies held, the page polls again at the limit, the next heartbeat is taken, and the page calls `Spoonbill.disconnect()`: it does not reload, keeps what the user typed, and works again after `Spoonbill.connect()` |
 | `back-pause` | Back is pressed while long polling is paused: `Spoonbill.connect()` reloads the page at the URL that Back went to, and a click runs the handler of that route |
 | `ws-connect` | `Spoonbill.connect()` on an open WebSocket: no second socket opens, the bridge is not built again, and a click runs one handler |
+| `ws-connect-decoding` | `Spoonbill.connect()` while the close of a WebSocket waits for its last frame to decode: no socket opens until the close has run, the bridge is built again, and a click goes out once |
+| `back-listener-pause` | Back is pressed and the application's own `popstate` listener, which runs first, calls `Spoonbill.disconnect()`: `Spoonbill.connect()` reloads the page at the URL that Back went to, and a click runs the handler of that route |
+| `eval-pause` | A command whose code calls `Spoonbill.disconnect()` returns its result during the pause: after `Spoonbill.connect()` the server gets the result once, well before its RPC timeout, and the page keeps what the user typed |
 
 Each case was proved by a mutation that it must catch, put in and taken out
 again: a click from an older display that runs a handler (`stale-*`), a

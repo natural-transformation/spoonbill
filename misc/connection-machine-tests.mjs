@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connectio
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, transportNote,
-  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, pollDeadline, RELOAD_WINDOW, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
+  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, socketState, outgoingMessage, pollDeadline, RELOAD_WINDOW, MAX_KEPT_REPLIES, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
@@ -343,6 +343,51 @@ test('a connect() starts nothing while an attempt is pending or a socket is conn
   ];
   for (const [pending, socket, starts] of table)
     assert.equal(connectStarts(pending, socket), starts, String([pending, socket]));
+});
+
+test('a socket that reports CLOSED is closing while its close handler runs', () => {
+  // The review of PR 39 at 17fd8ee0, finding 1: the close handler waits for
+  // the last frame to decode, and a connect() then installed a second socket.
+  // (the close handler runs, readyState) -> the socket for connectStarts.
+  const table = [
+    [false, 0, 'connecting'], [false, 1, 'open'], [false, 2, 'closing'], [true, 2, 'closing'],
+    [true, 3, 'closing'], [false, 3, 'closed']
+  ];
+  for (const [closing, readyState, expected] of table)
+    assert.equal(socketState({...initialConnection(), closing}, readyState), expected, String([closing, readyState]));
+  // The close handler of the current socket starts the mark, and its close ends it.
+  const epoch = {};
+  const socket = step({...initialConnection(), phase: 'ready'}, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch});
+  const closing = step(socket, {type: 'close-started', epoch});
+  assert.equal(closing.closing, true);
+  assert.equal(step(socket, {type: 'close-started', epoch: {}}), socket, 'a stale socket marks nothing');
+  assert.deepEqual([step(closing, {type: 'close', epoch}).closing, step(closing, {type: 'close', epoch}).phase], [false, 'dormant']);
+  // A new transport or a restored page (pageshow) ends it too.
+  assert.equal(step(closing, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}}).closing, false);
+  assert.equal(step(closing, {type: 'reset-lifecycle'}).closing, false);
+});
+
+test('a paused page keeps a reply, misses a navigation and drops a user event', () => {
+  // The review of PR 39 at 17fd8ee0, findings 2 and 3.
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  for (const kind of ['reply', 'history', 'other'])
+    assert.equal(outgoingMessage(polling, kind, 0), 'send', kind);
+  const paused = step(polling, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
+  assert.equal(outgoingMessage(paused, 'reply', 0), 'keep');
+  assert.equal(outgoingMessage(paused, 'reply', MAX_KEPT_REPLIES), 'drop', 'the kept replies are bounded');
+  assert.equal(outgoingMessage(paused, 'history', 0), 'missed');
+  assert.equal(outgoingMessage(paused, 'other', 0), 'drop');
+  // An application's popstate listener paused the page at the destination of
+  // Back: the URL fits, but the server missed the navigation.
+  assert.equal(resumes(paused, '/orders/0'), true);
+  const missed = step(paused, {type: 'navigation-missed'});
+  assert.equal(resumes(missed, '/orders/0'), false);
+  // A second disconnect keeps the mark; a new transport ends the pause and the mark.
+  assert.equal(resumes(step(missed, {type: 'disconnect', reconnect: true, scheduleEpoch: {}, location: '/orders/0'}), '/orders/0'), false);
+  const resumed = step(missed, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.deepEqual([resumed.paused, resumed.missedNavigation], [false, false]);
+  // Not paused: nothing is missed.
+  assert.equal(step(polling, {type: 'navigation-missed'}), polling);
 });
 
 test('a disconnect ends a long-polling transport, and a WebSocket waits for its close', () => {

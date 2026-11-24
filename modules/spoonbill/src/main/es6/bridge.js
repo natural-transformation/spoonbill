@@ -3,7 +3,8 @@ import { Procedure, CallbackType, PropertyType } from './protocol.js';
 import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
 import {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
-  acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer, heartbeatRefused} from './bridge-machine.js';
+  acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer, heartbeatRefused,
+  messageKind} from './bridge-machine.js';
 
 const ProtocolDebugEnabledKey = "$bridge.protocolDebugEnabled";
 
@@ -129,7 +130,8 @@ export class Bridge {
       : JSON.stringify(args !== undefined ? [type, args] : [type]);
     if (protocolDebugEnabled)
       console.log('<- callback', type);
-    this._connection.send(message);
+    // A paused page keeps a reply and notes a missed navigation.
+    this._connection.send(message, undefined, messageKind(type));
   }
 
   _applyView(update) {

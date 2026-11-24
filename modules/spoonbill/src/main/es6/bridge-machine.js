@@ -17,6 +17,23 @@ export function initialBridge(guarded, page = null) {
     heartbeatInFlight: null, heartbeatSeq: 0, heartbeatTransport: undefined};
 }
 
+// The callback types (CallbackType of protocol.js) that messageKind tells
+// apart: HISTORY, and the replies to a request of the server,
+// EXTRACT_PROPERTY_RESPONSE, EVALJS_RESPONSE and EXTRACT_EVENT_DATA_RESPONSE.
+// misc/bridge-machine-tests.mjs checks them against protocol.js.
+const HISTORY_CALLBACK = 3;
+const REPLY_CALLBACKS = [2, 4, 5];
+
+/**
+ * What a callback is to a paused page (outgoingMessage of the connection
+ * machine): 'history', a 'reply' to a request of the server, which the server
+ * waits for, or 'other'.
+ */
+export function messageKind(type) {
+  if (type === HISTORY_CALLBACK) return 'history';
+  return REPLY_CALLBACKS.includes(type) ? 'reply' : 'other';
+}
+
 export function bridgeStep(state, event) {
   switch (event.type) {
     case 'suspend': return {...state, gate: state.gate === 'recovering' ? 'recovering' : 'waiting'};

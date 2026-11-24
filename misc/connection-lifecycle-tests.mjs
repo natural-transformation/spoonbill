@@ -755,6 +755,34 @@ test('a connect() while the socket is closing waits for its close, which builds 
   assert.deepEqual(events, ['open', 'close', 'open'], 'a fresh bridge for the new socket');
 }));
 
+test('a connect() while the close of a socket waits for its last frame to decode starts nothing until the close has run', () => environment(async env => {
+  // The review of PR 39 at 17fd8ee0, finding 1: the socket was CLOSED, so a
+  // connect() installed a second one; the close handler then found it and
+  // left the old bridge, which took the listeners of the new view as well.
+  let complete;
+  const decoded = new Promise(resolve => { complete = resolve; });
+  const connection = env.create();
+  const events = [];
+  for (const name of ['open', 'close', 'message'])
+    connection.dispatcher.addEventListener(name, event => events.push(name === 'message' ? event.data : name));
+  try {
+    connection.connect(); env.nextTimer(); env.sockets[0].open();
+    env.sockets[0].message(new class extends Blob { text() { return decoded; } }());
+    await env.flush();
+    await connection.disconnect(false);
+    assert.equal(env.sockets[0].readyState, WebSocket.CLOSED);
+    connection.connect();
+    assert.equal(env.timers.size, 0, 'no attempt while the close waits for the decoder');
+    complete('last');
+    await env.flush(); await env.flush();
+    assert.deepEqual(events, ['open', 'last', 'close'], 'the last frame, then the close lifecycle');
+    env.nextTimer();
+    assert.equal(env.sockets.length, 2);
+    env.sockets[1].open();
+    assert.deepEqual(events, ['open', 'last', 'close', 'open'], 'a fresh bridge for the new socket');
+  } finally { complete('last'); await env.flush(); }
+}));
+
 test('a disconnect() before the first socket pauses nothing, so a connect() after a URL change opens the socket', () => environment(async env => {
   // The review of PR 39 at 628bbd99, finding 1.4: a guarded page went into the
   // reload guard of long polling.

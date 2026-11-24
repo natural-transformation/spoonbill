@@ -169,7 +169,9 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
 - Fix: the browser client keeps one connection at a time. A
   `Spoonbill.connect()` while an attempt is pending, or while a WebSocket is
   connecting or open, starts nothing; while a WebSocket is closing it
-  reconnects when the close has ended, with a new bridge. An explicit
+  reconnects when the close has ended, with a new bridge. A WebSocket is
+  closing until its close handler has applied the last frame that arrived and
+  has torn the bridge down. An explicit
   `connect()` also turns automatic reconnect back on after `disconnect()`. A
   new transport closes the one it replaces. Two quick calls used to open two WebSockets, and a call on an
   open connection opened a second one, whose view announced its listeners to
@@ -181,7 +183,11 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   ended meanwhile. `disconnect(true)` polls again after 200 ms. The heartbeat
   pauses too and starts over afterwards, so a paused page never reloads for
   missing replies. If the user navigated during the pause, `connect()`
-  reloads the page at its new URL, since the server never heard of it. A
+  reloads the page at its new URL, since the server never heard of it; also
+  when the application's own `popstate` listener paused the page after Back
+  had changed the URL. The result of a command that the server waits for,
+  such as `evalJs`, that the page produces during the pause is sent once
+  when it resumes; user events of the pause are dropped as before. A
   notice that showed before the pause hides at the first answer after it,
   and answered re-polls do not grow the reconnect back-off. The page used to
   go on polling and applying frames.

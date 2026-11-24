@@ -6,8 +6,10 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/bridge-ma
 const {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
   initialSensitive, sensitiveStep, departurePending, navigationPending, sensitiveTerminal,
   sensitiveBlocked, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable,
-  heartbeatTick, heartbeatAnswer, heartbeatRefused} =
+  heartbeatTick, heartbeatAnswer, heartbeatRefused, messageKind} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+const {CallbackType} = await import('data:text/javascript;base64,' +
+  readFileSync(new URL('../modules/spoonbill/src/main/es6/protocol.js', import.meta.url)).toString('base64'));
 const connection = '11111111-1111-4111-8111-111111111111';
 const presentation = '22222222-2222-4222-8222-222222222222';
 
@@ -248,4 +250,14 @@ test('a WebSocket page reloads at the limit, and no heartbeat goes out once a re
   assert.equal(heartbeatTick(out.state, 2, false, false).command, 'reload');
   for (const longPolling of [true, false])
     assert.deepEqual(heartbeatTick(state, 2, longPolling, true), {state, command: 'skip', failed: false});
+});
+
+test('a callback is a history message, a reply to a request of the server, or another message', () => {
+  // The review of PR 39 at 17fd8ee0: a paused page notes a missed navigation and keeps a reply.
+  assert.equal(messageKind(CallbackType.HISTORY), 'history');
+  for (const type of [CallbackType.EXTRACT_PROPERTY_RESPONSE, CallbackType.EVALJS_RESPONSE, CallbackType.EXTRACT_EVENT_DATA_RESPONSE])
+    assert.equal(messageKind(type), 'reply', String(type));
+  for (const [name, type] of Object.entries(CallbackType))
+    if (!['HISTORY', 'EXTRACT_PROPERTY_RESPONSE', 'EVALJS_RESPONSE', 'EXTRACT_EVENT_DATA_RESPONSE'].includes(name))
+      assert.equal(messageKind(type), 'other', name);
 });

@@ -3,6 +3,8 @@ export const ConnectionType = {WEB_SOCKET: 0, LONG_POLLING: 1};
 export const MIN_RECONNECT_TIMEOUT = 200;
 export const MAX_RECONNECT_TIMEOUT = 5000;
 const MAX_RECOVERY_ATTEMPTS = 3;
+/** The replies to requests of the server that a paused page keeps, at most. */
+export const MAX_KEPT_REPLIES = 128;
 /** One framework reload of an unguarded page in this many milliseconds; a second one waits. */
 export const RELOAD_WINDOW = 30000;
 const PAGE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,6 +24,9 @@ export function initialConnection() {
     deliveredEpoch: null,
     recoveryAttempts: 0,
     reconnectDelay: MIN_RECONNECT_TIMEOUT,
+    // The close handler of the WebSocket has started and has not ended: it
+    // waits for the last frame to decode before it tears the bridge down.
+    closing: false,
     // Long polling that resumes. The page id names this document for its whole
     // life; `seen` is the last frame that it applied, `dom` the DOM frames among
     // them, and `failures` the polls that failed in a row.
@@ -37,6 +42,11 @@ export function initialConnection() {
     // reloads the page, since the server never heard of that navigation.
     paused: false,
     pausedAt: null,
+    // A history message that the page could not send while it was paused: the
+    // server missed a navigation, so a connect() reloads the page even at the
+    // URL of the pause. An application's popstate listener can pause the page
+    // after the URL has changed (the review of PR 39 at 17fd8ee0, finding 2).
+    missedNavigation: false,
     // A framework reload of an unguarded page has started: 'now', or 'waiting'
     // for the end of the reload window. From then on no transport is current.
     reloading: null,
@@ -120,10 +130,44 @@ export const repollsAfterMessage = (state, sent) => sent && !linkUp(state) && !s
 
 /**
  * A connect() goes on with the transport of a page, which is not paused, or
- * that was paused at the URL that it shows now. Otherwise the user navigated
- * while it was paused, the server never heard of it, and the page reloads.
+ * that was paused at the URL that it shows now and missed no navigation.
+ * Otherwise the user navigated while it was paused, the server never heard of
+ * it, and the page reloads.
  */
-export const resumes = (state, location) => !state.paused || state.pausedAt === location;
+export const resumes = (state, location) =>
+  !state.paused || (state.pausedAt === location && !state.missedNavigation);
+
+/**
+ * What becomes of a message of the bridge: 'send' it, or, while long polling
+ * is paused, 'keep' a reply to a request of the server for the transport that
+ * resumes the page, note a 'missed' navigation, or 'drop' it. The server
+ * waits for a reply until its RPC timeout, so a short pause must not lose one
+ * (the review of PR 39 at 17fd8ee0, finding 3); a user event is dropped as
+ * before. `kind` is 'reply', 'history' or 'other' (messageKind of the bridge
+ * machine), and `kept` the number of replies that the page keeps already.
+ */
+export function outgoingMessage(state, kind, kept) {
+  if (!state.paused) return 'send';
+  if (kind === 'reply') return kept < MAX_KEPT_REPLIES ? 'keep' : 'drop';
+  return kind === 'history' ? 'missed' : 'drop';
+}
+
+/**
+ * The socket of a WebSocket transport for connectStarts, by its readyState
+ * (0 to 3). A socket that reports CLOSED while its close handler runs is
+ * still closing: the handler waits for the last frame to decode, and tears the
+ * bridge down after that. A second socket before then kept the old bridge (the
+ * review of PR 39 at 17fd8ee0, finding 1). A socket that closed without a
+ * close event, as in the back/forward cache, is closed.
+ */
+export function socketState(state, readyState) {
+  switch (readyState) {
+    case 0: return 'connecting';
+    case 1: return 'open';
+    case 2: return 'closing';
+    default: return state.closing ? 'closing' : 'closed';
+  }
+}
 
 /**
  * A connect() starts an attempt only when none is pending and no socket is
@@ -131,7 +175,7 @@ export const resumes = (state, location) => !state.paused || state.pausedAt === 
  * whose listeners the bridge of the first would take as well. A socket that
  * is closing ends its close lifecycle first, and the connect() step has asked
  * for the reconnect after it. `socket` is 'none', 'connecting', 'open',
- * 'closing' or 'closed'.
+ * 'closing' or 'closed' (socketState).
  */
 export const connectStarts = (attemptPending, socket) =>
   !attemptPending && socket !== 'connecting' && socket !== 'open' && socket !== 'closing';
@@ -215,9 +259,10 @@ export function connectionStep(state, event) {
       // prove the link, so the notice that shows stays until an answer (the
       // review of PR 39 at f55be0f2).
       return event.transport === ConnectionType.LONG_POLLING ?
-        {...state, transport: event.transport, epoch: event.epoch, replaced: false, paused: false, pausedAt: null} :
+        {...state, transport: event.transport, epoch: event.epoch, replaced: false, paused: false, pausedAt: null,
+          missedNavigation: false, closing: false} :
         {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null, triedWebSocket: true,
-          paused: false, pausedAt: null};
+          paused: false, pausedAt: null, missedNavigation: false, closing: false};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;
       return {...state, phase: connectionReady(state) ? 'ready' : 'opened',
@@ -226,8 +271,10 @@ export function connectionStep(state, event) {
       if (!currentTransport(state, event.epoch) || connectionReady(state)) return state;
       return {...state, phase: connectionOpened(state) ? 'ready' : 'ready-before-open',
         recoveryAttempts: 0, presence: state.presence === 'departed' ? 'departed' : 'active'};
+    case 'close-started':
+      return currentTransport(state, event.epoch) ? {...state, closing: true} : state;
     case 'close':
-      return currentTransport(state, event.epoch) ? {...state, phase: 'dormant'} : state;
+      return currentTransport(state, event.epoch) ? {...state, phase: 'dormant', closing: false} : state;
     case 'disconnect':
       // Long polling has no socket whose close ends it: the disconnect ends
       // its transport here, so nothing of it is current any more, and it
@@ -244,6 +291,9 @@ export function connectionStep(state, event) {
           epoch: null, paused: true, pausedAt: state.paused ? state.pausedAt : (event.location ?? null)} :
         {...state, reconnect: event.reconnect,
           scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch};
+    case 'navigation-missed':
+      // Only a paused page misses a navigation; the next transport ends the mark.
+      return state.paused && !state.missedNavigation ? {...state, missedNavigation: true} : state;
     case 'connect':
       // An explicit connect() asks to be connected: a socket that is still
       // closing reconnects when its close ends, and so does a later drop.
@@ -262,7 +312,7 @@ export function connectionStep(state, event) {
     case 'show':
       return {...state, presence: 'active'};
     case 'reset-lifecycle':
-      return {...state, phase: 'dormant'};
+      return {...state, phase: 'dormant', closing: false};
     case 'claim-recovery':
       if (!currentTransport(state, event.epoch) || !event.enabled || !state.reconnect || state.presence !== 'active' || authenticationPending(state) ||
           (state.deliveredEpoch !== null && state.deliveredEpoch === event.epoch) ||

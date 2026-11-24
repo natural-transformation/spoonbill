@@ -1674,6 +1674,75 @@ test('redesign client regressions against real source modules', { timeout: 10000
       } finally { lp.bridge.destroy(); restoreTiming(saved); }
     });
 
+    await t.test('Back that an application handles first, with a pause, makes connect() reload: the server missed the navigation', () => {
+      // The review of PR 39 at 17fd8ee0, finding 2: the application's popstate
+      // listener paused the page when the URL already showed the destination,
+      // so the URL of the pause fit, and the page resumed the view of the old route.
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        window.location.pathname = '/orders/0';
+        lp.connection.disconnect(false);
+        // Spoonbill's own listener comes second.
+        lp.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        assert.deepEqual(lp.sent(), [], 'nothing is sent while paused');
+        const polls = lp.polls().length;
+        lp.connection.connect();
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        assert.equal(reloads, 1);
+        assert.equal(lp.polls().length, polls, 'no poll resumes the old route');
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a reply that the page makes while paused goes to the server once when it resumes; a user event does not', () => {
+      // The review of PR 39 at 17fd8ee0, finding 3: the code of an evalJs
+      // paused the page, its result was refused, and the server waited for
+      // its RPC timeout.
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      globalThis.__pause = () => lp.connection.disconnect(false);
+      try {
+        // The command of access.evalJs("__pause(), 42").
+        lp.polls()[0].frame(1, 0, JSON.stringify([10, '7', '__pause(), 42']));
+        lp.bridge._onCallback(CallbackType.DOM_EVENT, '0:1_1:click');
+        assert.deepEqual(lp.sent(), [], 'nothing is sent while paused');
+        assert.equal(lp.polls().length, 1, 'and nothing polled');
+        lp.connection.connect();
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        const reply = JSON.stringify([CallbackType.EVALJS_RESPONSE, '7:0:42']);
+        assert.deepEqual(lp.sent(), [reply], 'the reply, once, and not the click');
+        assert.equal(new URL(lp.posts()[0].url).searchParams.get('seen'), '1');
+        assert.equal(new URL(lp.polls().at(-1).url).searchParams.get('seen'), '1');
+        assert.equal(reloads, 0);
+        // A second pause and resume does not send it again.
+        lp.connection.disconnect(true);
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        assert.deepEqual(lp.sent(), [reply]);
+      } finally { delete globalThis.__pause; lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
+    await t.test('a page that reloads after a pause sends none of the replies that it kept', () => {
+      const saved = keepTiming();
+      const { window } = browser();
+      let reloads = 0;
+      window.location.reload = () => { reloads++; };
+      const lp = longPolling(window);
+      try {
+        lp.connection.disconnect(false);
+        lp.bridge._onCallback(CallbackType.EVALJS_RESPONSE, '7:0:42');
+        window.location.pathname = '/orders/0';
+        lp.connection.connect();
+        lp.timers.filter(timer => timer.delay === 200 && !timer.cleared).at(-1).callback();
+        assert.deepEqual([reloads, lp.sent()], [1, []]);
+      } finally { lp.bridge.destroy(); restoreTiming(saved); }
+    });
+
     await t.test('a long-polling heartbeat that no transport takes is not counted, and is no failed poll', () => {
       const saved = keepTiming();
       const { window } = browser();
