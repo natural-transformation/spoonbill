@@ -1,5 +1,6 @@
 package spoonbill.internal
 
+import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
 import spoonbill.{Context, Extension}
@@ -72,9 +73,10 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
   private final case class Held(machine: State[S, M], handlers: Vector[Active])
   private val lock           = new Object
   @volatile private var held = Held(ExtensionMachine.initial[S, M](checks.nonEmpty), Vector.empty)
-  // A check and its continuation settle before the lane starts another step.
-  @volatile private var progress: Progress[S, M] = None
-  private val lane                               = new SerialLane[F, Step[S, M]](handle, failed, unscheduled)
+  private val lane           = new SerialLane[F, Step[S, M]](handle, failed, unscheduled)
+  // The lane writes progress on every delivery. Give it its own cell so these writes
+  // do not update the runtime object that concurrent writers read during admission.
+  private val progress = new AtomicReference[Progress[S, M]](None)
 
   private def stopped: Boolean = ExtensionMachine.stopped(held.machine)
 
@@ -121,7 +123,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
           woken = true
           lane.wake()
         }
-      case Command.Close        => progress = None; lane.close()
+      case Command.Close        => progress.set(None); lane.close()
       case Command.Report(text) => error.foreach(reportError(text, _))
       case _                    => () // register, handle and destroyAll interpret the effect commands.
     }
@@ -218,10 +220,10 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
   def start(): F[Unit] = Effect[F].delay(feed(Event.Begin))
 
   private def passed(check: Step.Check[S, M]): Unit = {
-    progress = ExtensionMachine.passed(held.machine, check)
+    progress.set(ExtensionMachine.passed(held.machine, check))
     // Close can race the publication above. Neither order retains a delivery
     // after close, including a guarded check completing after the teardown bound.
-    if (stopped) progress = None
+    if (stopped) progress.set(None)
   }
 
   /**
@@ -230,9 +232,9 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    */
   private def enterCall(call: Step.Call[S, M]): Active = {
     val current = held
-    if (!ExtensionMachine.mayCall(current.machine, progress, call)) null
+    if (!ExtensionMachine.mayCall(current.machine, progress.get(), call)) null
     else {
-      if (ExtensionMachine.endsDelivery(current.machine, call)) progress = None
+      if (ExtensionMachine.endsDelivery(current.machine, call)) progress.set(None)
       val entry = current.handlers(call.slot)
       call.check.notification match {
         case Notification.State(_) =>
@@ -277,7 +279,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
    */
   private def failed(step: Step[S, M], error: Throwable): Unit = {
     step match {
-      case call: Step.Call[S, M] if ExtensionMachine.endsDelivery(held.machine, call) => progress = None
+      case call: Step.Call[S, M] if ExtensionMachine.endsDelivery(held.machine, call) => progress.set(None)
       case _                                                                          => ()
     }
     feed(Event.Failed(step, classify(error)), Some(error))
@@ -397,7 +399,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
   /**
    * Whether admission still needs a delivery identity; idle lanes retain none.
    */
-  private[spoonbill] def retainedDelivery: Boolean = progress.nonEmpty
+  private[spoonbill] def retainedDelivery: Boolean = progress.get().nonEmpty
 
   /**
    * What is kept before delivery starts: at most one state, and every message.

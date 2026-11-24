@@ -1,6 +1,6 @@
 package spoonbill.internal
 
-import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.{CyclicBarrier, Executors, RejectedExecutionException, TimeUnit}
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
@@ -10,6 +10,21 @@ import spoonbill.effect.Effect
 import spoonbill.internal.TimerTestSupport.{Reports, Worker}
 
 class ExtensionRuntimeRetentionSpec extends AnyFlatSpec with Matchers {
+  /** State 0 has reached the observer. The worker is waiting for the check of state 1. */
+  private def pendingGuardedState(): (ExtensionRuntimeFixture, Promise[Unit]) = {
+    val gate = Promise[Unit]()
+    val checks = new ExtensionRuntime.Checks[Future, Int, String] {
+      def state(value: Int): Future[Unit]      = if (value == 1) gate.future else Future.unit
+      def message(value: String): Future[Unit] = Future.unit
+    }
+    val f = new ExtensionRuntimeFixture(Some(checks))(f => List(f.recorder("observer")))
+    f.attach()
+    f.taken() shouldBe Vector("observer.setup", "observer.onState(0)")
+    f.runtime.state(1)
+    f.taken() shouldBe empty
+    (f, gate)
+  }
+
   "Delivery admission" should "release its message when the final callback enters, even while that callback waits" in {
     val first = Promise[Unit]()
     val last  = Promise[Unit]()
@@ -45,6 +60,42 @@ class ExtensionRuntimeRetentionSpec extends AnyFlatSpec with Matchers {
     f.runtime.pending shouldBe 0
     f.runtime.retainedDelivery shouldBe false
     f.result(f.runtime.destroy())
+  }
+
+  it should "release a guarded delivery whose check completes after teardown times out" in {
+    val (f, gate) = pendingGuardedState()
+    val destroyed = f.runtime.destroy()
+    f.taken() shouldBe empty
+    destroyed.isCompleted shouldBe false
+    f.bound.expire()
+    f.result(destroyed)
+    f.taken() shouldBe Vector("observer.onDestroy(0)")
+    gate.success(())
+    f.runtime.retainedDelivery shouldBe false
+    f.taken() shouldBe empty
+    f.runtime.retainedDelivery shouldBe false
+  }
+
+  it should "release the delivery when a guarded check completes concurrently with stop" in {
+    val completer = ExecutionContext.fromExecutorService(Executors.newSingleThreadExecutor())
+    try {
+      for (_ <- 1 to 100) {
+        val (f, gate) = pendingGuardedState()
+        val start     = new CyclicBarrier(2)
+        val completed = Future {
+          start.await(5, TimeUnit.SECONDS)
+          gate.success(())
+        }(completer)
+        start.await(5, TimeUnit.SECONDS)
+        f.runtime.stop()
+        Await.result(completed, 5.seconds)
+        // Observe both operations before draining the lane or starting teardown.
+        f.runtime.retainedDelivery shouldBe false
+        f.taken() shouldBe empty
+        f.result(f.runtime.destroy())
+        f.taken() shouldBe Vector("observer.onDestroy(0)")
+      }
+    } finally completer.shutdownNow()
   }
 
   it should "release admission when the final callback effect cannot start" in {
