@@ -472,11 +472,13 @@ export class Connection {
         if (request.readyState !== 4)
           return;
         if (heartbeat !== null && heartbeat.request === request) heartbeat = null;
+        // A transport that was replaced or paused counts nothing, a heartbeat
+        // neither (the review of PR 39 at 628bbd99).
+        if (!isCurrent())
+          return;
         // Whether the server took the message, for a heartbeat.
         const sent = messageSent(request.status);
         if (onAnswer) onAnswer(sent);
-        if (!isCurrent())
-          return;
         if (repollsAfterMessage(this._lifecycle, sent)) {
           this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-replaced'});
           this._repoll();
@@ -503,22 +505,27 @@ export class Connection {
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
     this._linkFailed = () => { if (isCurrent()) linkFailed('message-failed'); };
-    this._retire = () => {
-      clearTimeout(retry);
-      retry = null;
-      if (pending === null) return;
-      const request = pending;
-      pending = null;
-      clearTimeout(deadline);
-      request.abort();
-    };
-    this._abortHeartbeat = () => {
+    // Gives up the heartbeat in flight: its listener first, so that its answer
+    // changes nothing.
+    const abortHeartbeat = () => {
       if (heartbeat === null) return;
       const {request, listener} = heartbeat;
       heartbeat = null;
       request.removeEventListener('readystatechange', listener);
       request.abort();
     };
+    this._retire = () => {
+      clearTimeout(retry);
+      retry = null;
+      // A replaced or paused transport leaves no heartbeat request open.
+      abortHeartbeat();
+      if (pending === null) return;
+      const request = pending;
+      pending = null;
+      clearTimeout(deadline);
+      request.abort();
+    };
+    this._abortHeartbeat = abortHeartbeat;
     this._repoll = () => {
       if (!isCurrent()) return;
       // A poll that waits out its back-off goes now, and only once.
@@ -558,13 +565,14 @@ export class Connection {
 
   /**
    * @private
-   * @return {string} 'none' without a socket transport, else whether its socket is connecting, open or closed.
+   * @return {string} 'none' without a socket transport, else whether its socket is connecting, open, closing or closed.
    */
   _socketState() {
     if (this._lifecycle.transport !== ConnectionType.WEB_SOCKET || this._webSocket == null) return 'none';
     switch (this._webSocket.readyState) {
       case WebSocket.CONNECTING: return 'connecting';
       case WebSocket.OPEN: return 'open';
+      case WebSocket.CLOSING: return 'closing';
       default: return 'closed';
     }
   }
@@ -864,8 +872,10 @@ export class Connection {
 
   connect() {
 
-    // One connection at a time: a pending attempt, or a socket that is
-    // connecting or open, takes this call.
+    // The page asks to be connected. One connection at a time: a pending
+    // attempt, or a socket that is connecting, open or closing, takes this
+    // call; a closing one reconnects when its close ends.
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'connect'});
     if (!connectStarts(this._reconnectTimer !== null, this._socketState())) return;
 
     if (connectionOpened(this._lifecycle))

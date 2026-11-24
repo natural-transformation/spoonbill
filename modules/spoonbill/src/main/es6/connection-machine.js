@@ -127,11 +127,14 @@ export const resumes = (state, location) => !state.paused || state.pausedAt === 
 
 /**
  * A connect() starts an attempt only when none is pending and no socket is
- * connecting or open: a second socket would get a view of its own, whose
- * listeners the bridge of the first would take as well. `socket` is
- * 'none', 'connecting', 'open' or 'closed'.
+ * connecting, open or closing: a second socket would get a view of its own,
+ * whose listeners the bridge of the first would take as well. A socket that
+ * is closing ends its close lifecycle first, and the connect() step has asked
+ * for the reconnect after it. `socket` is 'none', 'connecting', 'open',
+ * 'closing' or 'closed'.
  */
-export const connectStarts = (attemptPending, socket) => !attemptPending && socket !== 'connecting' && socket !== 'open';
+export const connectStarts = (attemptPending, socket) =>
+  !attemptPending && socket !== 'connecting' && socket !== 'open' && socket !== 'closing';
 
 /**
  * The deadline of a poll in milliseconds: the poll wait that the page
@@ -230,13 +233,25 @@ export function connectionStep(state, event) {
       // its transport here, so nothing of it is current any more, and it
       // sends and polls nothing. The page keeps its counts, and a later
       // connect() goes on with them. A WebSocket waits for its close event.
-      return state.transport === ConnectionType.LONG_POLLING ?
+      // Only an installed long-polling transport is paused; before the first
+      // transport the machine names long polling, but there is nothing to
+      // pause. A page that is paused already keeps the URL of its pause: a
+      // second disconnect must not take the URL of a navigation since (the
+      // review of PR 39 at 628bbd99).
+      return state.transport === ConnectionType.LONG_POLLING && (state.epoch !== null || state.paused) ?
         {...state, reconnect: event.reconnect,
           scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch,
-          epoch: null, paused: true, pausedAt: event.location ?? null} :
+          epoch: null, paused: true, pausedAt: state.paused ? state.pausedAt : (event.location ?? null)} :
         {...state, reconnect: event.reconnect,
           scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch};
+    case 'connect':
+      // An explicit connect() asks to be connected: a socket that is still
+      // closing reconnects when its close ends, and so does a later drop.
+      return state.reconnect ? state : {...state, reconnect: true};
     case 'advance-backoff':
+      // Long polling backs off its failed polls by `failures` (pollDelay); a
+      // connect() does not grow the delay, also while a quiet poll waits.
+      if (state.selected === ConnectionType.LONG_POLLING) return state;
       return {...state, reconnectDelay: Math.min(state.reconnectDelay * 2, MAX_RECONNECT_TIMEOUT)};
     case 'before-unload':
       return state.presence === 'departed' ? state : {...state, presence: 'navigating'};

@@ -10,10 +10,11 @@ export function initialBridge(guarded, page = null) {
   // `outstandingHeartbeats` counts the heartbeats that the server took and has
   // not answered, `repolled` says that the limit gave a re-poll since the last
   // reply, and `heartbeatInFlight` is the number of a long-polling heartbeat
-  // whose request has no answer yet.
+  // whose request has no answer yet. `heartbeatTransport` is the transport
+  // that these count for (see heartbeatTick).
   return {view: page === null ? null : {connection: page, revision: '0'}, gate: guarded ? 'waiting' : 'ready',
     application: 'idle', navigationCounter: 0, outstandingHeartbeats: undefined, repolled: false,
-    heartbeatInFlight: null, heartbeatSeq: 0};
+    heartbeatInFlight: null, heartbeatSeq: 0, heartbeatTransport: undefined};
 }
 
 export function bridgeStep(state, event) {

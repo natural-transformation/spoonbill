@@ -27,8 +27,11 @@ async function environment(check, {session = new Map()} = {}) {
     open() { this.readyState = Socket.OPEN; this.dispatchEvent(new Event('open')); }
     close() {
       if (this.readyState === Socket.CLOSED) return;
+      // A socket that lingers stays CLOSING until its close handshake ends, as in a browser.
+      if (this.lingers) { this.readyState = Socket.CLOSING; return; }
       this.readyState = Socket.CLOSED; this.dispatchEvent(new Event('close'));
     }
+    finishClose() { this.readyState = Socket.CLOSED; this.dispatchEvent(new Event('close')); }
     send(value) { this.sent.push(value); }
     message(value) { this.dispatchEvent(new MessageEvent('message', {data: value})); }
   }
@@ -691,6 +694,84 @@ test('re-polls by disconnect(true) on a sound link do not grow the back-off', ()
   const {connection} = await polling(env);
   for (let round = 0; round < 6; round++) {
     env.polls().at(-1).respond(204);
+    await connection.disconnect(true);
+    runTimer(env, 200);
+  }
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('Back during a pause and a second disconnect, with or without reconnect, still reload the page', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.1: the second disconnect wrote
+  // the new URL over the URL of the pause.
+  for (const resume of ['disconnect(true)', 'disconnect() and connect()']) {
+    const {connection} = await polling(env);
+    env.polls().at(-1).frame(1, 0, '["one"]');
+    connection._location.pathname = '/app/orders/1';
+    await connection.disconnect(false);
+    connection._location.pathname = '/app/orders/0';
+    const reloads = env.reloads.count;
+    if (resume === 'disconnect(true)') await connection.disconnect(true);
+    else { await connection.disconnect(false); connection.connect(); }
+    runTimer(env, 200);
+    assert.equal(env.reloads.count, reloads + 1, resume);
+    env.session.clear();
+  }
+}));
+
+test('a long-polling transport that a connect() replaces gives up its heartbeat, whose late answer counts nothing', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.2.
+  const {connection, events} = await polling(env);
+  env.polls()[0].respond(500);
+  const answers = [];
+  connection.send('[6]', sent => answers.push(sent));
+  const heartbeat = env.requests.filter(request => request.method === 'POST').at(-1);
+  connection.connect();
+  // The back-off of the failed poll is 200 ms too: run the reconnect, set last.
+  const [id, reconnect] = [...env.timers.entries()].filter(([, timer]) => timer.delay === 200).at(-1);
+  env.timers.delete(id); reconnect.callback();
+  assert.equal(heartbeat.aborted, true);
+  assert.deepEqual(answers, [], 'its answer reaches nothing');
+  assert.equal(events.includes('interrupt'), false);
+}));
+
+test('a connect() while the socket is closing waits for its close, which builds the bridge again', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.3: a second socket installed
+  // during the close kept the old bridge, and its view doubled the listeners.
+  const connection = env.create();
+  const events = [];
+  for (const name of ['open', 'close']) connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer(); env.sockets[0].open();
+  env.sockets[0].lingers = true;
+  await connection.disconnect(false);
+  connection.connect();
+  assert.equal(env.timers.size, 0, 'no attempt while the socket closes');
+  assert.equal(env.sockets.length, 1);
+  env.sockets[0].finishClose();
+  await env.flush();
+  assert.deepEqual(events, ['open', 'close'], 'the close lifecycle runs');
+  env.nextTimer();
+  assert.equal(env.sockets.length, 2);
+  env.sockets[1].open();
+  assert.deepEqual(events, ['open', 'close', 'open'], 'a fresh bridge for the new socket');
+}));
+
+test('a disconnect() before the first socket pauses nothing, so a connect() after a URL change opens the socket', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.4: a guarded page went into the
+  // reload guard of long polling.
+  const connection = env.create({auth: true});
+  connection.connect();
+  await connection.disconnect(false);
+  connection._location.pathname = '/app/orders/0';
+  connection.connect(); env.nextTimer();
+  assert.equal(env.reloads.count, 0);
+  assert.equal(env.sockets.length, 1);
+}));
+
+test('re-polls of a quiet long-polling page do not grow the reconnect back-off', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, note 1.5.1: polls that wait for their 204 are not answered yet.
+  const {connection} = await polling(env);
+  env.polls().at(-1).frame(1, 0, '["one"]');
+  for (let round = 0; round < 6; round++) {
     await connection.disconnect(true);
     runTimer(env, 200);
   }

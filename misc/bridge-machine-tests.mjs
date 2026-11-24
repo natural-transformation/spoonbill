@@ -195,6 +195,15 @@ test('a heartbeat that fails gives the re-poll back: the next limit polls again,
   assert.equal(heartbeatTick(state, 2, true, false).command, 'repoll');
 });
 
+test('the bridge state names the transport that its heartbeats count for, from the start', () => {
+  // The review of PR 39 at 628bbd99, note 1.5.3.
+  for (const guarded of [false, true]) {
+    const state = initialBridge(guarded);
+    assert.equal(Object.hasOwn(state, 'heartbeatTransport'), true);
+    assert.equal(state.heartbeatTransport, undefined);
+  }
+});
+
 test('heartbeats count for one transport: a paused page skips and starts over, and so does a new transport', () => {
   // The review of PR 39 at f55be0f2, finding 1: a page paused with a heartbeat
   // taken and its re-poll spent reloaded at the next tick.

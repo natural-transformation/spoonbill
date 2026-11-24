@@ -302,6 +302,30 @@ test('a disconnect pauses long polling at its location, and only a connect() at 
   assert.equal(step(socket, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/x'}).paused, false);
 });
 
+test('a second disconnect keeps the URL of the pause, and a disconnect before any transport pauses nothing', () => {
+  // The review of PR 39 at 628bbd99, findings 1.1 and 1.4.
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  const paused = step(polling, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/1'});
+  const again = step(paused, {type: 'disconnect', reconnect: true, scheduleEpoch: {}, location: '/orders/0'});
+  assert.deepEqual([again.paused, again.pausedAt, again.reconnect], [true, '/orders/1', true]);
+  assert.equal(resumes(again, '/orders/0'), false);
+  // Before the first transport is installed the machine names long polling, but nothing is paused.
+  const dormant = step(initialConnection(), {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/1'});
+  assert.deepEqual([dormant.paused, dormant.pausedAt], [false, null]);
+  assert.equal(resumes(dormant, '/orders/0'), true);
+});
+
+test('a connect() asks to be connected, also when it starts nothing, and long polling grows no back-off', () => {
+  // The review of PR 39 at 628bbd99, findings 1.3 and 1.5.
+  const off = step(initialConnection(), {type: 'disconnect', reconnect: false, scheduleEpoch: {}});
+  assert.equal(step(off, {type: 'connect'}).reconnect, true);
+  assert.equal(connectStarts(false, 'closing'), false, 'a socket that is closing ends its close lifecycle first');
+  const polling = {...initialConnection(), selected: ConnectionType.LONG_POLLING};
+  assert.equal(step(polling, {type: 'advance-backoff'}), polling);
+  const socket = {...initialConnection(), selected: ConnectionType.WEB_SOCKET};
+  assert.equal(step(socket, {type: 'advance-backoff'}).reconnectDelay, 2 * MIN_RECONNECT_TIMEOUT);
+});
+
 test('an answered poll resets the reconnect back-off', () => {
   // The review of PR 39 at f55be0f2: a page that keeps its bridge has no open
   // event, which resets it on a WebSocket.
