@@ -30,9 +30,13 @@ object RendererAcceptanceDocuments {
     val component = new AtomicInteger()
     // The stages whose `resume-act` handler ran, in order.
     val clicks = new java.util.concurrent.ConcurrentLinkedQueue[Integer]()
+    // The results of the `resume-eval` command, in order: the result, or `failed`.
+    val evals = new java.util.concurrent.ConcurrentLinkedQueue[String]()
     def json: String = {
-      val ran = clicks.toArray.mkString(",")
-      s""""advance":${advance.get()},"previous":${previous.get()},"current":${current.get()},"component":${component.get()},"clicks":[$ran]"""
+      val ran     = clicks.toArray.mkString(",")
+      val results = evals.toArray.map(result => "\"" + result.toString.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+      s""""advance":${advance.get()},"previous":${previous.get()},"current":${current.get()},"component":${component.get()},"clicks":[$ran],"evals":[${results
+          .mkString(",")}]"""
     }
   }
 
@@ -228,6 +232,20 @@ object RendererAcceptanceDocuments {
         id := "resume-act",
         "Act",
         event("click") { _ => counters.clicks.add(stage); Future.unit }
+      ),
+      // A command whose code pauses long polling: its result must still reach
+      // the server, once (the review of PR 39 at 17fd8ee0, finding 3).
+      button(
+        id := "resume-eval",
+        "Eval",
+        event("click") { access =>
+          access
+            .evalJs("window.Spoonbill.disconnect(); 42")
+            .transform { result =>
+              counters.evals.add(result.fold(_ => "failed", identity))
+              scala.util.Success(())
+            }(scala.concurrent.ExecutionContext.parasitic)
+        }
       )
     )
 

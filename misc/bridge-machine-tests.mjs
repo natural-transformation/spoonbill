@@ -6,8 +6,10 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/bridge-ma
 const {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
   initialSensitive, sensitiveStep, departurePending, navigationPending, sensitiveTerminal,
   sensitiveBlocked, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable,
-  heartbeatTick, heartbeatAnswer, heartbeatRefused} =
+  heartbeatTick, heartbeatAnswer, heartbeatRefused, messageKind} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+const {CallbackType} = await import('data:text/javascript;base64,' +
+  readFileSync(new URL('../modules/spoonbill/src/main/es6/protocol.js', import.meta.url)).toString('base64'));
 const connection = '11111111-1111-4111-8111-111111111111';
 const presentation = '22222222-2222-4222-8222-222222222222';
 
@@ -195,6 +197,41 @@ test('a heartbeat that fails gives the re-poll back: the next limit polls again,
   assert.equal(heartbeatTick(state, 2, true, false).command, 'repoll');
 });
 
+test('the bridge state names the transport that its heartbeats count for, from the start', () => {
+  // The review of PR 39 at 628bbd99, note 1.5.3.
+  for (const guarded of [false, true]) {
+    const state = initialBridge(guarded);
+    assert.equal(Object.hasOwn(state, 'heartbeatTransport'), true);
+    assert.equal(state.heartbeatTransport, undefined);
+  }
+});
+
+test('heartbeats count for one transport: a paused page skips and starts over, and so does a new transport', () => {
+  // The review of PR 39 at f55be0f2, finding 1: a page paused with a heartbeat
+  // taken and its re-poll spent reloaded at the next tick.
+  const transport = {};
+  let state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
+  let out = heartbeatTick(state, 2, true, false, transport);
+  state = heartbeatAnswer(out.state, out.seq, true).state;
+  out = heartbeatTick(state, 2, true, false, transport);
+  assert.equal(out.command, 'repoll');
+  out = heartbeatTick(out.state, 2, true, false, transport);
+  const outstanding = heartbeatAnswer(out.state, out.seq, true).state;
+  assert.deepEqual([outstanding.outstandingHeartbeats, outstanding.repolled], [1, true]);
+  // Paused: no transport. Nothing is sent, nothing is spent, and the count starts over.
+  const paused = heartbeatTick(outstanding, 2, true, false, null);
+  assert.deepEqual([paused.command, paused.failed], ['skip', false]);
+  assert.deepEqual([paused.state.outstandingHeartbeats, paused.state.heartbeatInFlight, paused.state.repolled], [0, null, false]);
+  assert.equal(heartbeatTick(paused.state, 2, true, false, null).command, 'skip');
+  // Resumed on a new transport: a fresh allowance.
+  const resumed = heartbeatTick(paused.state, 2, true, false, {});
+  assert.deepEqual([resumed.command, resumed.failed, resumed.state.outstandingHeartbeats], ['send', false, 1]);
+  // A heartbeat in flight when the transport changes is written off without a failure.
+  const flying = heartbeatTick(outstanding, 2, true, false, transport);
+  const moved = heartbeatTick(flying.state, 2, true, false, {});
+  assert.deepEqual([moved.failed, moved.command], [false, 'send']);
+});
+
 test('a heartbeat that no transport takes is neither counted nor a failed poll', () => {
   const state = bridgeStep(initialBridge(false, connection), {type: 'heartbeat-configured'});
   const out = heartbeatTick(state, 2, true, false);
@@ -213,4 +250,14 @@ test('a WebSocket page reloads at the limit, and no heartbeat goes out once a re
   assert.equal(heartbeatTick(out.state, 2, false, false).command, 'reload');
   for (const longPolling of [true, false])
     assert.deepEqual(heartbeatTick(state, 2, longPolling, true), {state, command: 'skip', failed: false});
+});
+
+test('a callback is a history message, a reply to a request of the server, or another message', () => {
+  // The review of PR 39 at 17fd8ee0: a paused page notes a missed navigation and keeps a reply.
+  assert.equal(messageKind(CallbackType.HISTORY), 'history');
+  for (const type of [CallbackType.EXTRACT_PROPERTY_RESPONSE, CallbackType.EVALJS_RESPONSE, CallbackType.EXTRACT_EVENT_DATA_RESPONSE])
+    assert.equal(messageKind(type), 'reply', String(type));
+  for (const [name, type] of Object.entries(CallbackType))
+    if (!['HISTORY', 'EXTRACT_PROPERTY_RESPONSE', 'EVALJS_RESPONSE', 'EXTRACT_EVENT_DATA_RESPONSE'].includes(name))
+      assert.equal(messageKind(type), 'other', name);
 });

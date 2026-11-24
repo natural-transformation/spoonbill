@@ -10,7 +10,7 @@ const moduleFile = join(directory, 'connection.mjs');
 writeFileSync(join(directory, 'package.json'), '{"type":"module"}');
 writeFileSync(join(directory, 'connection-machine.js'), readFileSync(new URL('../modules/spoonbill/src/main/es6/connection-machine.js', import.meta.url)));
 writeFileSync(moduleFile, readFileSync(new URL('../modules/spoonbill/src/main/es6/connection.js', import.meta.url)));
-const {Connection} = await import(pathToFileURL(moduleFile));
+const {Connection, ConnectionType} = await import(pathToFileURL(moduleFile));
 after(() => rmSync(directory, {recursive: true, force: true}));
 
 async function environment(check, {session = new Map()} = {}) {
@@ -27,8 +27,11 @@ async function environment(check, {session = new Map()} = {}) {
     open() { this.readyState = Socket.OPEN; this.dispatchEvent(new Event('open')); }
     close() {
       if (this.readyState === Socket.CLOSED) return;
+      // A socket that lingers stays CLOSING until its close handshake ends, as in a browser.
+      if (this.lingers) { this.readyState = Socket.CLOSING; return; }
       this.readyState = Socket.CLOSED; this.dispatchEvent(new Event('close'));
     }
+    finishClose() { this.readyState = Socket.CLOSED; this.dispatchEvent(new Event('close')); }
     send(value) { this.sent.push(value); }
     message(value) { this.dispatchEvent(new MessageEvent('message', {data: value})); }
   }
@@ -226,7 +229,10 @@ test('an old socket decoder cannot let later frames overtake a new socket decode
     connection.connect(); env.nextTimer(); env.sockets[0].open();
     env.sockets[0].message(old.blob);
     await env.flush();
-    connection.connect(); env.nextTimer(); env.sockets[1].open();
+    // A second socket while the decoder of the first is pending. No public
+    // path makes one any more: connect() leaves an open socket alone, and a
+    // close waits for the decoder before it reconnects. The guard stays.
+    connection._connectUsingConnectionType(ConnectionType.WEB_SOCKET); env.sockets[1].open();
     env.sockets[1].message(first.blob);
     await env.flush();
     old.complete('stale');
@@ -549,4 +555,253 @@ test('a page whose fallback works notes nothing', () => environment(async env =>
   const reloaded = env.create({lpw: 1000});
   reloaded.connect(); env.nextTimer();
   assert.equal(env.sockets.length, 2, 'the reloaded page tries a WebSocket first');
+}));
+
+// One connection at a time (survey entry WEB-1).
+test('a connect() while an attempt is pending starts no second attempt', () => environment(async env => {
+  const connection = env.create();
+  connection.connect();
+  connection.connect();
+  assert.equal(env.timers.size, 1);
+  assert.equal(env.nextTimer(), 200, 'the absorbed call does not advance the backoff');
+  assert.equal(env.timers.size, 0);
+  assert.equal(env.sockets.length, 1);
+}));
+
+test('a connect() while a socket is open or connecting starts nothing', () => environment(async env => {
+  // The review of PR 39 at f55be0f2, finding 3: a second socket got a new view,
+  // which announced its listeners to the old bridge, and a click went out twice.
+  const connection = env.create();
+  const events = [];
+  for (const name of ['open', 'close', 'error'])
+    connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer();
+  // Connecting: the handshake is not closed, and nothing falls back to long polling.
+  connection.connect();
+  assert.equal(env.timers.size, 0);
+  env.sockets[0].open();
+  connection.connect();
+  assert.equal(env.timers.size, 0);
+  assert.equal(env.sockets.length, 1);
+  assert.equal(env.requests.length, 0);
+  assert.equal(env.sockets[0].readyState, WebSocket.OPEN);
+  await env.flush();
+  assert.deepEqual(events, ['open']);
+}));
+
+test('a new transport aborts the long-poll subscription it replaces', () => environment(async env => {
+  const connection = env.create({ws: false, lpw: 1000});
+  const events = [];
+  for (const name of ['close', 'error'])
+    connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer();
+  const old = env.polls()[0];
+  connection.connect(); runTimer(env, 200);
+  assert.equal(old.aborted, true);
+  assert.equal(env.polls().length, 2, 'the aborted poll renews nothing');
+  assert.notEqual(env.polls()[1].aborted, true);
+  assert.deepEqual(events, []);
+}));
+
+// disconnect() and long polling that resumes (survey entry WEB-3): the polls
+// stop, the page keeps its bridge and its view, and connect() goes on with them.
+test('disconnect() stops long polling and keeps the bridge, and connect() goes on with the same page and cursor', () => environment(async env => {
+  const {connection, events} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const outstanding = env.polls()[1];
+  await connection.disconnect(false);
+  assert.equal(outstanding.aborted, true);
+  assert.equal(events.includes('close'), false, 'no close: the bridge stays');
+  assert.equal(env.polls().length, 2, 'no poll goes out');
+  assert.equal(connection.send('late'), false, 'nothing is sent');
+  assert.equal(env.requests.filter(request => request.method === 'POST').length, 0);
+  assert.deepEqual([...env.timers.values()].map(timer => timer.delay), [], 'no deadline, back-off or reconnect is left');
+  connection.connect(); runTimer(env, 200);
+  const next = env.polls().at(-1);
+  assert.equal(query(next.url).seen, '1');
+  assert.equal(query(next.url).page, query(outstanding.url).page);
+  assert.deepEqual(events.filter(name => name === 'open'), ['open'], 'no second open: the same bridge goes on');
+  next.frame(2, 0, '["two"]');
+  assert.equal(events.at(-1), '["two"]');
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('disconnect(true) on long polling polls again at once with the same cursor, and keeps the bridge', () => environment(async env => {
+  const {connection, events} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const outstanding = env.polls()[1];
+  await connection.disconnect(true);
+  assert.equal(outstanding.aborted, true);
+  runTimer(env, 200);
+  const next = env.polls().at(-1);
+  assert.notEqual(next, outstanding);
+  assert.equal(query(next.url).seen, '1');
+  assert.equal(events.includes('close'), false);
+  assert.equal(env.sockets.length, 0, 'the transport stays long polling');
+}));
+
+test('a disconnect() during the back-off of a failed poll sends no poll when the back-off ends', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].respond(500);
+  assert.ok([...env.timers.values()].some(timer => timer.delay === 200), 'the poll waits out its back-off');
+  await connection.disconnect(false);
+  assert.deepEqual([...env.timers.values()].map(timer => timer.delay), [], 'the back-off is cleared');
+  assert.equal(env.polls().length, 1);
+}));
+
+test('a connect() after the view has ended makes the page reload once', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  await connection.disconnect(false);
+  connection.connect(); runTimer(env, 200);
+  // The view ended while the page did not poll: the server sends the reload frame.
+  env.polls().at(-1).respond(200, '[1]');
+  assert.equal(env.reloads.count, 1);
+}));
+
+test('a connect() after Back during a pause reloads the page at its new URL, and does not resume', () => environment(async env => {
+  // The review of PR 39 at f55be0f2, finding 2: the server never heard of the
+  // Back, so the resumed view would run the handlers of the old route.
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  connection._location.pathname = '/app/orders/1';
+  await connection.disconnect(false);
+  connection._location.pathname = '/app/orders/0';
+  const polls = env.polls().length;
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 1);
+  assert.equal(env.polls().length, polls, 'no poll resumes the old route');
+}));
+
+test('a pause and a connect() at the same URL resume, and the notice that showed hides at the next answer', () => environment(async env => {
+  // The review of PR 39 at f55be0f2: installing the transport cleared the
+  // failures, so the answer never hid the notice.
+  const {connection, events} = await polling(env);
+  env.polls()[0].respond(500);
+  runTimer(env, 200);
+  env.polls()[1].respond(500);
+  assert.deepEqual(events.filter(name => name === 'interrupt'), ['interrupt']);
+  await connection.disconnect(false);
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 0);
+  env.polls().at(-1).respond(204);
+  assert.deepEqual(events.filter(name => name === 'interrupt' || name === 'resume'), ['interrupt', 'resume']);
+  assert.equal(connection.linkUp, true);
+}));
+
+test('re-polls by disconnect(true) on a sound link do not grow the back-off', () => environment(async env => {
+  // The review of PR 39 at f55be0f2: 200, 400, 800 ms and on, for re-polls that were answered.
+  const {connection} = await polling(env);
+  for (let round = 0; round < 6; round++) {
+    env.polls().at(-1).respond(204);
+    await connection.disconnect(true);
+    runTimer(env, 200);
+  }
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('Back during a pause and a second disconnect, with or without reconnect, still reload the page', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.1: the second disconnect wrote
+  // the new URL over the URL of the pause.
+  for (const resume of ['disconnect(true)', 'disconnect() and connect()']) {
+    const {connection} = await polling(env);
+    env.polls().at(-1).frame(1, 0, '["one"]');
+    connection._location.pathname = '/app/orders/1';
+    await connection.disconnect(false);
+    connection._location.pathname = '/app/orders/0';
+    const reloads = env.reloads.count;
+    if (resume === 'disconnect(true)') await connection.disconnect(true);
+    else { await connection.disconnect(false); connection.connect(); }
+    runTimer(env, 200);
+    assert.equal(env.reloads.count, reloads + 1, resume);
+    env.session.clear();
+  }
+}));
+
+test('a long-polling transport that a connect() replaces gives up its heartbeat, whose late answer counts nothing', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.2.
+  const {connection, events} = await polling(env);
+  env.polls()[0].respond(500);
+  const answers = [];
+  connection.send('[6]', sent => answers.push(sent));
+  const heartbeat = env.requests.filter(request => request.method === 'POST').at(-1);
+  connection.connect();
+  // The back-off of the failed poll is 200 ms too: run the reconnect, set last.
+  const [id, reconnect] = [...env.timers.entries()].filter(([, timer]) => timer.delay === 200).at(-1);
+  env.timers.delete(id); reconnect.callback();
+  assert.equal(heartbeat.aborted, true);
+  assert.deepEqual(answers, [], 'its answer reaches nothing');
+  assert.equal(events.includes('interrupt'), false);
+}));
+
+test('a connect() while the socket is closing waits for its close, which builds the bridge again', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.3: a second socket installed
+  // during the close kept the old bridge, and its view doubled the listeners.
+  const connection = env.create();
+  const events = [];
+  for (const name of ['open', 'close']) connection.dispatcher.addEventListener(name, () => events.push(name));
+  connection.connect(); env.nextTimer(); env.sockets[0].open();
+  env.sockets[0].lingers = true;
+  await connection.disconnect(false);
+  connection.connect();
+  assert.equal(env.timers.size, 0, 'no attempt while the socket closes');
+  assert.equal(env.sockets.length, 1);
+  env.sockets[0].finishClose();
+  await env.flush();
+  assert.deepEqual(events, ['open', 'close'], 'the close lifecycle runs');
+  env.nextTimer();
+  assert.equal(env.sockets.length, 2);
+  env.sockets[1].open();
+  assert.deepEqual(events, ['open', 'close', 'open'], 'a fresh bridge for the new socket');
+}));
+
+test('a connect() while the close of a socket waits for its last frame to decode starts nothing until the close has run', () => environment(async env => {
+  // The review of PR 39 at 17fd8ee0, finding 1: the socket was CLOSED, so a
+  // connect() installed a second one; the close handler then found it and
+  // left the old bridge, which took the listeners of the new view as well.
+  let complete;
+  const decoded = new Promise(resolve => { complete = resolve; });
+  const connection = env.create();
+  const events = [];
+  for (const name of ['open', 'close', 'message'])
+    connection.dispatcher.addEventListener(name, event => events.push(name === 'message' ? event.data : name));
+  try {
+    connection.connect(); env.nextTimer(); env.sockets[0].open();
+    env.sockets[0].message(new class extends Blob { text() { return decoded; } }());
+    await env.flush();
+    await connection.disconnect(false);
+    assert.equal(env.sockets[0].readyState, WebSocket.CLOSED);
+    connection.connect();
+    assert.equal(env.timers.size, 0, 'no attempt while the close waits for the decoder');
+    complete('last');
+    await env.flush(); await env.flush();
+    assert.deepEqual(events, ['open', 'last', 'close'], 'the last frame, then the close lifecycle');
+    env.nextTimer();
+    assert.equal(env.sockets.length, 2);
+    env.sockets[1].open();
+    assert.deepEqual(events, ['open', 'last', 'close', 'open'], 'a fresh bridge for the new socket');
+  } finally { complete('last'); await env.flush(); }
+}));
+
+test('a disconnect() before the first socket pauses nothing, so a connect() after a URL change opens the socket', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, finding 1.4: a guarded page went into the
+  // reload guard of long polling.
+  const connection = env.create({auth: true});
+  connection.connect();
+  await connection.disconnect(false);
+  connection._location.pathname = '/app/orders/0';
+  connection.connect(); env.nextTimer();
+  assert.equal(env.reloads.count, 0);
+  assert.equal(env.sockets.length, 1);
+}));
+
+test('re-polls of a quiet long-polling page do not grow the reconnect back-off', () => environment(async env => {
+  // The review of PR 39 at 628bbd99, note 1.5.1: polls that wait for their 204 are not answered yet.
+  const {connection} = await polling(env);
+  env.polls().at(-1).frame(1, 0, '["one"]');
+  for (let round = 0; round < 6; round++) {
+    await connection.disconnect(true);
+    runTimer(env, 200);
+  }
+  assert.equal(env.reloads.count, 0);
 }));

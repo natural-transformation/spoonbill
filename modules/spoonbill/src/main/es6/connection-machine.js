@@ -3,6 +3,8 @@ export const ConnectionType = {WEB_SOCKET: 0, LONG_POLLING: 1};
 export const MIN_RECONNECT_TIMEOUT = 200;
 export const MAX_RECONNECT_TIMEOUT = 5000;
 const MAX_RECOVERY_ATTEMPTS = 3;
+/** The replies to requests of the server that a paused page keeps, at most. */
+export const MAX_KEPT_REPLIES = 128;
 /** One framework reload of an unguarded page in this many milliseconds; a second one waits. */
 export const RELOAD_WINDOW = 30000;
 const PAGE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,6 +24,9 @@ export function initialConnection() {
     deliveredEpoch: null,
     recoveryAttempts: 0,
     reconnectDelay: MIN_RECONNECT_TIMEOUT,
+    // The close handler of the WebSocket has started and has not ended: it
+    // waits for the last frame to decode before it tears the bridge down.
+    closing: false,
     // Long polling that resumes. The page id names this document for its whole
     // life; `seen` is the last frame that it applied, `dom` the DOM frames among
     // them, and `failures` the polls that failed in a row.
@@ -32,6 +37,16 @@ export function initialConnection() {
     // A message that the server took has replaced the poll of this
     // interruption. Only once: the poll that it started waits for its answer.
     replaced: false,
+    // Long polling paused by Spoonbill.disconnect(): no transport is current,
+    // and `pausedAt` is the URL of the page then. A connect() at another URL
+    // reloads the page, since the server never heard of that navigation.
+    paused: false,
+    pausedAt: null,
+    // A history message that the page could not send while it was paused: the
+    // server missed a navigation, so a connect() reloads the page even at the
+    // URL of the pause. An application's popstate listener can pause the page
+    // after the URL has changed (the review of PR 39 at 17fd8ee0, finding 2).
+    missedNavigation: false,
     // A framework reload of an unguarded page has started: 'now', or 'waiting'
     // for the end of the reload window. From then on no transport is current.
     reloading: null,
@@ -114,6 +129,58 @@ export const messageSent = status => !requestFailed(status);
 export const repollsAfterMessage = (state, sent) => sent && !linkUp(state) && !state.replaced;
 
 /**
+ * A connect() goes on with the transport of a page, which is not paused, or
+ * that was paused at the URL that it shows now and missed no navigation.
+ * Otherwise the user navigated while it was paused, the server never heard of
+ * it, and the page reloads.
+ */
+export const resumes = (state, location) =>
+  !state.paused || (state.pausedAt === location && !state.missedNavigation);
+
+/**
+ * What becomes of a message of the bridge: 'send' it, or, while long polling
+ * is paused, 'keep' a reply to a request of the server for the transport that
+ * resumes the page, note a 'missed' navigation, or 'drop' it. The server
+ * waits for a reply until its RPC timeout, so a short pause must not lose one
+ * (the review of PR 39 at 17fd8ee0, finding 3); a user event is dropped as
+ * before. `kind` is 'reply', 'history' or 'other' (messageKind of the bridge
+ * machine), and `kept` the number of replies that the page keeps already.
+ */
+export function outgoingMessage(state, kind, kept) {
+  if (!state.paused) return 'send';
+  if (kind === 'reply') return kept < MAX_KEPT_REPLIES ? 'keep' : 'drop';
+  return kind === 'history' ? 'missed' : 'drop';
+}
+
+/**
+ * The socket of a WebSocket transport for connectStarts, by its readyState
+ * (0 to 3). A socket that reports CLOSED while its close handler runs is
+ * still closing: the handler waits for the last frame to decode, and tears the
+ * bridge down after that. A second socket before then kept the old bridge (the
+ * review of PR 39 at 17fd8ee0, finding 1). A socket that closed without a
+ * close event, as in the back/forward cache, is closed.
+ */
+export function socketState(state, readyState) {
+  switch (readyState) {
+    case 0: return 'connecting';
+    case 1: return 'open';
+    case 2: return 'closing';
+    default: return state.closing ? 'closing' : 'closed';
+  }
+}
+
+/**
+ * A connect() starts an attempt only when none is pending and no socket is
+ * connecting, open or closing: a second socket would get a view of its own,
+ * whose listeners the bridge of the first would take as well. A socket that
+ * is closing ends its close lifecycle first, and the connect() step has asked
+ * for the reconnect after it. `socket` is 'none', 'connecting', 'open',
+ * 'closing' or 'closed' (socketState).
+ */
+export const connectStarts = (attemptPending, socket) =>
+  !attemptPending && socket !== 'connecting' && socket !== 'open' && socket !== 'closing';
+
+/**
  * The deadline of a poll in milliseconds: the poll wait that the page
  * configuration names (`lpw`), plus a margin of at most five seconds and at
  * most half the wait. The server bounds the wait to half the idle timeout, so
@@ -188,9 +255,14 @@ export function connectionStep(state, event) {
       if (state.reloading !== null) return state;
       // The page id and the counts belong to the document: a second transport
       // of it, after a connect(), goes on from the frame that it has applied.
+      // A new long-polling transport keeps the failures as well: it does not
+      // prove the link, so the notice that shows stays until an answer (the
+      // review of PR 39 at f55be0f2).
       return event.transport === ConnectionType.LONG_POLLING ?
-        {...state, transport: event.transport, epoch: event.epoch, failures: 0, replaced: false} :
-        {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null, triedWebSocket: true};
+        {...state, transport: event.transport, epoch: event.epoch, replaced: false, paused: false, pausedAt: null,
+          missedNavigation: false, closing: false} :
+        {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null, triedWebSocket: true,
+          paused: false, pausedAt: null, missedNavigation: false, closing: false};
     case 'open':
       if (!currentTransport(state, event.epoch) || connectionOpened(state)) return state;
       return {...state, phase: connectionReady(state) ? 'ready' : 'opened',
@@ -199,12 +271,37 @@ export function connectionStep(state, event) {
       if (!currentTransport(state, event.epoch) || connectionReady(state)) return state;
       return {...state, phase: connectionOpened(state) ? 'ready' : 'ready-before-open',
         recoveryAttempts: 0, presence: state.presence === 'departed' ? 'departed' : 'active'};
+    case 'close-started':
+      return currentTransport(state, event.epoch) ? {...state, closing: true} : state;
     case 'close':
-      return currentTransport(state, event.epoch) ? {...state, phase: 'dormant'} : state;
+      return currentTransport(state, event.epoch) ? {...state, phase: 'dormant', closing: false} : state;
     case 'disconnect':
-      return {...state, reconnect: event.reconnect,
-        scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch};
+      // Long polling has no socket whose close ends it: the disconnect ends
+      // its transport here, so nothing of it is current any more, and it
+      // sends and polls nothing. The page keeps its counts, and a later
+      // connect() goes on with them. A WebSocket waits for its close event.
+      // Only an installed long-polling transport is paused; before the first
+      // transport the machine names long polling, but there is nothing to
+      // pause. A page that is paused already keeps the URL of its pause: a
+      // second disconnect must not take the URL of a navigation since (the
+      // review of PR 39 at 628bbd99).
+      return state.transport === ConnectionType.LONG_POLLING && (state.epoch !== null || state.paused) ?
+        {...state, reconnect: event.reconnect,
+          scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch,
+          epoch: null, paused: true, pausedAt: state.paused ? state.pausedAt : (event.location ?? null)} :
+        {...state, reconnect: event.reconnect,
+          scheduleEpoch: event.reconnect ? state.scheduleEpoch : event.scheduleEpoch};
+    case 'navigation-missed':
+      // Only a paused page misses a navigation; the next transport ends the mark.
+      return state.paused && !state.missedNavigation ? {...state, missedNavigation: true} : state;
+    case 'connect':
+      // An explicit connect() asks to be connected: a socket that is still
+      // closing reconnects when its close ends, and so does a later drop.
+      return state.reconnect ? state : {...state, reconnect: true};
     case 'advance-backoff':
+      // Long polling backs off its failed polls by `failures` (pollDelay); a
+      // connect() does not grow the delay, also while a quiet poll waits.
+      if (state.selected === ConnectionType.LONG_POLLING) return state;
       return {...state, reconnectDelay: Math.min(state.reconnectDelay * 2, MAX_RECONNECT_TIMEOUT)};
     case 'before-unload':
       return state.presence === 'departed' ? state : {...state, presence: 'navigating'};
@@ -215,7 +312,7 @@ export function connectionStep(state, event) {
     case 'show':
       return {...state, presence: 'active'};
     case 'reset-lifecycle':
-      return {...state, phase: 'dormant'};
+      return {...state, phase: 'dormant', closing: false};
     case 'claim-recovery':
       if (!currentTransport(state, event.epoch) || !event.enabled || !state.reconnect || state.presence !== 'active' || authenticationPending(state) ||
           (state.deliveredEpoch !== null && state.deliveredEpoch === event.epoch) ||
@@ -233,7 +330,11 @@ export function connectionStep(state, event) {
     case 'prefer-long-polling':
       return state.selected === null ? {...state, selected: ConnectionType.LONG_POLLING, fromNote: true} : state;
     case 'poll-answered':
-      return state.failures === 0 ? state : {...state, failures: 0, replaced: false};
+      // An answer proves the link: the failures and the reconnect back-off
+      // start over. A page that keeps its bridge has no open event, which
+      // resets the back-off on a WebSocket (the review of PR 39 at f55be0f2).
+      return state.failures === 0 && state.reconnectDelay === MIN_RECONNECT_TIMEOUT ? state :
+        {...state, failures: 0, replaced: false, reconnectDelay: MIN_RECONNECT_TIMEOUT};
     case 'frame-applied':
       return {...state, seen: state.seen + 1, dom: state.dom + (event.domFrame ? 1 : 0)};
     case 'poll-failed':

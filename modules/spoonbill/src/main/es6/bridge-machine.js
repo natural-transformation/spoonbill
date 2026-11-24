@@ -10,10 +10,28 @@ export function initialBridge(guarded, page = null) {
   // `outstandingHeartbeats` counts the heartbeats that the server took and has
   // not answered, `repolled` says that the limit gave a re-poll since the last
   // reply, and `heartbeatInFlight` is the number of a long-polling heartbeat
-  // whose request has no answer yet.
+  // whose request has no answer yet. `heartbeatTransport` is the transport
+  // that these count for (see heartbeatTick).
   return {view: page === null ? null : {connection: page, revision: '0'}, gate: guarded ? 'waiting' : 'ready',
     application: 'idle', navigationCounter: 0, outstandingHeartbeats: undefined, repolled: false,
-    heartbeatInFlight: null, heartbeatSeq: 0};
+    heartbeatInFlight: null, heartbeatSeq: 0, heartbeatTransport: undefined};
+}
+
+// The callback types (CallbackType of protocol.js) that messageKind tells
+// apart: HISTORY, and the replies to a request of the server,
+// EXTRACT_PROPERTY_RESPONSE, EVALJS_RESPONSE and EXTRACT_EVENT_DATA_RESPONSE.
+// misc/bridge-machine-tests.mjs checks them against protocol.js.
+const HISTORY_CALLBACK = 3;
+const REPLY_CALLBACKS = [2, 4, 5];
+
+/**
+ * What a callback is to a paused page (outgoingMessage of the connection
+ * machine): 'history', a 'reply' to a request of the server, which the server
+ * waits for, or 'other'.
+ */
+export function messageKind(type) {
+  if (type === HISTORY_CALLBACK) return 'history';
+  return REPLY_CALLBACKS.includes(type) ? 'reply' : 'other';
 }
 
 export function bridgeStep(state, event) {
@@ -53,8 +71,18 @@ export function bridgeStep(state, event) {
  * reloads at the limit. Decided by the user on 2026-11-22, after the review of
  * PR 42.
  */
-export function heartbeatTick(state, limit, longPolling, reloading) {
+export function heartbeatTick(state, limit, longPolling, reloading, transport = state.heartbeatTransport) {
   if (reloading) return {state, command: 'skip', failed: false};
+  // Heartbeats count for one transport. A page whose long polling is paused
+  // has none: it sends nothing and spends nothing, and the count starts over,
+  // as it does on a new transport (the review of PR 39 at f55be0f2).
+  const current = state.heartbeatTransport === transport ? state :
+    {...state, heartbeatTransport: transport, heartbeatInFlight: null, outstandingHeartbeats: 0, repolled: false};
+  if (transport === null) return {state: current, command: 'skip', failed: false};
+  return heartbeatCounted(current, limit, longPolling);
+}
+
+function heartbeatCounted(state, limit, longPolling) {
   const failed = longPolling && state.heartbeatInFlight !== null;
   // A heartbeat that failed gives the re-poll back: what the page knew of
   // its poll before the link failed says nothing about the poll after it.

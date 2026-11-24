@@ -134,7 +134,7 @@ the stage that it was rendered for. The fixture's idle timeout is 6 seconds
 in this scenario, so a poll waits 3 seconds. Every poll of the page passes
 through the test, which can fail all of them for a while, drop a DOM frame
 after the server has answered it, or hold that answer. The page has no
-WebSocket, so it uses long polling, except in the one case that tests a
+WebSocket, so it uses long polling, except in the cases that test a
 WebSocket. In Chromium and WebKit:
 
 | Case | What must hold |
@@ -145,13 +145,21 @@ WebSocket. In Chromium and WebKit:
 | `back` | Back is pressed while a patch is held, and the history event leaves before the patch arrives: the page ends at the route that Back went to, without a reload |
 | `view-ends` | Every poll fails for longer than the idle timeout: the page reloads once and works |
 | `lost-state-lp`, `lost-state-ws` | The stored state of a page at `/orders/42` is gone before it connects, by long polling and by WebSocket: the page reloads once, shows its route, and a click runs its handler |
+| `pause-heartbeat` | With the heartbeat on and its replies held, the page polls again at the limit, the next heartbeat is taken, and the page calls `Spoonbill.disconnect()`: it does not reload, keeps what the user typed, and works again after `Spoonbill.connect()` |
+| `back-pause` | Back is pressed while long polling is paused: `Spoonbill.connect()` reloads the page at the URL that Back went to, and a click runs the handler of that route |
+| `ws-connect` | `Spoonbill.connect()` on an open WebSocket: no second socket opens, the bridge is not built again, and a click runs one handler |
+| `ws-connect-decoding` | `Spoonbill.connect()` while the close of a WebSocket waits for its last frame to decode: no socket opens until the close has run, the bridge is built again, and a click goes out once |
+| `back-listener-pause` | Back is pressed and the application's own `popstate` listener, which runs first, calls `Spoonbill.disconnect()`: `Spoonbill.connect()` reloads the page at the URL that Back went to, and a click runs the handler of that route |
+| `eval-pause` | A command whose code calls `Spoonbill.disconnect()` returns its result during the pause: after `Spoonbill.connect()` the server gets the result once, well before its RPC timeout, and the page keeps what the user typed |
 
 Each case was proved by a mutation that it must catch, put in and taken out
 again: a click from an older display that runs a handler (`stale-*`), a
 failed poll that reloads (`lost-frame`, `kept-input`, `stale-dropped`), a
 missing state that is built from the bridge request (`lost-state-*`), a reload
 answer taken as a failed poll (`view-ends`), and an old history event that is
-discarded (`back`).
+discarded (`back`). The last three fail on the client of PR 39 before its
+review at `f55be0f2`: the paused page reloads, the resumed page keeps the old
+route, and `connect()` opens a second socket.
 
 To run some cases, or more rounds, start the fixture as the script does and
 set `SPOONBILL_LP_CASES` (keys from the table, comma-separated),

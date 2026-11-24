@@ -1,7 +1,8 @@
 import {ConnectionType, initialConnection, connectionStep, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, transportNote, frameKind, afterFrame,
-  reloadStarted, messageSent, repollsAfterMessage, pollDeadline} from './connection-machine.js';
+  reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, socketState, outgoingMessage,
+  pollDeadline} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
@@ -54,8 +55,16 @@ export class Connection {
     this._abortHeartbeat = () => {};
     // The long-polling transport counts a message that could not be sent as a failed poll.
     this._linkFailed = () => {};
-    // The transport that is replaced gives up its poll and its deadline.
+    // The transport that is replaced gives up its poll and its deadline, or
+    // closes its socket: one transport at a time. A plain function, which the
+    // next transport calls on its own.
+    /** @type {function(): void} */
     this._retire = () => {};
+    // The replies to requests of the server that the page made while long
+    // polling was paused: handles only, which the transport that resumes the
+    // page sends (outgoingMessage).
+    /** @type {!Array<string>} */
+    this._kept = [];
     this._sessionId = sessionId;
     this._serverRootPath = serverRootPath;
 
@@ -155,7 +164,17 @@ export class Connection {
    * @private
    */
   _connectUsingConnectionType(connectionType) {
-    this._retire();
+    // A page that the user navigated while its long polling was paused does
+    // not resume: the server never heard of that navigation, so the page
+    // reloads at its new URL.
+    if (!resumes(this._lifecycle, this._locationKey())) {
+      this.reloadPage();
+      return;
+    }
+    // One transport at a time. The one that this attempt replaces is retired
+    // after the new one is installed: it is stale by then, so its close or a
+    // late answer reaches no lifecycle.
+    const replaced = this._retire;
     this._retire = () => {};
     switch (connectionType) {
       case ConnectionType.LONG_POLLING:
@@ -168,6 +187,7 @@ export class Connection {
           : (this._guarded ? this._onError() : this._connectUsingLongPolling());
         break;
     }
+    replaced();
   }
 
   /** @private */
@@ -266,6 +286,12 @@ export class Connection {
       });
     };
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch});
+    // A transport that replaces this one closes its socket, so that the server
+    // does not keep it open.
+    this._retire = () => {
+      clearPendingSends();
+      if (sendingSocket.readyState === WebSocket.CONNECTING || sendingSocket.readyState === WebSocket.OPEN) sendingSocket.close();
+    };
 
     this._webSocket.addEventListener('open', (event) => {
       if (isCurrent()) this._onOpen();
@@ -452,11 +478,13 @@ export class Connection {
         if (request.readyState !== 4)
           return;
         if (heartbeat !== null && heartbeat.request === request) heartbeat = null;
+        // A transport that was replaced or paused counts nothing, a heartbeat
+        // neither (the review of PR 39 at 628bbd99).
+        if (!isCurrent())
+          return;
         // Whether the server took the message, for a heartbeat.
         const sent = messageSent(request.status);
         if (onAnswer) onAnswer(sent);
-        if (!isCurrent())
-          return;
         if (repollsAfterMessage(this._lifecycle, sent)) {
           this._lifecycle = connectionStep(this._lifecycle, {type: 'poll-replaced'});
           this._repoll();
@@ -483,22 +511,29 @@ export class Connection {
     this._lifecycle = connectionStep(this._lifecycle, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch});
     this._send = publish;
     this._linkFailed = () => { if (isCurrent()) linkFailed('message-failed'); };
-    this._retire = () => {
-      clearTimeout(retry);
-      retry = null;
-      if (pending === null) return;
-      const request = pending;
-      pending = null;
-      clearTimeout(deadline);
-      request.abort();
-    };
-    this._abortHeartbeat = () => {
+    // Gives up the heartbeat in flight: its listener first, so that its answer
+    // changes nothing.
+    const abortHeartbeat = () => {
       if (heartbeat === null) return;
       const {request, listener} = heartbeat;
       heartbeat = null;
       request.removeEventListener('readystatechange', listener);
       request.abort();
     };
+    this._retire = () => {
+      clearTimeout(retry);
+      retry = null;
+      // A replaced or paused transport leaves no heartbeat request open.
+      abortHeartbeat();
+      if (pending === null) return;
+      const request = pending;
+      pending = null;
+      clearTimeout(deadline);
+      request.abort();
+    };
+    this._abortHeartbeat = abortHeartbeat;
+    // The replies that the page made while it was paused go out, once.
+    for (const data of this._kept.splice(0)) publish(data);
     this._repoll = () => {
       if (!isCurrent()) return;
       // A poll that waits out its back-off goes now, and only once.
@@ -525,6 +560,25 @@ export class Connection {
 
   /** @return {string} The page id of this document. */
   get page() { return this._lifecycle.page; }
+
+  /**
+   * The transport that is current, as an opaque identity, or null when there
+   * is none, as while long polling is paused. The heartbeat counts for one.
+   * @return {?Object}
+   */
+  get transportEpoch() { return this._lifecycle.epoch; }
+
+  /** @private @return {string} The path and query of the page now. */
+  _locationKey() { return (this._location.pathname || '/') + (this._location.search || ''); }
+
+  /**
+   * @private
+   * @return {string} 'none' without a socket transport, else whether its socket is connecting, open, closing or closed.
+   */
+  _socketState() {
+    if (this._lifecycle.transport !== ConnectionType.WEB_SOCKET || this._webSocket == null) return 'none';
+    return socketState(this._lifecycle, this._webSocket.readyState);
+  }
 
   /** @return {boolean} The connection runs on long polling. */
   get longPolling() { return this._lifecycle.transport === ConnectionType.LONG_POLLING; }
@@ -590,6 +644,8 @@ export class Connection {
       this._reconnectTimer = null;
     }
     this._clearPendingSends();
+    // The replies that a paused page kept belong to a view that the reload ends.
+    this._kept.length = 0;
     if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
     const reload = () => {
       try { if (storage !== null) storage.setItem(this._reloadKey, String(Date.now())); } catch (_) {}
@@ -640,6 +696,8 @@ export class Connection {
   async _onClose() {
     const disconnectedSocket = this._webSocket;
     const disconnectedEpoch = this._lifecycle.epoch;
+    // The close lifecycle has started: a connect() waits for its end (socketState).
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'close-started', epoch: disconnectedEpoch});
     console.log('Connection closed');
     if (this._processing) {
       console.log('Await processing last message')
@@ -712,11 +770,24 @@ export class Connection {
   /**
    * @param {string} data
    * @param {function(boolean)} [onAnswer] on long polling: whether the server took it
-   * @return {boolean} whether a transport took the message
+   * @param {string} [kind] 'reply', 'history' or 'other' (messageKind of the bridge machine)
+   * @return {boolean} whether a transport took the message, or the paused page keeps it
    */
-  send(data, onAnswer) {
+  send(data, onAnswer, kind = 'other') {
     if (authenticationPending(this._lifecycle) || !this._send) return false;
-    return Boolean(this._send(data, onAnswer));
+    switch (outgoingMessage(this._lifecycle, kind, this._kept.length)) {
+      case 'keep':
+        // A reply waits for the transport that resumes the page.
+        this._kept.push(data);
+        return true;
+      case 'missed':
+        this._lifecycle = connectionStep(this._lifecycle, {type: 'navigation-missed'});
+        return false;
+      case 'drop':
+        return false;
+      default:
+        return Boolean(this._send(data, onAnswer));
+    }
   }
 
   /** A message could not be sent: on long polling that is a failed poll. */
@@ -783,29 +854,49 @@ export class Connection {
    * @param {boolean} reconnect
    */
   async disconnect(reconnect = true) {
-    this._lifecycle = connectionStep(this._lifecycle, {type: 'disconnect', reconnect, scheduleEpoch: {}});
+    const longPolling = this._lifecycle.transport === ConnectionType.LONG_POLLING;
+    this._lifecycle = connectionStep(this._lifecycle,
+      {type: 'disconnect', reconnect, scheduleEpoch: {}, location: this._locationKey()});
     if (!reconnect && this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
     this._clearPendingSends();
-    if (this._webSocket != null) {
+    if (longPolling) {
+      // Long polling has no socket to close. The disconnect step has ended its
+      // transport; here its poll, its deadline and its back-off go. The page
+      // keeps its bridge and its view, so no close is reported: connect() goes
+      // on with the same page and cursor, and the page reloads only if the
+      // view has ended meanwhile.
+      this._retire();
+      this._retire = () => {};
+      // The heartbeat in flight is given up too; the bridge starts its count
+      // over, since no transport is current.
+      this._abortHeartbeat();
+      if (reconnect) this.connect();
+    } else if (this._webSocket != null) {
         this._webSocket.close();
-    } else {
-        console.log("Disconnect allowed only for WebSocket connections")
     }
   }
 
   _scheduleConnection(connectionType) {
     const scheduleEpoch = this._lifecycle.scheduleEpoch;
     this._reconnectTimer = setTimeout(() => {
-      if (!currentSchedule(this._lifecycle, scheduleEpoch)) return;
+      // connect() keeps one attempt pending at most, so this timer is that
+      // attempt. Clear it before the check: a stale value would block connect().
       this._reconnectTimer = null;
+      if (!currentSchedule(this._lifecycle, scheduleEpoch)) return;
       if (!(this._lifecycle.presence === 'departed')) this._connectUsingConnectionType(connectionType);
     }, this._lifecycle.reconnectDelay);
   }
 
   connect() {
+
+    // The page asks to be connected. One connection at a time: a pending
+    // attempt, or a socket that is connecting, open or closing, takes this
+    // call; a closing one reconnects when its close ends.
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'connect'});
+    if (!connectStarts(this._reconnectTimer !== null, this._socketState())) return;
 
     if (connectionOpened(this._lifecycle))
       console.log('Reconnecting...');

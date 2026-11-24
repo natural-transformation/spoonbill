@@ -166,6 +166,32 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   newer, where `IO.async_` cannot be cancelled while it waits. A long poll
   whose request is cancelled leaves its wait there too.
 
+- Fix: the browser client keeps one connection at a time. A
+  `Spoonbill.connect()` while an attempt is pending, or while a WebSocket is
+  connecting or open, starts nothing; while a WebSocket is closing it
+  reconnects when the close has ended, with a new bridge. A WebSocket is
+  closing until its close handler has applied the last frame that arrived and
+  has torn the bridge down. An explicit
+  `connect()` also turns automatic reconnect back on after `disconnect()`. A
+  new transport closes the one it replaces. Two quick calls used to open two WebSockets, and a call on an
+  open connection opened a second one, whose view announced its listeners to
+  the same page, so a click went out twice.
+- Fix: `Spoonbill.disconnect()` stops long polling. The poll that waits is
+  given up and the page sends nothing more, but it keeps its bridge and its
+  view: a later `Spoonbill.connect()` goes on with the same page and the
+  frame that it applied last, and the page reloads only if its view has
+  ended meanwhile. `disconnect(true)` polls again after 200 ms. The heartbeat
+  pauses too and starts over afterwards, so a paused page never reloads for
+  missing replies. If the user navigated during the pause, `connect()`
+  reloads the page at its new URL, since the server never heard of it; also
+  when the application's own `popstate` listener paused the page after Back
+  had changed the URL. On resume, the client makes one POST attempt for each
+  reply it kept during the pause, including an `evalJs` result. If the reply
+  fails to reach the server, the RPC can time out. The client drops user
+  events during the pause. A notice that showed before the pause hides at the
+  first answer after it, and answered re-polls do not grow the reconnect
+  back-off. The page used to go on polling and applying frames.
+
 **For deployments.**
 
 - The long-polling protocol changed on both sides. A long-polling page that
