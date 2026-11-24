@@ -185,12 +185,12 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   missing replies. If the user navigated during the pause, `connect()`
   reloads the page at its new URL, since the server never heard of it; also
   when the application's own `popstate` listener paused the page after Back
-  had changed the URL. The result of a command that the server waits for,
-  such as `evalJs`, that the page produces during the pause is sent once
-  when it resumes; user events of the pause are dropped as before. A
-  notice that showed before the pause hides at the first answer after it,
-  and answered re-polls do not grow the reconnect back-off. The page used to
-  go on polling and applying frames.
+  had changed the URL. On resume, the client makes one POST attempt for each
+  reply it kept during the pause, including an `evalJs` result. If the reply
+  fails to reach the server, the RPC can time out. The client drops user
+  events during the pause. A notice that showed before the pause hides at the
+  first answer after it, and answered re-polls do not grow the reconnect
+  back-off. The page used to go on polling and applying frames.
 
 **For deployments.**
 
