@@ -51,16 +51,35 @@ async function usable(page, state, polling, message) {
   await waitFor(async () => (await ready(page)) && listening(state, polling), message);
 }
 
+/**
+ * Whether the page has applied the completion of a navigation (procedure 24),
+ * of navigation `number` if given, which reopens its input: on long polling
+ * once a later poll of the same page names its frame, on a WebSocket once it
+ * reached the newest socket.
+ */
+function completed(state, polling, number) {
+  const done = body => number === undefined ? body.startsWith('[24,') : new RegExp(`^\\[24,${number}\\s*\\]$`).test(body);
+  if (!polling) return (state.sockets.at(-1) || []).some(done);
+  const last = state.polled.at(-1);
+  return last !== undefined && state.answers.some(answer => answer.page === last.page && done(answer.body) &&
+    state.polled.some(poll => poll.page === last.page && poll.seen >= Number(answer.frame)));
+}
+
 const subscribe = /\/bridge\/long-polling\/[^/]+\/subscribe/;
 const publish = /\/bridge\/long-polling\/[^/]+\/publish/;
+// The body of a history event: a view event of callback type 3.
+const historyEvent = /^\[7,"[^:]+:\d+:3:/;
 
 /**
  * A page of the `resume` scenario. Every poll passes through the test, so a
  * case can fail all of them for a while, drop a DOM frame after the server
- * has answered it, or hold its answer. `polling` removes WebSocket, so the
- * client uses long polling.
+ * has answered it, or hold its answer, the first one too. A case can also
+ * hold a history event on its way to the server, or answer it as it likes
+ * (`onHistory`). `polling` removes WebSocket, so the client uses long
+ * polling. With `ready` false the case does not wait for the page to take
+ * clicks.
  */
-async function open(browser, path, {polling = true, beforeLoad, scenario = 'resume'} = {}) {
+async function open(browser, path, {polling = true, beforeLoad, scenario = 'resume', ready = true} = {}) {
   const context = await browser.newContext();
   await control(context, `start/${scenario}/plain/none`);
   const page = await context.newPage();
@@ -69,15 +88,25 @@ async function open(browser, path, {polling = true, beforeLoad, scenario = 'resu
   // the page had applied. `sockets` holds the frames of every WebSocket.
   // `log` has every poll and message in the order that they left the page.
   // `holdReplies` holds the answers that carry a heartbeat reply.
+  // `holdHistory` holds a history event before it reaches the server, and
+  // `publishAnswers` has the status of every message that was answered.
+  // `onHistory`, if set, handles the request of every history event.
+  // `holdFirst` holds the first answer of the server, which has the first
+  // frame of the view.
   const state = {errors: [], answers: [], published: [], polled: [], sockets: [], loads: 0, dropNextDom: false,
     dropped: false, hold: null, held: false, heldFrame: null, block: false, hang: null, finished: false,
-    log: [], holdReplies: null};
+    log: [], holdReplies: null, holdHistory: null, historyHeld: false, publishAnswers: [], onHistory: null,
+    holdFirst: null, firstHeld: false};
   page.on('pageerror', error => state.errors.push(`pageerror ${clip(error.message)}`));
   page.on('load', () => { state.loads++; });
   page.on('request', request => {
     if (!publish.test(request.url())) return;
     state.published.push(request.postData());
     state.log.push({kind: 'post', body: request.postData()});
+  });
+  page.on('response', response => {
+    if (publish.test(response.url()))
+      state.publishAnswers.push({body: response.request().postData(), status: response.status()});
   });
   page.on('websocket', socket => {
     const frames = [];
@@ -103,6 +132,7 @@ async function open(browser, path, {polling = true, beforeLoad, scenario = 'resu
     let response, body;
     try { response = await route.fetch(); body = await response.text(); } catch (_) { return route.abort().catch(ignore); }
     state.answers.push({page: pageId, status: response.status(), frame: response.headers()['spoonbill-frame'], body});
+    if (state.holdFirst && state.answers.length === 1) { state.firstHeld = true; await state.holdFirst; }
     if (state.dropNextDom && body.startsWith('[4')) {
       state.dropNextDom = false; state.dropped = true;
       return route.abort('connectionreset').catch(ignore);
@@ -118,11 +148,19 @@ async function open(browser, path, {polling = true, beforeLoad, scenario = 'resu
   });
   await page.route(publish, async route => {
     if (state.hang) await state.hang;
+    const history = historyEvent.test(route.request().postData() || '');
+    if (history && state.onHistory) return state.onHistory(route).catch(() => {});
+    // A history event waits here, before the server has it, until the case lets it go.
+    const holdHistory = state.holdHistory;
+    if (holdHistory && history) {
+      state.historyHeld = true;
+      await holdHistory;
+    }
     return route.continue().catch(() => {});
   });
   if (beforeLoad) await beforeLoad(page, context, state);
   await page.goto(origin + path);
-  await usable(page, state, polling, 'The page never became ready to take a click');
+  if (ready) await usable(page, state, polling, 'The page never became ready to take a click');
   return {context, page, state};
 }
 
@@ -468,6 +506,658 @@ async function evalDuringPause(browser) {
   return state;
 }
 
+/**
+ * Stage 1 at `/orders/1`, with its event counter applied and a draft in the
+ * field, so that Back goes to `/orders/0`.
+ */
+async function atStageOne(page, state, polling = true) {
+  const since = state.answers.length;
+  const frames = polling ? 0 : state.sockets.at(-1).length;
+  await page.click('#resume-next');
+  await waitFor(async () => (await stage(page)) === 'stage 1' && page.url().endsWith('/orders/1'), 'Stage 1 never arrived');
+  if (polling) await counterApplied(state, since);
+  else await waitFor(() => state.sockets.at(-1).slice(frames).some(frame => frame.startsWith('[0,')),
+    'The event counter of the click never reached the page');
+  await page.fill('#resume-input', 'draft');
+}
+
+/** Stage 2 at `/orders/2`, after the steps of atStageOne: Back goes to `/orders/1`. */
+async function atStageTwo(page, state) {
+  await atStageOne(page, state);
+  const since = state.answers.length;
+  await page.click('#resume-next');
+  await waitFor(async () => (await stage(page)) === 'stage 2' && page.url().endsWith('/orders/2'), 'Stage 2 never arrived');
+  await counterApplied(state, since);
+}
+
+/**
+ * Once the page shows the route of Back and has applied the completion of
+ * that navigation, no handler has run for a click on the old display, also
+ * not late, and a click now runs the handler of that route once.
+ */
+async function clickAtRouteOfBack(page, context, state, polling = true) {
+  await waitFor(async () => (await stage(page)) === 'stage 0', 'The page never showed the route of Back');
+  // The completion reopens the page's input: the fresh click waits for it.
+  await waitFor(() => completed(state, polling), 'The page never applied the completion of the navigation');
+  await usable(page, state, polling, 'The page never became ready to take a click');
+  assert.deepEqual((await status(context)).clicks, [], 'The click on the old display ran a handler late');
+  await page.click('#resume-act');
+  await waitFor(async () => (await status(context)).clicks.length === 1, 'The click at the route of Back ran no handler');
+  await pause(500);
+  assert.deepEqual((await status(context)).clicks, [0], 'The click ran the handler of another route, or ran twice');
+}
+
+/**
+ * A click right after Back, while its history event is on the way (found with
+ * the review of PR 39 at 3abb1412). On long polling every message is a POST
+ * of its own, so the click reached the server first, and the handler of the
+ * route that the user had left ran. With `paused`, the application's own
+ * popstate listener, which runs after Spoonbill's, calls
+ * Spoonbill.disconnect() while the history event is on the way, and the page
+ * then calls Spoonbill.connect(): the event is healthy, so the page resumes
+ * the same document, and the user clicks the old display after it.
+ *
+ * The click on the old display runs no handler, the page reaches the route of
+ * Back without a reload and keeps what the user typed, and a click there runs
+ * its handler once.
+ */
+async function clickBeforeHistory(browser, paused) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-long'});
+  let release = () => {};
+  try {
+    await atStageOne(page, state);
+    // Added after the bridge's own listener, so it runs once that has sent the history event.
+    if (paused) await page.evaluate(() => window.addEventListener('popstate', () => window.Spoonbill.disconnect()));
+    state.holdHistory = new Promise(resolve => { release = resolve; });
+    await page.goBack();
+    await waitFor(() => page.url().endsWith('/orders/0') && state.historyHeld, 'The history event was not held');
+    if (paused) {
+      // The polls of the same page go on: connect() resumes it.
+      const pageId = state.polled.at(-1).page;
+      const from = state.polled.length;
+      await page.evaluate(() => window.Spoonbill.connect());
+      await waitFor(() => state.polled.slice(from).some(poll => poll.page === pageId) || state.loads > 1,
+        'connect() did not resume the page');
+      assert.equal(state.loads, 1, 'connect() reloaded the page while its history event was on the way');
+    }
+    await pause(300);
+    assert.equal(await stage(page), 'stage 1', 'The page did not show the old display');
+    await page.click('#resume-act');
+    // The click has had its time to reach the server; the history event has not.
+    await pause(1000);
+    assert.deepEqual((await status(context)).clicks, [], 'A click made after Back ran a handler before the history event arrived');
+    state.holdHistory = null;
+    release();
+    await clickAtRouteOfBack(page, context, state);
+    assert.equal(state.loads, 1, 'The page reloaded');
+    assert.equal(await page.evaluate(() => window.__ready), 1, 'The bridge was built again');
+    assert.equal(await page.inputValue('#resume-input'), 'draft');
+  } finally { release(); state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * The server has taken the history event of Back (on long polling its POST
+ * is answered), and the fixture holds the route change before its render, so
+ * the handlers of the old route are still the published ones. A click on the
+ * old display runs no handler here either, on long polling and on a
+ * WebSocket, where the messages arrive in order. So a page may not send its
+ * user events once the server has taken the history event before them: it
+ * waits until the new route is published.
+ */
+async function clickBeforeRoute(browser, polling = true) {
+  const {context, page, state} = await open(browser, '/orders/0', {polling, scenario: 'resume-long'});
+  try {
+    await atStageOne(page, state, polling);
+    await control(context, 'hold-route');
+    await page.goBack();
+    await waitFor(() => page.url().endsWith('/orders/0'), 'Back did not change the URL');
+    const taken = () => !polling ||
+      state.publishAnswers.some(answer => historyEvent.test(answer.body || '') && answer.status === 200);
+    await waitFor(async () => taken() && (await status(context)).routeWaits === 1,
+      'The server did not take the history event, or its route did not wait');
+    assert.equal(await stage(page), 'stage 1', 'The page did not show the old display');
+    await page.click('#resume-act');
+    // The click has had its time to reach the server; the route has not changed.
+    await pause(1000);
+    assert.deepEqual((await status(context)).clicks, [], 'A click made after Back ran a handler before the route changed');
+    await control(context, 'release-route');
+    await clickAtRouteOfBack(page, context, state, polling);
+    assert.equal(state.loads, 1, 'The page reloaded');
+    assert.equal(await page.inputValue('#resume-input'), 'draft');
+  } finally {
+    state.finished = true;
+    await control(context, 'release-route').catch(() => {});
+    await context.close();
+  }
+  return state;
+}
+
+/**
+ * Keeps every WebSocket of the page in `window.__sockets`, so that a case can
+ * close one. `window.__closeDelay` makes the next close wait that many
+ * milliseconds, as a slow close handshake does.
+ */
+const keepSockets = page => page.addInitScript(() => {
+  const Native = window.WebSocket;
+  window.__sockets = [];
+  window.__closeDelay = 0;
+  window.WebSocket = class extends Native {
+    constructor(...args) { super(...args); window.__sockets.push(this); }
+    close(...args) {
+      const delay = window.__closeDelay;
+      window.__closeDelay = 0;
+      if (delay) setTimeout(() => super.close(...args), delay);
+      else super.close(...args);
+    }
+  };
+});
+
+/**
+ * The socket closes while the server holds the route of Back (the re-review
+ * of 2026-11-24). The page connected again with a fresh bridge, which knew
+ * nothing of the navigation: a click on the old display ran the handler of
+ * the route that the user had left. Now the page reloads at the URL of Back
+ * instead, and the click on the old display reaches no server; after the
+ * reload a click runs the handler of Back's route once.
+ */
+async function reconnectBeforeRoute(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {polling: false, scenario: 'resume-long',
+    beforeLoad: keepSockets});
+  // The document requests of the tab: a reload is one.
+  const documents = [];
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documents.push(request.url());
+  });
+  try {
+    await atStageOne(page, state, false);
+    await control(context, 'hold-route');
+    await page.goBack();
+    await waitFor(async () => page.url().endsWith('/orders/0') && (await status(context)).routeWaits === 1,
+      'Back did not change the URL, or its route did not wait');
+    const act = await page.locator('#resume-act').boundingBox();
+    await page.evaluate(() => window.__sockets.at(-1).close());
+    // Either the page reloads, or it connects again and its new view listens
+    // for clicks. Nothing here evaluates in the page: while the reload waits
+    // for the held route, an evaluation would wait for it too.
+    await waitFor(() => documents.length > 0 || (state.sockets.length > 1 && listening(state, false)),
+      'The page neither reloaded nor connected again');
+    // The reload waits for the held route, so the old display is still there.
+    // A click of the locator would wait for the reload; the mouse does not.
+    await page.mouse.click(act.x + act.width / 2, act.y + act.height / 2);
+    await pause(1000);
+    assert.deepEqual((await status(context)).clicks, [], 'A click on the old display ran a handler after the socket closed');
+    assert.deepEqual(documents.map(url => new URL(url).pathname), ['/orders/0'], 'The page did not reload at the URL of Back');
+    await control(context, 'release-route');
+    await waitFor(() => state.loads === 2, 'The reload never finished', 15000);
+    await usable(page, state, false, 'The reloaded page never became ready to take a click');
+    assert.equal(await stage(page), 'stage 0');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click after the reload ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [0], 'The click ran the handler of another route, or ran twice');
+  } finally {
+    state.finished = true;
+    await control(context, 'release-route').catch(() => {});
+    await context.close();
+  }
+  return state;
+}
+
+/**
+ * The page opens at `/orders/0001`, an alias of stage 1 whose URL on the
+ * server is `/orders/1` (the re-review of 2026-11-24, D5). After Next and
+ * Back, the page skipped the server's URL of Back's route, and the address
+ * bar kept the alias. Now the URL that the server sends for the navigation
+ * takes the entry that Back chose, without adding one; Forward and Back still
+ * reach their stages, and a click runs the handler of the route that shows.
+ */
+async function canonicalUrl(browser, polling) {
+  const {context, page, state} = await open(browser, '/orders/0001', {polling, scenario: 'resume-long'});
+  try {
+    assert.ok(page.url().endsWith('/orders/0001'), `The page did not open at the alias: ${page.url()}`);
+    assert.equal(await stage(page), 'stage 1');
+    await page.click('#resume-next');
+    await waitFor(async () => (await stage(page)) === 'stage 2' && page.url().endsWith('/orders/2'), 'Stage 2 never arrived');
+    const entries = await page.evaluate(() => history.length);
+    await page.goBack();
+    await waitFor(() => completed(state, polling, 1), 'The page never applied the completion of Back');
+    await waitFor(() => page.url().endsWith('/orders/1'), `The address bar kept the alias: ${page.url()}`);
+    assert.equal(await stage(page), 'stage 1');
+    assert.equal(await page.evaluate(() => history.length), entries, 'The URL of the server added an entry');
+    await usable(page, state, polling, 'The page never became ready to take a click');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click at the route of Back ran no handler');
+    // The entry that the URL took is still Back's: Forward and Back reach their stages.
+    await page.goForward();
+    await waitFor(async () => page.url().endsWith('/orders/2') && (await stage(page)) === 'stage 2', 'Forward did not reach stage 2');
+    await waitFor(() => completed(state, polling, 2), 'The page never applied the completion of Forward');
+    await page.goBack();
+    await waitFor(async () => page.url().endsWith('/orders/1') && (await stage(page)) === 'stage 1',
+      `The second Back did not reach stage 1: ${page.url()}`);
+    await waitFor(() => completed(state, polling, 3), 'The page never applied the completion of the second Back');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [1], 'The click ran the handler of another route, or ran twice');
+    assert.equal(state.loads, 1, 'The page reloaded');
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * The page opens at `/orders?stage=1`, whose query names the stage; bare
+ * `/orders` is stage 0 (the third review of 2026-11-24). Back to that first
+ * entry, which has no history state, sent the path that the page had at its
+ * start, without the query: the server routed stage 0, and its URL took the
+ * entry. Now the page sends the path and the query of the entry: Back reaches
+ * stage 1, the server's URL of stage 1 takes the entry, and a click runs the
+ * handler of stage 1.
+ */
+async function queryDeepLink(browser, polling) {
+  const {context, page, state} = await open(browser, '/orders?stage=1', {polling, scenario: 'resume-long'});
+  try {
+    assert.ok(page.url().endsWith('/orders?stage=1'), `The page did not open at its address: ${page.url()}`);
+    assert.equal(await stage(page), 'stage 1');
+    await page.click('#resume-next');
+    await waitFor(async () => (await stage(page)) === 'stage 2' && page.url().endsWith('/orders/2'), 'Stage 2 never arrived');
+    const entries = await page.evaluate(() => history.length);
+    await page.goBack();
+    await waitFor(() => completed(state, polling, 1), 'The page never applied the completion of Back');
+    await waitFor(async () => (await stage(page)) !== 'stage 2', 'Back did not leave stage 2');
+    assert.equal(await stage(page), 'stage 1', 'Back did not reach stage 1');
+    assert.ok(page.url().endsWith('/orders/1'), `The entry of Back has another URL: ${page.url()}`);
+    assert.equal(await page.evaluate(() => history.length), entries, 'Back added an entry');
+    await usable(page, state, polling, 'The page never became ready to take a click');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click at the route of Back ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [1], 'The click ran the handler of another route, or ran twice');
+    assert.equal(state.loads, 1, 'The page reloaded');
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * `Spoonbill.disconnect()` while the server holds the route of Back, on a
+ * WebSocket whose close takes longer than the deadline of the navigation,
+ * 4.5 s here (the third review of 2026-11-24). The deadline reloaded the page
+ * although its user had disconnected it. Now the page waits, and
+ * `Spoonbill.connect()` reloads it at the URL of Back; after the reload a click
+ * runs the handler of that route once.
+ */
+async function disconnectBeforeRoute(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {polling: false, beforeLoad: keepSockets});
+  // The document requests of the tab: a reload is one.
+  const documents = [];
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documents.push(request.url());
+  });
+  try {
+    await atStageOne(page, state, false);
+    await control(context, 'hold-route');
+    await page.goBack();
+    await waitFor(async () => page.url().endsWith('/orders/0') && (await status(context)).routeWaits === 1,
+      'Back did not change the URL, or its route did not wait');
+    await page.evaluate(() => { window.__closeDelay = 8000; window.Spoonbill.disconnect(); });
+    // The deadline of the navigation passes while the socket closes.
+    await pause(6000);
+    assert.deepEqual(documents, [], 'The page reloaded before connect()');
+    await page.evaluate(() => window.Spoonbill.connect());
+    // The reload waits for the held route.
+    await waitFor(() => documents.length > 0, 'connect() did not reload the page');
+    assert.deepEqual(documents.map(url => new URL(url).pathname), ['/orders/0'], 'The page did not reload at the URL of Back');
+    await control(context, 'release-route');
+    await waitFor(() => state.loads === 2, 'The reload never finished', 15000);
+    await usable(page, state, false, 'The reloaded page never became ready to take a click');
+    assert.equal(await stage(page), 'stage 0');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click after the reload ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [0], 'The click ran the handler of another route, or ran twice');
+  } finally {
+    state.finished = true;
+    await control(context, 'release-route').catch(() => {});
+    await context.close();
+  }
+  return state;
+}
+
+/**
+ * Back on a route whose URL on the server is not ASCII, `/café/<stage>` (the
+ * third review of 2026-11-24). A client that compares that URL with the
+ * address bar, which the browser encodes, adds an entry for every URL frame,
+ * as the client of PR 39 at `3abb1412` does. The render of the route of Back
+ * came with two URL frames, so such a client added an entry for Back. Now it
+ * comes with one: the number of entries stays, also with that client, and a
+ * click runs the handler of the route of Back.
+ */
+async function unicodeRoute(browser) {
+  const {context, page, state} = await open(browser, '/caf%C3%A9/0', {scenario: 'resume-unicode'});
+  try {
+    assert.equal(await stage(page), 'stage 0');
+    for (const next of [1, 2]) {
+      const since = state.answers.length;
+      await page.click('#resume-next');
+      await waitFor(async () => (await stage(page)) === `stage ${next}`, `Stage ${next} never arrived`);
+      await counterApplied(state, since);
+    }
+    const entries = await page.evaluate(() => history.length);
+    await page.goBack();
+    await waitFor(() => completed(state, true, 1), 'The page never applied the completion of Back');
+    await waitFor(async () => (await stage(page)) === 'stage 1', 'Back did not reach stage 1');
+    assert.equal(decodeURIComponent(new URL(page.url()).pathname), '/café/1');
+    assert.equal(await page.evaluate(() => history.length), entries, 'Back added an entry');
+    await usable(page, state, true, 'The page never became ready to take a click');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click at the route of Back ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [1], 'The click ran the handler of another route, or ran twice');
+    assert.equal(state.loads, 1, 'The page reloaded');
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * Back, then Forward before the history event of Back reached the server. The
+ * page posts Forward's history event only after the answer to Back's, so the
+ * server takes them in the order of the page. A click while the page waits
+ * runs no handler, and only the completion of Forward reopens the input. A
+ * later Back reaches the entry before Forward's, and its route runs.
+ */
+async function backThenForward(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-long'});
+  let release = () => {};
+  try {
+    await atStageTwo(page, state);
+    const entries = await page.evaluate(() => history.length);
+    state.holdHistory = new Promise(resolve => { release = resolve; });
+    await page.goBack();
+    await waitFor(() => page.url().endsWith('/orders/1') && state.historyHeld, 'The history event of Back was not held');
+    await page.goForward();
+    await waitFor(() => page.url().endsWith('/orders/2'), 'Forward did not change the URL');
+    assert.equal(state.published.filter(body => historyEvent.test(body)).length, 1, 'Forward was posted before Back was answered');
+    await page.click('#resume-act');
+    await pause(1000);
+    assert.deepEqual((await status(context)).clicks, [], 'A click while the page waited ran a handler');
+    state.holdHistory = null;
+    release();
+    await waitFor(() => completed(state, true, 2), 'The page never applied the completion of Forward');
+    assert.equal(await stage(page), 'stage 2');
+    assert.deepEqual((await status(context)).clicks, [], 'The click on the old display ran a handler late');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click after Forward ran no handler');
+    // Later Backs reach the entries before Forward's, in order: the history
+    // of the tab has no entries that the server's URLs added.
+    for (const [number, at] of [[3, 1], [4, 0]]) {
+      await page.goBack();
+      await waitFor(async () => page.url().endsWith(`/orders/${at}`) && (await stage(page)) === `stage ${at}`,
+        `A later Back did not reach stage ${at}: ${page.url()}`);
+      await waitFor(() => completed(state, true, number), 'The page never applied the completion of a later Back');
+    }
+    assert.equal(await page.evaluate(() => history.length), entries, 'The history of the tab has entries that the server added');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 2, 'The click after the later Backs ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [2, 0]);
+    assert.equal(state.loads, 1, 'The page reloaded');
+    assert.equal(await page.inputValue('#resume-input'), 'draft');
+  } finally { release(); state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * Back to an entry whose route leaves the screen as it is, while its history
+ * event is held. The user clicks the screen, which looks the same before and
+ * after: the click runs neither route's handler. Once the navigation is
+ * confirmed, a click runs the handler of the route once.
+ */
+async function sameScreen(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-long'});
+  let release = () => {};
+  try {
+    await atStageOne(page, state);
+    // A second entry of the same route: Back from it routes to stage 1 again.
+    await page.evaluate(() => history.pushState('/orders/1', '', '/orders/1#same'));
+    state.holdHistory = new Promise(resolve => { release = resolve; });
+    await page.goBack();
+    await waitFor(() => page.url().endsWith('/orders/1') && state.historyHeld, 'The history event was not held');
+    await page.click('#resume-act');
+    await pause(1000);
+    assert.deepEqual((await status(context)).clicks, [], 'A click while the page waited ran a handler');
+    state.holdHistory = null;
+    release();
+    await waitFor(() => completed(state, true, 1), 'The page never applied the completion of the navigation');
+    assert.equal(await stage(page), 'stage 1');
+    assert.deepEqual((await status(context)).clicks, [], 'The click while the page waited ran a handler late');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click after the navigation ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [1]);
+    assert.equal(state.loads, 1, 'The page reloaded');
+    assert.equal(await page.inputValue('#resume-input'), 'draft');
+  } finally { release(); state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * Back, and its history event never gets an answer: the page gives the POST
+ * up at the deadline of a poll, and reloads at the URL that it shows. A click
+ * while it waited runs no handler, and the reloaded page works.
+ */
+async function hungHistory(browser) {
+  const {context, page, state} = await open(browser, '/orders/0');
+  try {
+    await atStageOne(page, state);
+    // Held for good: the history event never reaches the server.
+    state.holdHistory = new Promise(() => {});
+    await page.goBack();
+    await waitFor(() => page.url().endsWith('/orders/0') && state.historyHeld, 'The history event was not held');
+    await page.click('#resume-act');
+    await waitFor(() => state.loads === 2, 'The page did not reload after its history event hung', 15000);
+    state.holdHistory = null;
+    await usable(page, state, true, 'The reloaded page never became ready');
+    assert.equal(await stage(page), 'stage 0');
+    assert.deepEqual((await status(context)).clicks, [], 'A click while the history event hung ran a handler');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The reloaded page ran no handler');
+    assert.deepEqual((await status(context)).clicks, [0]);
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * Back: the server takes its history event, but the route is never published
+ * (the fixture holds it). The page waits for the completion until the
+ * deadline of a poll, and reloads at the URL that it shows. A click while it
+ * waited runs no handler.
+ */
+async function unconfirmedRoute(browser) {
+  const {context, page, state} = await open(browser, '/orders/0');
+  let reloading = false;
+  try {
+    await atStageOne(page, state);
+    page.on('request', request => { if (request.isNavigationRequest()) reloading = true; });
+    await control(context, 'hold-route');
+    await page.goBack();
+    await waitFor(async () => (await status(context)).routeWaits === 1, 'The route did not wait');
+    await page.click('#resume-act');
+    // The reload renders the page at its URL, which needs the route: it goes on then.
+    await waitFor(() => reloading, 'The page did not reload when its navigation was not confirmed', 15000);
+    await control(context, 'release-route');
+    await waitFor(() => state.loads === 2, 'The reload did not finish');
+    await usable(page, state, true, 'The reloaded page never became ready');
+    assert.equal(await stage(page), 'stage 0');
+    assert.deepEqual((await status(context)).clicks, [], 'A click while the navigation waited ran a handler');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The reloaded page ran no handler');
+    assert.deepEqual((await status(context)).clicks, [0]);
+  } finally {
+    state.finished = true;
+    await control(context, 'release-route').catch(() => {});
+    await context.close();
+  }
+  return state;
+}
+
+/**
+ * Back, then Forward while Back's history event waits. The server takes
+ * Back's event and confirms it, and then the answer to its POST is lost (the
+ * code review of 2026-11-24, finding 1). Back was delivered, so Forward's
+ * event goes out, and the page reaches Forward's route without a reload.
+ */
+async function lostAnswer(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-long'});
+  let release = () => {};
+  try {
+    await atStageTwo(page, state);
+    const gate = new Promise(resolve => { release = resolve; });
+    let backTaken = false;
+    state.onHistory = async route => {
+      if (backTaken) return route.continue();
+      backTaken = true;
+      await gate;
+      // The server takes Back's event, routes it and confirms it; then its answer is lost.
+      await route.fetch();
+      await waitFor(() => completed(state, true, 1), 'Back was never confirmed');
+      return route.abort();
+    };
+    await page.goBack();
+    await waitFor(() => page.url().endsWith('/orders/1') && backTaken, 'Back was not posted');
+    await page.goForward();
+    await waitFor(() => page.url().endsWith('/orders/2'), 'Forward did not change the URL');
+    release();
+    await waitFor(() => completed(state, true, 2), 'Forward was never confirmed', 15000);
+    assert.equal(await stage(page), 'stage 2');
+    assert.equal(state.loads, 1, 'The page reloaded');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The click after Forward ran no handler');
+    await pause(500);
+    assert.deepEqual((await status(context)).clicks, [2]);
+    assert.equal(await page.inputValue('#resume-input'), 'draft');
+  } finally { release(); state.finished = true; await context.close(); }
+  return state;
+}
+
+/**
+ * Back, then Forward. The route of Back is published while Forward's history
+ * event waits, and then Forward's POST fails (the code review of 2026-11-24,
+ * finding 2). The URL of Back's route must not take Forward's entry: the page
+ * reloads at Forward's URL, and Back and Forward reach their entries after.
+ */
+async function forwardFails(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-long'});
+  let release = () => {};
+  try {
+    await atStageTwo(page, state);
+    await control(context, 'hold-route');
+    const gate = new Promise(resolve => { release = resolve; });
+    let posted = 0;
+    state.onHistory = async route => {
+      // Back's event reaches the server; Forward's waits here, and fails.
+      if (++posted === 1) return route.continue();
+      await gate;
+      return route.abort();
+    };
+    await page.goBack();
+    await waitFor(async () => page.url().endsWith('/orders/1') && (await status(context)).routeWaits === 1,
+      'The route of Back did not wait');
+    await page.goForward();
+    await waitFor(() => page.url().endsWith('/orders/2') && posted === 2, 'Forward was not posted');
+    await control(context, 'release-route');
+    await waitFor(() => completed(state, true, 1), 'Back was never confirmed');
+    assert.equal(new URL(page.url()).pathname, '/orders/2', "The URL of Back's route took Forward's entry");
+    const reloads = [];
+    page.on('request', request => { if (request.isNavigationRequest()) reloads.push(new URL(request.url()).pathname); });
+    release();
+    await waitFor(() => reloads.length > 0, 'The page did not reload after Forward failed', 15000);
+    assert.equal(reloads[0], '/orders/2', "The page reloaded at another URL than Forward's");
+    // Playwright's WebKit does not finish a reload after Back and Forward in
+    // the same document, also on a static page without Spoonbill: the rest is
+    // checked in Chromium.
+    if (browser.browserType().name() === 'webkit') return state;
+    await waitFor(() => state.loads === 2, 'The reload after Forward failed did not finish', 15000);
+    state.onHistory = null;
+    await usable(page, state, true, 'The reloaded page never became ready');
+    assert.equal(new URL(page.url()).pathname, '/orders/2');
+    assert.equal(await stage(page), 'stage 2');
+    for (const [move, at] of [[() => page.goBack(), 1], [() => page.goForward(), 2]]) {
+      await move();
+      await waitFor(async () => page.url().endsWith(`/orders/${at}`) && (await stage(page)) === `stage ${at}`,
+        `Back or Forward did not reach stage ${at}: ${page.url()}`);
+    }
+  } finally {
+    release(); state.finished = true;
+    await control(context, 'release-route').catch(() => {});
+    await context.close();
+  }
+  return state;
+}
+
+/**
+ * Back before the page has read the first frame of its view, which says that
+ * the view confirms navigations (the code review of 2026-11-24, finding 3).
+ * The page is at `/orders/1`, with an entry of its own document for
+ * `/orders/0` before it; the first answer of the server is held, and the
+ * fixture holds the route of Back. A click on the old display runs no handler.
+ */
+async function backBeforeCapability(browser) {
+  let releaseFirst = () => {};
+  const {context, page, state} = await open(browser, '/orders/1', {scenario: 'resume-long', ready: false,
+    beforeLoad: async (page, context, state) => {
+      state.holdFirst = new Promise(resolve => { releaseFirst = resolve; });
+      await page.addInitScript(() => {
+        history.replaceState('/orders/0', '', '/orders/0');
+        history.pushState('/orders/1', '', '/orders/1');
+      });
+    }});
+  try {
+    await waitFor(() => state.firstHeld, 'The first answer was not held');
+    await control(context, 'hold-route');
+    await page.goBack();
+    await waitFor(async () => page.url().endsWith('/orders/0') && (await status(context)).routeWaits === 1,
+      'The route of Back did not wait');
+    releaseFirst();
+    await usable(page, state, true, 'The page never became ready to take a click');
+    assert.equal(await stage(page), 'stage 1', 'The page did not show the old display');
+    await page.click('#resume-act');
+    // The click has had its time to reach the server; the route has not changed.
+    await pause(1000);
+    assert.deepEqual((await status(context)).clicks, [], 'A click before the first frame of the view ran a handler');
+    await control(context, 'release-route');
+    await clickAtRouteOfBack(page, context, state);
+    assert.equal(state.loads, 1, 'The page reloaded');
+  } finally {
+    releaseFirst(); state.finished = true;
+    await control(context, 'release-route').catch(() => {});
+    await context.close();
+  }
+  return state;
+}
+
+/**
+ * Back, and the server refuses its history event with `410` (the code review
+ * of 2026-11-24, finding 4): no view can take it. The page reloads at once at
+ * the URL that it shows, rather than waiting for a confirmation that cannot
+ * come, and a click there runs its handler.
+ */
+async function refusedHistory(browser) {
+  const {context, page, state} = await open(browser, '/orders/0', {scenario: 'resume-long'});
+  try {
+    await atStageOne(page, state);
+    state.onHistory = route => route.fulfill({status: 410, body: ''});
+    await page.goBack();
+    // Within the 20 s that the page would wait for a confirmation.
+    await waitFor(() => state.loads === 2, 'The page did not reload after its history event was refused', 10000);
+    state.onHistory = null;
+    await usable(page, state, true, 'The reloaded page never became ready');
+    assert.equal(new URL(page.url()).pathname, '/orders/0');
+    assert.equal(await stage(page), 'stage 0');
+    await page.click('#resume-act');
+    await waitFor(async () => (await status(context)).clicks.length === 1, 'The reloaded page ran no handler');
+    assert.deepEqual((await status(context)).clicks, [0]);
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
 /** The view ends while the polls fail: the page reloads once and works. */
 async function viewEnds(browser) {
   const {context, page, state} = await open(browser, '/orders/0');
@@ -535,7 +1225,26 @@ const all = [
   ['ws-connect', 'connect() on an open WebSocket starts nothing, and a click goes out once', webSocketConnect],
   ['ws-connect-decoding', 'connect() while the close waits for the last frame: one socket after the close, and a click goes out once', webSocketConnectWhileDecoding],
   ['back-listener-pause', 'Back that the application handles first with a pause: connect() reloads, and the click runs its handler', backListenerPause],
-  ['eval-pause', 'a command that pauses the page: its result reaches the server once after connect()', evalDuringPause]
+  ['eval-pause', 'a command that pauses the page: its result reaches the server once after connect()', evalDuringPause],
+  ['history-click', 'a click after Back while its history event is on the way runs no handler', browser => clickBeforeHistory(browser, false)],
+  ['history-click-pause', 'the same with a pause and connect() while the history event is on the way: the page resumes and keeps its draft', browser => clickBeforeHistory(browser, true)],
+  ['history-route-held', 'a click after Back runs no handler while the server holds the new route', browser => clickBeforeRoute(browser, true)],
+  ['history-route-held-ws', 'the same on a WebSocket', browser => clickBeforeRoute(browser, false)],
+  ['history-reconnect-ws', 'the socket closes while the server holds the route of Back: the page reloads at its URL, and no click runs an old handler', reconnectBeforeRoute],
+  ['history-canonical-url', "Back to an alias: the server's URL of the route takes Back's entry, and Forward and Back still work", browser => canonicalUrl(browser, true)],
+  ['history-canonical-url-ws', 'the same on a WebSocket', browser => canonicalUrl(browser, false)],
+  ['history-query', 'Back to the first entry, opened at `/orders?stage=1`: its query is sent, the page reaches stage 1, and the URL of stage 1 takes the entry', browser => queryDeepLink(browser, true)],
+  ['history-query-ws', 'the same on a WebSocket', browser => queryDeepLink(browser, false)],
+  ['history-disconnect-ws', 'Spoonbill.disconnect() while the server holds the route of Back, and the socket closes slowly: the page reloads at the URL of Back only at connect()', disconnectBeforeRoute],
+  ['history-unicode', 'Back on a route at `/café/<stage>`: one URL frame, so the number of entries stays, also with an older client', unicodeRoute],
+  ['history-back-forward', 'Back then Forward while Back is on the way: the server takes them in order, and a later Back reaches its entry', backThenForward],
+  ['history-same-screen', 'Back to a route that leaves the screen as it is: a click while the page waits runs no handler', sameScreen],
+  ['history-hung-post', 'a history event that never gets an answer: the page reloads at its URL after the deadline', hungHistory],
+  ['history-unconfirmed', 'a navigation whose route is never published: the page reloads at its URL after the deadline', unconfirmedRoute],
+  ['history-lost-answer', 'Back confirmed, then its answer lost while Forward waits: Forward goes out, and the page reaches it', lostAnswer],
+  ['history-forward-fails', "Forward fails after Back's route is published: the page reloads at Forward's URL", forwardFails],
+  ['history-before-capability', 'Back before the first frame of the view: a click on the old display runs no handler', backBeforeCapability],
+  ['history-refused', 'a history event that no view can take: the page reloads at once at its URL', refusedHistory]
 ];
 // SPOONBILL_LP_CASES picks cases by key, for example `lost-frame,back`.
 const picked = (process.env.SPOONBILL_LP_CASES || all.map(([key]) => key).join(',')).split(',');

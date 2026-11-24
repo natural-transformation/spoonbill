@@ -6,7 +6,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.*
-import spoonbill.{Context, Qsid}
+import spoonbill.{Context, Qsid, Router}
 import spoonbill.data.Bytes
 import spoonbill.effect.{Effect, Queue, Reporter, Scheduler, Stream}
 import spoonbill.internal.TimerTestSupport.{Reports, Worker}
@@ -27,14 +27,29 @@ import spoonbill.web.{PathAndQuery, Request}
  *   whether the view answers a heartbeat
  * @param storage
  *   the state storage, when a case needs another one
+ * @param router
+ *   the router of the page, when a case navigates
+ * @param delayedRender
+ *   how long a render waits after a state change, on the real clock
+ * @param deniedState
+ *   a state whose render throws `SessionAccessDenied`, as an application can
+ * @param rendering
+ *   called with each state whose document is built, before it is built
+ * @param effect
+ *   the effect of the services, when a case needs another one
  */
 private[services] final class LongPollingFixture(
   idleTimeout: FiniteDuration = 10.seconds,
   heartbeats: Boolean = true,
-  storage: Option[StateStorage[Future, Int]] = None
+  storage: Option[StateStorage[Future, Int]] = None,
+  router: Router[Future, Int] = Router.empty[Future, Int],
+  delayedRender: FiniteDuration = Duration.Zero,
+  deniedState: Option[Int] = None,
+  rendering: Int => Unit = _ => (),
+  effect: Effect[Future] = Effect.futureEffect
 ) {
   import LongPollingFixture.*
-  private given Effect[Future] = Effect.futureEffect
+  private given Effect[Future] = effect
 
   val worker  = new Worker
   val reports = new Reports
@@ -44,11 +59,17 @@ private[services] final class LongPollingFixture(
   import context.*
   private val config = SpoonbillServiceConfig[Future, Int, Any](
     stateLoader = StateLoader.default(0),
-    document = state => Html(body(button("Add", event("click")(access => access.transition(_ + 1))), p(s"count $state"))),
+    document = state => {
+      rendering(state)
+      if (deniedState.contains(state)) throw new spoonbill.server.SessionAccessDenied
+      Html(body(button("Add", event("click")(access => access.transition(_ + 1))), p(s"count $state")))
+    },
     reporter = reports,
     stateStorage = storage.orNull,
     sessionIdleTimeout = idleTimeout,
-    heartbeatLimit = Option.when(heartbeats)(2)
+    heartbeatLimit = Option.when(heartbeats)(2),
+    router = router,
+    delayedRender = delayedRender
   )(worker)
   val sessions = new SessionsService(
     config,
@@ -114,6 +135,10 @@ private[services] final class LongPollingFixture(
   /** A heartbeat of the page. */
   def heartbeat(page: Page, seen: Long): Future[HttpResponse[Future]] = publish(page, seen, """[6,"0"]""")
 
+  /** A history event to `path`, as a page of DOM revision `revision` sends it. */
+  def navigate(page: Page, seen: Long, revision: Long, path: String): Future[HttpResponse[Future]] =
+    publish(page, seen, s"""[7,"${page.id}:$revision:3:$path"]""")
+
   /** The id of the button of the view of `page`. */
   def target(page: Page): String = {
     val app = sessions.getApp(page.qsid)
@@ -126,6 +151,13 @@ private[services] final class LongPollingFixture(
       .filter(id => id.`type` == "click" && id.phase == avocet.events.EventPhase.Bubbling)
       .map(_.target.mkString)
       .head
+  }
+
+  /** The view of `page`, for a case that registers a callback on it. */
+  def view(page: Page): sessions.App = {
+    val app = sessions.getApp(page.qsid)
+    worker.drain()
+    await(app).getOrElse(throw new AssertionError("The page has no view"))
   }
 
   /** Whether the session of `page` has a view. */

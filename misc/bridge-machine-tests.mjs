@@ -6,7 +6,8 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/bridge-ma
 const {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
   initialSensitive, sensitiveStep, departurePending, navigationPending, sensitiveTerminal,
   sensitiveBlocked, validSensitiveBinding, sensitivePresentationAllowed, regionCapacityAvailable,
-  heartbeatTick, heartbeatAnswer, heartbeatRefused, messageKind} =
+  heartbeatTick, heartbeatAnswer, heartbeatRefused, messageKind, navigationAnswer, navigationConfirmed,
+  navigationDeadline, pageUrlEntry} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const {CallbackType} = await import('data:text/javascript;base64,' +
   readFileSync(new URL('../modules/spoonbill/src/main/es6/protocol.js', import.meta.url)).toString('base64'));
@@ -260,4 +261,124 @@ test('a callback is a history message, a reply to a request of the server, or an
   for (const [name, type] of Object.entries(CallbackType))
     if (!['HISTORY', 'EXTRACT_PROPERTY_RESPONSE', 'EVALJS_RESPONSE', 'EXTRACT_EVENT_DATA_RESPONSE'].includes(name))
       assert.equal(messageKind(type), 'other', name);
+});
+
+// The history-ordering fix: an unguarded page drops its user events from a
+// history event until its view confirms that the route is published.
+const sent = (state, posted = true) => bridgeStep(state, {type: 'navigation-sent', posted});
+const started = (state, confirms) => bridgeStep(state, {type: 'view-started', confirms});
+const confirming = () => started(initialBridge(false), true);
+const legacy = () => started(initialBridge(false), false);
+
+test('an unguarded page holds a navigation until its view says whether it confirms navigations', () => {
+  const barriers = initialSensitive();
+  // The review of 2026-11-24, finding 3: Back before the first frame of the view.
+  const early = sent(initialBridge(false));
+  assert.equal(early.confirmsNavigation, null);
+  assert.deepEqual(early.navigation, {pending: 1, waitsFor: 'answer', confirmed: 0});
+  assert.equal(callbackAdmission(early, barriers, false, false), 'drop');
+  assert.equal(callbackAdmission(early, barriers, false, true), 'send');
+  // A view that confirms navigations keeps the page waiting for this one.
+  assert.deepEqual(started(early, true).navigation, {pending: 1, waitsFor: 'answer', confirmed: 0});
+  assert.equal(callbackAdmission(started(early, true), barriers, false, false), 'drop');
+  // A view of an older server confirms none: its first frame releases the page.
+  const released = started(early, false);
+  assert.deepEqual(released.navigation, {pending: null, waitsFor: null, confirmed: 0});
+  assert.equal(callbackAdmission(released, barriers, false, false), 'send');
+  // Once the view is known to confirm none, a navigation only counts.
+  const older = sent(legacy());
+  assert.equal(older.navigationCounter, 1);
+  assert.equal(older.navigation.pending, null);
+  assert.equal(navigationConfirmed(older, 1).action, 'none');
+  // On a WebSocket there is no POST to answer: the wait for the confirmation starts at once.
+  assert.equal(sent(confirming(), false).navigation.waitsFor, 'confirmation');
+  // A guarded page keeps its own gate.
+  assert.equal(callbackAdmission(initialBridge(true), barriers, true, false), 'drop');
+});
+
+test('the answer to a history POST says whether the navigation was delivered', () => {
+  const waiting = sent(confirming());
+  const taken = navigationAnswer(waiting, 1, true);
+  assert.deepEqual([taken.action, taken.delivered], ['expect', true]);
+  assert.equal(taken.state.navigation.waitsFor, 'confirmation');
+  const lost = navigationAnswer(waiting, 1, false);
+  assert.deepEqual([lost.action, lost.delivered], ['recover', false]);
+  // The review of 2026-11-24, finding 1: Back confirmed, then its answer
+  // lost, while Forward waits behind it. Back was delivered: Forward goes on.
+  const forward = navigationConfirmed(sent(waiting), 1).state;
+  const late = navigationAnswer(forward, 1, false);
+  assert.deepEqual([late.action, late.delivered], ['none', true]);
+  assert.equal(late.state.navigation.pending, 2);
+  // Back unconfirmed and its POST failed: the navigation is unresolved.
+  assert.deepEqual([navigationAnswer(sent(waiting), 1, false).action, navigationAnswer(sent(waiting), 1, false).delivered],
+    ['recover', false]);
+  assert.deepEqual([navigationAnswer(sent(waiting), 1, true).action, navigationAnswer(sent(waiting), 1, true).delivered],
+    ['none', true]);
+  // With an older server a failed POST recovers too: the server may not know the URL.
+  assert.deepEqual([navigationAnswer(sent(legacy()), 1, false).action, navigationAnswer(sent(legacy()), 1, true).delivered],
+    ['recover', true]);
+});
+
+test('only the confirmation of the latest navigation reopens the input', () => {
+  const barriers = initialSensitive();
+  // Back, then Forward before Back is confirmed.
+  let state = sent(navigationAnswer(sent(confirming()), 1, true).state);
+  assert.equal(state.navigation.pending, 2);
+  // An unrelated patch, and the confirmation of Back, leave Forward pending.
+  state = bridgeStep(state, {type: 'dom-frame'});
+  const back = navigationConfirmed(state, 1);
+  assert.equal(back.action, 'none');
+  assert.deepEqual(back.state.navigation, {pending: 2, waitsFor: 'answer', confirmed: 1});
+  assert.equal(callbackAdmission(back.state, barriers, false, false), 'drop');
+  const forward = navigationConfirmed(back.state, 2);
+  assert.equal(forward.action, 'open');
+  assert.deepEqual(forward.state.navigation, {pending: null, waitsFor: null, confirmed: 2});
+  assert.equal(callbackAdmission(forward.state, barriers, false, false), 'send');
+  // A late or repeated confirmation changes nothing; one of a navigation never sent recovers.
+  assert.equal(navigationConfirmed(forward.state, 1).action, 'none');
+  assert.equal(navigationConfirmed(forward.state, 2).action, 'none');
+  assert.equal(navigationConfirmed(forward.state, 3).action, 'recover');
+  // A view whose state is not known yet confirms nothing.
+  assert.equal(navigationConfirmed(sent(initialBridge(false)), 1).action, 'none');
+});
+
+test('a confirmation that does not come in time recovers; only a pause and a resume give it more time', () => {
+  const waiting = navigationAnswer(sent(confirming()), 1, true).state;
+  // `paused`, `resumed`: the page is paused now, or a paused page resumed since the wait began.
+  assert.equal(navigationDeadline(waiting, 1, false, false), 'recover');
+  assert.equal(navigationDeadline(waiting, 1, true, false), 'wait');
+  assert.equal(navigationDeadline(waiting, 1, false, true), 'wait');
+  // A deadline of a navigation that was confirmed, or whose place a later one took, needs nothing.
+  assert.equal(navigationDeadline(navigationConfirmed(waiting, 1).state, 1, false, false), 'none');
+  assert.equal(navigationDeadline(sent(waiting), 1, false, false), 'none');
+  // While the POST has no answer, its own deadline counts, not this one.
+  assert.equal(navigationDeadline(sent(confirming()), 1, false, false), 'none');
+});
+
+test('while a navigation waits for its confirmation, the page skips the URLs that the view sends', () => {
+  // The review of 2026-11-24, finding 2: the URL of Back's route came while
+  // Forward waited, replaced Forward's entry, and a failed Forward reloaded it.
+  const waiting = sent(sent(confirming()));
+  assert.equal(pageUrlEntry(waiting, false), 'skip');
+  assert.equal(pageUrlEntry(navigationConfirmed(waiting, 1).state, false), 'skip');
+  assert.equal(pageUrlEntry(navigationConfirmed(waiting, 2).state, false), 'push');
+  assert.equal(pageUrlEntry(sent(initialBridge(false)), false), 'skip');
+  assert.equal(pageUrlEntry(confirming(), false), 'push');
+  // A page whose view confirms no navigation, and a guarded page, push as before.
+  assert.equal(pageUrlEntry(sent(legacy()), false), 'push');
+  assert.equal(pageUrlEntry(initialBridge(true), true), 'push');
+});
+
+test('the URL that the view sends for the navigation that the page waits for replaces the entry that the user chose', () => {
+  // The re-review of 2026-11-24: skipping every URL while a navigation
+  // waited lost the server's URL of the route that won as well.
+  const waiting = sent(sent(confirming()));
+  assert.equal(pageUrlEntry(waiting, false, 2), 'replace');
+  // The URL of a navigation whose place a later one took is skipped.
+  assert.equal(pageUrlEntry(waiting, false, 1), 'skip');
+  assert.equal(pageUrlEntry(navigationConfirmed(waiting, 1).state, false, 2), 'replace');
+  // After the confirmation, a URL is a transition of the application again.
+  assert.equal(pageUrlEntry(navigationConfirmed(waiting, 2).state, false, 2), 'push');
+  // A guarded page numbers no URL.
+  assert.equal(pageUrlEntry(initialBridge(true), true, 1), 'push');
 });

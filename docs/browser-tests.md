@@ -130,12 +130,22 @@ the preset-id client defect it found (now fixed) and the recorded runs.
 [`misc/long-polling-native-tests.cjs`](../misc/long-polling-native-tests.cjs),
 on the same fixture, in its `resume` scenario: a page at `/orders/<stage>`
 with a field, a button that moves the stage on, and one whose handler records
-the stage that it was rendered for. The fixture's idle timeout is 6 seconds
+the stage that it was rendered for. An address can also name the stage in its
+query, `/orders?stage=<stage>`, and bare `/orders` is stage 0. The fixture's idle timeout is 6 seconds
 in this scenario, so a poll waits 3 seconds. Every poll of the page passes
 through the test, which can fail all of them for a while, drop a DOM frame
-after the server has answered it, or hold that answer. The page has no
-WebSocket, so it uses long polling, except in the cases that test a
-WebSocket. In Chromium and WebKit:
+after the server has answered it, or hold that answer. The test can also hold
+a history event before it reaches the server, and the fixture can hold the
+route change of a history event before its render (`/fixture/hold-route`).
+The poll wait of the fixture is 3 seconds, so the deadline of a poll, which
+also bounds a navigation, is 4.5 seconds. The cases that hold a navigation
+on purpose use the scenario `resume-long`, the same page with an idle timeout
+of 30 seconds, so a navigation has 20 seconds, and a slow run does not reach
+the bound while the case holds it. The scenario `resume-unicode` is the
+`resume-long` page at `/café/<stage>`, a URL that the server writes as it is
+and the browser encodes.
+The page has no WebSocket, so it uses long polling, except in the cases that
+test a WebSocket. In Chromium and WebKit:
 
 | Case | What must hold |
 | --- | --- |
@@ -151,6 +161,21 @@ WebSocket. In Chromium and WebKit:
 | `ws-connect-decoding` | `Spoonbill.connect()` while the close of a WebSocket waits for its last frame to decode: no socket opens until the close has run, the bridge is built again, and a click goes out once |
 | `back-listener-pause` | Back is pressed and the application's own `popstate` listener, which runs first, calls `Spoonbill.disconnect()`: `Spoonbill.connect()` reloads the page at the URL that Back went to, and a click runs the handler of that route |
 | `eval-pause` | A command whose code calls `Spoonbill.disconnect()` returns its result during the pause: after `Spoonbill.connect()` the server gets the result once, well before its RPC timeout, and the page keeps what the user typed |
+| `history-click`, `history-click-pause` | Back is pressed, and its history event is held before it reaches the server. With `-pause`, the application's own `popstate` listener, which runs after Spoonbill's, calls `Spoonbill.disconnect()`, and the page calls `Spoonbill.connect()`: the history event is healthy, so the page resumes. A click on the old display runs no handler, also once the history event has arrived. The page reaches the route of Back, and once it has applied the completion of the navigation a click there runs its handler once. The page does not reload and keeps what the user typed |
+| `history-route-held`, `history-route-held-ws` | The server has taken the history event of Back, and the fixture holds the route change before its render, on long polling and on a WebSocket: a click on the old display runs no handler. Once the route is shown and its completion applied, a click runs its handler once, and the page does not reload and keeps what the user typed |
+| `history-reconnect-ws` | The fixture holds the route of Back on a WebSocket, and the socket closes: the page reloads at the URL of Back instead of connecting again. A click on the old display while the reload waits runs no handler, and after the reload a click runs the handler of the route of Back once |
+| `history-canonical-url`, `history-canonical-url-ws` | The page opens at `/orders/0001`, an alias of stage 1, goes on to stage 2 and then Back, on long polling and on a WebSocket: the URL that the server sends with the navigation, `/orders/1`, takes the entry of Back without adding one. A click runs the handler of stage 1 once, and Forward and Back still reach their stages without a reload |
+| `history-query`, `history-query-ws` | The page opens at `/orders?stage=1`, goes on to stage 2 and then Back to that first entry, which has no history state, on long polling and on a WebSocket: the page sends the path and the query of the entry, reaches stage 1, and the server's URL of stage 1, `/orders/1`, takes the entry without adding one. A click runs the handler of stage 1 once |
+| `history-disconnect-ws` | In the scenario `resume`, whose bound of 4.5 seconds the case lets pass, the fixture holds the route of Back on a WebSocket, and the page calls `Spoonbill.disconnect()`; its socket closes more slowly than that bound: the page does not reload until `Spoonbill.connect()`, which reloads it at the URL of Back, and after the reload a click runs the handler of that route once |
+| `history-unicode` | In the scenario `resume-unicode`, two stages on and then Back: the render of the route of Back sends one URL frame, so the number of the tab's entries stays, also with the client of PR 39 at `3abb1412`, which adds an entry for every URL frame whose raw form differs from the address bar. A click runs the handler of stage 1 once |
+| `history-back-forward` | Back, then Forward while Back's history event is held: Forward's is posted only after the answer to Back's. A click while the page waits runs no handler, and only the completion of Forward reopens the input. Two later Backs reach the entries before Forward's, the tab's history has no entry that the server added, and the page does not reload |
+| `history-same-screen` | Back to an entry whose route leaves the screen as it is, while its history event is held: a click on that screen runs no handler. After the completion a click runs the handler of the route once |
+| `history-hung-post` | Back, and its history event never gets an answer: the page gives it up at the deadline of a poll and reloads at the URL that it shows. A click while it waited runs no handler |
+| `history-unconfirmed` | Back, the server takes the history event, and the fixture never publishes the route: the page reloads at the URL that it shows when the deadline of a poll has passed. A click while it waited runs no handler |
+| `history-lost-answer` | Back, then Forward while Back's history event waits; the server takes Back's event and confirms it, and then the answer to its POST is lost: Forward's event goes out, the page reaches Forward's route without a reload, and a click there runs its handler once |
+| `history-forward-fails` | Back, then Forward; Back's route is published while Forward's history event waits, and then Forward's POST fails: the URL of Back's route does not take Forward's entry, and the page reloads at Forward's URL. In Chromium the reloaded page shows Forward's route, and Back and Forward reach their entries after it. Playwright's WebKit does not finish a reload after Back and Forward in the same document, also on a static page without Spoonbill, so in WebKit the case checks the URL of the reload only |
+| `history-before-capability` | Back before the page has read the first frame of its view, which says that the view confirms navigations, while the fixture holds the route of Back: a click on the old display runs no handler, and after the completion a click runs the handler of the route of Back once |
+| `history-refused` | The server answers Back's history event with `410`, as when no view can take it: the page reloads at once at the URL that it shows, rather than after the bound, and a click there runs its handler |
 
 Each case was proved by a mutation that it must catch, put in and taken out
 again: a click from an older display that runs a handler (`stale-*`), a
@@ -159,7 +184,32 @@ missing state that is built from the bridge request (`lost-state-*`), a reload
 answer taken as a failed poll (`view-ends`), and an old history event that is
 discarded (`back`). The last three fail on the client of PR 39 before its
 review at `f55be0f2`: the paused page reloads, the resumed page keeps the old
-route, and `connect()` opens a second socket.
+route, and `connect()` opens a second socket. The `history-click`,
+`history-click-pause` and `history-route-held` cases, and
+`history-route-held-ws` as a probe, fail on the client of PR 39 at
+`3abb1412`: the click on the old display runs the handler of stage 1. Without
+that click they pass on that client. On that client `history-back-forward`
+and `history-same-screen` fail too, as a click while the page waits runs a
+handler, and so do `history-hung-post` and `history-unconfirmed`, as the page
+never reloads. The `history-lost-answer`,
+`history-forward-fails`, `history-before-capability` and `history-refused`
+cases fail in Chromium on the first version of the history-ordering fix, as
+its code review of 2026-11-24 found: Forward is never confirmed, the URL
+becomes `/orders/1`, the click runs the handler of stage 1, and the page does
+not reload in time. The `history-reconnect-ws`, `history-canonical-url` and
+`history-canonical-url-ws` cases fail in Chromium and WebKit on the second
+version, as its re-review of the same day found: once the socket had closed,
+the page connected again and a click on the old display ran the handler of
+stage 1, and the address bar kept `/orders/0001`. The `history-query`,
+`history-query-ws` and `history-disconnect-ws` cases fail in Chromium and
+WebKit on the third version, as its third review of the same day found:
+Back reached stage 0, and the page reloaded before `Spoonbill.connect()`. On
+that version `history-unicode` fails with the client of PR 39 at `3abb1412`,
+in Chromium and WebKit: Back added an entry. With the client of this fix it
+passes on that version too, so the mixed run shows it.
+
+All the cases take about three minutes in both engines; the script stops
+them after 600 seconds.
 
 To run some cases, or more rounds, start the fixture as the script does and
 set `SPOONBILL_LP_CASES` (keys from the table, comma-separated),

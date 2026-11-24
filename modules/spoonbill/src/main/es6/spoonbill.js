@@ -25,8 +25,6 @@ export class Spoonbill {
     this.rootListeners = [];
     /** @type {?function(Event)} */
     this.historyHandler = null;
-    /** @type {string} */
-    this.initialPath = window.location.pathname;
     /** @type {function(CallbackType, string)} */
     this.callback = callback;
     /** @type {Object<Event>} */
@@ -115,7 +113,12 @@ export class Spoonbill {
     this.listenRoot('submit', true);
 
     this.historyHandler = (/** @type {Event} */ event) => {
-      if (event.state === null) callback(CallbackType.HISTORY, this.initialPath);
+      // An entry that the page did not push has no state: the first entry of
+      // the document above all. The page sends the path and the query of that
+      // entry, which the location shows now; the path that the page had at
+      // its start lacked the query, and was another entry's after a new
+      // bridge (the third review of 2026-11-24).
+      if (event.state === null) callback(CallbackType.HISTORY, window.location.pathname + (window.location.search || ''));
       else callback(CallbackType.HISTORY, event.state);
     };
 
@@ -455,10 +458,13 @@ export class Spoonbill {
 
    /**
     * @param {string} path
+    * @param {boolean=} replace the URL rewrites the entry of the tab's history
+    *   that the page shows, rather than adding one (pageUrlEntry)
     */
-  changePageUrl(path) {
-    if (path !== window.location.pathname + window.location.search)
-      window.history.pushState(path, '', path);
+  changePageUrl(path, replace = false) {
+    if (path === window.location.pathname + window.location.search) return;
+    if (replace) window.history.replaceState(path, '', path);
+    else window.history.pushState(path, '', path);
   }
 
    /**

@@ -191,12 +191,55 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   events during the pause. A notice that showed before the pause hides at the
   first answer after it, and answered re-polls do not grow the reconnect
   back-off. The page used to go on polling and applying frames.
+- Fix: a click right after Back no longer runs the handler of the route that
+  the user left. An unguarded view confirms each navigation once the render
+  of its route has published the patch and the handlers, with the procedure
+  that completes a guarded navigation (24), and its first frame says that it
+  does. Until then the page drops its user events, on long polling and on a
+  WebSocket; history events, heartbeats and replies to the server go on, and
+  the page keeps its document and what the user typed. A navigation that the
+  page makes before that first frame waits for it. On long polling a history
+  event is posted only after the answer to the one before it, so Back and
+  Forward reach the view in order, and only a `200` counts as taken; a
+  confirmation proves a navigation also when the answer to its POST is lost.
+  The render that publishes the route sends its URL with the number of the
+  navigation, and confirms the navigation once its patch is published, so the
+  URL and the confirmation belong to the display that the page shows. While a
+  navigation waits, the page skips the other URLs that the server sends; the
+  numbered one takes the entry that the user chose. So the tab keeps its
+  entries and shows the server's form of the URL, and a path that the router
+  does not route keeps its URL. The render sends no other URL frame, so an
+  older client changes its URL once, as before. A history POST that fails or
+  has no answer within the deadline of a poll makes the page reload at the
+  URL that it shows, and so does a confirmation that does not come within a
+  second such deadline, counted from the answer (on a WebSocket, from the
+  history event). A paused page, and one that its user disconnected with
+  `Spoonbill.disconnect()`, also while its socket still closes, reload at
+  `connect()`; only a pause gives a navigation more time. A page whose socket
+  is lost while a navigation waits reloads at its URL instead of connecting
+  again. A route that fails on the server, or whose render fails, a denial
+  too, retires the view: it runs no more routes, handlers, callbacks, timers
+  or delays, and its page reloads. On long polling the click used to reach
+  the server before the history event, and on both transports it could be
+  handled before the new route was published.
+  [ADR 0007](docs/adr/0007-navigation-confirmation.md) records the rule, its
+  cost and what a redesign has to keep.
+- Fix: Back or Forward to an entry that the page did not push, the first entry
+  of the document above all, sends the path and the query of that entry. It
+  used to send the path that the page had at its start, without the query,
+  so the server routed `/orders?stage=1` as `/orders`.
 
 **For deployments.**
 
 - The long-polling protocol changed on both sides. A long-polling page that
   an earlier version rendered is told to reload when it reaches a server of
   this version.
+- A page waits for the confirmation of a navigation only when its view says
+  that it confirms navigations; a navigation that it makes before the first
+  frame of its view waits for that frame. An older page ignores the flag, the
+  confirmations and the number that a view adds to the URL of a navigation.
+  So during a rolling deploy a page and a view of two versions work together,
+  as before for the race of a click with Back.
 - With `StateStorage.fromRepository` the retirement of a view removes its
   row, so every reconnect after a closed WebSocket now reloads the page. With
   the default storage a page reloads after a restart of the server. With

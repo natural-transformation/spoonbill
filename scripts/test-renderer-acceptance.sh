@@ -104,5 +104,7 @@ nix develop .#browser --no-write-lock-file --command bash -c '
   fi
   grep "\"phase\":\"patched-dom\"" "$1"
   printf "%s\n" "PASS: injected name-truncation fault detected (status $status)"
-  timeout --kill-after=10s 300s node misc/long-polling-native-tests.cjs
+  # The long-polling cases take about three minutes in both engines. The
+  # limit stops a run that hangs.
+  timeout --kill-after=10s 600s node misc/long-polling-native-tests.cjs
 ' renderer-acceptance "$test_root/fault-probe.log"

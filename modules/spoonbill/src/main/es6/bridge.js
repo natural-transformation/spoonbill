@@ -4,7 +4,7 @@ import { Connection } from './connection.js';
 import { SensitiveRegions } from './sensitive.js';
 import {initialBridge, bridgeStep, callbackAdmission, validBaseline, patchDecision, validReadiness,
   acceptsSensitiveView, validBarrier, heartbeatTick, heartbeatAnswer, heartbeatRefused,
-  messageKind} from './bridge-machine.js';
+  messageKind, navigationAnswer, navigationConfirmed, navigationDeadline, pageUrlEntry} from './bridge-machine.js';
 
 const ProtocolDebugEnabledKey = "$bridge.protocolDebugEnabled";
 
@@ -23,6 +23,11 @@ export class Bridge {
     // carry the page id and the DOM revision that the page shows.
     this._lifecycle = initialBridge(config['auth'] === true, connection.longPolling ? connection.page : null);
     this._guarded = config['auth'] === true;
+    // The timer of the wait for the confirmation of a navigation: a handle
+    // only (navigationDeadline decides). A bridge that was destroyed takes no
+    // late answer to its history POSTs: they belong to the view that it had.
+    this._navigationTimer = null;
+    this._destroyed = false;
     this._messageHandler = this._onMessage.bind(this);
     this._sensitive = new SensitiveRegions(
       message => this._onCallback(CallbackType.SENSITIVE_ACK, message),
@@ -130,8 +135,71 @@ export class Bridge {
       : JSON.stringify(args !== undefined ? [type, args] : [type]);
     if (protocolDebugEnabled)
       console.log('<- callback', type);
+    if (type === CallbackType.HISTORY && !this._guarded) {
+      this._sendNavigation(message);
+      return;
+    }
     // A paused page keeps a reply and notes a missed navigation.
     this._connection.send(message, undefined, messageKind(type));
+  }
+
+  /**
+   * A history message of an unguarded page. It counts once the connection
+   * took it, as its view counts it once it took it; if the view confirms
+   * navigations, the page drops its user events until it confirms this one.
+   * On long polling the wait for the confirmation starts with the answer to
+   * its POST, on a WebSocket at once.
+   * @param {string} message
+   */
+  _sendNavigation(message) {
+    const posted = Boolean(this._connection.longPolling);
+    const counter = this._lifecycle.navigationCounter + 1;
+    const onAnswer = posted ? sent => this._onNavigationAnswer(counter, sent) : undefined;
+    // A paused page notes a missed navigation, and sends and counts nothing.
+    if (!this._connection.send(message, onAnswer, 'history')) return;
+    this._lifecycle = bridgeStep(this._lifecycle, {type: 'navigation-sent', posted});
+    if (this._lifecycle.navigation.waitsFor === 'confirmation') this._awaitConfirmation();
+  }
+
+  /**
+   * Whether the server took the history POST of navigation `counter`.
+   * @return {boolean} whether the navigation counts as delivered, for the
+   *   history messages that wait behind it
+   */
+  _onNavigationAnswer(counter, sent) {
+    if (this._destroyed) return sent;
+    const out = navigationAnswer(this._lifecycle, counter, sent);
+    this._lifecycle = out.state;
+    if (out.action === 'expect') this._awaitConfirmation();
+    else if (out.action === 'recover') this._recoverNavigation();
+    return out.delivered;
+  }
+
+  /**
+   * Starts the wait for the confirmation of the navigation that the page
+   * waits for, bounded as a poll is. A page that is paused, or that resumed
+   * after a pause since, waits again; a replaced transport gives no more time.
+   */
+  _awaitConfirmation() {
+    clearTimeout(this._navigationTimer);
+    const counter = this._lifecycle.navigation.pending;
+    const resumes = this._connection.resumeCount;
+    this._navigationTimer = setTimeout(() => {
+      this._navigationTimer = null;
+      switch (navigationDeadline(this._lifecycle, counter, Boolean(this._connection.paused),
+          this._connection.resumeCount !== resumes)) {
+        case 'wait': this._awaitConfirmation(); break;
+        case 'recover': this._recoverNavigation(); break;
+      }
+    }, this._connection.navigationBound);
+  }
+
+  /** A navigation is unresolved: the page reloads at its URL, or once it resumes. */
+  _recoverNavigation() {
+    clearTimeout(this._navigationTimer);
+    this._navigationTimer = null;
+    console.log('A navigation is unresolved, reloading the page');
+    this._connection.recoverNavigation();
   }
 
   _applyView(update) {
@@ -189,7 +257,12 @@ export class Bridge {
           const currentUrl = new URL(window.location.href ||
             window.location.protocol + '//' + window.location.host + window.location.pathname + (window.location.search || ''));
           if (new URL(commands[0], currentUrl).href !== currentUrl.href) this._sensitive.clearAll();
-          k.changePageUrl.apply(k, commands);
+          // While a navigation waits for its confirmation, the tab keeps the
+          // entry that the user chose; only that navigation's URL rewrites it.
+          switch (pageUrlEntry(this._lifecycle, this._guarded, commands[1])) {
+            case 'push': k.changePageUrl(commands[0]); break;
+            case 'replace': k.changePageUrl(commands[0], true); break;
+          }
           break;
         }
         case Procedure.UPLOAD_FORM: k.uploadForm.apply(k, commands); break;
@@ -202,7 +275,19 @@ export class Bridge {
         case Procedure.REST_FORM: k.resetForm.apply(k, commands); break;
         case Procedure.DOWNLOAD_FILE: k.downloadFile.apply(k, commands); break;
         case Procedure.HEARTBEAT: this._lifecycle = bridgeStep(this._lifecycle, {type: 'heartbeat-reply'}); break;
-        case Procedure.RESET_EVENT_COUNTERS: k.resetEventCounters.apply(k, commands); break;
+        case Procedure.RESET_EVENT_COUNTERS:
+          k.resetEventCounters.apply(k, commands);
+          // The first frame of a view says whether it confirms navigations. A
+          // view of an older server does not, and lets go of a navigation that
+          // waited for it.
+          if (!this._guarded) {
+            this._lifecycle = bridgeStep(this._lifecycle, {type: 'view-started', confirms: commands[0] === true});
+            if (this._lifecycle.navigation.pending === null) {
+              clearTimeout(this._navigationTimer);
+              this._navigationTimer = null;
+            }
+          }
+          break;
         case Procedure.COMPLETE_AUTHENTICATION:
           this._lifecycle = bridgeStep(this._lifecycle, {type: 'suspend'});
           this._sensitive.clearAll();
@@ -261,7 +346,19 @@ export class Bridge {
         case Procedure.SENSITIVE_NAVIGATION_COMPLETE:
           if (!validBarrier(commands))
             throw new Error('Invalid sensitive navigation barrier');
-          this._sensitive.completeNavigation(commands[0]);
+          if (this._guarded) {
+            this._sensitive.completeNavigation(commands[0]);
+            break;
+          }
+          // An unguarded view confirms a navigation whose route it has published.
+          {
+            const out = navigationConfirmed(this._lifecycle, commands[0]);
+            this._lifecycle = out.state;
+            if (out.action === 'open') {
+              clearTimeout(this._navigationTimer);
+              this._navigationTimer = null;
+            } else if (out.action === 'recover') this._recoverNavigation();
+          }
           break;
         case Procedure.SENSITIVE_DEPARTURE_COMPLETE:
           if (!validBarrier(commands))
@@ -306,6 +403,15 @@ export class Bridge {
   destroy() {
     this._sensitive.destroy();
     clearInterval(this._intervalId);
+    // A navigation that its view never confirmed is unresolved for the
+    // document: a new view would show the route that the user left, under
+    // the URL of the other one. The page reloads at its URL instead of
+    // connecting again (the re-review of 2026-11-24).
+    if (!this._guarded && this._lifecycle.navigation.pending !== null) this._connection.navigationUnresolved();
+    // A view that is replaced waits for nothing: a fresh view counts its own navigations.
+    this._destroyed = true;
+    clearTimeout(this._navigationTimer);
+    this._navigationTimer = null;
     this._connection.dispatcher.removeEventListener("message", this._messageHandler);
     this._spoonbill.destroy();
   }
