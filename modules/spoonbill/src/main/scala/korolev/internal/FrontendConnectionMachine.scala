@@ -8,13 +8,32 @@ private[internal] object FrontendConnectionMachine {
   enum Status   { case Live, Replacing, Closed, ClosedReplacing    }
   enum View     { case Unpublished; case Published(revision: Long) }
   enum Revision { case Current, Obsolete, Denied                   }
-  final case class State(status: Status, view: View, navigation: Long, departure: Long, handledDeparture: Long)
+  /**
+   * @param retired
+   *   an unguarded view whose route failed: it starts no callback, timer or
+   *   other application work, while its output still carries the reload to
+   *   its page
+   */
+  final case class State(
+    status: Status,
+    view: View,
+    navigation: Long,
+    departure: Long,
+    handledDeparture: Long,
+    retired: Boolean = false
+  )
   val initial: State   = State(Status.Live, View.Unpublished, 0L, 0L, 0L)
   val maxCounter: Long = 9007199254740991L
 
   def closed(state: State): Boolean    = state.status == Status.Closed || state.status == Status.ClosedReplacing
   def replacing(state: State): Boolean = state.status == Status.Replacing || state.status == Status.ClosedReplacing
   def live(state: State): Boolean      = state.status == Status.Live
+
+  /** Whether the view starts application work: it is live and was not retired. */
+  def admitsWork(state: State): Boolean = live(state) && !state.retired
+
+  /** The code review of 2026-11-24: a retired view runs no callback or timer. */
+  def retire(state: State): State = if (state.retired) state else state.copy(retired = true)
 
   def close(state: State): State = state.status match {
     case Status.Live      => state.copy(status = Status.Closed)

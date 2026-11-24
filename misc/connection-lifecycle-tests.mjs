@@ -805,3 +805,186 @@ test('re-polls of a quiet long-polling page do not grow the reconnect back-off',
   }
   assert.equal(env.reloads.count, 0);
 }));
+
+// The history-ordering fix: on long polling a history message is posted
+// alone, its answer counts for the page whatever became of its transport,
+// and one without an answer within the deadline of a poll fails.
+const posts = env => env.requests.filter(request => request.method === 'POST');
+/** Runs the timer that was set last. */
+const runLastTimer = env => {
+  const [id, timer] = [...env.timers.entries()].at(-1);
+  env.timers.delete(id); timer.callback(); return timer.delay;
+};
+
+test('a history message of long polling waits for the answer to the one before it; a click does not', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  assert.equal(connection.send('back', sent => answers.push(['back', sent]), 'history'), true);
+  assert.equal(connection.send('forward', sent => answers.push(['forward', sent]), 'history'), true);
+  assert.equal(connection.send('click'), true);
+  assert.deepEqual(posts(env).map(request => request.body), ['back', 'click']);
+  posts(env)[0].respond(200);
+  assert.deepEqual(answers, [['back', true]]);
+  assert.deepEqual(posts(env).map(request => request.body), ['back', 'click', 'forward']);
+  posts(env)[2].respond(200);
+  assert.deepEqual(answers, [['back', true], ['forward', true]]);
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('a history POST that fails drops the history messages that wait, and the page reloads', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => answers.push(['back', sent]), 'history');
+  connection.send('forward', sent => answers.push(['forward', sent]), 'history');
+  posts(env)[0].respond(503);
+  assert.deepEqual(answers, [['back', false]]);
+  assert.deepEqual(posts(env).map(request => request.body), ['back'], 'Forward is not posted after a failure');
+  // The bridge recovers the unresolved navigation.
+  connection.recoverNavigation();
+  assert.equal(env.reloads.count, 1);
+}));
+
+test('a history POST without an answer within the deadline of a poll is given up, and fails', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => answers.push(sent), 'history');
+  assert.equal(runLastTimer(env), 1500, 'the deadline of a poll with a wait of 1000 ms');
+  assert.equal(posts(env)[0].aborted, true);
+  assert.deepEqual(answers, [false]);
+}));
+
+test('the answer to a history POST counts after a pause, and a later history message of the paused page is missed', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => answers.push(sent), 'history');
+  await connection.disconnect(false);
+  // A healthy POST of the paused page: its answer still counts.
+  posts(env)[0].respond(200);
+  assert.deepEqual(answers, [true]);
+  assert.equal(connection.send('again', sent => answers.push(sent), 'history'), false);
+  assert.equal(posts(env).length, 1, 'a paused page posts nothing');
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 1, 'the history message missed during the pause reloads');
+}));
+
+test('a failed history POST of a paused page reloads it only when connect() is called', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => answers.push(sent), 'history');
+  await connection.disconnect(false);
+  posts(env)[0].respond(0);
+  assert.deepEqual(answers, [false]);
+  connection.recoverNavigation();
+  assert.equal(env.reloads.count, 0, 'the paused page keeps its document');
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 1);
+}));
+
+test('a history message that waited is missed when the page pauses before the answer to the one before it', () => environment(async env => {
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => answers.push(['back', sent]), 'history');
+  connection.send('forward', sent => answers.push(['forward', sent]), 'history');
+  await connection.disconnect(false);
+  posts(env)[0].respond(200);
+  assert.deepEqual(answers, [['back', true]]);
+  assert.equal(posts(env).length, 1, 'Forward is not posted while paused');
+  connection.connect(); runTimer(env, 200);
+  assert.equal(env.reloads.count, 1, 'the server missed Forward: connect() reloads');
+}));
+
+// The code review of 2026-11-24. An answer callback of a history message
+// says whether its navigation counts as delivered: a confirmation proves it
+// also when the answer is lost. A callback that returns no boolean leaves the
+// answer itself to decide.
+
+test('a history POST whose answer is lost after its navigation was confirmed lets the next one go', () => environment(async env => {
+  // Finding 1: Forward used to be dropped, and the page waited for ever.
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => { answers.push(['back', sent]); return true; }, 'history');
+  connection.send('forward', sent => { answers.push(['forward', sent]); return sent; }, 'history');
+  posts(env)[0].respond(0);
+  assert.deepEqual(answers, [['back', false]]);
+  assert.deepEqual(posts(env).map(request => request.body), ['back', 'forward'], 'Forward was dropped');
+  posts(env)[1].respond(200);
+  assert.deepEqual(answers, [['back', false], ['forward', true]]);
+  assert.equal(env.reloads.count, 0);
+}));
+
+test('a refused history POST fails, and the history messages that wait go with it', () => environment(async env => {
+  // Finding 4: 410 means that no view could take it.
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  const answers = [];
+  connection.send('back', sent => { answers.push(['back', sent]); return sent; }, 'history');
+  connection.send('forward', sent => { answers.push(['forward', sent]); return sent; }, 'history');
+  posts(env)[0].respond(410);
+  assert.deepEqual(answers, [['back', false]]);
+  assert.deepEqual(posts(env).map(request => request.body), ['back'], 'Forward was posted after a refused Back');
+}));
+
+test('connect() on an active long-polling page counts no resume; a pause and connect() count one', () => environment(async env => {
+  // Finding 5: only a pause gives a navigation more time.
+  const {connection} = await polling(env);
+  env.polls()[0].frame(1, 0, '["one"]');
+  assert.equal(connection.resumeCount, 0);
+  const epoch = connection.transportEpoch;
+  connection.connect(); runTimer(env, 200);
+  assert.notEqual(connection.transportEpoch, epoch, 'connect() did not replace the transport');
+  assert.equal(connection.resumeCount, 0);
+  await connection.disconnect(false);
+  connection.connect(); runTimer(env, 200);
+  assert.equal(connection.resumeCount, 1);
+}));
+
+test('a socket that closes while a navigation waits for its confirmation reloads the page instead of connecting again', () => environment(async env => {
+  // The re-review of 2026-11-24: the reconnect built a fresh bridge with no
+  // navigation pending, and a click on the display that the user left ran the
+  // handler of the route that the user left. The bridge tells its connection
+  // when it goes away with a navigation pending (Bridge.destroy).
+  for (const unresolved of [false, true]) {
+    const connection = env.create();
+    if (unresolved) connection.dispatcher.addEventListener('close', () => connection.navigationUnresolved());
+    connection.connect(); env.nextTimer();
+    const socket = env.sockets.at(-1);
+    socket.open();
+    const reloads = env.reloads.count;
+    socket.close();
+    await env.flush();
+    if (unresolved) {
+      assert.equal(env.reloads.count, reloads + 1, 'the page did not reload');
+      assert.equal(env.timers.size, 0, 'the page tried to connect again');
+    } else {
+      assert.equal(env.reloads.count, reloads);
+      assert.equal(env.timers.size, 1, 'a close without a pending navigation connects again');
+      env.timers.clear();
+    }
+    await connection.disconnect(false);
+    env.session.clear();
+  }
+}));
+
+test('a navigation that a WebSocket page cannot resolve after Spoonbill.disconnect() waits for connect()', () => environment(async env => {
+  // The third review of 2026-11-24: the socket was still closing when the
+  // deadline of the navigation came, and the page reloaded without connect().
+  const connection = env.create();
+  connection.connect(); env.nextTimer();
+  const socket = env.sockets.at(-1);
+  socket.open();
+  // The close handshake takes its time.
+  socket.lingers = true;
+  await connection.disconnect(false);
+  connection.recoverNavigation();
+  await env.flush();
+  assert.equal(env.reloads.count, 0, 'the page reloaded without connect()');
+  connection.connect();
+  assert.equal(env.reloads.count, 1, 'connect() did not reload the page');
+}));

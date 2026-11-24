@@ -6,7 +6,8 @@ const source = readFileSync(new URL('../modules/spoonbill/src/main/es6/connectio
 const {ConnectionType, initialConnection, connectionStep: step, connectionOpened, connectionReady,
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, headerCount, pollAnswer, reloadWait, transportNote,
-  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, socketState, outgoingMessage, pollDeadline, RELOAD_WINDOW, MAX_KEPT_REPLIES, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT} =
+  frameKind, afterFrame, reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, socketState, outgoingMessage, pollDeadline, RELOAD_WINDOW, MAX_KEPT_REPLIES, MIN_RECONNECT_TIMEOUT, MAX_RECONNECT_TIMEOUT,
+  nextHistory, navigationRecovery, historyAccepted, connectReloads} =
   await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 test('transport epochs reject stale closure while preserving the selected transport', () => {
@@ -370,8 +371,10 @@ test('a socket that reports CLOSED is closing while its close handler runs', () 
 test('a paused page keeps a reply, misses a navigation and drops a user event', () => {
   // The review of PR 39 at 17fd8ee0, findings 2 and 3.
   const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
-  for (const kind of ['reply', 'history', 'other'])
+  for (const kind of ['reply', 'other'])
     assert.equal(outgoingMessage(polling, kind, 0), 'send', kind);
+  // A history message is posted alone (the history-ordering fix).
+  assert.equal(outgoingMessage(polling, 'history', 0), 'post');
   const paused = step(polling, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
   assert.equal(outgoingMessage(paused, 'reply', 0), 'keep');
   assert.equal(outgoingMessage(paused, 'reply', MAX_KEPT_REPLIES), 'drop', 'the kept replies are bounded');
@@ -407,4 +410,89 @@ test('the deadline of a poll is its wait and a margin, below twice the wait, and
   assert.equal(pollDeadline(undefined), pollDeadline(15000));
   assert.equal(pollDeadline(Number.NaN), pollDeadline(15000));
   assert.ok(pollDeadline(1e12) <= 2147483647);
+});
+
+test('a history message of long polling is posted alone, and the next one waits for its answer', () => {
+  // The history-ordering fix: two POSTs can arrive in either order, so Back
+  // then Forward would reach the view in the wrong order.
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(outgoingMessage(polling, 'history', 0), 'post');
+  const posted = step(polling, {type: 'history-posted'});
+  assert.equal(outgoingMessage(posted, 'history', 0), 'queue');
+  // Replies, heartbeats and user events do not wait for it.
+  for (const kind of ['reply', 'other']) assert.equal(outgoingMessage(posted, kind, 0), 'send', kind);
+  assert.equal(outgoingMessage(step(posted, {type: 'history-answered'}), 'history', 0), 'post');
+  // The POST belongs to the page: a pause and the transport that resumes it keep it.
+  const paused = step(posted, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
+  assert.equal(paused.historyPosted, true);
+  const resumed = step(paused, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(outgoingMessage(resumed, 'history', 0), 'queue');
+  // On a WebSocket the messages arrive in order: nothing waits.
+  const socket = step(initialConnection(), {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  assert.equal(outgoingMessage(step(socket, {type: 'history-posted'}), 'history', 0), 'send');
+});
+
+test('a history message that waited is posted after a taken one, missed while paused, and dropped after a failure', () => {
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(nextHistory(polling, true), 'post');
+  // After a failure the page recovers, and the messages after it go with it.
+  assert.equal(nextHistory(polling, false), 'drop');
+  const paused = step(polling, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
+  assert.equal(nextHistory(paused, true), 'missed');
+  assert.equal(nextHistory(paused, false), 'drop');
+  assert.equal(nextHistory(step(polling, {type: 'reload', wait: 0, scheduleEpoch: {}}), true), 'drop');
+});
+
+test('an unresolved navigation reloads the page, or waits until a paused page resumes', () => {
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(navigationRecovery(polling), 'reload');
+  const paused = step(polling, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
+  assert.equal(navigationRecovery(paused), 'defer');
+  // The paused page notes a missed navigation, so connect() reloads it, also at the URL of the pause.
+  assert.equal(resumes(step(paused, {type: 'navigation-missed'}), '/orders/0'), false);
+  const socket = step(initialConnection(), {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  assert.equal(navigationRecovery(socket), 'reload');
+});
+
+test('a view that went away while a navigation waited makes the next connect() reload the page', () => {
+  // The re-review of 2026-11-24: a socket closed while Back waited, and the
+  // fresh view of the reconnect took a click on the display that the user left.
+  const socket = step(initialConnection(), {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  assert.equal(connectReloads(socket), false);
+  const unresolved = step(socket, {type: 'navigation-unresolved'});
+  assert.equal(connectReloads(unresolved), true);
+  // It stays so: a later transport does not resolve the navigation.
+  assert.equal(connectReloads(step(unresolved, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}})), true);
+});
+
+test('a navigation that a page cannot resolve after its user disconnected it waits for connect()', () => {
+  // The third review of 2026-11-24: Spoonbill.disconnect() on a WebSocket
+  // whose close took longer than the deadline of a navigation, and the
+  // deadline reloaded the page although the user had disconnected it.
+  const socket = step(initialConnection(), {type: 'install', transport: ConnectionType.WEB_SOCKET, epoch: {}});
+  const disconnected = step(socket, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
+  assert.equal(navigationRecovery(disconnected), 'hold');
+  // connect() reloads it.
+  assert.equal(connectReloads(step(disconnected, {type: 'navigation-unresolved'})), true);
+  // A disconnect that connects again at once, and a socket that is lost, still reload now.
+  assert.equal(navigationRecovery(step(socket, {type: 'disconnect', reconnect: true, scheduleEpoch: {}, location: '/orders/0'})), 'reload');
+  assert.equal(navigationRecovery(socket), 'reload');
+});
+
+test('only a 200 accepts a history POST', () => {
+  // The review of 2026-11-24, finding 4: 410 means that no view could take it,
+  // and 400 or 403 that the view refused it.
+  assert.equal(historyAccepted(200), true);
+  for (const status of [0, 204, 400, 403, 408, 410, 429, 500, 503])
+    assert.equal(historyAccepted(status), false, String(status));
+});
+
+test('a paused long-polling page that resumes counts a resume; a transport that connect() replaces does not', () => {
+  // The review of 2026-11-24, finding 5: only a pause gives a navigation more time.
+  const polling = step(initialConnection(), {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(polling.resumeCount, 0);
+  const replaced = step(polling, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}});
+  assert.equal(replaced.resumeCount, 0);
+  const paused = step(replaced, {type: 'disconnect', reconnect: false, scheduleEpoch: {}, location: '/orders/0'});
+  assert.equal(step(paused, {type: 'install', transport: ConnectionType.LONG_POLLING, epoch: {}}).resumeCount, 1);
 });

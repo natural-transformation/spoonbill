@@ -109,6 +109,9 @@ final class ComponentInstance[
 
   private[spoonbill] def closeAdmission(): Unit = owners.closeAdmission()
 
+  /** Whether this component admits turns: false once the teardown of its view has closed admission. */
+  private[spoonbill] def admits: Boolean = owner.isOpen
+
   @volatile private var lastParameters: Baseline.Parameters[P] = Baseline.emptyParameters[P]
   private val markedDelays             = mutable.Set.empty[Id] // Set of the delays which are should survive
   private val markedComponentInstances = mutable.Set.empty[Id]
@@ -415,7 +418,7 @@ final class ComponentInstance[
               val delayInstance =
                 new DelayInstance(delay, scheduler, reporter, executionContext, timers.map(_.deadlines))
               delays.put(id, delayInstance)
-              delayInstance.start(browserAccess, () => frontend.authorizeInteraction())
+              delayInstance.start(browserAccess, () => frontend.admitDelay())
             }
           case timer: TimerBinding[F, CS, E] @unchecked =>
             timers.foreach(_.collect(timerTarget, timer.id, timer.nanos, timer.periodic, timer.restartOn, timer.update))
@@ -585,6 +588,21 @@ final class ComponentInstance[
       browserAccess.state.flatMap(update)
     }
 
+  /**
+   * As [[updateFromHistory]], for navigation `navigation` of an unguarded
+   * view. The render of the new state sends its URL with the number of the
+   * navigation, and confirms the navigation once it has published its DOM
+   * patch and its handlers, also when the patch is empty: then this completes
+   * with `true`. An update that keeps the state renders nothing and
+   * completes at once with `false`: the caller confirms. It fails when the
+   * update or its render fails, or when the turn is discarded.
+   */
+  private[spoonbill] def updateFromHistoryRendered(update: CS => F[Option[CS]], navigation: Long): F[Boolean] =
+    Effect[F].promiseF[Boolean] { done =>
+      val turn = new ComponentInstance.NavigationTurn(navigation, done)
+      ownedTurn(browserAccess.state.flatMap(update), Some(turn)).recover { case error => turn(Left(error)) }
+    }
+
   type EventHandlers    = Vector[DomEventMessage => F[Boolean]]
   type AllEventHandlers = MapView[EventId, EventHandlers]
 
@@ -723,6 +741,23 @@ private[spoonbill] object ComponentInstance {
 
   import Context.Access
   import Context.Delay
+
+  /**
+   * The completion of the turn of a navigation (`updateFromHistoryRendered`),
+   * a handle that the render queue carries. The render that takes it sends
+   * its URL with the number of `navigation`, confirms the navigation once its
+   * patch is published, and then calls `rendered`. A turn that keeps the state,
+   * or that fails, completes it as any render promise.
+   */
+  final class NavigationTurn(val navigation: Long, done: Effect.Promise[Boolean])
+      extends (Either[Throwable, Unit] => Unit) {
+
+    /** The turn ended without a render (`Right`), or failed (`Left`). */
+    def apply(result: Either[Throwable, Unit]): Unit = done(result.map(_ => false))
+
+    /** The render of the turn published its patch and confirmed the navigation. */
+    def rendered(): Unit = done(Right(true))
+  }
 
   final class DelayInstance[F[_]: Effect, S, M](
     delay: Delay[F, S, M],

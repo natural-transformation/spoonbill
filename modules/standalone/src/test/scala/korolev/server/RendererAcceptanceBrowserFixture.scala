@@ -1,12 +1,12 @@
 package spoonbill.server
 
 import avocet.RendererCollisionWitnesses
-import java.net.InetSocketAddress
+import java.net.{InetSocketAddress, URLDecoder}
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.*
 import spoonbill.Router
@@ -78,29 +78,83 @@ object RendererAcceptanceBrowserFixture {
     def remove(device: String, session: String): Unit = underlying.remove(device, session)
   }
 
-  /** The route of the `resume` scenario: `/orders/<stage>`. */
+  /**
+   * A hold on the route changes of a run (the `hold-route` and `release-route`
+   * controls). While it is held, the state of a route waits for the release:
+   * the server has taken the history event, but has neither rendered the new
+   * route nor published its handlers. `waiting` counts the route changes that
+   * wait for the release.
+   */
+  final class RouteHold {
+    private val gate    = new AtomicReference[Option[Promise[Unit]]](None)
+    private val counter = new AtomicInteger(0)
+    def hold(): Unit    = { gate.compareAndSet(None, Some(Promise[Unit]())); () }
+    def release(): Unit = gate.getAndSet(None).foreach(_.trySuccess(()))
+    def waiting: Int    = counter.get()
+    def await(implicit ec: ExecutionContext): Future[Unit] = gate.get() match {
+      case None => Future.unit
+      case Some(released) =>
+        counter.incrementAndGet()
+        released.future.andThen { case _ => counter.decrementAndGet() }
+    }
+  }
+
+  /**
+   * The route of the `resume` scenario: `/orders/<stage>`. An address can also
+   * name the stage in its query, `/orders?stage=<stage>`, and bare `/orders`
+   * is stage 0: a first address whose query matters.
+   */
   private val orders = "/orders/([0-9]{1,6})".r
-  private val resumeRouter = Router[Future, Int](
+  private def resumeRouter(hold: RouteHold)(implicit ec: ExecutionContext) = Router[Future, Int](
     { case stage => PathAndQuery.fromString(s"/orders/$stage") },
-    { case path if orders.matches(path.mkString) => _ => Future.successful(path.mkString.stripPrefix("/orders/").toInt) }
+    {
+      case path if orders.matches(path.mkString) => _ => hold.await.map(_ => path.mkString.stripPrefix("/orders/").toInt)
+      case path if path.asPath.mkString == "/orders" =>
+        _ => hold.await.map(_ => path.param("stage").flatMap(_.toIntOption).getOrElse(0))
+    }
+  )
+
+  /**
+   * The route of the `resume-unicode` scenario: `/café/<stage>`. The server
+   * writes the URL as it is, and the browser encodes it, so the route takes
+   * the path in either form.
+   */
+  private val cafe = "/café/([0-9]{1,6})".r
+  private def unicodeRouter(hold: RouteHold)(implicit ec: ExecutionContext) = Router[Future, Int](
+    { case stage => PathAndQuery.fromString(s"/café/$stage") },
+    {
+      case path if cafe.matches(URLDecoder.decode(path.mkString, StandardCharsets.UTF_8)) =>
+        _ => hold.await.map(_ => URLDecoder.decode(path.mkString, StandardCharsets.UTF_8).stripPrefix("/café/").toInt)
+    }
   )
 
   final class Run(val scenario: String, val presetIds: Boolean, val fault: String)(implicit ec: ExecutionContext) {
-    val counters = new RendererAcceptanceDocuments.Counters
-    val storage  = new ForgettingStorage
-    private val resume = scenario == "resume" || scenario == "resume-heartbeat"
+    val counters  = new RendererAcceptanceDocuments.Counters
+    val storage   = new ForgettingStorage
+    val routeHold = new RouteHold
+    private val resume =
+      scenario == "resume" || scenario == "resume-heartbeat" || scenario == "resume-long" || scenario == "resume-unicode"
     val service = spoonbillService(
       SpoonbillServiceConfig[Future, Int, Any](
         stateLoader = StateLoader.default(0),
         document = RendererAcceptanceDocuments.document(scenario, counters),
-        router = if (resume) resumeRouter else Router.empty[Future, Int],
+        router =
+          if (scenario == "resume-unicode") unicodeRouter(routeHold)
+          else if (resume) resumeRouter(routeHold)
+          else Router.empty[Future, Int],
         presetIds = presetIds,
         // `resume-heartbeat` runs the heartbeat of long polling: a tick every
         // 500 ms and the default limit of two.
         heartbeatInterval = if (scenario == "resume-heartbeat") 500.millis else 1.minute,
         // A short idle timeout lets a case end a view by blocking its polls.
-        // A poll waits half of it.
-        sessionIdleTimeout = if (resume) 6.seconds else 60.seconds,
+        // A poll waits half of it, and a navigation the deadline of a poll:
+        // 4.5 s. `resume-long` gives a navigation 20 s, for the cases that hold
+        // one on purpose, so that a slow run does not reach the bound, and so
+        // does `resume-unicode`, the same page at `/café/<stage>`.
+        sessionIdleTimeout =
+          if (scenario == "resume-long" || scenario == "resume-unicode") 30.seconds
+          else if (resume) 6.seconds
+          else 60.seconds,
         stateStorage = storage,
         reporter = silentReporter
       )
@@ -108,7 +162,7 @@ object RendererAcceptanceBrowserFixture {
     def output(source: Stream[Future, Bytes]): Stream[Future, Bytes] =
       if (fault == "truncate-names") source.map(truncateNames) else source
     def metadata: String =
-      s"""{"scenario":"$scenario","presetIds":$presetIds,"fault":"$fault","witnessesCollide":true,${counters.json},"names":${RendererAcceptanceDocuments.Names.json}}"""
+      s"""{"scenario":"$scenario","presetIds":$presetIds,"fault":"$fault","witnessesCollide":true,${counters.json},"routeWaits":${routeHold.waiting},"names":${RendererAcceptanceDocuments.Names.json}}"""
   }
 
   def main(args: Array[String]): Unit = {
@@ -140,6 +194,13 @@ object RendererAcceptanceBrowserFixture {
           // The stored state of this session is gone, as after a removal.
           active.storage.forget(path.stripPrefix("/fixture/forget/"))
           HttpResponse.ok[Future]("forgotten")
+        } else if (path == "/fixture/hold-route" && request.method == Request.Method.Post) {
+          // Route changes wait from now on, until the release.
+          active.routeHold.hold()
+          HttpResponse.ok[Future]("held")
+        } else if (path == "/fixture/release-route" && request.method == Request.Method.Post) {
+          active.routeHold.release()
+          HttpResponse.ok[Future]("released")
         } else active.service.http(request)
       }
       def ws(request: WebSocketRequest[Future]): Future[WebSocketResponse[Future]] = {

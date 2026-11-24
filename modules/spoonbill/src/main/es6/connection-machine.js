@@ -47,6 +47,17 @@ export function initialConnection() {
     // URL of the pause. An application's popstate listener can pause the page
     // after the URL has changed (the review of PR 39 at 17fd8ee0, finding 2).
     missedNavigation: false,
+    // A history message of long polling is posted and has no answer yet. The
+    // next one waits for that answer, so the view takes them in the order of
+    // the page. The POST belongs to the page, not to its transport: its
+    // answer counts also after a pause.
+    historyPosted: false,
+    // How many times the page resumed after a pause: a navigation that waits
+    // for its confirmation gets more time once, after a resume.
+    resumeCount: 0,
+    // A view went away while a navigation of the document waited for its
+    // confirmation: the page reloads instead of connecting again.
+    navigationUnresolved: false,
     // A framework reload of an unguarded page has started: 'now', or 'waiting'
     // for the end of the reload window. From then on no transport is current.
     reloading: null,
@@ -119,6 +130,13 @@ function requestFailed(status) {
 export const messageSent = status => !requestFailed(status);
 
 /**
+ * Whether the view took a history message, by the status of its POST: only a
+ * `200` says so. A `410` means that no view could take it, and a `400` or
+ * `403` that the view refused it (the code review of 2026-11-24, finding 4).
+ */
+export const historyAccepted = status => status === 200;
+
+/**
  * A message that the server took while the link is interrupted: the link is
  * back, so a poll that hangs on the broken link or waits out its back-off is
  * replaced at once. Once for each interruption: the poll that this started is
@@ -138,8 +156,9 @@ export const resumes = (state, location) =>
   !state.paused || (state.pausedAt === location && !state.missedNavigation);
 
 /**
- * What becomes of a message of the bridge: 'send' it, or, while long polling
- * is paused, 'keep' a reply to a request of the server for the transport that
+ * What becomes of a message of the bridge: 'send' it, on long polling 'post' a
+ * history message or let it wait in the 'queue', or, while long polling is
+ * paused, 'keep' a reply to a request of the server for the transport that
  * resumes the page, note a 'missed' navigation, or 'drop' it. The server
  * waits for a reply until its RPC timeout, so a short pause must not lose one
  * (the review of PR 39 at 17fd8ee0, finding 3); a user event is dropped as
@@ -147,10 +166,52 @@ export const resumes = (state, location) =>
  * machine), and `kept` the number of replies that the page keeps already.
  */
 export function outgoingMessage(state, kind, kept) {
-  if (!state.paused) return 'send';
+  if (!state.paused) {
+    // On long polling every message is a POST of its own, and two of them can
+    // arrive in either order. A history message is posted only when the one
+    // before it has its answer ('post'); until then it waits ('queue'). So the
+    // view takes Back and Forward in the order of the page.
+    if (kind === 'history' && state.transport === ConnectionType.LONG_POLLING)
+      return state.historyPosted ? 'queue' : 'post';
+    return 'send';
+  }
   if (kind === 'reply') return kept < MAX_KEPT_REPLIES ? 'keep' : 'drop';
   return kind === 'history' ? 'missed' : 'drop';
 }
+
+/**
+ * What becomes of the history message that waited for the answer to the one
+ * before it. After a POST that the server took it is posted ('post'), or, on
+ * a page that is paused meanwhile, its navigation is missed ('missed':
+ * connect() reloads). After a POST that failed the page recovers, and every
+ * message that waited goes with it ('drop'); so does one of a page that
+ * reloads.
+ */
+export function nextHistory(state, sent) {
+  if (!sent || state.reloading !== null) return 'drop';
+  return state.paused ? 'missed' : 'post';
+}
+
+/**
+ * A navigation of the page is unresolved: its history message failed, or its
+ * confirmation did not come in time. The page reloads at the URL that it
+ * shows ('reload'). A paused page waits until it resumes ('defer'): it notes
+ * a missed navigation, so connect() reloads it then. So does a page whose
+ * user disconnected it without a reconnect, whose socket may still be
+ * closing ('hold'): it notes the navigation as unresolved (connectReloads).
+ * A socket that is lost, or a disconnect that connects again, reloads now
+ * (the third review of 2026-11-24).
+ */
+export const navigationRecovery = state => state.paused ? 'defer' : !state.reconnect ? 'hold' : 'reload';
+
+/**
+ * Whether a connect() reloads the page instead of connecting: a view went
+ * away while a navigation of the document waited for its confirmation. A new
+ * view would render the state that the server has, under the URL that the
+ * user chose, which may be the route that the user left; the page reloads
+ * at its URL instead (the re-review of 2026-11-24).
+ */
+export const connectReloads = state => state.navigationUnresolved;
 
 /**
  * The socket of a WebSocket transport for connectStarts, by its readyState
@@ -260,7 +321,7 @@ export function connectionStep(state, event) {
       // review of PR 39 at f55be0f2).
       return event.transport === ConnectionType.LONG_POLLING ?
         {...state, transport: event.transport, epoch: event.epoch, replaced: false, paused: false, pausedAt: null,
-          missedNavigation: false, closing: false} :
+          missedNavigation: false, closing: false, resumeCount: state.paused ? state.resumeCount + 1 : state.resumeCount} :
         {...state, transport: event.transport, epoch: event.epoch, deliveredEpoch: null, triedWebSocket: true,
           paused: false, pausedAt: null, missedNavigation: false, closing: false};
     case 'open':
@@ -294,6 +355,12 @@ export function connectionStep(state, event) {
     case 'navigation-missed':
       // Only a paused page misses a navigation; the next transport ends the mark.
       return state.paused && !state.missedNavigation ? {...state, missedNavigation: true} : state;
+    case 'history-posted':
+      return {...state, historyPosted: true};
+    case 'navigation-unresolved':
+      return {...state, navigationUnresolved: true};
+    case 'history-answered':
+      return {...state, historyPosted: false};
     case 'connect':
       // An explicit connect() asks to be connected: a socket that is still
       // closing reconnects when its close ends, and so does a later drop.

@@ -179,7 +179,13 @@ final class ApplicationInstance[
     if (devMode.isActive && !frontend.guarded) Effect[F].delay(devMode.saveRenderContext(renderContext))
     else Effect[F].unit
 
-  private def onState(maybeRenderCallback: Seq[Effect.Promise[Unit]]): F[Unit] =
+  private def onState(maybeRenderCallback: Seq[Effect.Promise[Unit]]): F[Unit] = {
+    // The navigations whose turns this render completes (an unguarded view's
+    // history events). The render sends its own URL with the number of the
+    // last of them, and confirms each once its patch is published and the
+    // render is done, so a URL and a confirmation always belong to the display
+    // that this render publishes (the third review of 2026-11-24).
+    val navigations = maybeRenderCallback.collect { case turn: ComponentInstance.NavigationTurn => turn.navigation }.sorted
     (for {
       snapshot <- topLevelComponentInstance.stateSnapshot
       producedState = snapshot[S](Id.TopLevel).getOrElse(initialState)
@@ -188,7 +194,10 @@ final class ApplicationInstance[
              .lift(producedState)
              .fold(Effect[F].unit) { uri => authorizeProduced match {
                case Some(_) => frontend.changePageUrlAuthorized(rootPath ++ uri, outputAuthorization(producedState))
-               case None => frontend.changePageUrl(rootPath ++ uri)
+               case None => navigations.lastOption match {
+                 case Some(navigation) => frontend.changeNavigationUrl(rootPath ++ uri, navigation)
+                 case None             => frontend.changePageUrl(rootPath ++ uri)
+               }
              }}
       _ <- Effect[F].delay {
              ensureActive()
@@ -225,13 +234,20 @@ final class ApplicationInstance[
            }
       _ <- Effect[F].delay { timers.flush(); topLevelComponentInstance.dropObsoleteMisc() }
       _ <- saveRenderContextIfNecessary()
+      // The patch and the handlers of the routes are published, and the render
+      // is done: confirm the navigations, before any later render sends a frame.
+      _ <- navigations.foldLeft(Effect[F].unit)((sent, navigation) => sent.flatMap(_ => frontend.confirmNavigation(navigation)))
       // Make spoonbill ready to next render
-      _ = maybeRenderCallback.foreach(_(Right(())))
+      _ = maybeRenderCallback.foreach {
+            case turn: ComponentInstance.NavigationTurn => turn.rendered()
+            case callback                               => callback(Right(()))
+          }
     } yield ()).recoverF { case error =>
       abortRender()
       maybeRenderCallback.foreach(_(Left(error)))
       Effect[F].fail(error)
     }
+  }
 
   private def awaitReadiness: F[Unit] =
     awaitReady.fold(Effect[F].unit)(ready => Effect[F].delayAsync(ready()))
@@ -248,19 +264,70 @@ final class ApplicationInstance[
   private def beforeAdmittedInteraction: F[Unit] =
     if (frontend.guarded) awaitReadiness else beforeInteraction
 
+  /** The state that the router makes of `path` from `current`, or none: then the state stays. */
+  private def routed(path: PathAndQuery)(current: S): F[Option[S]] =
+    router.toState
+      .lift(path)
+      .fold(Effect[F].delay(Option.empty[S]))(_(current).map(Some(_)))
+
   private def onHistory(message: Frontend.BrowserHistoryMessage): F[Unit] =
-    frontend.runUserAction(
-      beforeAdmittedInteraction
-        .flatMap(_ =>
-          topLevelComponentInstance.updateFromHistory { current =>
-            router.toState
-              .lift(message.path)
-              .fold(Effect[F].delay(Option.empty[S]))(_(current).map(Some(_)))
-          }
+    message.confirmedNavigation match {
+      case Some(counter) => frontend.runUserAction(confirmedHistory(message, counter), message.renderRevision)
+      case None =>
+        frontend.runUserAction(
+          beforeAdmittedInteraction
+            .flatMap(_ => topLevelComponentInstance.updateFromHistory(routed(message.path)))
+            .flatMap(_ => message.sensitiveNavigation.fold(Effect[F].unit)(frontend.completeSensitiveNavigation)),
+          message.renderRevision
         )
-        .flatMap(_ => message.sensitiveNavigation.fold(Effect[F].unit)(frontend.completeSensitiveNavigation)),
-      message.renderRevision
-    )
+    }
+
+  /**
+   * The history event of an unguarded view. Its page drops user events until
+   * the view confirms the navigation, and the view confirms it only once the
+   * render of the route has published its patch and its handlers. So a click
+   * that the user made on the display that they left never meets the handlers
+   * of either route. The render that publishes the route sends its URL with
+   * the number of the navigation, and the page gives that URL to the entry
+   * that the user chose; that render confirms the navigation once it has
+   * published its patch (`onState`). A path that the router does not route changes nothing,
+   * so no render confirms it: the view confirms it at once, and the entry
+   * keeps its URL.
+   *
+   * A route that fails, or whose render fails, retires the view: its routes,
+   * handlers, callbacks, timers and renders start no more, also not the
+   * history events that wait behind this one. Its page reloads at the URL
+   * that it shows: a long-polling view closes, and its next poll is told to
+   * reload; a WebSocket view tells its page to reload, and the reload ends the
+   * socket. A denial counts as a failure too, unless the view is being torn
+   * down: then its page learns from its transport (the code review of
+   * 2026-11-24).
+   */
+  private def confirmedHistory(message: Frontend.BrowserHistoryMessage, counter: Long): F[Unit] =
+    beforeAdmittedInteraction
+      .flatMap(_ => topLevelComponentInstance.updateFromHistoryRendered(routed(message.path), counter))
+      .flatMap(rendered => if (rendered) Effect[F].unit else frontend.confirmNavigation(counter))
+      .recoverF {
+        case _: spoonbill.server.SessionAccessDenied if tearingDown => Effect[F].unit
+        case error =>
+          reporter.error("Unable to route a history event", error)
+          Effect[F]
+            .delay {
+              lifecycle.modify(ApplicationLifecycleMachine.retire)
+              frontend.retire()
+            }
+            .flatMap(_ => if (frontend.resuming) frontend.close() else frontend.reload())
+            .recover { case _ => () }
+      }
+
+  /**
+   * Whether this view is being torn down, or was retired: its application is
+   * not active, its admission is closed, or its frontend admits no work. A
+   * denial of its work then needs no recovery.
+   */
+  private def tearingDown: Boolean =
+    !ApplicationLifecycleMachine.active(lifecycle.get) || !topLevelComponentInstance.admits ||
+      !frontend.interactionIsLive
 
   private def onEvent(dem: DomEventMessage): F[Unit] = {
     // The event's admission check authorized the first handler: only

@@ -2,7 +2,7 @@ import {ConnectionType, initialConnection, connectionStep, connectionOpened, con
   currentTransport, currentSchedule, authenticationPending, nextTransport, socketSenderStep,
   linkUp, noticeShown, pollDelay, pollAnswer, reloadWait, transportNote, frameKind, afterFrame,
   reloadStarted, messageSent, repollsAfterMessage, resumes, connectStarts, socketState, outgoingMessage,
-  pollDeadline} from './connection-machine.js';
+  pollDeadline, nextHistory, navigationRecovery, historyAccepted, connectReloads} from './connection-machine.js';
 export {ConnectionType} from './connection-machine.js';
 
 const MAX_PENDING_SENDS = 128;
@@ -65,6 +65,10 @@ export class Connection {
     // page sends (outgoingMessage).
     /** @type {!Array<string>} */
     this._kept = [];
+    // The history messages that wait for the answer to the history POST
+    // before them, with their answer callbacks: handles only (outgoingMessage).
+    /** @type {!Array<{data: string, onAnswer: (function(boolean)|undefined)}>} */
+    this._historyQueue = [];
     this._sessionId = sessionId;
     this._serverRootPath = serverRootPath;
 
@@ -134,8 +138,10 @@ export class Connection {
           this._lifecycle = connectionStep(this._lifecycle, {type: 'prefer-long-polling'});
       } catch (_) {}
     }
-    // On long polling a send can say whether the server took the message.
-    /** @type {?function(string, function(boolean)=): *} */
+    // On long polling a send can say whether the server took the message: a
+    // heartbeat through its second argument, a history message through its
+    // third (publish).
+    /** @type {?function(string, function(boolean)=, function(boolean)=): *} */
     this._send = null;
     this._clearPendingSends = () => {};
     this._dispatcher = window.document.createDocumentFragment();
@@ -469,15 +475,27 @@ export class Connection {
       retry = setTimeout(() => { retry = null; poll(); }, pollDelay(this._lifecycle));
     };
 
-    /** @type {function(string)} */
-    let publish = (data, onAnswer) => {
+    /**
+     * `onAnswer` is the answer callback of a heartbeat. `settle` is that of a
+     * history message: it hears whether the server took the message whatever
+     * became of this transport since, as the POST belongs to the page (decision
+     * 4A of the history-ordering fix). A history POST without an answer within
+     * the deadline of a poll is given up, and so fails.
+     * @type {function(string, (function(boolean)|undefined)=, (function(boolean)|undefined)=): boolean}
+     */
+    let publish = (data, onAnswer, settle) => {
       if (!isCurrent()) return false;
+      let postDeadline = null;
 
       let onReadyStateChange = (event) => {
         let request = event.target;
         if (request.readyState !== 4)
           return;
         if (heartbeat !== null && heartbeat.request === request) heartbeat = null;
+        if (settle) {
+          clearTimeout(postDeadline);
+          settle(historyAccepted(request.status));
+        }
         // A transport that was replaced or paused counts nothing, a heartbeat
         // neither (the review of PR 39 at 628bbd99).
         if (!isCurrent())
@@ -505,6 +523,8 @@ export class Connection {
       request.send(data);
       // Only a heartbeat has an answer callback.
       if (onAnswer) heartbeat = {request, listener: onReadyStateChange};
+      // Aborting moves the request to its end with status 0: it settles as failed.
+      if (settle) postDeadline = setTimeout(() => request.abort(), this._pollDeadline);
       return true;
     }
 
@@ -644,8 +664,10 @@ export class Connection {
       this._reconnectTimer = null;
     }
     this._clearPendingSends();
-    // The replies that a paused page kept belong to a view that the reload ends.
+    // The replies that a paused page kept belong to a view that the reload ends,
+    // and so do the history messages that wait.
     this._kept.length = 0;
+    this._historyQueue.length = 0;
     if (!shown && noticeShown(this._lifecycle)) this._dispatcher.dispatchEvent(this._createEvent('interrupt'));
     const reload = () => {
       try { if (storage !== null) storage.setItem(this._reloadKey, String(Date.now())); } catch (_) {}
@@ -769,9 +791,12 @@ export class Connection {
 
   /**
    * @param {string} data
-   * @param {function(boolean)} [onAnswer] on long polling: whether the server took it
+   * @param {function(boolean)} [onAnswer] on long polling: whether the server
+   *   took it. For a history message it is called for every outcome, also
+   *   after a pause, and for one that waits only once it was posted; it may
+   *   return whether the navigation counts as delivered (_postHistory).
    * @param {string} [kind] 'reply', 'history' or 'other' (messageKind of the bridge machine)
-   * @return {boolean} whether a transport took the message, or the paused page keeps it
+   * @return {boolean} whether a transport took the message, or the page keeps it
    */
   send(data, onAnswer, kind = 'other') {
     if (authenticationPending(this._lifecycle) || !this._send) return false;
@@ -785,10 +810,96 @@ export class Connection {
         return false;
       case 'drop':
         return false;
+      case 'queue':
+        // A history message waits for the answer to the one before it.
+        this._historyQueue.push({data, onAnswer});
+        return true;
+      case 'post':
+        return this._postHistory(data, onAnswer);
       default:
         return Boolean(this._send(data, onAnswer));
     }
   }
+
+  /**
+   * @private
+   * Posts a history message of long polling. Its answer, whatever became of
+   * the transport since, goes to `onAnswer`, and then the next history
+   * message that waits is posted. What happens to that one follows whether the
+   * navigation counts as delivered, which `onAnswer` may say: a confirmation
+   * proves it also when the answer is lost (the code review of 2026-11-24,
+   * finding 1). Without a boolean from it, the answer itself decides.
+   * @return {boolean} whether the current transport posted it
+   */
+  _postHistory(data, onAnswer) {
+    const settle = sent => {
+      this._lifecycle = connectionStep(this._lifecycle, {type: 'history-answered'});
+      const delivered = onAnswer ? onAnswer(sent) : sent;
+      this._nextHistory(typeof delivered === 'boolean' ? delivered : sent);
+    };
+    if (!this._send(data, undefined, settle)) return false;
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'history-posted'});
+    return true;
+  }
+
+  /**
+   * @private
+   * After the answer to a history POST: the history message that waits next
+   * (nextHistory). One that the transport cannot post fails, and the page
+   * recovers through its answer callback.
+   */
+  _nextHistory(sent) {
+    const next = this._historyQueue.shift();
+    if (next === undefined) return;
+    switch (nextHistory(this._lifecycle, sent)) {
+      case 'post':
+        if (this._postHistory(next.data, next.onAnswer)) return;
+        this._historyQueue.length = 0;
+        if (next.onAnswer) next.onAnswer(false);
+        return;
+      case 'missed':
+        this._lifecycle = connectionStep(this._lifecycle, {type: 'navigation-missed'});
+        this._historyQueue.length = 0;
+        return;
+      default:
+        this._historyQueue.length = 0;
+    }
+  }
+
+  /**
+   * A navigation of the page is unresolved: its history message failed, or
+   * its confirmation did not come in time. The page reloads at the URL that it
+   * shows, through the reload guard; a paused page, or one that its user
+   * disconnected, reloads when connect() is called (navigationRecovery).
+   */
+  recoverNavigation() {
+    switch (navigationRecovery(this._lifecycle)) {
+      case 'defer': this._lifecycle = connectionStep(this._lifecycle, {type: 'navigation-missed'}); break;
+      case 'hold': this._lifecycle = connectionStep(this._lifecycle, {type: 'navigation-unresolved'}); break;
+      default: this.reloadPage();
+    }
+  }
+
+  /**
+   * The bridge of a view that went away had a navigation that waited for its
+   * confirmation: the next connect() reloads the page (connectReloads).
+   */
+  navigationUnresolved() {
+    this._lifecycle = connectionStep(this._lifecycle, {type: 'navigation-unresolved'});
+  }
+
+  /** @return {boolean} Long polling is paused by Spoonbill.disconnect(). */
+  get paused() { return this._lifecycle.paused; }
+
+  /** @return {number} How many times the page resumed after a pause. */
+  get resumeCount() { return this._lifecycle.resumeCount; }
+
+  /**
+   * @return {number} The bound in milliseconds of the wait for the answer to a
+   *   history POST, and of the wait for the confirmation of a navigation: the
+   *   deadline of a poll.
+   */
+  get navigationBound() { return this._pollDeadline; }
 
   /** A message could not be sent: on long polling that is a failed poll. */
   messageFailed() { this._linkFailed(); }
@@ -892,6 +1003,11 @@ export class Connection {
 
   connect() {
 
+    // A view went away while a navigation waited: the page reloads at its URL.
+    if (connectReloads(this._lifecycle)) {
+      this.reloadPage();
+      return;
+    }
     // The page asks to be connected. One connection at a time: a pending
     // attempt, or a socket that is connecting, open or closing, takes this
     // call; a closing one reconnects when its close ends.

@@ -413,8 +413,10 @@ test('redesign client regressions against real source modules', { timeout: 10000
     await t.test('unguarded actions remain available after a canceled departure without a recovery protocol', () => {
       browser();
       const sent = [];
+      // The history event below waits for a view whose capability is not known
+      // yet, so the bridge reports it unresolved when it goes away.
       const connection = {dispatcher: new EventTargetFake(), send: value => sent.push(JSON.parse(value)),
-        disconnect: () => assert.fail('Unexpected reconnect')};
+        navigationUnresolved() {}, disconnect: () => assert.fail('Unexpected reconnect')};
       const bridge = new Bridge({heartbeat: {interval: '0'}}, connection);
       try {
         window.dispatchEvent({type: 'beforeunload'});
@@ -423,6 +425,285 @@ test('redesign client regressions against real source modules', { timeout: 10000
         bridge._onCallback(CallbackType.HISTORY, '/different');
         assert.deepEqual(sent, [[0, '0:1:click'], [1, 'ordinary:fresh'], [3, '/different']]);
       } finally { bridge.destroy(); }
+    });
+
+    // The history-ordering fix: an unguarded page drops its user events from a
+    // history event until its view confirms the navigation (procedure 24).
+    const navigationPage = (longPolling = true) => {
+      const timers = new Set();
+      const saved = {setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout};
+      globalThis.setTimeout = (callback, delay) => { const timer = {callback, delay}; timers.add(timer); return timer; };
+      globalThis.clearTimeout = timer => { timers.delete(timer); };
+      browser();
+      const sent = [], answers = [];
+      const connection = {dispatcher: new EventTargetFake(), longPolling,
+        page: longPolling ? '33333333-3333-4333-8333-333333333333' : undefined,
+        transportEpoch: {}, paused: false, resumeCount: 0, navigationBound: 1500, recovered: 0,
+        send(value, onAnswer, kind) { sent.push({kind, message: JSON.parse(value)}); if (onAnswer) answers.push(onAnswer); return true; },
+        recoverNavigation() { this.recovered++; },
+        unresolved: 0, navigationUnresolved() { this.unresolved++; },
+        disconnect: () => assert.fail('Unexpected reconnect')};
+      const bridge = new Bridge({heartbeat: {interval: '0'}}, connection);
+      const frame = data => connection.dispatcher.dispatchEvent({type: 'message', data});
+      const fire = () => {
+        const [timer] = timers;
+        assert.ok(timer, 'Expected a running deadline');
+        timers.delete(timer); timer.callback();
+      };
+      const kinds = () => sent.map(entry => entry.kind);
+      const restore = () => { bridge.destroy(); Object.assign(globalThis, saved); };
+      return {connection, bridge, sent, answers, timers, frame, fire, kinds, restore};
+    };
+
+    await t.test('an unguarded page drops user events after Back until its view confirms the route', () => {
+      const page = navigationPage();
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        page.bridge._onCallback(CallbackType.CUSTOM_CALLBACK, 'act:now');
+        assert.deepEqual(page.kinds(), ['history'], 'a user event went out before the confirmation');
+        assert.equal(page.timers.size, 0, 'the wait for the confirmation starts with the answer to the POST');
+        page.answers[0](true);
+        assert.deepEqual([...page.timers].map(timer => timer.delay), [1500]);
+        page.frame('[24,1]');
+        assert.equal(page.timers.size, 0, 'the confirmation ends the wait');
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.kinds(), ['history', 'other']);
+        // The click keeps the page and revision of the display on which it was made.
+        assert.deepEqual(page.sent.at(-1).message, [7, '33333333-3333-4333-8333-333333333333:0:0:0:1:click']);
+        assert.equal(page.connection.recovered, 0);
+      } finally { page.restore(); }
+    });
+
+    await t.test('Back then Forward: only the confirmation of Forward reopens the input', () => {
+      const page = navigationPage();
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/1');
+        page.answers[0](true);
+        page.answers[1](true);
+        page.frame('[24,1]');
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.kinds(), ['history', 'history'], 'the confirmation of Back reopened the input');
+        page.frame('[24,2]');
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.kinds(), ['history', 'history', 'other']);
+        assert.equal(page.timers.size, 0);
+      } finally { page.restore(); }
+    });
+
+    await t.test('a confirmation that does not come in time reloads the page; a pause, and the resume after it, give it more time', () => {
+      const page = navigationPage();
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        page.answers[0](true);
+        page.connection.paused = true;
+        page.fire();
+        assert.equal(page.connection.recovered, 0, 'a paused page recovered');
+        page.connection.paused = false;
+        page.connection.resumeCount++;
+        page.connection.transportEpoch = {};
+        page.fire();
+        assert.equal(page.connection.recovered, 0, 'a page that resumed recovered at once');
+        page.fire();
+        assert.equal(page.connection.recovered, 1);
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.kinds(), ['history'], 'the input reopened without a confirmation');
+      } finally { page.restore(); }
+    });
+
+    await t.test('connect() on an active page gives a navigation no more time', () => {
+      // The code review of 2026-11-24, finding 5: a new transport before every
+      // deadline put the recovery off for ever.
+      const page = navigationPage();
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        page.answers[0](true);
+        page.connection.transportEpoch = {};
+        page.fire();
+        assert.equal(page.connection.recovered, 1, 'a replaced transport put the recovery off');
+      } finally { page.restore(); }
+    });
+
+    await t.test('the answer callback of a history POST says whether the navigation was delivered', () => {
+      // The code review of 2026-11-24, finding 1: Back was confirmed and its
+      // answer lost while Forward waited; the connection must post Forward.
+      const page = navigationPage();
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/1');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/2');
+        page.frame('[24,1]');
+        assert.equal(page.answers[0](false), true, 'a confirmed navigation counts as delivered');
+        assert.equal(page.connection.recovered, 0);
+        assert.equal(page.answers[1](false), false);
+        assert.equal(page.connection.recovered, 1);
+      } finally { page.restore(); }
+    });
+
+    await t.test('a navigation before the first frame of the view waits until the view says how it confirms', () => {
+      // The code review of 2026-11-24, finding 3: Back before [17,true] went
+      // unprotected, and a click reached the old route's handler.
+      const capable = navigationPage();
+      try {
+        capable.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        capable.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        capable.frame('[17,true]');
+        capable.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(capable.kinds(), ['history'], 'a click went out before the confirmation');
+        capable.frame('[24,1]');
+        capable.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(capable.kinds(), ['history', 'other']);
+      } finally { capable.restore(); }
+      // A view of an older server confirms none: its first frame lets the page go on.
+      const older = navigationPage();
+      try {
+        older.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        older.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(older.kinds(), ['history']);
+        older.frame('[17]');
+        older.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(older.kinds(), ['history', 'other']);
+        older.answers[0](true);
+        assert.equal(older.timers.size, 0, 'a page that waits for nothing has no deadline');
+      } finally { older.restore(); }
+    });
+
+    await t.test('a failed history POST recovers, but not after the confirmation came first', () => {
+      const failed = navigationPage();
+      try {
+        failed.frame('[17,true]');
+        failed.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        failed.answers[0](false);
+        assert.equal(failed.connection.recovered, 1);
+      } finally { failed.restore(); }
+      const proven = navigationPage();
+      try {
+        proven.frame('[17,true]');
+        proven.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        proven.frame('[24,1]');
+        proven.answers[0](false);
+        assert.equal(proven.connection.recovered, 0, 'a late POST error undid a confirmed navigation');
+        assert.equal(proven.timers.size, 0);
+      } finally { proven.restore(); }
+    });
+
+    await t.test('a page whose view does not confirm navigations waits for none', () => {
+      // A view of an older server: its first frame has no flag.
+      const page = navigationPage();
+      try {
+        page.frame('[17]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.kinds(), ['history', 'other']);
+        page.answers[0](true);
+        assert.equal(page.timers.size, 0);
+        // A confirmation that it never announced changes nothing.
+        page.frame('[24,1]');
+        assert.equal(page.connection.recovered, 0);
+      } finally { page.restore(); }
+    });
+
+    await t.test('on a WebSocket the wait for the confirmation starts with the history event', () => {
+      const page = navigationPage(false);
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+        assert.deepEqual(page.answers, [], 'a WebSocket message has no answer');
+        assert.deepEqual([...page.timers].map(timer => timer.delay), [1500]);
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.kinds(), ['history']);
+        page.frame('[24,1]');
+        page.bridge._onCallback(CallbackType.DOM_EVENT, '0:1:click');
+        assert.deepEqual(page.sent.at(-1).message, [0, '0:1:click']);
+      } finally { page.restore(); }
+    });
+
+    await t.test('the page skips the URLs of the view while a navigation waits, and adds the URLs after it', () => {
+      // The code review of 2026-11-24, finding 2: the URL of Back's route came
+      // while Forward waited and replaced Forward's entry of the tab.
+      const page = navigationPage();
+      const entries = [];
+      window.history = {pushState: (state, title, url) => entries.push(['push', url]),
+        replaceState: (state, title, url) => entries.push(['replace', url])};
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/1');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/2');
+        page.frame('[6,"/orders/1"]');
+        page.frame('[24,1]');
+        page.frame('[6,"/orders/2"]');
+        page.frame('[24,2]');
+        // A transition of the application after the navigation adds an entry.
+        page.frame('[6,"/orders/3"]');
+        assert.deepEqual(entries, [['push', '/orders/3']]);
+      } finally { page.restore(); delete window.history; }
+    });
+
+    await t.test('the URL that the view sends for the navigation that the page waits for takes the entry that the user chose', () => {
+      // The re-review of 2026-11-24: the page skipped every URL while it
+      // waited, the server's URL of the route that won too, so the tab kept
+      // the alias that the user had opened.
+      const page = navigationPage();
+      const entries = [];
+      window.history = {pushState: (state, title, url) => entries.push(['push', url]),
+        replaceState: (state, title, url) => entries.push(['replace', url])};
+      try {
+        page.frame('[17,true]');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0001');
+        page.bridge._onCallback(CallbackType.HISTORY, '/orders/0002');
+        // Back's URLs come while Forward waits: skipped, numbered or not.
+        page.frame('[6,"/orders/1"]');
+        page.frame('[6,"/orders/1",1]');
+        page.frame('[24,1]');
+        page.frame('[6,"/orders/2"]');
+        page.frame('[6,"/orders/2",2]');
+        page.frame('[24,2]');
+        assert.deepEqual(entries, [['replace', '/orders/2']]);
+      } finally { page.restore(); delete window.history; }
+    });
+
+    await t.test('a bridge that goes away while a navigation waits tells its connection; one with none pending does not', () => {
+      // The re-review of 2026-11-24: the bridge of a reconnect knew nothing of
+      // the navigation, and took a click on the display that the user left.
+      const page = navigationPage(false);
+      page.frame('[17,true]');
+      page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+      page.restore();
+      assert.equal(page.connection.unresolved, 1);
+      const settled = navigationPage(false);
+      settled.frame('[17,true]');
+      settled.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+      settled.frame('[24,1]');
+      settled.restore();
+      assert.equal(settled.connection.unresolved, 0);
+    });
+
+    await t.test('Back to an entry without history state sends the path and the query of that entry', () => {
+      // The third review of 2026-11-24: the page sent the path that it had at
+      // its start, without the query, so `/orders?stage=1` was routed as
+      // `/orders`, and the URL of that route took the entry.
+      const page = navigationPage(false);
+      try {
+        page.frame('[17,true]');
+        window.location.pathname = '/orders';
+        window.location.search = '?stage=1';
+        window.dispatchEvent({type: 'popstate', state: null});
+        assert.deepEqual(page.sent.at(-1).message, [3, '/orders?stage=1']);
+      } finally { page.restore(); }
+    });
+
+    await t.test('a bridge that was destroyed takes no late answer to its history POST', () => {
+      const page = navigationPage();
+      page.frame('[17,true]');
+      page.bridge._onCallback(CallbackType.HISTORY, '/orders/0');
+      page.restore();
+      page.answers[0](false);
+      assert.equal(page.connection.recovered, 0);
     });
 
     await t.test('terminal guarded controllers suppress actions even without a pending departure', () => {

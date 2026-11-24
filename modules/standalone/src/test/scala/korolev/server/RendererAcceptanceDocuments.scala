@@ -20,7 +20,8 @@ import spoonbill.state.javaSerialization.*
  */
 object RendererAcceptanceDocuments {
 
-  val scenarios: Set[String] = Set("long-names", "collisions", "encoding", "first-patch", "resume", "resume-heartbeat")
+  val scenarios: Set[String] =
+    Set("long-names", "collisions", "encoding", "first-patch", "resume", "resume-heartbeat", "resume-long", "resume-unicode")
 
   /** Handler invocations observed by the service; read through the status control. */
   final class Counters {
@@ -259,6 +260,10 @@ object RendererAcceptanceDocuments {
       case "resume"      => resume(run, stage)
       // The same page, with a short heartbeat (see the fixture).
       case "resume-heartbeat" => resume(run, stage)
+      // The same page, with a long idle timeout (see the fixture).
+      case "resume-long" => resume(run, stage)
+      // The same page at `/café/<stage>`, with a long idle timeout (see the fixture).
+      case "resume-unicode" => resume(run, stage)
     }
     frame(run, stage, content)
   }

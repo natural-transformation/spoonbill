@@ -28,15 +28,18 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     val storage: StateManager[Future] = StateManager.cached[Future](),
     authorize: Option[() => Future[Unit]] = None,
     recovery: Boolean = false,
-    ready: Option[() => Future[Unit]] = None
+    ready: Option[() => Future[Unit]] = None,
+    router: Router[Future, Int] = Router.empty[Future, Int]
   ) {
     val worker                              = new Worker
     val clock                               = new Deadlines
     val reports                             = new Reports
     given Reporter                          = reports
     given scala.concurrent.ExecutionContext = worker
+    // The messages of the page, for a case that navigates.
+    val input = Queue[Future, String]()
     val frontend = new Frontend[Future](
-      Queue[Future, String]().stream,
+      input.stream,
       None,
       authorize = authorize,
       viewRecoveryEpoch = if (recovery) Some(ViewOwnershipEpoch.initial) else None
@@ -50,7 +53,7 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
       0,
       document,
       Root,
-      Router.empty[Future, Int],
+      router,
       (rc, add) =>
         new StatefulRenderContext[Context.Binding[Future, Int, Unit]] {
           def currentContainerId: Id                                  = rc.currentContainerId
@@ -115,6 +118,48 @@ class TimerApplicationSpec extends AnyFlatSpec with Matchers {
     result(f.storage.read[Int](Id.TopLevel)) shouldBe Some(6)
     f.clock.active shouldBe empty
     f.reports.errors.map(_._1).toSet shouldBe Set("Unable to process state update")
+    f.close()
+  }
+
+  it should "fire no timer of a view whose route failed" in {
+    // The re-review of 2026-11-24: a timer that was armed before the route
+    // failed ran its reducer once the view had retired, and wrote the state.
+    // The output stays unread, as a page that has not read the reload yet.
+    val broken = Router[Future, Int](
+      PartialFunction.empty,
+      { case path if path.mkString == "/broken" => _ => Future.failed(new IllegalStateException("A broken route")) }
+    )
+    val binding = ctx.timer.after(ctx.timerId("notice"), tickDelay).update(StateUpdate.Modify[Int](_ + 1))
+    val f       = new App(_ => Html(body(binding)), router = broken)
+    f.start()
+    f.clock.active.size shouldBe 1
+    f.input.offerUnsafe("""[3,"/broken"]""") shouldBe true
+    f.worker.drain()
+    f.reports.errors.map(_._1) shouldBe Vector("Unable to route a history event")
+    f.fire()
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe None
+    f.close()
+  }
+
+  it should "start no delay of a view whose route failed" in {
+    // The third review of 2026-11-24: a delay (`ctx.delay`), which runs on
+    // another path than a timer, was armed before the route failed and ran
+    // its effect once the view had retired, writing the state. The output
+    // stays unread, as a page that has not read the reload yet.
+    val broken = Router[Future, Int](
+      PartialFunction.empty,
+      { case path if path.mkString == "/broken" => _ => Future.failed(new IllegalStateException("A broken route")) }
+    )
+    @volatile var ran = 0
+    val delayed = ctx.delay(1.millis) { access => ran += 1; access.transition(_ + 1) }
+    val f       = new App(_ => Html(body(delayed)), router = broken)
+    f.start()
+    f.input.offerUnsafe("""[3,"/broken"]""") shouldBe true
+    f.worker.drain()
+    f.reports.errors.map(_._1) shouldBe Vector("Unable to route a history event")
+    f.fire()
+    ran shouldBe 0
+    result(f.storage.read[Int](Id.TopLevel)) shouldBe None
     f.close()
   }
 

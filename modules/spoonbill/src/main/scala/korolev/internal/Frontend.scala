@@ -158,7 +158,26 @@ final class Frontend[F[_]: Effect](
 
   private[spoonbill] def authorizeInteraction(): F[Unit] = authorizeWith(authorize)
 
-  private[spoonbill] def interactionIsLive: Boolean = Connection.live(connection)
+  /** Whether the view starts application work: false once closed, replaced or retired. */
+  private[spoonbill] def interactionIsLive: Boolean = Connection.admitsWork(connection)
+
+  /**
+   * An unguarded view whose route failed takes no more work: callbacks,
+   * timers and history events are refused from now on. Its output stays
+   * open, so the reload frame that follows still reaches its page.
+   */
+  private[spoonbill] def retire(): Unit = { advanceConnection(Connection.retire); () }
+
+  /**
+   * Admits a delay (`ctx.delay`) that fires, after authorization. An unguarded
+   * view that is closed or retired starts none, as it starts no timer or
+   * callback; its output stays open for the reload frame. A guarded view
+   * checks its authority as before (the third review of 2026-11-24).
+   */
+  private[spoonbill] def admitDelay(): F[Unit] =
+    authorizeInteraction().flatMap { _ =>
+      if (guarded || interactionIsLive) Effect[F].unit else Effect[F].fail(new SessionAccessDenied)
+    }
 
   private[spoonbill] def selectLiveInteraction[A](select: => A): Option[A] = renderPublication.synchronized {
     if (interactionIsLive) Some(select) else None
@@ -283,6 +302,29 @@ final class Frontend[F[_]: Effect](
       .flatMap(_ => sendRaw(s"[24,$counter]", protectedOutput = false, rejectIfFull = true))
       .recoverF { case error => close().flatMap(_ => Effect[F].fail(error)) }
 
+  /**
+   * Confirms navigation `counter` of an unguarded view to its page, with the
+   * procedure that completes a guarded navigation (24). Called only once the
+   * route of that history event has been rendered and published, so the
+   * page has applied the route's patch when it reads this. The page drops
+   * its user events from the history event until then, and with them every
+   * click on the display that the user left.
+   */
+  private[spoonbill] def confirmNavigation(counter: Long): F[Unit] =
+    send(Procedure.SensitiveNavigationComplete.code, counter)
+
+  /**
+   * The URL of the render that publishes the route of navigation `counter` of
+   * an unguarded view, in place of its plain URL frame. A page that waits for
+   * that navigation gives this URL to the entry of its tab that the user
+   * chose, and skips any other URL while it waits. An older client takes it
+   * as a plain change of the URL and ignores the number; since it is the
+   * render's only URL frame, such a client changes its URL once, as before
+   * (the reviews of 2026-11-24).
+   */
+  private[spoonbill] def changeNavigationUrl(pq: PathAndQuery, counter: Long): F[Unit] =
+    send(Procedure.ChangePageUrl.code, pq.mkString, counter)
+
   private def cleanup(steps: List[() => F[Unit]], firstError: Option[Throwable] = None): F[Unit] =
     steps match {
       case Nil => firstError.fold(Effect[F].unit)(Effect[F].fail[Unit])
@@ -367,14 +409,21 @@ final class Frontend[F[_]: Effect](
     staleResult: () => Option[A],
     obsoleteResult: Option[A] = None
   ): F[A] =
-    if (!guarded) obsoleteResult match {
-      // A browser callback of a view that resumes is checked against its
-      // published revision right before it runs, as a DOM event is.
-      case Some(discarded) if Connection.checkedBeforeRun(resumes, browserInput = true) =>
-        checkRenderRevision(expectedRevision, ObsoleteRevision.Discard)
-          .flatMap(_ => Effect[F].delayAsync(operation))
-          .recover { case ObsoleteBrowserEvent => discarded }
-      case _ => Effect[F].delayAsync(operation)
+    if (!guarded) Effect[F].delay(interactionIsLive).flatMap {
+      // A view that was closed or retired starts nothing: a browser callback
+      // is dropped, and a user action is denied (the code review of
+      // 2026-11-24).
+      case false => obsoleteResult.fold(Effect[F].fail[A](new SessionAccessDenied))(Effect[F].pure(_))
+      case true =>
+        obsoleteResult match {
+          // A browser callback of a view that resumes is checked against its
+          // published revision right before it runs, as a DOM event is.
+          case Some(discarded) if Connection.checkedBeforeRun(resumes, browserInput = true) =>
+            checkRenderRevision(expectedRevision, ObsoleteRevision.Discard)
+              .flatMap(_ => Effect[F].delayAsync(operation))
+              .recover { case ObsoleteBrowserEvent => discarded }
+          case _ => Effect[F].delayAsync(operation)
+        }
     }
     else
       Effect[F].promise[A] { callback =>
@@ -634,9 +683,18 @@ final class Frontend[F[_]: Effect](
   val browserHistoryMessages: Stream[F, BrowserHistoryMessage] =
     rawBrowserHistoryChanges.mapAsync { case Incoming(_, args, revision, _) =>
       Effect[F].delay {
-        val counter = Option.when(guarded)(advanceConnection(Connection.navigate).navigation)
-        if (counter.exists(_ > 9007199254740991L)) throw new SessionAccessDenied
-        BrowserHistoryMessage(PathAndQuery.fromString(args), revision, counter)
+        // Every view numbers its history events, in the order in which they
+        // arrive. A guarded view confirms one at once, after its route state
+        // is written; an unguarded view confirms one after its route is
+        // published (`confirmedNavigation`).
+        val counter = advanceConnection(Connection.navigate).navigation
+        if (counter > 9007199254740991L) throw new SessionAccessDenied
+        BrowserHistoryMessage(
+          PathAndQuery.fromString(args),
+          revision,
+          sensitiveNavigation = Option.when(guarded)(counter),
+          confirmedNavigation = Option.when(!guarded)(counter)
+        )
       }.flatMap { message =>
         // Retire before joining the user queue: an earlier disclosure may be
         // waiting for its acknowledgement and must be released first.
@@ -929,8 +987,16 @@ final class Frontend[F[_]: Effect](
   def setEventCounter(id: Id, eventType: String, n: Int): F[Unit] =
     send(Procedure.SetEventCounter.code, id.mkString, eventType, n)
 
+  /**
+   * The first frame of a view. An unguarded view adds `true`: it confirms
+   * each navigation once its route is published (`confirmNavigation`), so
+   * its page may hold its user events until then. A page waits for no
+   * confirmation unless its view said so, and a client that does not know
+   * the flag passes it to a function that takes no argument.
+   */
   def resetEventCounters(): F[Unit] =
-    send(Procedure.ResetEventCounters.code)
+    if (guarded) send(Procedure.ResetEventCounters.code)
+    else send(Procedure.ResetEventCounters.code, true)
 
   private[spoonbill] def readyForUserEvents(): F[Unit] =
     send(Procedure.ReadyForUserEvents.code, recoversView)
@@ -1361,10 +1427,19 @@ object Frontend {
     override def toString: String = s"DomEventMessage($eventCounter,$target,$eventType,<redacted>)"
   }
 
+  /**
+   * @param sensitiveNavigation
+   *   the number of the navigation in a guarded view, confirmed after its
+   *   route state is written
+   * @param confirmedNavigation
+   *   the number of the navigation in an unguarded view, confirmed after its
+   *   route is published
+   */
   final case class BrowserHistoryMessage(
     path: PathAndQuery,
     renderRevision: Option[Long],
-    sensitiveNavigation: Option[Long] = None
+    sensitiveNavigation: Option[Long] = None,
+    confirmedNavigation: Option[Long] = None
   )
 
   sealed abstract class Procedure(final val code: Int) {
@@ -1396,7 +1471,7 @@ object Frontend {
     case object ReadyForUserEvents          extends Procedure(21) // (requires durable baseline)
     case object PresentSensitive            extends Procedure(22)
     case object ClearSensitive              extends Procedure(23)
-    case object SensitiveNavigationComplete extends Procedure(24)
+    case object SensitiveNavigationComplete extends Procedure(24) // (navigation); also confirms an unguarded navigation
     case object SensitiveDepartureComplete  extends Procedure(25)
     case object RecoverAuthentication       extends Procedure(26) // (ceremony lookup only; ordinary authorization required)
 
