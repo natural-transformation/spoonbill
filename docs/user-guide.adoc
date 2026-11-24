@@ -1,9 +1,9 @@
-= Spoonbill 10 User Guide
+= Spoonbill 11 User Guide
 Aleksey Fomkin <a@fomkin.org>
 :source-highlighter: highlight.js
 :sectnums:
 :toc:
-:version: 10.0.1
+:version: 11.0.0
 :scala-version: 3.3.8
 :code: https://github.com/natural-transformation/spoonbill/blob/v{version}/
 
@@ -26,6 +26,10 @@ Presentation state is distinct from domain storage and authentication authority.
 The browser remains an untrusted input source. For account-bearing applications,
 use the guarded authentication integration described in <<authentication>>.
 The small public examples below intentionally have no accounts.
+
+Version 11 changes the extension contract, Future effect instances and stream
+behavior. Upgrade every Spoonbill module together and recompile consumers. See
+link:migration-v11.md[the 11.0 migration guide].
 
 Version 10 upgrades rendering to Avocet 2 and adds the portable UI recovery
 API and `spoonbill-recovery-testkit` for opt-in external snapshot payload storage.
@@ -729,8 +733,7 @@ sensitive content. Deferred external work is not part of the new timer API.
 
 === Extensions
 
-NOTE: This section describes the extension contract of Spoonbill 11, the next
-major release. An application on 10 finds the differences in the
+NOTE: When upgrading extensions from Spoonbill 10, follow the
 link:migration-v11.md[migration notes].
 
 An `Extension` is server code that lives as long as one attached view. Use it
