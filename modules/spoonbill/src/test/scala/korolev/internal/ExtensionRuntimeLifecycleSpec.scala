@@ -190,7 +190,9 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     // The check of state 1 passes, and the view ends before the callback runs.
     gate.success(())
     f.logged shouldBe empty
+    f.runtime.retainedDelivery shouldBe true
     f.result(f.runtime.destroy())
+    f.runtime.retainedDelivery shouldBe false
     // An extension that cleans up after the state it last saw must get state 0.
     f.taken() shouldBe Vector("a.onDestroy(0)")
   }

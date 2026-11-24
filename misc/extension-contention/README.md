@@ -22,7 +22,9 @@ pooling is reported only for the contended statistic, not as a new four-cell gat
 
 The baseline and candidate both include the correctness fixes in `ba9cd772`.
 The candidate moves the delivery worker’s progress into a separate atomic
-reference. Both builds ran the same fixture. All 36 trials passed its callback
+reference. This moves the writes off the runtime object. The JVM determines
+physical cache-line placement, including after garbage collection. Both
+builds ran the same fixture. All 36 trials passed its callback
 count, per-writer order, backlog, teardown and histogram checks.
 
 Three pairs per workload met the throughput, delivery p99 and allocation
@@ -33,6 +35,11 @@ allocation stayed within 0.01%. The ranges overlap. The one-minute load at
 startup was 9.74, above the release cutoff of 2.00. The collections are
 diagnostic and each is reported separately.
 [Trial data, artifact hashes and paired results](evidence/2026-11-24-extension-delivery-progress.json)
+
+For independent views, the candidate allocated 977.50, 1,072.03 and 977.98
+bytes per notification across the three JVMs. Main ranged from 1,071.21 to
+1,072.33. The reported 91.22% is the ratio of their medians. The cause of
+the lower allocation in two candidate trials remains unverified.
 
 ## Workloads and controls
 
@@ -131,6 +138,8 @@ Retained evidence files:
   the `d806539c` result described in ADR 0004.
 - [Fresh `d057488e` comparison](evidence/2026-11-18-d057488e-main.json). Contended
   delivery p99 misses the guide; aggregate acceptance remains unresolved.
+- [Delivery progress compared with its parent](evidence/2026-11-24-extension-delivery-progress.json).
+  All four workloads met the parent-relative budgets in a diagnostic run.
 
 Intermediate exploratory screens and variant patches from earlier pilot iterations
 were pruned before merge.
