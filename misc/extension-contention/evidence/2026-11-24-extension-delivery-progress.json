@@ -1,0 +1,433 @@
+{
+  "schema": "spoonbill-extension-parent-comparison-v1",
+  "sources": {
+    "stock": "ba9cd772e3c5ba2424e1e042e85a6715688abf60",
+    "source": {
+      "tag": "cell",
+      "base": "ba9cd772e3c5ba2424e1e042e85a6715688abf60",
+      "patchSha256": "b8c7f49be1753dd7128305c827f5c55e8f1bd5f255d48581d7c724f77ff76b4a",
+      "sourceSha256": {
+        "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": "0902b4026bf42dce38e19ec3504611060c6fd1c0c9c0b8fe7b849e9d3d18a0f0"
+      },
+      "sourceBasis": "Candidate source files reconstructed from the retained tag patch against the archived stock tree. Class hashes identify the binary inputs."
+    }
+  },
+  "classification": {
+    "fourWorkloads": "diagnostic",
+    "focused": "diagnostic",
+    "startedUtc": "2026-11-24T21:26:59Z",
+    "startupLoadAverages": [
+      9.74,
+      11.12,
+      11.03
+    ],
+    "loadOrderMinutes": [
+      1,
+      5,
+      15
+    ]
+  },
+  "protocol": {
+    "declarationSha256": "bac451e43596ea8a157feed86dccc71e4570b9d4c24c779f859b5c1240bd100a",
+    "flags": [
+      "-Xms256m",
+      "-Xmx256m",
+      "-XX:+UseG1GC",
+      "-XX:ActiveProcessorCount=8"
+    ],
+    "java": "21.0.8",
+    "warmupSeconds": 5,
+    "measurementSeconds": 5,
+    "jvmPerTrial": 1,
+    "full": {
+      "fixtureLabelToArm": {
+        "baseline": "stock",
+        "pilot": "source"
+      },
+      "alternatingPairsPerWorkload": 3
+    },
+    "focused": {
+      "stockArm": "stock",
+      "sourceArm": "source",
+      "alternatingPairs": 6
+    },
+    "statistics": "Ratios of arm medians; ranges across fresh JVMs. No pooling.",
+    "scope": "Both collections compare the source candidate with unchanged main at the same base revision. The numerical budgets apply relative to that parent."
+  },
+  "fourWorkloadComparison": {
+    "classification": "diagnostic",
+    "allWorkloadsMeetParentBudgets": true,
+    "allocationBoundaryVerified": true,
+    "thresholdsAgainstStock": {
+      "throughputMin": 0.95,
+      "deliveryP99Max": 1.1,
+      "allocationMax": 1.1
+    },
+    "workloads": [
+      {
+        "scenario": "isolated",
+        "meetsParentBudgets": true,
+        "stock": {
+          "throughput": {
+            "median": 1154284.2115209915,
+            "min": 1102827.5887118322,
+            "max": 1189752.469129136
+          },
+          "p99": {
+            "median": 3.35,
+            "min": 3.141,
+            "max": 3.656
+          },
+          "allocation": {
+            "median": 1072.0938416209574,
+            "min": 1071.2072593607113,
+            "max": 1072.330895724297
+          }
+        },
+        "source": {
+          "throughput": {
+            "median": 1155465.4857149313,
+            "min": 1132507.635860968,
+            "max": 1170056.662405576
+          },
+          "p99": {
+            "median": 3.219,
+            "min": 2.926,
+            "max": 3.236
+          },
+          "allocation": {
+            "median": 977.9827049695609,
+            "min": 977.4998619985749,
+            "max": 1072.0329529393562
+          }
+        },
+        "sourceOverStock": {
+          "throughput": 1.001023382440953,
+          "deliveryP99Ms": 0.9608955223880596,
+          "bytesPerNotification": 0.9122174449681525
+        }
+      },
+      {
+        "scenario": "contended",
+        "meetsParentBudgets": true,
+        "stock": {
+          "throughput": {
+            "median": 2399712.1536798966,
+            "min": 2277742.2613959317,
+            "max": 2476972.4629770876
+          },
+          "p99": {
+            "median": 0.701,
+            "min": 0.645,
+            "max": 0.801
+          },
+          "allocation": {
+            "median": 1066.1350552802533,
+            "min": 1066.1144101542895,
+            "max": 1066.2149177891288
+          }
+        },
+        "source": {
+          "throughput": {
+            "median": 2470252.9111701716,
+            "min": 2425551.9763914384,
+            "max": 2635013.13047184
+          },
+          "p99": {
+            "median": 0.705,
+            "min": 0.594,
+            "max": 0.923
+          },
+          "allocation": {
+            "median": 1066.0033558717737,
+            "min": 1065.9577602041968,
+            "max": 1066.1683544091927
+          }
+        },
+        "sourceOverStock": {
+          "throughput": 1.0293955078662673,
+          "deliveryP99Ms": 1.0057061340941513,
+          "bytesPerNotification": 0.9998764702390872
+        }
+      },
+      {
+        "scenario": "extensions",
+        "meetsParentBudgets": true,
+        "stock": {
+          "throughput": {
+            "median": 105137.63427608286,
+            "min": 104917.95614998008,
+            "max": 105203.62405097293
+          },
+          "p99": {
+            "median": 24.4,
+            "min": 23.4,
+            "max": 24.6
+          },
+          "allocation": {
+            "median": 2376.953449506996,
+            "min": 2376.6464404544454,
+            "max": 2377.9624674018646
+          }
+        },
+        "source": {
+          "throughput": {
+            "median": 106902.28012192283,
+            "min": 106435.42586360038,
+            "max": 107359.84304771306
+          },
+          "p99": {
+            "median": 23.9,
+            "min": 21.9,
+            "max": 24.6
+          },
+          "allocation": {
+            "median": 2376.452166038184,
+            "min": 2164.2749627589096,
+            "max": 2378.241235099856
+          }
+        },
+        "sourceOverStock": {
+          "throughput": 1.016784150204542,
+          "deliveryP99Ms": 0.9795081967213115,
+          "bytesPerNotification": 0.9997891067370646
+        }
+      },
+      {
+        "scenario": "backlog",
+        "meetsParentBudgets": true,
+        "stock": {
+          "throughput": {
+            "median": 140512.82679319166,
+            "min": 140378.02153921005,
+            "max": 143383.25289508875
+          },
+          "p99": {
+            "median": 64.5,
+            "min": 64,
+            "max": 65.3
+          },
+          "allocation": {
+            "median": 1087.7714411011893,
+            "min": 1087.1577966989062,
+            "max": 1088.1450580319383
+          }
+        },
+        "source": {
+          "throughput": {
+            "median": 142577.45128179688,
+            "min": 142567.7844857244,
+            "max": 143574.36094616898
+          },
+          "p99": {
+            "median": 64.3,
+            "min": 64,
+            "max": 64.9
+          },
+          "allocation": {
+            "median": 1087.8765749179554,
+            "min": 1087.4061152192605,
+            "max": 1088.2577416154438
+          }
+        },
+        "sourceOverStock": {
+          "throughput": 1.0146934947913613,
+          "deliveryP99Ms": 0.9968992248062015,
+          "bytesPerNotification": 1.0000966506499376
+        }
+      }
+    ]
+  },
+  "focused": {
+    "classification": "focused diagnostic",
+    "java": "21.0.8",
+    "trialCount": 12,
+    "pairs": [
+      {
+        "round": 1,
+        "stockP99Ms": 0.727,
+        "sourceP99Ms": 0.913,
+        "sourceP99Direction": "higher"
+      },
+      {
+        "round": 2,
+        "stockP99Ms": 0.935,
+        "sourceP99Ms": 0.721,
+        "sourceP99Direction": "lower"
+      },
+      {
+        "round": 3,
+        "stockP99Ms": 0.648,
+        "sourceP99Ms": 0.901,
+        "sourceP99Direction": "higher"
+      },
+      {
+        "round": 4,
+        "stockP99Ms": 0.949,
+        "sourceP99Ms": 0.627,
+        "sourceP99Direction": "lower"
+      },
+      {
+        "round": 5,
+        "stockP99Ms": 0.746,
+        "sourceP99Ms": 0.688,
+        "sourceP99Direction": "lower"
+      },
+      {
+        "round": 6,
+        "stockP99Ms": 0.928,
+        "sourceP99Ms": 0.671,
+        "sourceP99Direction": "lower"
+      }
+    ],
+    "summary": {
+      "stock": {
+        "notificationsPerSecond": {
+          "min": 2290120.8710932047,
+          "median": 2356761.3490815535,
+          "max": 2438678.3350278684
+        },
+        "deliveryP99Ms": {
+          "min": 0.648,
+          "median": 0.837,
+          "max": 0.949
+        },
+        "bytesPerNotification": {
+          "min": 1065.8105427105215,
+          "median": 1066.1682773915759,
+          "max": 1066.2956862362787
+        }
+      },
+      "source": {
+        "notificationsPerSecond": {
+          "min": 2360350.1661724853,
+          "median": 2468708.8877685065,
+          "max": 2515955.126029637
+        },
+        "deliveryP99Ms": {
+          "min": 0.627,
+          "median": 0.7044999999999999,
+          "max": 0.913
+        },
+        "bytesPerNotification": {
+          "min": 1066.0401571285133,
+          "median": 1066.0949066709877,
+          "max": 1066.4074067129075
+        }
+      }
+    },
+    "sourceOverStock": {
+      "notificationsPerSecond": 1.0475005832604052,
+      "deliveryP99Ms": 0.8416965352449223,
+      "bytesPerNotification": 0.9999311827953016
+    }
+  },
+  "manifest": {
+    "hashAlgorithm": "SHA-256; JARs hash raw bytes; class-directory hashes digest the ordered JSON array of [relative file name, raw file digest].",
+    "harness": {"ExtensionRuntimeBenchmark.scala":"afdaa6b4fb2ab0ac9e1e7e13d4c09a15fecb6212019c5dc5fb375f284bab511b","prepare.sh":"1555de0c805d5f8d1c2df83ab9317e2a1d7f3681e381d0fca169233e3eeb2e03","run.sh":"8faaf233949d95de7b0a199db6ef09da74246b8490e975c68080226886759e44","analyze.mjs":"9d706ff51143a25caca4b5f75ba6fe701f07d5f7333ff81cd4d1fbcaaf0a32f1","check-gate.mjs":"b2443613c7385149f569055abaa11d17fee4ddfeb9e16022cec8ef2e1e99d004"},
+    "classpaths": {
+      "stock": [
+        {"entry":"modules/spoonbill/target/scala-3.3.8/test-classes","treeSha256":"e7f1d1bba0858b4de8e4b0bff036820feeac321c6ebf920cfa365ae499a1fb4c","classes":{"spoonbill/internal/ExtensionRuntimeBenchmark$$anon$1.class":"5a657dce6d7ca2d55c9610549c609dcd8a3ec7a599f782cc23b2cc01a9a1897f","spoonbill/internal/ExtensionRuntimeBenchmark$.class":"dfe47bbc5dc8487c209624a81c71a8e16208f21759fac68809833dd711027709","spoonbill/internal/ExtensionRuntimeBenchmark$Histogram.class":"e4194154d41189f6dfb9494b5e03618f781467fc45ffce63f0258bb7f4cd080e","spoonbill/internal/ExtensionRuntimeBenchmark$Value$.class":"c0feb4d1c44cb9ab285a2891d2a66417ef9e6c50d12b153e7cd379ef256c445b","spoonbill/internal/ExtensionRuntimeBenchmark$Value.class":"bff3587018783d8d914c56d81ecf89c552f6cb8daff17125bf05e3f4426a9116","spoonbill/internal/ExtensionRuntimeBenchmark.class":"1084e7199a8aba16b47e16bfd58d7b2db35192ea68c7d728a588a03ebd13d99e"}},
+        {"entry":"modules/spoonbill/target/scala-3.3.8/classes","treeSha256":"e4155679d9f28725dc44121ac2f76b2380df6e06e9d975e63d95fbae86f2c457","classes":{"spoonbill/internal/ExtensionRuntime$$anon$1.class":"7d979892b49416a71a7d381c23c397417ab862fe987ed9d3f1659ea95f1c76e6","spoonbill/internal/ExtensionRuntime$$anon$2.class":"0214567d27a096a59a3dc9f4cf69913d629e8f8074bfacb189f732187b2f225c","spoonbill/internal/ExtensionRuntime$$anon$3.class":"8a2572a0a2b303193a5afc078de774b018ae6730179d640a6c1e1070294756a5","spoonbill/internal/ExtensionRuntime$$anon$4.class":"3fdb976c9568d7c88de24e0c539cdbefb61854b6315a11bbdd44eb884c38e49b","spoonbill/internal/ExtensionRuntime$.class":"f4b75a2637250bcfbe38b9933bec4057d566efc69613bc39cb4447cf1d4d9716","spoonbill/internal/ExtensionRuntime$Active.class":"4a1a5f4c75910fded676a15bdc0f145132df64afd2f0fd1fee7066f40921c0f3","spoonbill/internal/ExtensionRuntime$Bound.class":"30869c00cfe9ff2a7469bdb420937c56630ab1b3b3c880b47cde53f426f01aa7","spoonbill/internal/ExtensionRuntime$Checks.class":"006e3b1c24251143f645fe7050f1b7717c6fa02d7f80696a4e72ab6922b7779c","spoonbill/internal/ExtensionRuntime$Held$.class":"67a8c88de2341ae1fb0be5b6ded1a07e316f303f811d73c46481e151211d99da","spoonbill/internal/ExtensionRuntime$Held.class":"c5fa6966f003d602ec14de8f49ccd87a8974f4c2a3ea5811f4190792b4964e85","spoonbill/internal/ExtensionRuntime$SetupAborted.class":"b18c5dc4252cb80851cb847c77cad8f186c478e41e4e6301f2ed03c3b109d387","spoonbill/internal/ExtensionRuntime$TimedOut.class":"3d2c3024a582669c2da01c1697a1a8bb787f8bf9c2c5cab69c04bb4d2288b6c2","spoonbill/internal/ExtensionRuntime.class":"cb59a2f9465bd42e832daa22e861bc4bfd7dd0fc07b7626b6385f0b85f004bc6"}},
+        {"entry":"modules/core/target/scala-3.3.8/classes","treeSha256":"19c8eaf6ba1d953b451f26e15d5668ba6bf28629d37550beb81d6db7203acb04"},
+        {"entry":"modules/effect/target/scala-3.3.8/classes","treeSha256":"94470b4e773c6d0311d6c97a629abfad9163542f0f17ac48ab3571a788501072"},
+        {"entry":"modules/bytes/target/scala-3.3.8/classes","treeSha256":"049a523069b3490817f4673ee4daf939f08e57d33c2d415700ae5f43c5b4bb5a"},
+        {"entry":"modules/web/target/scala-3.3.8/classes","treeSha256":"cb287ce1a4169b763968e6a7aa33ddeae61cd0458b8cabec2165073e390fd1f5"},
+        {"entry":"scala3-library_3-3.3.8.jar","sha256":"2c6eace9158df8ee4485a06128a479d968c1ebfc83ae9b1a394b58429f0d1492"},
+        {"entry":"scalatest_3-3.2.9.jar","sha256":"6a528ed38912f9c69bf2a1be157871fe801bbff590eecb1a56fa25c62570e147"},
+        {"entry":"scalacheck-1-15_3-3.2.9.0.jar","sha256":"e893f07e81c2adaf61d03abdddcb67e1f81883522132fce52003b50325b92d94"},
+        {"entry":"avocet-core_3-2.0.1.jar","sha256":"196730cb718065ae1f4995d7ed1eb51ab054fdfa4cdf7b8258627fd96386dc84"},
+        {"entry":"avocet-events_3-2.0.1.jar","sha256":"7f1f61d1be7a9bac25ca09b3576e4994e4247d2dbdb3829ebc8f103b1bc9ce7a"},
+        {"entry":"scala-library-2.13.18.jar","sha256":"4e85d96ff7bc7dc627985523c3541b9917aaa08e956391380c42db21a2c4e5a0"},
+        {"entry":"scalatest-core_3-3.2.9.jar","sha256":"248674b6269578bc2f57d595f1e484fc02837ef567ba461eafb81294bce611a8"},
+        {"entry":"scalatest-featurespec_3-3.2.9.jar","sha256":"db51db398582b656cc0b90fbd1c6e5c2495125706b1f860b4cdfc5aba1832d0d"},
+        {"entry":"scalatest-flatspec_3-3.2.9.jar","sha256":"b558319f8b4835d25424381dc9b7dcc3b27353cf36dc2c28270dac59e8c8b827"},
+        {"entry":"scalatest-freespec_3-3.2.9.jar","sha256":"dfcbce7d8315dca731b2829ad233893f2dec8895543267c086f7c88a618bda97"},
+        {"entry":"scalatest-funsuite_3-3.2.9.jar","sha256":"f3aa7a6414a6f0217ab386be38da537738239f073512a00e93967ac34ff3c9d3"},
+        {"entry":"scalatest-funspec_3-3.2.9.jar","sha256":"a4d0b15fea0f73cc7af7f1e35ae291966f8652fbf811d6525294691fa6fb54d2"},
+        {"entry":"scalatest-propspec_3-3.2.9.jar","sha256":"bae00b7ce007b8cc86ffddb44246f5aa8e47055414337ddf322a9ae7c95ea809"},
+        {"entry":"scalatest-refspec_3-3.2.9.jar","sha256":"3f7a1cab9d46d6f57c694e0ddc65db009f7cd0951bbf3a3c3a660c2f52a28dee"},
+        {"entry":"scalatest-wordspec_3-3.2.9.jar","sha256":"28a649d8f73fbd7a9d02e702a5f23577b4f6e301840d002d5574728a6ba5c473"},
+        {"entry":"scalatest-diagrams_3-3.2.9.jar","sha256":"20a310d96298a2cde22e1d990f6ef61320ff38f273902aa31592e04e02d902ed"},
+        {"entry":"scalatest-matchers-core_3-3.2.9.jar","sha256":"4aee69baf7cbbd2f8c28e02fab7aead12093bf905b322a4aca9c987de58dffab"},
+        {"entry":"scalatest-shouldmatchers_3-3.2.9.jar","sha256":"5866c9f28faf5389a82d0a66f3539933325eed3a03425c9bf2f495c34f4bb370"},
+        {"entry":"scalatest-mustmatchers_3-3.2.9.jar","sha256":"2755b8558acf71603b70d10a02f9df43a216f305318dbcb442d5451f0da32c46"},
+        {"entry":"scalacheck_3-1.15.4.jar","sha256":"a344fc84ec8478b9faf550116df51e9fff822448bfe279a05fec8e16bfab34e3"},
+        {"entry":"scalactic_3-3.2.9.jar","sha256":"dde6c79aeb8ca632ac9aede0a00462b6b75d0db857bf0e9f264a2ed36efcb800"},
+        {"entry":"scalatest-compatible-3.2.9.jar","sha256":"7e5f1193af2fd88c432c4b80ce3641e4b1d062f421d8a0fcc43af9a19bb7c2eb"},
+        {"entry":"scala-xml_3-2.0.0.jar","sha256":"98485486ec710ac1851491d318a31bceef372935bc468431c0bc8aff36401ef7"},
+        {"entry":"test-interface-1.0.jar","sha256":"15f70b38bb95f3002fec9aea54030f19bb4ecfbad64c67424b5e5fea09cd749e"}
+      ],
+      "source": [
+        {"entry":"modules/spoonbill/target/scala-3.3.8/test-classes","treeSha256":"e7f1d1bba0858b4de8e4b0bff036820feeac321c6ebf920cfa365ae499a1fb4c","classes":{"spoonbill/internal/ExtensionRuntimeBenchmark$$anon$1.class":"5a657dce6d7ca2d55c9610549c609dcd8a3ec7a599f782cc23b2cc01a9a1897f","spoonbill/internal/ExtensionRuntimeBenchmark$.class":"dfe47bbc5dc8487c209624a81c71a8e16208f21759fac68809833dd711027709","spoonbill/internal/ExtensionRuntimeBenchmark$Histogram.class":"e4194154d41189f6dfb9494b5e03618f781467fc45ffce63f0258bb7f4cd080e","spoonbill/internal/ExtensionRuntimeBenchmark$Value$.class":"c0feb4d1c44cb9ab285a2891d2a66417ef9e6c50d12b153e7cd379ef256c445b","spoonbill/internal/ExtensionRuntimeBenchmark$Value.class":"bff3587018783d8d914c56d81ecf89c552f6cb8daff17125bf05e3f4426a9116","spoonbill/internal/ExtensionRuntimeBenchmark.class":"1084e7199a8aba16b47e16bfd58d7b2db35192ea68c7d728a588a03ebd13d99e"}},
+        {"entry":"modules/spoonbill/target/scala-3.3.8/classes","treeSha256":"ba301a174aaaa64143341e25f438ef8f65c5d398800b794af7ce013389b19c4c","classes":{"spoonbill/internal/ExtensionRuntime$$anon$1.class":"bcf525d5faa4e09b062caf5775e8f27b98eee1053ba8c6b2144962a0f51f2117","spoonbill/internal/ExtensionRuntime$$anon$2.class":"ee42d9ded0dec697a493d99ddc565b517b99e6b7845d4cc6dd73e2787b58358f","spoonbill/internal/ExtensionRuntime$$anon$3.class":"4a709e4b9cfbf08a4e3dd7953fd470a46c25a6409d5555cc2919532770de0da6","spoonbill/internal/ExtensionRuntime$$anon$4.class":"bcb16137d421393e0150f73c61fc566f759f772b53612260e643ba1d4785c742","spoonbill/internal/ExtensionRuntime$.class":"ff18c4ab7c16c888259823da1523382583d21b7369250e6043c6b491b0371af3","spoonbill/internal/ExtensionRuntime$Active.class":"794899b36b55d730a525dea5a294c316041343c50c3b58d20d862cb445f1b618","spoonbill/internal/ExtensionRuntime$Bound.class":"30869c00cfe9ff2a7469bdb420937c56630ab1b3b3c880b47cde53f426f01aa7","spoonbill/internal/ExtensionRuntime$Checks.class":"006e3b1c24251143f645fe7050f1b7717c6fa02d7f80696a4e72ab6922b7779c","spoonbill/internal/ExtensionRuntime$Held$.class":"099d923d0baefc103d029fe369235f84dd878df9a33f52274ef14e6b197d504f","spoonbill/internal/ExtensionRuntime$Held.class":"a56af9449cb24181a0eb366b67c5d8522e7ac5b8eb65a1482ed63f100f318eee","spoonbill/internal/ExtensionRuntime$SetupAborted.class":"48b9e44890bcf04311f14f77d38aaf49a4c7d1269cb64a8d45f2670782166d1d","spoonbill/internal/ExtensionRuntime$TimedOut.class":"de97e5535afe650914040813305763ad486afbfba34c462ac2ed2328a0d04d09","spoonbill/internal/ExtensionRuntime.class":"e824d73d31bc1fd399607f7741e6dd991c00cb3dfbdfd680d6d78b76b1f963f3"}},
+        {"entry":"modules/core/target/scala-3.3.8/classes","treeSha256":"19c8eaf6ba1d953b451f26e15d5668ba6bf28629d37550beb81d6db7203acb04"},
+        {"entry":"modules/effect/target/scala-3.3.8/classes","treeSha256":"94470b4e773c6d0311d6c97a629abfad9163542f0f17ac48ab3571a788501072"},
+        {"entry":"modules/bytes/target/scala-3.3.8/classes","treeSha256":"049a523069b3490817f4673ee4daf939f08e57d33c2d415700ae5f43c5b4bb5a"},
+        {"entry":"modules/web/target/scala-3.3.8/classes","treeSha256":"cb287ce1a4169b763968e6a7aa33ddeae61cd0458b8cabec2165073e390fd1f5"},
+        {"entry":"scala3-library_3-3.3.8.jar","sha256":"2c6eace9158df8ee4485a06128a479d968c1ebfc83ae9b1a394b58429f0d1492"},
+        {"entry":"scalatest_3-3.2.9.jar","sha256":"6a528ed38912f9c69bf2a1be157871fe801bbff590eecb1a56fa25c62570e147"},
+        {"entry":"scalacheck-1-15_3-3.2.9.0.jar","sha256":"e893f07e81c2adaf61d03abdddcb67e1f81883522132fce52003b50325b92d94"},
+        {"entry":"avocet-core_3-2.0.1.jar","sha256":"196730cb718065ae1f4995d7ed1eb51ab054fdfa4cdf7b8258627fd96386dc84"},
+        {"entry":"avocet-events_3-2.0.1.jar","sha256":"7f1f61d1be7a9bac25ca09b3576e4994e4247d2dbdb3829ebc8f103b1bc9ce7a"},
+        {"entry":"scala-library-2.13.18.jar","sha256":"4e85d96ff7bc7dc627985523c3541b9917aaa08e956391380c42db21a2c4e5a0"},
+        {"entry":"scalatest-core_3-3.2.9.jar","sha256":"248674b6269578bc2f57d595f1e484fc02837ef567ba461eafb81294bce611a8"},
+        {"entry":"scalatest-featurespec_3-3.2.9.jar","sha256":"db51db398582b656cc0b90fbd1c6e5c2495125706b1f860b4cdfc5aba1832d0d"},
+        {"entry":"scalatest-flatspec_3-3.2.9.jar","sha256":"b558319f8b4835d25424381dc9b7dcc3b27353cf36dc2c28270dac59e8c8b827"},
+        {"entry":"scalatest-freespec_3-3.2.9.jar","sha256":"dfcbce7d8315dca731b2829ad233893f2dec8895543267c086f7c88a618bda97"},
+        {"entry":"scalatest-funsuite_3-3.2.9.jar","sha256":"f3aa7a6414a6f0217ab386be38da537738239f073512a00e93967ac34ff3c9d3"},
+        {"entry":"scalatest-funspec_3-3.2.9.jar","sha256":"a4d0b15fea0f73cc7af7f1e35ae291966f8652fbf811d6525294691fa6fb54d2"},
+        {"entry":"scalatest-propspec_3-3.2.9.jar","sha256":"bae00b7ce007b8cc86ffddb44246f5aa8e47055414337ddf322a9ae7c95ea809"},
+        {"entry":"scalatest-refspec_3-3.2.9.jar","sha256":"3f7a1cab9d46d6f57c694e0ddc65db009f7cd0951bbf3a3c3a660c2f52a28dee"},
+        {"entry":"scalatest-wordspec_3-3.2.9.jar","sha256":"28a649d8f73fbd7a9d02e702a5f23577b4f6e301840d002d5574728a6ba5c473"},
+        {"entry":"scalatest-diagrams_3-3.2.9.jar","sha256":"20a310d96298a2cde22e1d990f6ef61320ff38f273902aa31592e04e02d902ed"},
+        {"entry":"scalatest-matchers-core_3-3.2.9.jar","sha256":"4aee69baf7cbbd2f8c28e02fab7aead12093bf905b322a4aca9c987de58dffab"},
+        {"entry":"scalatest-shouldmatchers_3-3.2.9.jar","sha256":"5866c9f28faf5389a82d0a66f3539933325eed3a03425c9bf2f495c34f4bb370"},
+        {"entry":"scalatest-mustmatchers_3-3.2.9.jar","sha256":"2755b8558acf71603b70d10a02f9df43a216f305318dbcb442d5451f0da32c46"},
+        {"entry":"scalacheck_3-1.15.4.jar","sha256":"a344fc84ec8478b9faf550116df51e9fff822448bfe279a05fec8e16bfab34e3"},
+        {"entry":"scalactic_3-3.2.9.jar","sha256":"dde6c79aeb8ca632ac9aede0a00462b6b75d0db857bf0e9f264a2ed36efcb800"},
+        {"entry":"scalatest-compatible-3.2.9.jar","sha256":"7e5f1193af2fd88c432c4b80ce3641e4b1d062f421d8a0fcc43af9a19bb7c2eb"},
+        {"entry":"scala-xml_3-2.0.0.jar","sha256":"98485486ec710ac1851491d318a31bceef372935bc468431c0bc8aff36401ef7"},
+        {"entry":"test-interface-1.0.jar","sha256":"15f70b38bb95f3002fec9aea54030f19bb4ecfbad64c67424b5e5fea09cd749e"}
+      ]
+    }
+  },
+  "trials": [
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"isolated-baseline-1","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5771776,"callbacks":17315328,"elapsedSeconds":5.0003075,"notificationsPerSecond":1154284.2115209915,"allocatedBytes":6189253728,"producerAllocatedBytes":1382736072,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1072.330895724297,"allocatedBytesPerSecond":1237774622.4607186,"gcPauses":40,"gcPauseTotalMs":18.077377,"gcPauseP99Ms":0.679708,"gcPauseMaxMs":0.679708,"delivery":{"count":5771776,"p50Ms":0.24,"p95Ms":1.192,"p99Ms":3.141,"p999Ms":9.611,"maxMs":125.357458,"overflow":0},"admission":{"count":5771776,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.01,"maxMs":1.944291,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:26:59Z","averages":[9.74,11.12,11.03]},"after":{"utc":"2026-11-24T21:27:09Z","averages":[13.99,11.99,11.34]}},"artifactSha256":{"jsonl":"8793bdffb1527f3b3a20ab1f88c0ca6dbf1811ada84609e51d7dcb4447d1aba9","jfr":"f909996ad9ab9fc4e20cb620b8e6f02332ad7350ba165195f1cbf7fd78961b8d"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"isolated-pilot-1","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5662985,"callbacks":16988955,"elapsedSeconds":5.000394541,"notificationsPerSecond":1132507.635860968,"allocatedBytes":5535567056,"producerAllocatedBytes":1358299008,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":977.4998619985749,"allocatedBytesPerSecond":1107026057.7664285,"gcPauses":35,"gcPauseTotalMs":16.750833,"gcPauseP99Ms":0.718959,"gcPauseMaxMs":0.718959,"delivery":{"count":5662985,"p50Ms":0.246,"p95Ms":1.216,"p99Ms":3.236,"p999Ms":11.6,"maxMs":125.445083,"overflow":0},"admission":{"count":5662985,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.012,"maxMs":2.057084,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:27:09Z","averages":[13.99,11.99,11.34]},"after":{"utc":"2026-11-24T21:27:20Z","averages":[15.99,12.48,11.52]}},"artifactSha256":{"jsonl":"46bbf1e17ab2ce504fb7ecce5941debe8e95a354f58cae61b4d5d5d6232a38b2","jfr":"3721b8c8a4cc05494099ce56cd1030c03839bba2bc692cabe1e61664f69d0455"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"isolated-pilot-2","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5777694,"callbacks":17333082,"elapsedSeconds":5.00031725,"notificationsPerSecond":1155465.4857149313,"allocatedBytes":6193878360,"producerAllocatedBytes":1382789704,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1072.0329529393562,"allocatedBytesPerSecond":1238697076.6704853,"gcPauses":39,"gcPauseTotalMs":17.636705,"gcPauseP99Ms":0.823916,"gcPauseMaxMs":0.823916,"delivery":{"count":5777694,"p50Ms":0.243,"p95Ms":1.146,"p99Ms":3.219,"p999Ms":9.593,"maxMs":86.039334,"overflow":0},"admission":{"count":5777694,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.009,"maxMs":1.902417,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:27:20Z","averages":[15.99,12.48,11.52]},"after":{"utc":"2026-11-24T21:27:30Z","averages":[17.53,12.93,11.69]}},"artifactSha256":{"jsonl":"9618957db4f2762065679c4eac3e16910e72c07d19c26d091737bdfa3cdec7e5","jfr":"7afdac1b30f47375fcde9c21fa4d1cd4946b6356d8e7b0b9ffc9c7567bb1026c"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"isolated-baseline-2","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5514568,"callbacks":16543704,"elapsedSeconds":5.000389958,"notificationsPerSecond":1102827.5887118322,"allocatedBytes":5912134392,"producerAllocatedBytes":1321158184,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1072.0938416209574,"allocatedBytesPerSecond":1182334666.2276454,"gcPauses":38,"gcPauseTotalMs":17.79167,"gcPauseP99Ms":0.742042,"gcPauseMaxMs":0.742042,"delivery":{"count":5514568,"p50Ms":0.24,"p95Ms":1.23,"p99Ms":3.656,"p999Ms":15.6,"maxMs":124.084333,"overflow":0},"admission":{"count":5514568,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.011,"maxMs":1.999584,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:27:30Z","averages":[17.53,12.93,11.69]},"after":{"utc":"2026-11-24T21:27:40Z","averages":[18.98,13.39,11.87]}},"artifactSha256":{"jsonl":"d6052c1bd9d8720b4860531e9ad77f67114b1407fe81ec5b886281020e3a891a","jfr":"b69a12aba0ce77f92da9d8d33c38b453392aa49e42a93dab641f2170d6ef51c7"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"isolated-baseline-3","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5949174,"callbacks":17847522,"elapsedSeconds":5.000346,"notificationsPerSecond":1189752.469129136,"allocatedBytes":6372798376,"producerAllocatedBytes":1418376400,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1071.2072593607113,"allocatedBytesPerSecond":1274471481.773461,"gcPauses":41,"gcPauseTotalMs":18.420791,"gcPauseP99Ms":0.690167,"gcPauseMaxMs":0.690167,"delivery":{"count":5949174,"p50Ms":0.223,"p95Ms":1.192,"p99Ms":3.35,"p999Ms":9.988,"maxMs":47.659167,"overflow":0},"admission":{"count":5949174,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.013,"maxMs":10.128916,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:27:40Z","averages":[18.98,13.39,11.87]},"after":{"utc":"2026-11-24T21:27:51Z","averages":[20.2,13.84,12.04]}},"artifactSha256":{"jsonl":"877a10e934016b9632fdc7d20e5932c91890f350c8d0aaa330bb8f17f432011c","jfr":"2c3722ea590afea838b5dc44de0b512d29ca7b8cb2c1f3523b16e500846fb135"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"isolated-pilot-3","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5850698,"callbacks":17552094,"elapsedSeconds":5.000354417,"notificationsPerSecond":1170056.662405576,"allocatedBytes":5721881456,"producerAllocatedBytes":1399027112,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":977.9827049695609,"allocatedBytesPerSecond":1144295179.6670616,"gcPauses":37,"gcPauseTotalMs":17.002746,"gcPauseP99Ms":0.694334,"gcPauseMaxMs":0.694334,"delivery":{"count":5850698,"p50Ms":0.238,"p95Ms":1.152,"p99Ms":2.926,"p999Ms":8.443,"maxMs":105.3395,"overflow":0},"admission":{"count":5850698,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.009,"maxMs":2.857916,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:27:51Z","averages":[20.2,13.84,12.04]},"after":{"utc":"2026-11-24T21:28:01Z","averages":[21.09,14.24,12.21]}},"artifactSha256":{"jsonl":"387b4248b4afee12c814d3f1aba6d3149d1e7a0deb66a86e5430188d2f238ba0","jfr":"5bd1e4ab4045743917cac1dbcd5f9ef837fee78acf66a21cc9050caf8a92c1ea"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"contended-baseline-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12385544,"callbacks":37156632,"elapsedSeconds":5.000275209,"notificationsPerSecond":2476972.4629770876,"allocatedBytes":13204406936,"producerAllocatedBytes":2896725512,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1144101542895,"allocatedBytesPerSecond":2640736036.3352356,"gcPauses":84,"gcPauseTotalMs":47.206835,"gcPauseP99Ms":0.683,"gcPauseMaxMs":0.683,"delivery":{"count":12385544,"p50Ms":0.394,"p95Ms":0.463,"p99Ms":0.701,"p999Ms":2.402,"maxMs":6.635083,"overflow":0},"admission":{"count":12385544,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.004,"p999Ms":0.018,"maxMs":3.095834,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:28:01Z","averages":[21.09,14.24,12.21]},"after":{"utc":"2026-11-24T21:28:12Z","averages":[18.78,13.96,12.13]}},"artifactSha256":{"jsonl":"3a0912316f2f08bd85b11af71cea8005875d848203e9bcf4852bb58717c89dff","jfr":"e4fa31644234e740ca47a192b5ce3cd6c01af88579f4ab54c0a6b936b48398bd"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"contended-pilot-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13175712,"callbacks":39527136,"elapsedSeconds":5.000245292,"notificationsPerSecond":2635013.13047184,"allocatedBytes":14045353208,"producerAllocatedBytes":3080670864,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.0033558717737,"allocatedBytesPerSecond":2808932839.8491697,"gcPauses":89,"gcPauseTotalMs":49.714628,"gcPauseP99Ms":0.678791,"gcPauseMaxMs":0.678791,"delivery":{"count":13175712,"p50Ms":0.373,"p95Ms":0.43,"p99Ms":0.594,"p999Ms":1.57,"maxMs":8.752458,"overflow":0},"admission":{"count":13175712,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.014,"maxMs":0.777,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:28:12Z","averages":[18.78,13.96,12.13]},"after":{"utc":"2026-11-24T21:28:22Z","averages":[16.58,13.65,12.04]}},"artifactSha256":{"jsonl":"8dd4326c68c38dc907aefc04b3e3d7402154aa8d24a96caec599e0a28b389b73","jfr":"a238cb00001987d53712995bc6addb38e8a9ff951e00ff2edcf758871cd81737"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"contended-pilot-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12352001,"callbacks":37056003,"elapsedSeconds":5.000298125,"notificationsPerSecond":2470252.9111701716,"allocatedBytes":13166711320,"producerAllocatedBytes":2888079152,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.9577602041968,"allocatedBytesPerSecond":2633185260.328853,"gcPauses":83,"gcPauseTotalMs":47.073375,"gcPauseP99Ms":1.324916,"gcPauseMaxMs":1.324916,"delivery":{"count":12352001,"p50Ms":0.392,"p95Ms":0.509,"p99Ms":0.705,"p999Ms":1.642,"maxMs":7.33625,"overflow":0},"admission":{"count":12352001,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.018,"maxMs":4.950791,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:28:22Z","averages":[16.58,13.65,12.04]},"after":{"utc":"2026-11-24T21:28:32Z","averages":[21.52,14.76,12.45]}},"artifactSha256":{"jsonl":"ef193d129e768961363a617fc7c50ca57e6e0dec2764dd10359f4d4f917ddcf6","jfr":"ac9c49bd2b93a902b986db1cffb71d5ab776a5ca96548b5e193dc19c1b896edd"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"contended-baseline-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11389248,"callbacks":34167744,"elapsedSeconds":5.000235625,"notificationsPerSecond":2277742.2613959317,"allocatedBytes":12143386120,"producerAllocatedBytes":2665452992,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.2149177891288,"allocatedBytesPerSecond":2428562777.979088,"gcPauses":77,"gcPauseTotalMs":42.165831,"gcPauseP99Ms":0.699958,"gcPauseMaxMs":0.699958,"delivery":{"count":11389248,"p50Ms":0.42,"p95Ms":0.58,"p99Ms":0.801,"p999Ms":1.666,"maxMs":7.321417,"overflow":0},"admission":{"count":11389248,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.004,"p999Ms":0.022,"maxMs":0.793833,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:28:32Z","averages":[21.52,14.76,12.45]},"after":{"utc":"2026-11-24T21:28:43Z","averages":[20.26,14.72,12.46]}},"artifactSha256":{"jsonl":"e0a4a4b2552b3dd6a05b53017fd35d3d14bb6695ad16d30a718c34ee7dbbd6cf","jfr":"e51d35346b337bf54da2473b0e286d12914ffff60975531f1166780768865c4d"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"contended-baseline-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11999131,"callbacks":35997393,"elapsedSeconds":5.000237625,"notificationsPerSecond":2399712.1536798966,"allocatedBytes":12792694192,"producerAllocatedBytes":2806198328,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1350552802533,"allocatedBytesPerSecond":2558417249.620212,"gcPauses":81,"gcPauseTotalMs":44.909668,"gcPauseP99Ms":0.693083,"gcPauseMaxMs":0.693083,"delivery":{"count":11999131,"p50Ms":0.409,"p95Ms":0.458,"p99Ms":0.645,"p999Ms":2.568,"maxMs":8.978,"overflow":0},"admission":{"count":11999131,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.005,"p999Ms":0.019,"maxMs":0.705167,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:28:43Z","averages":[20.26,14.72,12.46]},"after":{"utc":"2026-11-24T21:28:53Z","averages":[19.3,14.69,12.48]}},"artifactSha256":{"jsonl":"e157bf4d32b2a658324c804ba849fb33b6aa715629ace381bca811530ad1a123","jfr":"779c8a2ffb5b40eeba173a52d95e390d136e95d0b903a77ce1c6b05ee9b0a44b"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"contended-pilot-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12128331,"callbacks":36384993,"elapsedSeconds":5.000235459,"notificationsPerSecond":2425551.9763914384,"allocatedBytes":12930842704,"producerAllocatedBytes":2836953752,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1683544091927,"allocatedBytesPerSecond":2586046759.203225,"gcPauses":82,"gcPauseTotalMs":46.716665,"gcPauseP99Ms":0.98875,"gcPauseMaxMs":0.98875,"delivery":{"count":12128331,"p50Ms":0.399,"p95Ms":0.495,"p99Ms":0.923,"p999Ms":2.526,"maxMs":9.303666,"overflow":0},"admission":{"count":12128331,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.019,"maxMs":2.185542,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:28:53Z","averages":[19.3,14.69,12.48]},"after":{"utc":"2026-11-24T21:29:03Z","averages":[16.81,14.37,12.4]}},"artifactSha256":{"jsonl":"5501956d0b11f97045a95985f682fee0779242b06314f1deebe0780adfef81f3","jfr":"9d601b1e8cf91289b4b4716b4b806362168496791a604f7a5df9c0cba145807f"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"extensions-baseline-1","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":526568,"callbacks":4212544,"elapsedSeconds":5.018854916,"notificationsPerSecond":104917.95614998008,"allocatedBytes":1251627624,"producerAllocatedBytes":264511008,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2376.953449506996,"allocatedBytesPerSecond":249385097.78591892,"gcPauses":9,"gcPauseTotalMs":14.875583,"gcPauseP99Ms":1.855583,"gcPauseMaxMs":1.855583,"delivery":{"count":526568,"p50Ms":19.1,"p95Ms":21.1,"p99Ms":24.6,"p999Ms":30.5,"maxMs":33.720042,"overflow":0},"admission":{"count":526568,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.009,"maxMs":2.523166,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:29:04Z","averages":[16.81,14.37,12.4]},"after":{"utc":"2026-11-24T21:29:14Z","averages":[15.48,14.16,12.35]}},"artifactSha256":{"jsonl":"13461f406c89674dcec290fa0ae34549657fbb1ae19522f7e3094678e31e3d0f","jfr":"b873e75d65eeacd8fd97d761afd1d6e04ec6884890ed1ada5cc4b7b0be78ccd0"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"extensions-pilot-1","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":536572,"callbacks":4292576,"elapsedSeconds":5.019275542,"notificationsPerSecond":106902.28012192283,"allocatedBytes":1276097656,"producerAllocatedBytes":269810208,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2378.241235099856,"allocatedBytesPerSecond":254239410.71215254,"gcPauses":8,"gcPauseTotalMs":13.341126,"gcPauseP99Ms":1.775917,"gcPauseMaxMs":1.775917,"delivery":{"count":536572,"p50Ms":18.8,"p95Ms":20.5,"p99Ms":23.9,"p999Ms":33.3,"maxMs":37.237458,"overflow":0},"admission":{"count":536572,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.007,"maxMs":2.671,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:29:14Z","averages":[15.48,14.16,12.35]},"after":{"utc":"2026-11-24T21:29:24Z","averages":[13.87,13.85,12.26]}},"artifactSha256":{"jsonl":"bad778ebf7a79aaeee45229c9d400274f57dc02c7bc105e5d9c809b10c036349","jfr":"23db35da7f8744496804bd5383959cd4e6273b08db11b0ce24add9ea1bb1919e"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"extensions-pilot-2","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":534356,"callbacks":4274848,"elapsedSeconds":5.020471292,"notificationsPerSecond":106435.42586360038,"allocatedBytes":1156493312,"producerAllocatedBytes":268721632,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2164.2749627589096,"allocatedBytesPerSecond":230355527.3471724,"gcPauses":8,"gcPauseTotalMs":12.775041,"gcPauseP99Ms":1.798333,"gcPauseMaxMs":1.798333,"delivery":{"count":534356,"p50Ms":18.9,"p95Ms":20.6,"p99Ms":24.6,"p999Ms":31.1,"maxMs":34.807458,"overflow":0},"admission":{"count":534356,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.011,"maxMs":1.918125,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:29:24Z","averages":[13.87,13.85,12.26]},"after":{"utc":"2026-11-24T21:29:35Z","averages":[12.35,13.53,12.17]}},"artifactSha256":{"jsonl":"effd465a12d2efd8d0da6c05246aeffe00a929b3f2ac729169fb2489c59dca6a","jfr":"c86478b11bce91ea05ee01c0aacbd0eac33bb18b40d8692528f75bdf520b68b7"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"extensions-baseline-2","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":527764,"callbacks":4222112,"elapsedSeconds":5.019743916,"notificationsPerSecond":105137.63427608286,"allocatedBytes":1254308432,"producerAllocatedBytes":265113888,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2376.6464404544454,"allocatedBytesPerSecond":249874984.2600536,"gcPauses":8,"gcPauseTotalMs":13.315208,"gcPauseP99Ms":1.787208,"gcPauseMaxMs":1.787208,"delivery":{"count":527764,"p50Ms":19.1,"p95Ms":21.2,"p99Ms":23.4,"p999Ms":28.6,"maxMs":30.785333,"overflow":0},"admission":{"count":527764,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.011,"maxMs":1.863625,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:29:35Z","averages":[12.35,13.53,12.17]},"after":{"utc":"2026-11-24T21:29:45Z","averages":[11.14,13.23,12.08]}},"artifactSha256":{"jsonl":"73de27252fa5a8e3bc2cb294b9a5bc52636806a0d79936110ff63b10918b83bb","jfr":"e1621d250730fce4a5ebc4ac2ce3cac789f8ef4c469c4e9aa70b264767e6f532"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"extensions-baseline-3","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":528021,"callbacks":4224168,"elapsedSeconds":5.019038125,"notificationsPerSecond":105203.62405097293,"allocatedBytes":1255614120,"producerAllocatedBytes":265139192,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2377.9624674018646,"allocatedBytesPerSecond":250170269.4278697,"gcPauses":8,"gcPauseTotalMs":13.268584,"gcPauseP99Ms":1.767875,"gcPauseMaxMs":1.767875,"delivery":{"count":528021,"p50Ms":19,"p95Ms":21,"p99Ms":24.4,"p999Ms":35.6,"maxMs":38.047041,"overflow":0},"admission":{"count":528021,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.014,"maxMs":2.472375,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:29:45Z","averages":[11.14,13.23,12.08]},"after":{"utc":"2026-11-24T21:29:56Z","averages":[10.03,12.93,11.98]}},"artifactSha256":{"jsonl":"5252700a124723f662415cb1db3a7759f47894f96b758b0fd3391a1aa3098667","jfr":"4c2b34430bcf45aa18ede03721e865458132037c93def21fb7ef42a23b971bc1"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"extensions-pilot-3","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":538864,"callbacks":4310912,"elapsedSeconds":5.019232375,"notificationsPerSecond":107359.84304771306,"allocatedBytes":1280584520,"producerAllocatedBytes":271014304,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2376.452166038184,"allocatedBytesPerSecond":255135531.55625716,"gcPauses":8,"gcPauseTotalMs":13.323375,"gcPauseP99Ms":1.834458,"gcPauseMaxMs":1.834458,"delivery":{"count":538864,"p50Ms":18.8,"p95Ms":20.4,"p99Ms":21.9,"p999Ms":26.6,"maxMs":28.13675,"overflow":0},"admission":{"count":538864,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.01,"maxMs":1.943041,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:29:56Z","averages":[10.03,12.93,11.98]},"after":{"utc":"2026-11-24T21:30:06Z","averages":[9.55,12.73,11.92]}},"artifactSha256":{"jsonl":"4e00b768df2511ed8671b7907f09cc1268ca54a6b3c76a3467a84a879aac0aee","jfr":"943a68db773d4a5837b53a8261fdc9bd9aba35b29cff1ce0082a2cd8f0d076b4"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"backlog-baseline-1","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":711449,"callbacks":2134347,"elapsedSeconds":5.063231708,"notificationsPerSecond":140512.82679319166,"allocatedBytes":773893904,"producerAllocatedBytes":180969288,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.7714411011893,"allocatedBytesPerSecond":152845840.0940319,"gcPauses":5,"gcPauseTotalMs":14.0825,"gcPauseP99Ms":3.030208,"gcPauseMaxMs":3.030208,"delivery":{"count":711449,"p50Ms":57.4,"p95Ms":61.8,"p99Ms":65.3,"p999Ms":70.5,"maxMs":71.283584,"overflow":0},"admission":{"count":711449,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.013,"maxMs":2.898167,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:30:06Z","averages":[9.55,12.73,11.92]},"after":{"utc":"2026-11-24T21:30:16Z","averages":[9.3,12.57,11.88]}},"artifactSha256":{"jsonl":"2ae71a55f5f36ff95fb6518e3c72349d8a7410b65aa9f20b55e3858178ed12b5","jfr":"4b9911a48cfe7aad0aadc619939d67d0ea59737158a26fb65a134ad79723e67a"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"backlog-pilot-1","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":726875,"callbacks":2180625,"elapsedSeconds":5.062707542,"notificationsPerSecond":143574.36094616898,"allocatedBytes":790408320,"producerAllocatedBytes":184428088,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.4061152192605,"allocatedBytesPerSecond":156123638.08156154,"gcPauses":5,"gcPauseTotalMs":15.04675,"gcPauseP99Ms":3.069292,"gcPauseMaxMs":3.069292,"delivery":{"count":726875,"p50Ms":56.5,"p95Ms":59.7,"p99Ms":64.9,"p999Ms":71,"maxMs":72.319667,"overflow":0},"admission":{"count":726875,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.017,"maxMs":0.597417,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:30:16Z","averages":[9.3,12.57,11.88]},"after":{"utc":"2026-11-24T21:30:27Z","averages":[8.96,12.39,11.82]}},"artifactSha256":{"jsonl":"2519db93c8e14347911543ced4a4a55a03d54d1b3d8bd8764f4ac97b81fab2d9","jfr":"7927dd4a2db3165e2694cbe871ee47c63ffd9b459a2de6b42944a56527c42d1d"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"backlog-pilot-2","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":721863,"callbacks":2165589,"elapsedSeconds":5.062953458,"notificationsPerSecond":142577.45128179688,"allocatedBytes":785297848,"producerAllocatedBytes":183412888,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.8765749179554,"allocatedBytesPerSecond":155106669.36097282,"gcPauses":5,"gcPauseTotalMs":15.023374,"gcPauseP99Ms":3.138916,"gcPauseMaxMs":3.138916,"delivery":{"count":721863,"p50Ms":56.8,"p95Ms":59.7,"p99Ms":64,"p999Ms":69.5,"maxMs":71.380417,"overflow":0},"admission":{"count":721863,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.018,"maxMs":3.213208,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:30:27Z","averages":[8.96,12.39,11.82]},"after":{"utc":"2026-11-24T21:30:37Z","averages":[9.38,12.37,11.82]}},"artifactSha256":{"jsonl":"70335c4d92bc4d58e79a563572f71828d54dd4fc95faf2649bfa9f30f700261a","jfr":"7d7dcca10cb8311975c7ec5a8396b4dae660f6c28a35959d964a0d6d49f57aed"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"backlog-baseline-2","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":710557,"callbacks":2131671,"elapsedSeconds":5.061739667,"notificationsPerSecond":140378.02153921005,"allocatedBytes":773189088,"producerAllocatedBytes":180956712,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1088.1450580319383,"allocatedBytesPerSecond":152751650.39419243,"gcPauses":5,"gcPauseTotalMs":13.864501,"gcPauseP99Ms":2.929584,"gcPauseMaxMs":2.929584,"delivery":{"count":710557,"p50Ms":57.5,"p95Ms":61.9,"p99Ms":64.5,"p999Ms":70.9,"maxMs":72.605084,"overflow":0},"admission":{"count":710557,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.015,"maxMs":2.943834,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:30:37Z","averages":[9.38,12.37,11.82]},"after":{"utc":"2026-11-24T21:30:48Z","averages":[8.79,12.15,11.75]}},"artifactSha256":{"jsonl":"d4e4b6280fe74cf635ee0328a916fdba7e7a3f05500701b8de5e013ed9fdea3d","jfr":"aa71be0790a56b12d2dd207a59a4c2639438626fafc9ebf5ac9369490f73e29f"}},
+    {"collection":"fourWorkloads","arm":"stock","metrics":{"label":"backlog-baseline-3","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":725820,"callbacks":2177460,"elapsedSeconds":5.062097458,"notificationsPerSecond":143383.25289508875,"allocatedBytes":789080872,"producerAllocatedBytes":184094144,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.1577966989062,"allocatedBytesPerSecond":155880221.30094674,"gcPauses":5,"gcPauseTotalMs":14.085749,"gcPauseP99Ms":2.978417,"gcPauseMaxMs":2.978417,"delivery":{"count":725820,"p50Ms":56.6,"p95Ms":59.6,"p99Ms":64,"p999Ms":70.4,"maxMs":72.426625,"overflow":0},"admission":{"count":725820,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.008,"maxMs":2.443709,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:30:48Z","averages":[8.79,12.15,11.75]},"after":{"utc":"2026-11-24T21:30:58Z","averages":[8.51,11.98,11.69]}},"artifactSha256":{"jsonl":"fb72ef49d566a814ec3aad0ca61b92c28362054bc125b2c33a227706e97a50e1","jfr":"8d5e70bd8bd9aeb6adc409997b9961d7f2528cf4d87bd937f8604ba2d27c577b"}},
+    {"collection":"fourWorkloads","arm":"source","metrics":{"label":"backlog-pilot-3","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":721684,"callbacks":2165052,"elapsedSeconds":5.062041208,"notificationsPerSecond":142567.7844857244,"allocatedBytes":785378200,"producerAllocatedBytes":184039360,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1088.2577416154438,"allocatedBytesPerSecond":155150495.17155173,"gcPauses":5,"gcPauseTotalMs":14.600084,"gcPauseP99Ms":3.026334,"gcPauseMaxMs":3.026334,"delivery":{"count":721684,"p50Ms":57,"p95Ms":60.1,"p99Ms":64.3,"p999Ms":68.8,"maxMs":70.938709,"overflow":0},"admission":{"count":721684,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.007,"maxMs":3.132084,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:30:58Z","averages":[8.14,11.84,11.65]},"after":{"utc":"2026-11-24T21:31:09Z","averages":[7.35,11.55,11.54]}},"artifactSha256":{"jsonl":"459bd58befac4b0957593bcaf3db48cc729dfe893bfb8fe7a1ad513cd5ed32b4","jfr":"e2531ec69b1c4c284105a496b4e778b1c840eb92f94659cc047fbca3eb837370"}},
+    {"collection":"focused","arm":"stock","metrics":{"label":"contended-stock-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11451285,"callbacks":34353855,"elapsedSeconds":5.000297209,"notificationsPerSecond":2290120.8710932047,"allocatedBytes":12208577632,"producerAllocatedBytes":2679018448,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1316727336714,"allocatedBytesPerSecond":2441570395.0608907,"gcPauses":77,"gcPauseTotalMs":42.839589,"gcPauseP99Ms":0.664792,"gcPauseMaxMs":0.664792,"delivery":{"count":11451285,"p50Ms":0.419,"p95Ms":0.568,"p99Ms":0.727,"p999Ms":1.429,"maxMs":7.884542,"overflow":0},"admission":{"count":11451285,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.007,"p999Ms":0.023,"maxMs":0.863375,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:31:09Z","averages":[7.35,11.55,11.54]},"after":{"utc":"2026-11-24T21:31:19Z","averages":[7.22,11.39,11.48]}},"artifactSha256":{"jsonl":"bf275464b07afe5274e177e1d26559bf9eb9e98c0c54ac2b7184ac67bf99c9f1","jfr":"ae02e98117a5420f7dd853f5ce3c76340e0ccbf9671ba82f750ee20ab4408646"}},
+    {"collection":"focused","arm":"source","metrics":{"label":"contended-source-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12372344,"callbacks":37117032,"elapsedSeconds":5.000234458,"notificationsPerSecond":2474352.773639479,"allocatedBytes":13193959280,"producerAllocatedBytes":2896835664,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.4074067129075,"allocatedBytesPerSecond":2638668124.629767,"gcPauses":84,"gcPauseTotalMs":46.882464,"gcPauseP99Ms":0.706875,"gcPauseMaxMs":0.706875,"delivery":{"count":12372344,"p50Ms":0.394,"p95Ms":0.484,"p99Ms":0.913,"p999Ms":1.942,"maxMs":9.100459,"overflow":0},"admission":{"count":12372344,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.018,"maxMs":0.784375,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:31:19Z","averages":[7.22,11.39,11.48]},"after":{"utc":"2026-11-24T21:31:30Z","averages":[7.21,11.24,11.43]}},"artifactSha256":{"jsonl":"bf458fe645e2f55acc055ac6809095f2f38b548751f00e0ad5369bb5d03cf152","jfr":"9dca4f5ef3c1107dacfdbffc659e7267109eb38778ae2f9b40708e25df80db84"}},
+    {"collection":"focused","arm":"source","metrics":{"label":"contended-source-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12315969,"callbacks":36947907,"elapsedSeconds":5.000261459,"notificationsPerSecond":2463065.001897534,"allocatedBytes":13130060576,"producerAllocatedBytes":2880816712,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1004892103902,"allocatedBytesPerSecond":2625874803.4799514,"gcPauses":83,"gcPauseTotalMs":46.896623,"gcPauseP99Ms":0.810917,"gcPauseMaxMs":0.810917,"delivery":{"count":12315969,"p50Ms":0.392,"p95Ms":0.507,"p99Ms":0.721,"p999Ms":1.953,"maxMs":7.069375,"overflow":0},"admission":{"count":12315969,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.018,"maxMs":0.761584,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:31:30Z","averages":[7.21,11.24,11.43]},"after":{"utc":"2026-11-24T21:31:40Z","averages":[7.27,11.12,11.39]}},"artifactSha256":{"jsonl":"0a2e79f61a76126769b405f05eb50a2f9a079e0a8b3c2b917890f6f0eaf29985","jfr":"99549202ce0210949fc0fece7c16ae7b78c36a3170c536120147bc43ffec1a49"}},
+    {"collection":"focused","arm":"stock","metrics":{"label":"contended-stock-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11909530,"callbacks":35728590,"elapsedSeconds":5.000228667,"notificationsPerSecond":2381797.0723217726,"allocatedBytes":12697468216,"producerAllocatedBytes":2785916040,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1603116159915,"allocatedBytesPerSecond":2539377508.8326373,"gcPauses":81,"gcPauseTotalMs":45.211417,"gcPauseP99Ms":0.672791,"gcPauseMaxMs":0.672791,"delivery":{"count":11909530,"p50Ms":0.409,"p95Ms":0.497,"p99Ms":0.935,"p999Ms":1.712,"maxMs":9.355292,"overflow":0},"admission":{"count":11909530,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.004,"p999Ms":0.02,"maxMs":0.894458,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:31:40Z","averages":[7.27,11.12,11.39]},"after":{"utc":"2026-11-24T21:31:50Z","averages":[7.29,11,11.34]}},"artifactSha256":{"jsonl":"651834b45db10c3d52b21ca1d32eeda37414e5c25edbdfdab44a1eeaf17b2187","jfr":"28c4d44b3b1d637cc9c2e7b3a8174fe22ef8b4adc7a2153ec9a41a373bcce9ca"}},
+    {"collection":"focused","arm":"stock","metrics":{"label":"contended-stock-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12193904,"callbacks":36581712,"elapsedSeconds":5.000210083,"notificationsPerSecond":2438678.3350278684,"allocatedBytes":12996391440,"producerAllocatedBytes":2848779168,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.8105427105215,"allocatedBytesPerSecond":2599169079.752444,"gcPauses":82,"gcPauseTotalMs":46.153963,"gcPauseP99Ms":0.709958,"gcPauseMaxMs":0.709958,"delivery":{"count":12193904,"p50Ms":0.398,"p95Ms":0.497,"p99Ms":0.648,"p999Ms":1.929,"maxMs":6.506,"overflow":0},"admission":{"count":12193904,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.009,"p999Ms":0.026,"maxMs":0.875291,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:31:50Z","averages":[7.29,11,11.34]},"after":{"utc":"2026-11-24T21:32:01Z","averages":[7.46,10.92,11.31]}},"artifactSha256":{"jsonl":"2be766551cfb9e5dd60278778371503a4b2f340e7db53e16bf76fdd6c7caa658","jfr":"c37b392058b25eef2b759a028a986eb6cedbdf1c27df80815790e5f1e9729127"}},
+    {"collection":"focused","arm":"source","metrics":{"label":"contended-source-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11802205,"callbacks":35406615,"elapsedSeconds":5.000192416,"notificationsPerSecond":2360350.1661724853,"allocatedBytes":12582972416,"producerAllocatedBytes":2760759400,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1543682727083,"allocatedBytesPerSecond":2516497640.318008,"gcPauses":80,"gcPauseTotalMs":44.784241,"gcPauseP99Ms":0.780959,"gcPauseMaxMs":0.780959,"delivery":{"count":11802205,"p50Ms":0.399,"p95Ms":0.551,"p99Ms":0.901,"p999Ms":2.667,"maxMs":12.423125,"overflow":0},"admission":{"count":11802205,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.02,"maxMs":12.090542,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:32:01Z","averages":[7.46,10.92,11.31]},"after":{"utc":"2026-11-24T21:32:11Z","averages":[8.43,11,11.33]}},"artifactSha256":{"jsonl":"857154c104a1849509a8d6187b7a746bc0adfd7b8d89898348f3da0e078efaa4","jfr":"22f72230815c9c75c9340fd6a309b9bf792936e2691afc4d09735ac9bde86b19"}},
+    {"collection":"focused","arm":"source","metrics":{"label":"contended-source-4","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12580363,"callbacks":37741089,"elapsedSeconds":5.000233458,"notificationsPerSecond":2515955.126029637,"allocatedBytes":13411790688,"producerAllocatedBytes":2942606176,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.089324131585,"allocatedBytesPerSecond":2682232899.854333,"gcPauses":85,"gcPauseTotalMs":47.570669,"gcPauseP99Ms":0.707416,"gcPauseMaxMs":0.707416,"delivery":{"count":12580363,"p50Ms":0.39,"p95Ms":0.458,"p99Ms":0.627,"p999Ms":1.462,"maxMs":7.315583,"overflow":0},"admission":{"count":12580363,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.016,"maxMs":0.782292,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:32:11Z","averages":[8.43,11,11.33]},"after":{"utc":"2026-11-24T21:32:22Z","averages":[8.45,10.92,11.3]}},"artifactSha256":{"jsonl":"963fc027ec2b782e8de8b412fdcc68a98bb9f2c0ac3dce1181dd51d5c9904ace","jfr":"03d999101f187167486fe155b37455cc2791980c4c75c953af14936c6ad98a2f"}},
+    {"collection":"focused","arm":"stock","metrics":{"label":"contended-stock-4","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11816688,"callbacks":35450064,"elapsedSeconds":5.000279,"notificationsPerSecond":2363205.7331200917,"allocatedBytes":12600083440,"producerAllocatedBytes":2765975968,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.2956862362787,"allocatedBytesPerSecond":2519876078.914797,"gcPauses":80,"gcPauseTotalMs":45.188758,"gcPauseP99Ms":0.719042,"gcPauseMaxMs":0.719042,"delivery":{"count":11816688,"p50Ms":0.415,"p95Ms":0.464,"p99Ms":0.949,"p999Ms":2.443,"maxMs":10.405458,"overflow":0},"admission":{"count":11816688,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.014,"maxMs":0.8425,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:32:22Z","averages":[8.45,10.92,11.3]},"after":{"utc":"2026-11-24T21:32:32Z","averages":[7.85,10.71,11.22]}},"artifactSha256":{"jsonl":"062f8d344b79e734572da7f200ffcb8d316b8982acbd5adfde6400c1a5a71cf2","jfr":"29a8c91531956f236b71aff5e6e6592c4219bf8dfd49e347514da0ea1fbffae4"}},
+    {"collection":"focused","arm":"stock","metrics":{"label":"contended-stock-5","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11752149,"callbacks":35256447,"elapsedSeconds":5.000240042,"notificationsPerSecond":2350316.965043016,"allocatedBytes":12530789968,"producerAllocatedBytes":2750868040,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.255198772582,"allocatedBytesPerSecond":2506037682.740512,"gcPauses":79,"gcPauseTotalMs":44.122088,"gcPauseP99Ms":0.684,"gcPauseMaxMs":0.684,"delivery":{"count":11752149,"p50Ms":0.416,"p95Ms":0.501,"p99Ms":0.746,"p999Ms":1.858,"maxMs":8.446458,"overflow":0},"admission":{"count":11752149,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.004,"p999Ms":0.018,"maxMs":0.855375,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:32:32Z","averages":[7.85,10.71,11.22]},"after":{"utc":"2026-11-24T21:32:42Z","averages":[7.72,10.59,11.17]}},"artifactSha256":{"jsonl":"d6c55a391db5ad3d17fae2e33c9e023b4e80f8eb7fd46e53e5004926312df2e3","jfr":"41643549b0e26a20c2b8952e1e3332936ebe34c581a7ededb38f756d20bdcde0"}},
+    {"collection":"focused","arm":"source","metrics":{"label":"contended-source-5","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12489140,"callbacks":37467420,"elapsedSeconds":5.000237792,"notificationsPerSecond":2497709.212946167,"allocatedBytes":13313924768,"producerAllocatedBytes":2921175888,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.0401571285133,"allocatedBytesPerSecond":2662658321.830467,"gcPauses":85,"gcPauseTotalMs":47.576539,"gcPauseP99Ms":0.709292,"gcPauseMaxMs":0.709292,"delivery":{"count":12489140,"p50Ms":0.388,"p95Ms":0.503,"p99Ms":0.688,"p999Ms":1.594,"maxMs":7.791625,"overflow":0},"admission":{"count":12489140,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.018,"maxMs":0.982459,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:32:42Z","averages":[7.72,10.59,11.17]},"after":{"utc":"2026-11-24T21:32:53Z","averages":[7.85,10.52,11.14]}},"artifactSha256":{"jsonl":"7d719f5398c7a32ac23ed06ab11e45dc2a5bf5269f80bf89c8033091ea32b2c8","jfr":"4385a02b3804f7bbe0353594a0e62ae4338dba8350f1b014615efb93210e097f"}},
+    {"collection":"focused","arm":"source","metrics":{"label":"contended-source-6","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12235090,"callbacks":36705270,"elapsedSeconds":5.000260833,"notificationsPerSecond":2446890.3540496565,"allocatedBytes":13043145544,"producerAllocatedBytes":2861022528,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.0441029857566,"allocatedBytesPerSecond":2608493032.5873666,"gcPauses":82,"gcPauseTotalMs":45.876794,"gcPauseP99Ms":0.705208,"gcPauseMaxMs":0.705208,"delivery":{"count":12235090,"p50Ms":0.4,"p95Ms":0.478,"p99Ms":0.671,"p999Ms":1.783,"maxMs":8.327,"overflow":0},"admission":{"count":12235090,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.018,"maxMs":0.720667,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:32:53Z","averages":[7.85,10.52,11.14]},"after":{"utc":"2026-11-24T21:33:03Z","averages":[7.97,10.45,11.1]}},"artifactSha256":{"jsonl":"c88ec7dd158f85698d92f2fedfe63c5189a96883c39be6f728ee10d8a553c301","jfr":"2f6d5c3421468aaf805614f5478eb973342b7351c2959698ab7e921586e25927"}},
+    {"collection":"focused","arm":"stock","metrics":{"label":"contended-stock-6","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":11489183,"callbacks":34467549,"elapsedSeconds":5.000207208,"notificationsPerSecond":2297741.3779209126,"allocatedBytes":12249493968,"producerAllocatedBytes":2687905560,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.17624316716,"allocatedBytesPerSecond":2449797270.0814524,"gcPauses":78,"gcPauseTotalMs":43.893499,"gcPauseP99Ms":0.785541,"gcPauseMaxMs":0.785541,"delivery":{"count":11489183,"p50Ms":0.424,"p95Ms":0.518,"p99Ms":0.928,"p999Ms":1.939,"maxMs":7.711958,"overflow":0},"admission":{"count":11489183,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.005,"p999Ms":0.02,"maxMs":1.873375,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-24T21:33:03Z","averages":[7.97,10.45,11.1]},"after":{"utc":"2026-11-24T21:33:13Z","averages":[7.87,10.35,11.06]}},"artifactSha256":{"jsonl":"22171d1630d7e6d186ed6a7c20517c16f8a84ede133de591d97245d1672e8166","jfr":"909ee90f922ddb78f52f2cfd7afebd01baa3f69f011e6c2308d38a05cd3d2ab4"}}
+  ]
+}

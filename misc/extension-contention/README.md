@@ -18,6 +18,22 @@ The `d806539c` JSON keeps `fullComparison.rawRows` and
 `contendedConfirmation.rawRows` separate because their trial labels repeat;
 pooling is reported only for the contended statistic, not as a new four-cell gate.
 
+## Delivery progress on current main
+
+The baseline and candidate both include the correctness fixes in `ba9cd772`.
+The candidate moves the delivery worker’s progress into a separate atomic
+reference. Both builds ran the same fixture. All 36 trials passed its callback
+count, per-writer order, backlog, teardown and histogram checks.
+
+Three pairs per workload met the throughput, delivery p99 and allocation
+budgets against that parent. Four-writer p99 was 0.701 ms on main and 0.705 ms
+on the candidate. In six separate pairs of that workload, median p99 moved
+from 0.837 to 0.7045 ms (lower in four pairs), throughput rose 4.75% and
+allocation stayed within 0.01%. The ranges overlap. The one-minute load at
+startup was 9.74, above the release cutoff of 2.00. The collections are
+diagnostic and each is reported separately.
+[Trial data, artifact hashes and paired results](evidence/2026-11-24-extension-delivery-progress.json)
+
 ## Workloads and controls
 
 Each fresh JVM uses G1, a 256 MiB heap and `ActiveProcessorCount=8`. Five-second
