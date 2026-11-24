@@ -228,6 +228,9 @@ and stream behavior. See the [migration guide](docs/migration-v11.md).
   of the document above all, sends the path and the query of that entry. It
   used to send the path that the page had at its start, without the query,
   so the server routed `/orders?stage=1` as `/orders`.
+- Fix: rendering the current route preserves the tab’s Forward entry and URL
+  fragment when the router sends a raw Unicode path such as `/café/1`. A
+  change to the query still updates browser history.
 
 **For deployments.**
 

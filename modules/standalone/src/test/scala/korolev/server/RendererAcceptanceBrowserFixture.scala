@@ -128,18 +128,27 @@ object RendererAcceptanceBrowserFixture {
     }
   )
 
+  /** The pathname stays /café while the stage changes in the query. */
+  private def unicodeQueryRouter(hold: RouteHold)(implicit ec: ExecutionContext) = Router[Future, Int](
+    { case stage => PathAndQuery.fromString("/café").withParam("stage", stage.toString) },
+    { case path if URLDecoder.decode(path.asPath.mkString, StandardCharsets.UTF_8) == "/café" =>
+      _ => hold.await.map(_ => path.param("stage").flatMap(_.toIntOption).getOrElse(0))
+    }
+  )
+
   final class Run(val scenario: String, val presetIds: Boolean, val fault: String)(implicit ec: ExecutionContext) {
     val counters  = new RendererAcceptanceDocuments.Counters
     val storage   = new ForgettingStorage
     val routeHold = new RouteHold
-    private val resume =
-      scenario == "resume" || scenario == "resume-heartbeat" || scenario == "resume-long" || scenario == "resume-unicode"
+    private val unicode = scenario == "resume-unicode" || scenario == "resume-unicode-query"
+    private val resume  = scenario == "resume" || scenario == "resume-heartbeat" || scenario == "resume-long" || unicode
     val service = spoonbillService(
       SpoonbillServiceConfig[Future, Int, Any](
         stateLoader = StateLoader.default(0),
         document = RendererAcceptanceDocuments.document(scenario, counters),
         router =
-          if (scenario == "resume-unicode") unicodeRouter(routeHold)
+          if (scenario == "resume-unicode-query") unicodeQueryRouter(routeHold)
+          else if (scenario == "resume-unicode") unicodeRouter(routeHold)
           else if (resume) resumeRouter(routeHold)
           else Router.empty[Future, Int],
         presetIds = presetIds,
@@ -152,7 +161,7 @@ object RendererAcceptanceBrowserFixture {
         // one on purpose, so that a slow run does not reach the bound, and so
         // does `resume-unicode`, the same page at `/café/<stage>`.
         sessionIdleTimeout =
-          if (scenario == "resume-long" || scenario == "resume-unicode") 30.seconds
+          if (scenario == "resume-long" || unicode) 30.seconds
           else if (resume) 6.seconds
           else 60.seconds,
         stateStorage = storage,

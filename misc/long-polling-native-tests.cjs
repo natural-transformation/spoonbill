@@ -856,6 +856,82 @@ async function unicodeRoute(browser) {
   return state;
 }
 
+/** Wait for the real stage-1 rerender and its unnumbered server URL to reach the page. */
+async function rerenderStageOne(page, state, path) {
+  const since = state.answers.length;
+  // The shared Advance button transitions to 1 even when the view already shows 1.
+  await page.click('#advance');
+  await waitFor(() => state.answers.slice(since).some(answer => {
+    if (!answer.body.startsWith('[6,')) return false;
+    const frame = JSON.parse(answer.body);
+    return frame.length === 2 && frame[1] === path &&
+      state.polled.some(poll => poll.page === answer.page && poll.seen >= Number(answer.frame));
+  }), 'The page did not apply the ordinary render URL');
+  await counterApplied(state, since);
+}
+
+/** Two ordinary renders of stage 1 must leave the Forward entry reachable. */
+async function unchangedRouteHistory(browser, unicode) {
+  const scenario = unicode ? 'resume-unicode' : 'resume-long';
+  const prefix = unicode ? '/café/' : '/orders/';
+  const {context, page, state} = await open(browser, encodeURI(prefix + '0'), {scenario});
+  try {
+    for (const next of [1, 2]) {
+      const since = state.answers.length;
+      await page.click('#resume-next');
+      await waitFor(async () => await stage(page) === 'stage ' + next, 'Next did not reach stage ' + next);
+      await counterApplied(state, since);
+    }
+    await page.goBack();
+    await waitFor(async () => completed(state, true, 1) && await stage(page) === 'stage 1', 'Back did not settle on stage 1');
+    await rerenderStageOne(page, state, prefix + '1');
+    await rerenderStageOne(page, state, prefix + '1');
+    await page.goForward();
+    assert.equal(new URL(page.url()).pathname, encodeURI(prefix + '2'), 'Forward after two same-URL renders');
+    await waitFor(async () => completed(state, true, 2) && await stage(page) === 'stage 2', 'Forward did not settle on stage 2');
+    for (const [counter, expected] of [[3, 1], [4, 0]]) {
+      await page.goBack();
+      await waitFor(async () => completed(state, true, counter) && await stage(page) === 'stage ' + expected,
+        'Back did not settle on stage ' + expected);
+      assert.equal(new URL(page.url()).pathname, encodeURI(prefix + expected));
+    }
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
+/** An ordinary render with the same path and query should preserve the current fragment. */
+async function unicodeRenderFragment(browser) {
+  const {context, page, state} = await open(browser, '/caf%C3%A9?stage=1#details', {scenario: 'resume-unicode-query'});
+  try {
+    assert.equal(new URL(page.url()).hash, '#details');
+    await rerenderStageOne(page, state, '/café?stage=1');
+    assert.equal(new URL(page.url()).hash, '#details', 'An ordinary same-URL render should preserve the fragment');
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
+/** A real query change adds an entry. Back restores the previous entry including its fragment. */
+async function unicodeQueryHistory(browser) {
+  const {context, page, state} = await open(browser, '/caf%C3%A9?stage=1#details', {scenario: 'resume-unicode-query'});
+  try {
+    const original = page.url();
+    assert.equal(new URL(original).hash, '#details');
+    assert.equal(await stage(page), 'stage 1');
+    const entries = await page.evaluate(() => history.length);
+    const since = state.answers.length;
+    await page.click('#resume-next');
+    await waitFor(async () => new URL(page.url()).search === '?stage=2' && await stage(page) === 'stage 2',
+      'The query change did not reach stage 2');
+    await counterApplied(state, since);
+    assert.equal(new URL(page.url()).pathname, new URL(original).pathname);
+    assert.equal(await page.evaluate(() => history.length), entries + 1, 'A real query change should add one entry');
+    await page.goBack();
+    await waitFor(async () => completed(state, true, 1) && await stage(page) === 'stage 1', 'Back did not restore stage 1');
+    assert.equal(page.url(), original, 'Back should preserve the query and fragment on the selected entry');
+  } finally { state.finished = true; await context.close(); }
+  return state;
+}
+
 /**
  * Back, then Forward before the history event of Back reached the server. The
  * page posts Forward's history event only after the answer to Back's, so the
@@ -1236,6 +1312,10 @@ const all = [
   ['history-query', 'Back to the first entry, opened at `/orders?stage=1`: its query is sent, the page reaches stage 1, and the URL of stage 1 takes the entry', browser => queryDeepLink(browser, true)],
   ['history-query-ws', 'the same on a WebSocket', browser => queryDeepLink(browser, false)],
   ['history-disconnect-ws', 'Spoonbill.disconnect() while the server holds the route of Back, and the socket closes slowly: the page reloads at the URL of Back only at connect()', disconnectBeforeRoute],
+  ['history-unchanged-ascii', 'ordinary same-URL renders preserve Forward and Back on an ASCII route', browser => unchangedRouteHistory(browser, false)],
+  ['history-unchanged-unicode', 'ordinary same-URL renders preserve Forward and Back on a raw Unicode route', browser => unchangedRouteHistory(browser, true)],
+  ['history-unicode-fragment', 'an ordinary same-URL render preserves the current fragment', unicodeRenderFragment],
+  ['history-unicode-query', 'changing only the query adds one entry and Back preserves its fragment', unicodeQueryHistory],
   ['history-unicode', 'Back on a route at `/café/<stage>`: one URL frame, so the number of entries stays, also with an older client', unicodeRoute],
   ['history-back-forward', 'Back then Forward while Back is on the way: the server takes them in order, and a later Back reaches its entry', backThenForward],
   ['history-same-screen', 'Back to a route that leaves the screen as it is: a click while the page waits runs no handler', sameScreen],
