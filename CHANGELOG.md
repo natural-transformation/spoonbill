@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+These changes reduce the database round trips of JDBC authority checks.
+Applications upgrading from 11.0.1 keep their database schema; every change is
+an opt-in, and the existing behavior stays the default.
+
+- `JdbcIsolation.readCommittedOnCheckout(source)` certifies that a pool
+  establishes `READ COMMITTED` on every checkout. Spoonbill's transactions on
+  a certified source skip the isolation setter, which the PostgreSQL driver
+  sends as one `SET` per transaction. See
+  [JDBC deployment](docs/browser-authentication.md#jdbc-deployment-and-credential-custody).
+
 ## 11.0.1 — 2026-11-25
 
 This patch reduces work during extension delivery. Applications upgrading

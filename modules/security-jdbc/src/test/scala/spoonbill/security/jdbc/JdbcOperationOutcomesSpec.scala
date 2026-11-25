@@ -328,11 +328,16 @@ class JdbcOperationOutcomesSpec extends AnyFlatSpec with Matchers {
     accepted(result(protocol.reconcile(authority.reference))).status shouldBe InvocationStatus.NotCommitted
   }
 
-  for (afterRollback <- Vector(false, true); typed <- Vector(false, true)) {
-    it should s"abort before pool return when ${if (typed) "typed rejection" else "callback failure"} rollback fails ${if (afterRollback) "after" else "before"} delegation" in withDb { db =>
+  /** The fault source as a deployment passes it: ordinary, or certified READ COMMITTED on checkout. */
+  private def lent(fault: LifecycleFaults, certified: Boolean): DataSource =
+    if (certified) JdbcIsolation.readCommittedOnCheckout(fault.source) else fault.source
+  private def through(certified: Boolean): String = if (certified) " through a certified source" else ""
+
+  for (afterRollback <- Vector(false, true); typed <- Vector(false, true); certified <- Vector(false, true)) {
+    it should s"abort before pool return when ${if (typed) "typed rejection" else "callback failure"} rollback fails ${if (afterRollback) "after" else "before"} delegation${through(certified)}" in withDb { db =>
       Using.resource(new LifecycleFaults(db, rollbackAfter = Some(afterRollback))) { fault =>
         val authority = db.authority()
-        val protocol = db.protocol(fault.source)
+        val protocol = db.protocol(lent(fault, certified))
         result(protocol.executeIssued(authority) { (scope, _) =>
           db.mutate(scope.transaction)
           if (typed) throw new OperationProtocolException(OperationError.HostDenied)
@@ -350,10 +355,10 @@ class JdbcOperationOutcomesSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  it should "quarantine a connection whose rollback and abort both fail without returning it to the pool" in withDb { db =>
+  for (certified <- Vector(false, true)) it should s"quarantine a connection whose rollback and abort both fail without returning it to the pool${through(certified)}" in withDb { db =>
     val authority = db.authority()
     Using.resource(new LifecycleFaults(db, rollbackAfter = Some(false), abortFails = true)) { fault =>
-      result(db.protocol(fault.source).executeIssued(authority) { (scope, _) =>
+      result(db.protocol(lent(fault, certified)).executeIssued(authority) { (scope, _) =>
         db.mutate(scope.transaction)
         throw new OperationProtocolException(OperationError.HostDenied)
       }) shouldBe Left(TransactionFailure.CommitUnknown)
@@ -372,11 +377,11 @@ class JdbcOperationOutcomesSpec extends AnyFlatSpec with Matchers {
     accepted(result(db.protocol().reconcile(authority.reference))).status shouldBe InvocationStatus.NotCommitted
   }
 
-  for (committed <- Vector(false, true)) {
-    it should s"abort an uncertain commit before pool return when server commit is $committed" in withDb { db =>
+  for (committed <- Vector(false, true); certified <- Vector(false, true)) {
+    it should s"abort an uncertain commit before pool return when server commit is $committed${through(certified)}" in withDb { db =>
       Using.resource(new LifecycleFaults(db, commitAfter = Some(committed))) { fault =>
         val authority = db.authority()
-        result(db.protocol(fault.source).executeIssued(authority)((scope, _) => db.mutate(scope.transaction))) shouldBe
+        result(db.protocol(lent(fault, certified)).executeIssued(authority)((scope, _) => db.mutate(scope.transaction))) shouldBe
           Left(TransactionFailure.CommitUnknown)
         fault.aborts.get() shouldBe 1
         fault.closes.get() shouldBe 1
@@ -389,11 +394,11 @@ class JdbcOperationOutcomesSpec extends AnyFlatSpec with Matchers {
     }
   }
 
-  for (reject <- Vector(false, true)) {
-    it should s"preserve acknowledged ${if (reject) "typed rollback" else "commit"} despite pool close failure" in withDb { db =>
+  for (reject <- Vector(false, true); certified <- Vector(false, true)) {
+    it should s"preserve acknowledged ${if (reject) "typed rollback" else "commit"} despite pool close failure${through(certified)}" in withDb { db =>
       Using.resource(new LifecycleFaults(db, closeFails = true)) { fault =>
         val authority = db.authority()
-        val observed = result(db.protocol(fault.source).executeIssued(authority) { (scope, _) =>
+        val observed = result(db.protocol(lent(fault, certified)).executeIssued(authority) { (scope, _) =>
           val value = db.mutate(scope.transaction)
           if (reject) throw new OperationProtocolException(OperationError.HostDenied)
           value
@@ -404,6 +409,17 @@ class JdbcOperationOutcomesSpec extends AnyFlatSpec with Matchers {
         fault.closes.get() shouldBe 1
         db.mutations shouldBe (if (reject) 0 else 1)
       }
+    }
+  }
+
+  it should "never call the isolation setter on a certified source, so a setter fault cannot occur" in withDb { db =>
+    Using.resource(new LifecycleFaults(db, setupFails = true)) { fault =>
+      val authority = db.authority()
+      result(db.protocol(lent(fault, certified = true)).executeIssued(authority)((scope, _) => db.mutate(scope.transaction))) shouldBe
+        Right("synthetic-once-only-result")
+      fault.aborts.get() shouldBe 0
+      fault.closes.get() shouldBe 1
+      db.mutations shouldBe 1
     }
   }
 

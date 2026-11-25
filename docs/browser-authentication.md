@@ -452,6 +452,24 @@ are real additional transactions, not a free or implicit clock guarantee. With
 ahead of its expiry from its own thread while observations happen, and the
 reserved `clockSource` is required.
 
+Every Spoonbill JDBC transaction runs at `READ COMMITTED`. By default each one
+sets that level first, and the PostgreSQL driver sends a `SET` for the call even
+when the session already has the level. A pool that establishes `READ COMMITTED`
+on every checkout can be certified instead: pass
+`JdbcIsolation.readCommittedOnCheckout(pool)` where the pool was passed.
+Transactions on the certified source then neither set nor read the level, which
+saves one round trip per transaction, clock checkpoints included. The pool must
+establish the level on new and replaced physical connections and on reuse after
+another borrower changed it. HikariCP restores a level that a borrower changed
+through `Connection.setTransactionIsolation` when the connection returns, but
+not one changed by a SQL `SET` statement. A startup query cannot establish how a
+pool treats reused connections, so Spoonbill does not verify the claim; verify
+the pool's behavior before certifying it. Certify the work source and a separate
+`clockSource` independently, and pass each certified source to Spoonbill
+directly: another wrapper around it hides the certification, and the ordinary
+path then sets the level as before. A caller-supplied `existingRunner` keeps its
+own transaction setup.
+
 ## Recovery and release
 
 Keep the original ceremony ID when preparation reports `CommitUnknown` or an

@@ -39,7 +39,9 @@ private[jdbc] object JdbcTransactions {
     var settled = false
     try {
       connection.setAutoCommit(false)
-      connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED)
+      // A certified pool establishes READ COMMITTED on every checkout, so its
+      // transactions skip the setter and the round trip the driver spends on it.
+      if (!JdbcIsolation.certified(source)) connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED)
       val staged = try body(connection) catch { case NonFatal(_) => Left(storageFailure) }
       staged match {
         case Left(error) =>
