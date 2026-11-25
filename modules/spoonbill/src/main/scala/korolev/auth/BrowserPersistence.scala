@@ -117,9 +117,10 @@ final class HostSessionPrepared(
  * maxConcurrentChecks at once plus one for maintenance revalidation, which
  * revalidates one view at a time. Every other coordinator turn stays
  * exclusive. A provider returns it only when its own calls and the host's
- * session resolution are safe to run concurrently.
+ * session resolution are safe to run concurrently. Only Spoonbill's providers
+ * create it; a provider decorator can forward the inner provider's value.
  */
-private[spoonbill] final case class BrowserCheckConcurrency(maxConcurrentChecks: Int) {
+final case class BrowserCheckConcurrency private[spoonbill] (maxConcurrentChecks: Int) {
   require(maxConcurrentChecks > 0, "maxConcurrentChecks must be positive")
 }
 
@@ -138,8 +139,11 @@ trait BrowserPersistence[F[_], P] {
    * Concurrent checks are an opt-in, never inherited: None keeps every
    * coordinator turn exclusive. A provider returns a setting only when its
    * checks, and the host's session resolution, are safe to run concurrently.
+   * The coordinator reads it from the provider it is given, so a decorator
+   * keeps concurrent checks only by returning the inner provider's value, and
+   * it may do so only when its own calls are safe to run concurrently too.
    */
-  private[spoonbill] def checkConcurrency: Option[BrowserCheckConcurrency] = None
+  def checkConcurrency: Option[BrowserCheckConcurrency] = None
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
   /**

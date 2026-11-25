@@ -139,13 +139,14 @@ persist arbitrary anonymous drafts with this helper.
 
 `provider.projectedSnapshotsIfChanged` takes the same arguments and skips
 the save when a write keeps the projection: a counter that is not projected, a
-page that loads its data, a chat that grows. The coordinator then runs each
-queued top-level write as one provider transaction, which checks the view's
-authority and owner and reads its snapshot revision together. When that
-revision is the session's expected revision and the candidate's encoded bytes
-equal those of the session's last acknowledged write, nothing is saved;
-otherwise the bytes are saved once, with the expected revision, and a revision
-conflict fails the write. Bytes are compared, not values, so a projection
+page that loads its data, a chat that grows. For each queued top-level write
+the coordinator checks the view's authority and owner and reads its snapshot
+revision in one provider transaction. When that revision is the session's
+expected revision and the candidate's encoded bytes equal those of the
+session's last acknowledged write, nothing is saved, and the write takes that
+one transaction. Otherwise the bytes are saved once in a second, fenced
+transaction, with the expected revision, and a revision conflict fails the
+write. Bytes are compared, not values, so a projection
 whose `equals` ignores a serialized field is still saved when that field
 changes. A restored projection has no acknowledged copy, so its first write
 saves. The session's public `commit` always performs the ordinary fenced save.

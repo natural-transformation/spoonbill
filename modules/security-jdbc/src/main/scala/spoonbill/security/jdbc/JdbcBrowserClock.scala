@@ -91,12 +91,14 @@ final class JdbcBrowserClock(
       .run[JdbcAuthError, Instant](source, JdbcAuthError.StorageFailure, JdbcAuthError.StorageFailure) { connection =>
         val stored = lockFloor(connection).orElse {
           // First use of the scope: insert a floor, then lock whichever row won.
-          insertFloor(connection, JdbcClockMachine.observe(observed.get(), clock()))
+          insertFloor(connection, sample())
           lockFloor(connection)
         }
         stored.toRight(JdbcAuthError.StorageFailure).flatMap { floor =>
-          // Sampled after the row lock: the instant is later than every wait.
-          val target = JdbcClockMachine.sharedCheckpoint(floor, observed.get(), clock())
+          // Sampled after the row lock, so the instant is later than every wait.
+          // The sample enters this process's floor at once, as now() records its
+          // samples: a checkpoint that then rolls back still bounds later calls.
+          val target = JdbcClockMachine.sharedCheckpoint(floor, sample())
           storeFloor(connection, target).filter(_ == target).toRight(JdbcAuthError.StorageFailure)
         }
       }

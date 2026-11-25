@@ -436,6 +436,14 @@ Size the main pool and the blocking executor for the cap plus maintenance and
 one writer, give the reserved clock source capacity of its own, and bound
 connection acquisition, statement, lock and socket waits on both.
 
+The coordinator reads `checkConcurrency` from the provider it is given. A
+provider decorator, such as one that adds a logout audit, keeps concurrent
+checks only by forwarding the inner provider's value:
+`override def checkConcurrency = inner.checkConcurrency`. Forward it only when
+the decorator's own calls are safe to run concurrently. Only Spoonbill's
+providers create a `BrowserCheckConcurrency`, so a decorator cannot opt in on
+its own; `guardedWriteObservations` is forwarded the same way.
+
 ## JDBC deployment and credential custody
 
 The [deployment guide](browser-auth-v4-deployment.md) includes the explicit
@@ -499,11 +507,14 @@ own transaction setup.
 With `BrowserOwnership.SharedViews`, the check of an authenticated view
 normally resolves the host twice and commits a clock checkpoint for each of its
 five time samples. A host that implements `JdbcHeldHostSessions` lets that
-check resolve the host once and decide at one checkpoint. The provider calls
+check resolve the host once and decide at one checkpoint: `authorize`, output
+admission, the guarded write observation and the check of `transact`, which
+also covers snapshot saves. For these the provider calls
 `lockResolution(connection, sessionId)` inside its transaction, after the
 browser token row and before the slot and view locks. The host acquires its
 locks there and returns the principal and an exclusive cutoff,
-`validUntilExclusive`, without deciding by time, or `None` for a stable denial.
+`validUntilExclusive`, without deciding by time, or `None` for a stable denial,
+which the provider then refuses without taking the slot and view locks.
 The provider then takes one checkpoint in its own transaction on the clock
 source: it locks the scope's clock row, samples the wall clock after the lock,
 and commits the latest of the stored floor, its own floor and that sample. That
@@ -513,9 +524,10 @@ it. The host's `onAcceptedAt(now)` runs last, in the same transaction, after
 every check passed; it may stage a conditional idle refresh on the rows it
 locked, and the provider never replays a check once it has started. Keep the
 stable absolute expiry in `HostPrincipal.expiresAt`, since it is part of the
-captured authority. Activation, replacement, anonymous and pending flows,
-`ExclusiveScope` providers and `tx.now` keep `resolve` and the ordinary clock,
-and a host without the capability is resolved twice as before.
+captured authority. Sign-in ceremonies, pending continuations, replacement and
+successor-completion flows, activation, anonymous views, `ExclusiveScope`
+providers and `tx.now` keep `resolve` and the ordinary clock, and never call
+`onAcceptedAt`; a host without the capability is resolved twice as before.
 
 ## Recovery and release
 

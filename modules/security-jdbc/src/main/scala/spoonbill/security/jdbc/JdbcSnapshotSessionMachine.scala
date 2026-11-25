@@ -5,9 +5,10 @@ import spoonbill.security.Versions.ViewRevision
 /**
  * Pure states of an inline snapshot session that can skip an unchanged
  * projection. Ready holds the expected revision and, when known, a copy of the
- * encoded bytes that the write acknowledged at that revision. Every change makes
- * a new Ready value, so the interpreter can recognize a late result of an older
- * attempt by reference and drop it.
+ * encoded bytes that the write acknowledged at that revision. Only one write per
+ * expected revision can succeed in the database, so an acknowledged result is
+ * published whenever the session still expects the revision that write
+ * expected, also when another commit of the same session started meanwhile.
  */
 private[jdbc] object JdbcSnapshotSessionMachine {
 
@@ -31,11 +32,24 @@ private[jdbc] object JdbcSnapshotSessionMachine {
   def acknowledged(revision: ViewRevision, bytes: Array[Byte]): Ready = new Ready(revision, Some(Confirmed.of(bytes)))
 
   /**
-   * A write attempt starts: the copy stays invalid until the attempt is
-   * acknowledged, so a failed, cancelled or uncertain attempt leaves none, and
+   * A write that expects `expected` starts: the copy is invalid until a write
+   * is acknowledged, so a failed, cancelled or uncertain write leaves none, and
    * the revision never advances without an acknowledgment.
    */
-  def attempt(ready: Ready): Ready = new Ready(ready.revision, None)
+  def begin(state: State, expected: ViewRevision): State = state match {
+    case ready: Ready if ready.revision == expected => new Ready(expected, None)
+    case other                                     => other
+  }
+
+  /**
+   * The write that expected `expected` was acknowledged at `next` with these
+   * bytes. It publishes them while the session still expects `expected`; a
+   * session that is no longer ready, or ready at another revision, stays as it is.
+   */
+  def acknowledge(state: State, expected: ViewRevision, next: ViewRevision, bytes: Array[Byte]): State = state match {
+    case ready: Ready if ready.revision == expected => acknowledged(next, bytes)
+    case other                                     => other
+  }
 
   /** An observation of another revision fails the write; the session never adopts it. */
   def conflicts(ready: Ready, observed: ViewRevision): Boolean = observed != ready.revision

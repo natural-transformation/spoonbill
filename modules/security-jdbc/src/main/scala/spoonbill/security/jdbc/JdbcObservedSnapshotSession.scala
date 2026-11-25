@@ -86,14 +86,16 @@ private[jdbc] final class JdbcObservedSnapshotSession[F[_], P, S, D](
 
   /**
    * One fenced save of these bytes with the expected revision. The copy is
-   * invalid while the save runs; only its acknowledgment publishes the next
-   * revision with these bytes, and only when no newer attempt started meanwhile.
+   * invalid while the save runs. Its acknowledgment publishes the next revision
+   * with these bytes while the session still expects the revision this save
+   * expected, also when another commit of the session started meanwhile: that
+   * one expects the same revision and loses the database's comparison.
    */
   private def write(current: Ready, bytes: Array[Byte]): F[Unit] = {
-    val attempt = JdbcSnapshotSessionMachine.attempt(current)
-    F.delay(state.compareAndSet(current, attempt)).flatMap { _ =>
-      F.delayAsync(store.writeEncoded(current.revision, bytes, resetting = false)).flatMap(accepted).flatMap { next =>
-        F.delay { state.compareAndSet(attempt, JdbcSnapshotSessionMachine.acknowledged(next, bytes)); () }
+    val expected = current.revision
+    F.delay(state.updateAndGet(JdbcSnapshotSessionMachine.begin(_, expected))).flatMap { _ =>
+      F.delayAsync(store.writeEncoded(expected, bytes, resetting = false)).flatMap(accepted).flatMap { next =>
+        F.delay { state.updateAndGet(JdbcSnapshotSessionMachine.acknowledge(_, expected, next, bytes)); () }
       }
     }
   }

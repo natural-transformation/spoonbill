@@ -29,6 +29,10 @@ an opt-in, and the existing behavior stays the default.
   Writers and every other check keep the exclusive lock. The
   `concurrentChecks` constructor parameter still refuses `SharedViews`. See
   [Concurrent authority checks](docs/browser-authentication.md#concurrent-authority-checks).
+- `BrowserPersistence.checkConcurrency` and `BrowserCheckConcurrency` are
+  public, so a provider decorator can forward the inner provider's
+  concurrent-check setting to the coordinator. Only Spoonbill's providers
+  create the setting.
 
 ## 11.0.1 — 2026-11-25
 

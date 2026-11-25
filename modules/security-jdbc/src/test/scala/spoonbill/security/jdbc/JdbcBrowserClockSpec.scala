@@ -441,15 +441,15 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
     val second   = f.clock(exclusive = false)
     val updating = new CountDownLatch(1)
     val resume   = new CountDownLatch(1)
-    val holder   = new AtomicReference[Thread]()
-    // Hold the first writer after its insert and its wall sample, before its update.
+    // Armed before the first writer starts: hold whichever update comes first,
+    // after its insert and its wall sample. The second writer starts only later.
+    val armed = new AtomicBoolean(true)
     f.prepareHook.set { sql =>
-      if ((Thread.currentThread() eq holder.get()) && sql.trim.startsWith("UPDATE spoonbill_auth_clock")) {
+      if (sql.trim.startsWith("UPDATE spoonbill_auth_clock") && armed.compareAndSet(true, false)) {
         updating.countDown(); resume.await(5, TimeUnit.SECONDS)
       }
     }
     val earlier = new Checkpoint(first)
-    holder.set(earlier.thread)
     updating.await(5, TimeUnit.SECONDS) shouldBe true
     // The second writer finds no committed row and waits on the first one's insert.
     f.time.set(start.plusSeconds(1))
@@ -459,6 +459,25 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
     earlier.outcome shouldBe Right(start)
     later.outcome shouldBe Right(start.plusSeconds(1))
     f.stored shouldBe start.plusSeconds(1)
+  }
+
+  it should "keep a wall-clock sample taken under the row lock when its checkpoint rolls back" in {
+    val f     = new Fixture
+    val clock = f.clock(exclusive = false)
+    clock.checkpoint() shouldBe start
+    // The update fails after the sample under the row lock, and the transaction rolls back.
+    val failUpdate = new AtomicBoolean(true)
+    f.prepareHook.set { sql =>
+      if (sql.trim.startsWith("UPDATE spoonbill_auth_clock") && failUpdate.getAndSet(false))
+        throw new SQLException("Synthetic failure after the locked sample")
+    }
+    f.time.set(start.plusSeconds(4))
+    intercept[JdbcAuthException](clock.checkpoint()).error shouldBe JdbcAuthError.StorageFailure
+    f.stored shouldBe start
+    // The process never returns less than a time it sampled, also after the wall clock moves back.
+    f.time.set(start.plusSeconds(1))
+    clock.checkpoint() shouldBe start.plusSeconds(4)
+    f.stored shouldBe start.plusSeconds(4)
   }
 
   it should "publish no instant from a failed or uncertain checkpoint" in {

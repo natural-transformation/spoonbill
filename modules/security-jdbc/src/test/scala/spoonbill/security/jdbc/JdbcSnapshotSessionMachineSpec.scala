@@ -25,13 +25,32 @@ class JdbcSnapshotSessionMachineSpec extends AnyFlatSpec with Matchers {
     JdbcSnapshotSessionMachine.unchanged(ready, Array[Byte](1, 2, 3)) shouldBe true
   }
 
-  it should "have no copy after a restore or while an attempt runs, and keep the revision until acknowledged" in {
+  it should "have no copy after a restore or while a write runs, and keep the revision until acknowledged" in {
     JdbcSnapshotSessionMachine.unchanged(JdbcSnapshotSessionMachine.restored(second), bytes) shouldBe false
-    val ready   = JdbcSnapshotSessionMachine.acknowledged(second, bytes)
-    val attempt = JdbcSnapshotSessionMachine.attempt(ready)
-    JdbcSnapshotSessionMachine.unchanged(attempt, bytes) shouldBe false
-    attempt.revision shouldBe second
-    // Every change is a new value, so a late result of an older attempt is recognized by reference.
-    (JdbcSnapshotSessionMachine.attempt(attempt) eq attempt) shouldBe false
+    val ready = JdbcSnapshotSessionMachine.acknowledged(second, bytes)
+    JdbcSnapshotSessionMachine.begin(ready, second) match {
+      case running: JdbcSnapshotSessionMachine.Ready =>
+        JdbcSnapshotSessionMachine.unchanged(running, bytes) shouldBe false
+        running.revision shouldBe second
+      case other => fail(s"Expected a ready session, got $other")
+    }
+  }
+
+  it should "publish an acknowledged write while the session still expects its revision, even after another write began" in {
+    val third   = second.next.toOption.get
+    val started = JdbcSnapshotSessionMachine.begin(JdbcSnapshotSessionMachine.acknowledged(second, bytes), second)
+    // Another commit of the session began meanwhile; it expects the same revision.
+    val overlapped = JdbcSnapshotSessionMachine.begin(started, second)
+    JdbcSnapshotSessionMachine.acknowledge(overlapped, second, third, Array[Byte](4)) match {
+      case published: JdbcSnapshotSessionMachine.Ready =>
+        published.revision shouldBe third
+        JdbcSnapshotSessionMachine.unchanged(published, Array[Byte](4)) shouldBe true
+      case other => fail(s"Expected a published revision, got $other")
+    }
+    // A result for a revision the session no longer expects, or a session that is not ready, changes nothing.
+    val later = JdbcSnapshotSessionMachine.acknowledged(third, bytes)
+    JdbcSnapshotSessionMachine.acknowledge(later, second, third, Array[Byte](4)) should be theSameInstanceAs later
+    JdbcSnapshotSessionMachine.acknowledge(JdbcSnapshotSessionMachine.Starting, second, third, bytes) shouldBe
+      JdbcSnapshotSessionMachine.Starting
   }
 }

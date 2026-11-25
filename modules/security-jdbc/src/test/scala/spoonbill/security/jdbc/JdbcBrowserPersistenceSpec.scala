@@ -616,6 +616,13 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       }
       def update(text: String)(set: PreparedStatement => Unit): Unit =
         Using.resource(connection.prepareStatement(text)) { query => set(query); query.executeUpdate() shouldBe 1 }
+      /**
+       * PostgreSQL ends a deadlock by aborting the backend whose wait first
+       * outlasts deadlock_timeout. A long timeout here makes the other side of
+       * a test's deadlock the one that is aborted.
+       */
+      def deferDeadlockDetection(): Unit =
+        Using.resource(connection.createStatement())(_.execute("SET LOCAL deadlock_timeout = '60s'"))
       /** One more locking read in this transaction; it waits for the rows, then reports whether it found any. */
       def lock(text: String)(set: PreparedStatement => Unit): Boolean =
         Using.resource(connection.prepareStatement(text)) { query => set(query); Using.resource(query.executeQuery())(_.next()) }
@@ -3593,6 +3600,45 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     }
   }
 
+  it should "keep resolve and the ordinary clock for ceremony and replacement flows of an authenticated view" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      // Each of these runs the two-sample path: resolve twice, no held host lock and no accepted hook.
+      def legacy(name: String)(operation: => Any): Unit = withClue(s"$name: ") {
+        val (holds, resolutions, _, _) = heldCounts(db)(operation)
+        holds shouldBe 0
+        resolutions should be >= 2
+      }
+      legacy("pending")(accepted(await(db.persistence.pending(view))))
+      legacy("begin")(accepted(await(db.persistence.begin(view, "login"))))
+      var ceremony = Option.empty[BrowserReplacementCeremony]
+      legacy("beginReplacement") { ceremony = Some(accepted(await(db.persistence.beginReplacement(view, "replace-factor")))) }
+      legacy("bindReplacementChallenge")(
+        accepted(await(db.persistence.bindReplacementChallenge(ceremony.get, BrowserChallenge("subject", 1L, 1L, "factor"))))
+      )
+      legacy("withSuccessorCompletion")(await(db.persistence.withSuccessorCompletion(view)((_, completion) => completion)))
+      db.hostAccepted.get() shouldBe 0
+      // The checks and protected host writes take the held path.
+      heldCounts(db)(accepted(await(db.persistence.transact(view)(_ => ())))) shouldBe (1, 0, 1, 1)
+      db.hostAccepted.get() shouldBe 1
+    }
+
+  it should "refuse a stable host denial without waiting for the slot and view locks" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    db.disable()
+    val slot = new db.HeldLock(
+      "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace='session' FOR UPDATE",
+      _.setString(1, db.realm)
+    )
+    try Await.result(db.persistence.authorize(view), 5.seconds) shouldBe Left(BrowserFailure.Denied)
+    finally slot.release()
+    // Session expiry still outranks the host's denial.
+    db.clock.set(view.identity.principal.get.expiresAt)
+    await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+  }
+
   private val draftFormat =
     new SnapshotFormat[String](accepted(SchemaId.parse("guarded-draft")), accepted(SchemaVersion.fromInt(1)))
   private case class Page(draft: String, other: String)
@@ -3809,6 +3855,31 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     } finally await(browser.close())
   }
 
+  it should "publish a write acknowledged while a second commit of the session waits, so the next write proceeds" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val pausing  = new db.PausingRunner
+      val provider = db.withRunner(pausing.runner)
+      try {
+        val (view, _) = signedIn(db, provider)
+        val session   = ifChanged(provider, view)
+        await(session.initialize(Page("", "a")))
+        val seeded = db.viewRevision()
+        // The first save holds its transaction open before commit; the second waits for the realm lock.
+        val (entered, resume) = pausing.arm()
+        val first = session.commit(Page("one", "a"))
+        entered.await(10, TimeUnit.SECONDS) shouldBe true
+        val second = session.commit(Page("two", "a"))
+        db.awaitLockWait("pg_advisory_xact_lock")
+        resume.countDown()
+        await(first)
+        snapshotError(await(second)) shouldBe ViewSnapshotError.RevisionConflict
+        db.viewRevision() shouldBe seeded + 1
+        // The first write's acknowledged revision is what the session expects now.
+        await(session.commit(Page("three", "a")))
+        db.viewRevision() shouldBe seeded + 2
+      } finally await(provider.close())
+    }
+
   private val secondBinding = "B" * 43
   private val secondView    = Qsid("provider-device", "second-view")
   private def realmKey(db: Fixture): String = s"spoonbill-auth:${db.realm.length}:${db.realm}session"
@@ -3925,6 +3996,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         "SELECT 1 FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace='session' AND view_id=? FOR UPDATE",
         query => { query.setString(1, db.realm); query.setString(2, viewKey) }
       )
+      viewRow.deferDeadlockDetection()
       val retried = provider.authorize(view)
       db.awaitLockWait("spoonbill_browser_view")
       // Waiting for the check's slot closes the cycle; PostgreSQL aborts the check, which runs once more.
@@ -3938,6 +4010,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       val after = (db.domainTransactions.get(), db.hostAccepted.get())
       db.hookLocks.set(Some(other.identity.sessionId.get))
       val otherRow  = new db.HeldLock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE", hostRow(db, other.identity.sessionId.get))
+      otherRow.deferDeadlockDetection()
       val abandoned = provider.authorize(view)
       db.awaitLockWait("spoonbill_auth_test_host")
       // The test transaction closes the cycle by waiting for this session's row; PostgreSQL aborts the check.
@@ -3986,6 +4059,49 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       exhausted.set(false)
       accepted(await(provider.authorize(view)))
     } finally await(provider.close())
+  }
+  it should "run checks of two bindings at once through an application decorator only when it forwards the setting" in {
+    for (forward <- Vector(true, false)) withClue(s"forwarding $forward: ") {
+      Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+        val origin    = "https://app.example"
+        val provider  = db.sharedConcurrent(4)
+        val decorated = new example.forwarding.ConcurrencyForwarding(provider, forward)
+        val browser = new BrowserAuthentication[Future, String, String](
+          decorated,
+          BrowserPresentation(() => "fresh", (_, _) => true, (page, _, _) => page),
+          BrowserConfiguration(decorated.scope, Set(origin)),
+          clock = () => db.clock.get()
+        )
+        try {
+          val configured = browser.configure(
+            SpoonbillServiceConfig[Future, String, Any](stateLoader = StateLoader.default("fresh"), document = page => Html(body(div(page))))
+          )
+          def guard(rawBinding: String, id: Qsid): SessionGuard[Future, String] = {
+            val (_, token, _) = retentionLogin(db, provider, rawBinding, id, 600)
+            val cookies = Seq(browser.configuration.bindingCookieName + "=" + rawBinding, browser.configuration.sessionCookieName + "=" + token.value)
+            val request = Request(Request.Method.Get, PathAndQuery.Root, Seq("Origin" -> origin), None, Stream.empty[Future, Bytes], cookies.mkString("; "))
+            await(configured.sessionAccessControl.get.open(id, request, ConnectionId.fromUuid(UUID.randomUUID())))
+          }
+          val (one, two) = (guard(binding, qsid), guard(secondBinding, secondView))
+          val clockRow   = new db.HeldLock("SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE", _.setString(1, db.realm))
+          val checks     = Vector(one.authorize("fresh"), two.authorize("fresh"))
+          if (forward) {
+            // Both checks run in read turns and wait for the clock row together.
+            db.awaitLockWait("spoonbill_auth_clock", count = 2)
+            browser.coordinatorStatistics.runningReads shouldBe 2
+          } else {
+            // Without the setting every check is an exclusive turn: the second one waits in the coordinator.
+            db.awaitLockWait("spoonbill_auth_clock")
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (browser.coordinatorStatistics.queuedWrites < 1 && System.nanoTime() < deadline) Thread.sleep(5)
+            browser.coordinatorStatistics.queuedWrites shouldBe 1
+            browser.coordinatorStatistics.runningReads shouldBe 0
+          }
+          clockRow.release()
+          checks.foreach(check => await(check))
+        } finally await(browser.close())
+      }
+    }
   }
 }
 

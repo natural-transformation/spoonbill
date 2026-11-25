@@ -24,16 +24,23 @@ private[jdbc] object JdbcHeldAuthority {
     else None
 
   /**
-   * The decision at the instant `at`. Every deadline is exclusive, so equality
-   * fails. A missing host resolution is a host denial, reported after expiry.
+   * A stable host denial at the instant `at`. Only session expiry outranks it,
+   * so it is decided without the framework's slot and view locks.
+   */
+  def denied(sessionExpiresAt: Instant, at: Instant): JdbcAuthError =
+    if (!at.isBefore(sessionExpiresAt)) JdbcAuthError.Expired else JdbcAuthError.HostDenied
+
+  /**
+   * The decision at the instant `at` for a host that resolved. Every deadline
+   * is exclusive, so equality fails.
    */
   def decide[A](
     sessionExpiresAt: Instant,
-    host: Option[HostDeadlines],
+    host: HostDeadlines,
     structural: Either[JdbcAuthError, A],
     at: Instant
   ): Either[JdbcAuthError, A] =
     if (!at.isBefore(sessionExpiresAt)) Left(JdbcAuthError.Expired)
-    else if (!host.exists(_.admit(at))) Left(JdbcAuthError.HostDenied)
+    else if (!host.admit(at)) Left(JdbcAuthError.HostDenied)
     else structural
 }

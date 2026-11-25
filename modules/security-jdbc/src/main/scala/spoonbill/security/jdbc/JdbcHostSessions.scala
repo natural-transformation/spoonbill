@@ -31,8 +31,11 @@ trait JdbcHostSessions[P] {
  * time rule at one durable instant that it samples after the last lock.
  *
  * The JDBC provider calls lockResolution only for a BrowserOwnership.SharedViews
- * view that was captured as authenticated, inside the provider transaction,
- * after the browser token row and before the slot and view locks. It must
+ * view that was captured as authenticated, and only from authorize, output
+ * admission, the guarded write observation and the check at the start of
+ * transact, which also covers its snapshot saves. It calls it inside the
+ * provider transaction, after the browser token row and before the slot and
+ * view locks; a None skips those locks. It must
  * acquire the host locks the decision needs and capture every non-time input
  * under them, and it must not decide by time. It returns None for a stable
  * denial. The returned principal and cutoff must stay valid for evaluation at
@@ -40,9 +43,10 @@ trait JdbcHostSessions[P] {
  * the transaction settles. A host whose time rule a single exclusive cutoff
  * cannot express keeps the resolve contract instead.
  *
- * resolve and acknowledge keep their contract. Activation, replacement,
- * anonymous and pending flows, ExclusiveScope providers and explicit host
- * tx.now still use resolve and the provider's ordinary clock.
+ * resolve and acknowledge keep their contract. Sign-in ceremonies, pending
+ * continuations, replacement and successor-completion flows, activation,
+ * anonymous views, ExclusiveScope providers and explicit host tx.now still use
+ * resolve and the provider's ordinary clock, and never call onAcceptedAt.
  */
 trait JdbcHeldHostSessions[P] extends JdbcHostSessions[P] {
   def lockResolution(connection: Connection, sessionId: UUID): Option[JdbcHeldResolution[P]]

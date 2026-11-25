@@ -550,8 +550,10 @@ final class JdbcBrowserSessions private[jdbc] (
    * checkpoint, sampled after the last lock and returned for the caller's
    * renewals. The first structural failure found under the locks is kept until
    * that instant, so expiry and host denial keep the priority that authorizeIn
-   * gives them when its time samples are equal. A rejection that authorizeIn
-   * makes before it samples any time takes no checkpoint here either.
+   * gives them when its time samples are equal. A stable host denial, which only
+   * expiry outranks, takes the instant without the slot and view locks. A
+   * rejection that authorizeIn makes before it samples any time takes no
+   * checkpoint here either.
    */
   private[jdbc] def authorizeHeldIn[P](
     connection: Connection,
@@ -572,28 +574,30 @@ final class JdbcBrowserSessions private[jdbc] (
       val before = rowByToken(connection, tokenHash).getOrElse(reject(JdbcAuthError.NotFound))
       JdbcHeldAuthority.untimed(before.prepared.bindingHash == bindingHash, before.revoked).foreach(reject)
       // Host locks come before the framework's slot and view locks.
-      val resolution = lockHost(before.prepared.hostSessionId)
-      val structural = for {
-        current <- slot(connection, bindingHash).toRight(JdbcAuthError.NotFound)
-        _       <- Either.cond(current.generation == expectedGeneration, (), JdbcAuthError.StaleGeneration)
-        owned   <- view(connection, fence.viewId).toRight(JdbcAuthError.NotFound)
-        _       <- checkView(owned, bindingHash, fence.ownerId, fence.epoch)
-        latest  <- rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound)
-        _       <- Either.cond(latest.prepared == before.prepared, (), JdbcAuthError.Conflict)
-        _       <- Either.cond(!latest.revoked, (), JdbcAuthError.Revoked)
-        session <- active(current, latest)
-      } yield session -> owned.snapshotRevision
-      // The one durable instant, after every lock this check waits for.
-      val at = checkpoint()
-      val deadlines = resolution.map(held =>
-        JdbcHeldAuthority.HostDeadlines(held.principal.expiresAt, held.validUntilExclusive)
-      )
-      JdbcHeldAuthority
-        .decide(before.prepared.sessionExpiresAt, deadlines, structural, at)
-        .flatMap { case (session, revision) =>
-          resolution.map(JdbcHeldAuthorization(session, _, at, revision)).toRight(JdbcAuthError.HostDenied)
-        }
-        .fold(reject, identity)
+      lockHost(before.prepared.hostSessionId) match {
+        case None =>
+          // A stable host denial: only session expiry outranks it, so it takes
+          // the instant without waiting for the slot and view locks.
+          reject(JdbcHeldAuthority.denied(before.prepared.sessionExpiresAt, checkpoint()))
+        case Some(held) =>
+          val structural = for {
+            current <- slot(connection, bindingHash).toRight(JdbcAuthError.NotFound)
+            _       <- Either.cond(current.generation == expectedGeneration, (), JdbcAuthError.StaleGeneration)
+            owned   <- view(connection, fence.viewId).toRight(JdbcAuthError.NotFound)
+            _       <- checkView(owned, bindingHash, fence.ownerId, fence.epoch)
+            latest  <- rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound)
+            _       <- Either.cond(latest.prepared == before.prepared, (), JdbcAuthError.Conflict)
+            _       <- Either.cond(!latest.revoked, (), JdbcAuthError.Revoked)
+            session <- active(current, latest)
+          } yield session -> owned.snapshotRevision
+          // The one durable instant, after every lock this check waits for.
+          val at        = checkpoint()
+          val deadlines = JdbcHeldAuthority.HostDeadlines(held.principal.expiresAt, held.validUntilExclusive)
+          JdbcHeldAuthority
+            .decide(before.prepared.sessionExpiresAt, deadlines, structural, at)
+            .map { case (session, revision) => JdbcHeldAuthorization(session, held, at, revision) }
+            .fold(reject, identity)
+      }
     } catch {
       case error: JdbcAuthException => throw error
       // Keep the cause: a deadlock abort is recognized by its SQLSTATE.

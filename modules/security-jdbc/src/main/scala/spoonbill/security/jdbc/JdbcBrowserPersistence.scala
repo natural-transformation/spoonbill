@@ -140,7 +140,7 @@ final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
       durable = true,
       ownership = ownership
     )
-  override private[spoonbill] def checkConcurrency: Option[BrowserCheckConcurrency] =
+  override def checkConcurrency: Option[BrowserCheckConcurrency] =
     concurrentChecks.map(setting => BrowserCheckConcurrency(setting.maxConcurrentChecks))
 
   /** True once a transaction of this instance has observed the realm's retention row. */
@@ -552,18 +552,31 @@ final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
     }
     identity -> revision
   }
-  private def current(connection: Connection, view: BrowserView[P], attempt: Option[CheckAttempt] = None): BrowserIdentity[P] =
-    currentObserved(connection, view, attempt)._1
+  /**
+   * One fresh observation of the view. held = true marks the operations that
+   * may take the held host's path: authorize, output admission, the guarded
+   * write observation and the check of transact. Every other operation, such as
+   * a ceremony, a pending continuation, a replacement or a successor
+   * completion, keeps resolve and the ordinary clock.
+   */
+  private def current(
+    connection: Connection,
+    view: BrowserView[P],
+    held: Boolean = false,
+    attempt: Option[CheckAttempt] = None
+  ): BrowserIdentity[P] =
+    currentObserved(connection, view, held, attempt)._1
 
   /** One fresh observation of the view, with its snapshot revision read in the same locked view read. */
   private def currentObserved(
     connection: Connection,
     view: BrowserView[P],
-    attempt: Option[CheckAttempt] = None
+    held: Boolean,
+    attempt: Option[CheckAttempt]
   ): (BrowserIdentity[P], Long) = {
     if (!issuer.owns(view)) reject(OperationError.ForeignPermit)
     heldHost match {
-      case Some(held) if heldEligible(view) => heldCurrent(connection, view, held, attempt)
+      case Some(host) if held && heldEligible(view) => heldCurrent(connection, view, host, attempt)
       case _ =>
         val captured = view.identity
         val (fresh, revision) = captureObservedIn(
@@ -830,7 +843,7 @@ final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
   }
 
   def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]] =
-    readRun(sharedCheck(view))((connection, attempt) => current(connection, view, attempt))
+    readRun(sharedCheck(view))((connection, attempt) => current(connection, view, held = true, attempt))
 
   /**
    * One check of the view, as authorize, that also reads its snapshot revision
@@ -842,7 +855,7 @@ final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
   private object writeObservations extends BrowserWriteObservations[F, P] {
     def observeWrite(view: BrowserView[P]): F[Either[BrowserFailure, BrowserWriteObservation[P]]] =
       F.map(readRun(sharedCheck(view)) { (connection, attempt) =>
-        val (identity, revision) = currentObserved(connection, view, attempt)
+        val (identity, revision) = currentObserved(connection, view, held = true, attempt)
         identity -> ViewRevision.fromLong(revision).fold(_ => reject(OperationError.StorageFailure), value => value)
       })(_.flatMap { case (identity, revision) =>
         issuer.writeObservation(identity, view, revision).toRight(BrowserFailure.Closed)
@@ -856,13 +869,13 @@ final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
    */
   override def admitOutput[A](view: BrowserView[P], output: A)(using Effect[F]): F[Either[BrowserFailure, A]] =
     readRun(sharedCheck(view)) { (connection, attempt) =>
-      current(connection, view, attempt); output
+      current(connection, view, held = true, attempt); output
     }
 
   override def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(using
     Effect[F]
   ): F[Either[BrowserFailure, A]] = readRun(sharedCheck(view)) { (connection, attempt) =>
-    if (!allowed(current(connection, view, attempt))) reject()
+    if (!allowed(current(connection, view, held = true, attempt))) reject()
     output
   }
 
@@ -872,7 +885,7 @@ final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
    */
   def transact[A](view: BrowserView[P])(body: Tx => A): F[Either[TransactionFailure, A]] = owned() {
     transaction { connection =>
-      current(connection, view); withHostTransaction(connection)(body)
+      current(connection, view, held = true); withHostTransaction(connection)(body)
     }
   }
 
