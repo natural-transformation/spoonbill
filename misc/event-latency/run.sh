@@ -79,8 +79,10 @@ if [[ -n "$snapshot" ]]; then
 fi
 # The shared mode's probe verdict and its click-phase report.
 extra=''
+report='null'
 if [[ -n "$shared" ]]; then
-  extra=",\"probe\":$probe,\"clicks\":$(node "$here/client/shared-report.mjs" "$result" "$users" "$clicks")"
+  report="$(node "$here/client/shared-report.mjs" "$result" "$users" "$clicks")"
+  extra=",\"probe\":$probe,\"clicks\":$report"
 fi
 # Retained objects after a full GC, while the server is still running.
 histogram="$(jcmd "$server" GC.class_histogram 2>/dev/null | awk '$4 ~ /TimerTask|Scheduler\$\$anon|JobHandler/ {n+=$2; b+=$3} END {printf "{\"timerObjects\":%d,\"timerBytes\":%d}", n, b}')"
@@ -91,7 +93,7 @@ if [[ -n "$snapshot" ]] && [[ "$(node -e 'console.log(JSON.parse(process.argv[1]
   echo "commit budget not met: $(node -e 'console.log(JSON.stringify(JSON.parse(process.argv[1]).violations))' "$budget")" >&2
   exit 1
 fi
-if [[ -n "$shared" ]] && [[ "$(node -e 'console.log(JSON.parse(process.argv[1]).ok)' "$probe")" != true ]]; then
-  echo "observation budget not met: $(node -e 'console.log(JSON.stringify(JSON.parse(process.argv[1]).violations))' "$probe")" >&2
-  exit 1
+# The shared mode passes only when both the observation probe and the click phase pass.
+if [[ -n "$shared" ]]; then
+  node "$here/client/shared-verdict.mjs" "$probe" "$report" || exit 1
 fi

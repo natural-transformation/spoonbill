@@ -1,5 +1,6 @@
 {
  "description": "jdbc-shared click-latency matrix: SharedViews ownership, a host that locks and reads one row per resolution, separate provider and clock pools, inline presentation snapshots of 1 KiB. Each constant-projection configuration ran three times, interleaved by mode; each changing-projection configuration ran once.",
+ "note": "The per-click counts of these runs include one view release per user after the last click: at most 0.02 provider transactions and 0.3 round trips per click. The harness now reads its final counters before the clients disconnect; throughput and latency are not affected.",
  "date": "2026-11-25",
  "environment": {
   "machine": "Apple M4 Max, 16 cores, 128 GiB, macOS 27.2.1",

@@ -265,6 +265,9 @@ async function run(opened, results) {
     }
     if (think > 0) await sleep(think);
   }
+  // With the warmup barrier the sessions stay open until the final counters
+  // are read, so that releasing a view does not count as click work.
+  if (warmupBarrier) return session;
   session.close();
 }
 
@@ -305,9 +308,10 @@ if (phased) {
     afterWarmup = await phaseStats();
     const measuredStarted = performance.now();
     releaseMeasured();
-    await runs;
+    const sessions = await runs;
     measuredSeconds = (performance.now() - measuredStarted) / 1000;
     afterDrain = await drainedStats();
+    for (const session of sessions) session?.close();
   } else await runs;
 } else {
   await Promise.all(Array.from({ length: users }, () => open().then(value => run(value, results))));

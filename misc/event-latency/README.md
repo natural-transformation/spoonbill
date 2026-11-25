@@ -81,7 +81,14 @@ tree (`local`). Results and their interpretation are in the
     and per click the provider transactions (each one observes the view once:
     a check, an output admission or a snapshot save), snapshot saves, clock
     checkpoints, host resolves and protocol round trips, with rollbacks and
-    reconnects.
+    reconnects. The clients stay connected until the final counters are read,
+    so releasing a view is not counted as click work. The click phase fails
+    on an incomplete click, a rollback, a reconnect, counters that do not
+    settle, or a save count other than none for a warmed constant projection
+    with guarded snapshots and one per click otherwise. `run.sh` exits 1 when
+    the probe or the click phase fails (`client/shared-verdict.mjs`);
+    `node --test misc/event-latency/client/shared-verdict.test.mjs` tests that
+    verdict and the click report.
 
   Switches: `BENCH_SHARED_HOST` is `legacy` (`resolve` twice per check) or
   `held` (`JdbcHeldHostSessions`: the same locks and read, once per check);

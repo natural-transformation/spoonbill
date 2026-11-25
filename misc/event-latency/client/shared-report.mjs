@@ -35,6 +35,10 @@ const window = {
   roundTrips: from.roundTrips == null || to.roundTrips == null ? null : to.roundTrips - from.roundTrips,
 };
 const completed = result.samples;
+// A guarded session skips the save of an unchanged projection; every other
+// top-level write saves once. A lost optimization therefore fails the run.
+const switches = at(from.stats, 'switches') ?? {};
+const expectedSaves = switches.snapshots === 'guarded' && switches.projection === 'constant' ? 0 : completed;
 const perClick = Object.fromEntries(Object.entries(window).map(([name, value]) =>
   [name, value == null || !completed ? null : Math.round(value / completed * 1000) / 1000]));
 const pick = summary => summary && { p50: summary.p50, p95: summary.p95, p99: summary.p99 };
@@ -43,6 +47,8 @@ const problems = [
   window.rollbacks !== 0 && `${window.rollbacks} rolled-back transactions`,
   result.reconnects !== 0 && `${result.reconnects} reconnects`,
   !to.drained && 'the counters did not settle after the measured clicks',
+  window.snapshotSaves !== expectedSaves &&
+    `${window.snapshotSaves} snapshot saves for ${completed} clicks, expected ${expectedSaves}`,
 ].filter(Boolean);
 console.log(JSON.stringify({
   ok: problems.length === 0, problems, users, clicksPerUser, completedClicks: completed,
