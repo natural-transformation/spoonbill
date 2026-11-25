@@ -53,9 +53,16 @@ object BenchLogin {
       Future.successful
     )
 
-  def provision(persistence: JdbcBrowserPersistence[Future, String], sessionSeconds: Long = 3600)(using
-    ExecutionContext
-  ): Future[Provisioned] = {
+  /**
+   * `hostSession` runs inside the preparation transaction with the new host
+   * session id, before the provider resolves it: a host that keeps its sessions
+   * in a table inserts the row there, as a real sign-in does.
+   */
+  def provision(
+    persistence: JdbcBrowserPersistence[Future, String],
+    sessionSeconds: Long = 3600,
+    hostSession: (Connection, UUID) => Unit = (_, _) => ()
+  )(using ExecutionContext): Future[Provisioned] = {
     val binding = freshBinding()
     val qsid    = Qsid("bench-login", UUID.randomUUID().toString)
     for {
@@ -68,7 +75,9 @@ object BenchLogin {
       receipt <- persistence
                    .prepare(ceremony) { tx =>
                      // The host session: a fresh id, its acknowledgment id and an expiry within the retention limit.
-                     new HostSessionPrepared(UUID.randomUUID(), UUID.randomUUID(), tx.now.plusSeconds(sessionSeconds), credential)
+                     val sessionId = UUID.randomUUID()
+                     hostSession(tx.connection, sessionId)
+                     new HostSessionPrepared(sessionId, UUID.randomUUID(), tx.now.plusSeconds(sessionSeconds), credential)
                    }
                    .flatMap(
                      _.fold(
