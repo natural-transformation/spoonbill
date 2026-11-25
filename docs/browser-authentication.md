@@ -405,10 +405,36 @@ checkpoint otherwise keeps its caller's realm lock. Any failed check, including
 a coordinator rejection or the ten-second bound on a guard call, closes the
 session, and the reconnect is an exclusive turn with exclusive provider
 transactions. The queue bound is therefore an overload limit, not a load
-shedder: size the cap so that rejections stay rare. `SharedViews` deployments
-cannot opt in. Without the setting nothing changes. The
-[design](concurrent-authorization-design.md) records the reasoning and the
-measurements.
+shedder: size the cap so that rejections stay rare. Without the setting
+nothing changes. The [design](concurrent-authorization-design.md) records the
+reasoning and the measurements.
+
+The `concurrentChecks` parameter refuses `SharedViews` ownership. A
+`SharedViews` deployment opts in through the named factory
+`JdbcBrowserPersistence.sharedViewsWithConcurrentChecks`, which takes a
+`JdbcConcurrentChecks` setting and a host that implements
+`JdbcHeldHostSessions` (see [JDBC deployment](#jdbc-deployment-and-credential-custody)):
+
+- Only an eligible check takes the realm lock in shared mode, once the realm
+  is enrolled: `authorize`, output admission or the guarded write observation
+  of a view captured as authenticated. Each resolves the held host once and
+  takes one short row-locked clock checkpoint on the reserved `clockSource`;
+  there is no background clock renewal. Enrollment, every other check and
+  every writer, including takeover, logout, snapshot saves and host
+  transactions, keep the exclusive realm lock, so nodes without the opt-in
+  stay ordered against these checks during a rolling upgrade.
+- A check aborted by a PostgreSQL deadlock is retried once only while the
+  host's `onAcceptedAt` hook has not started; an uncertain clock or provider
+  settlement fails closed without a retry.
+- Checks of different bindings run beside each other until the clock row,
+  which orders their checkpoints. The host must be safe for concurrent calls
+  and lock its rows in one global order. A host that takes one cluster-wide
+  policy lock in `lockResolution` serializes its checks there, so measure the
+  gain for such a host before enabling the opt-in.
+
+Size the main pool and the blocking executor for the cap plus maintenance and
+one writer, give the reserved clock source capacity of its own, and bound
+connection acquisition, statement, lock and socket waits on both.
 
 ## JDBC deployment and credential custody
 

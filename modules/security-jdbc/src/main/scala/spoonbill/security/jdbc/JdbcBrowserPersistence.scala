@@ -40,9 +40,11 @@ import spoonbill.server.BrowserSessionToken
  * of a view captured as authenticated resolves the host once and decides
  * expiry at one durable clock checkpoint; other flows keep resolve and the
  * ordinary clock. Pass concurrentChecks to let the coordinator run authority
- * checks concurrently under a shared realm lock; see JdbcConcurrentChecks.
+ * checks concurrently under a shared realm lock; see JdbcConcurrentChecks. A
+ * SharedViews provider opts in through
+ * JdbcBrowserPersistence.sharedViewsWithConcurrentChecks instead.
  */
-final class JdbcBrowserPersistence[F[_], P](
+final class JdbcBrowserPersistence[F[_], P] private[jdbc] (
   source: DataSource,
   blockingContext: ExecutionContext,
   val realm: String,
@@ -51,13 +53,34 @@ final class JdbcBrowserPersistence[F[_], P](
   host: JdbcHostSessions[P],
   vault: JdbcCredentialVault,
   ownership: BrowserOwnership,
-  limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
-  existingRunner: Option[TransactionExecutor[F, Direct, Connection]] = None,
-  clockSource: Option[DataSource] = None,
-  newId: () => UUID = () => UUID.randomUUID(),
-  concurrentChecks: Option[JdbcConcurrentChecks] = None
+  limits: BrowserPersistenceLimits,
+  existingRunner: Option[TransactionExecutor[F, Direct, Connection]],
+  clockSource: Option[DataSource],
+  newId: () => UUID,
+  concurrentChecks: Option[JdbcConcurrentChecks],
+  // Set only by sharedViewsWithConcurrentChecks: SharedViews with concurrentChecks.
+  sharedConcurrentChecks: Boolean
 )(using F: Effect[F])
     extends ReplacementBrowserPersistence[F, Direct, P] {
+
+  /** The public constructor. concurrentChecks refuses SharedViews ownership. */
+  def this(
+    source: DataSource,
+    blockingContext: ExecutionContext,
+    realm: String,
+    namespace: String,
+    clock: () => Instant,
+    host: JdbcHostSessions[P],
+    vault: JdbcCredentialVault,
+    ownership: BrowserOwnership,
+    limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
+    existingRunner: Option[TransactionExecutor[F, Direct, Connection]] = None,
+    clockSource: Option[DataSource] = None,
+    newId: () => UUID = () => UUID.randomUUID(),
+    concurrentChecks: Option[JdbcConcurrentChecks] = None
+  )(using F: Effect[F]) =
+    this(source, blockingContext, realm, namespace, clock, host, vault, ownership, limits, existingRunner, clockSource,
+      newId, concurrentChecks, false)
 
   /** The constructor of earlier releases, kept for binary compatibility. */
   def this(
@@ -75,7 +98,7 @@ final class JdbcBrowserPersistence[F[_], P](
     newId: () => UUID
   )(using Effect[F]) =
     this(source, blockingContext, realm, namespace, clock, host, vault, ownership, limits, existingRunner, clockSource,
-      newId, None)
+      newId, None, false)
   final class Transaction private[JdbcBrowserPersistence] (raw: Connection) {
     private val thread = Thread.currentThread()
     private var active = true
@@ -95,8 +118,13 @@ final class JdbcBrowserPersistence[F[_], P](
   }
   require(realm.matches("[A-Za-z0-9_.-]{1,96}") && namespace.matches("[A-Za-z0-9_.-]{1,96}"))
   require(
-    concurrentChecks.isEmpty || ownership != BrowserOwnership.SharedViews,
-    "Concurrent checks are not supported with SharedViews ownership"
+    concurrentChecks.isEmpty || ownership != BrowserOwnership.SharedViews || sharedConcurrentChecks,
+    "Concurrent checks with SharedViews ownership need JdbcBrowserPersistence.sharedViewsWithConcurrentChecks"
+  )
+  require(
+    !sharedConcurrentChecks || (ownership == BrowserOwnership.SharedViews && concurrentChecks.nonEmpty &&
+      host.isInstanceOf[JdbcHeldHostSessions[?]]),
+    "Shared-view concurrent checks need SharedViews ownership, a concurrent-checks setting and a held host"
   )
   require(
     concurrentChecks.forall(setting => clockSource.forall(_ eq setting.clockSource)),
@@ -131,23 +159,25 @@ final class JdbcBrowserPersistence[F[_], P](
   // expiry while observations happen, so checks perform no clock I/O inside
   // their transactions in the normal case. An expired lease still falls back
   // to the caller's own renewal, so the clock source's timeouts stay required.
-  private val renewalTask: Option[ScheduledExecutorService] = concurrentChecks.map { _ =>
-    val executor = Executors.newSingleThreadScheduledExecutor { runnable =>
-      val thread = new Thread(runnable, s"spoonbill-clock-renewal-$realm")
-      thread.setDaemon(true)
-      thread
+  // A shared clock writer has no lease to renew: each eligible check takes its own checkpoint.
+  private val renewalTask: Option[ScheduledExecutorService] =
+    concurrentChecks.filter(_ => ownership == BrowserOwnership.ExclusiveScope).map { _ =>
+      val executor = Executors.newSingleThreadScheduledExecutor { runnable =>
+        val thread = new Thread(runnable, s"spoonbill-clock-renewal-$realm")
+        thread.setDaemon(true)
+        thread
+      }
+      val period = JdbcBrowserClock.RenewAheadPeriod.toMillis
+      executor.scheduleWithFixedDelay(
+        () =>
+          try { durableClock.renewAhead(); () }
+          catch { case NonFatal(_) => () },
+        period,
+        period,
+        TimeUnit.MILLISECONDS
+      )
+      executor
     }
-    val period = JdbcBrowserClock.RenewAheadPeriod.toMillis
-    executor.scheduleWithFixedDelay(
-      () =>
-        try { durableClock.renewAhead(); () }
-        catch { case NonFatal(_) => () },
-      period,
-      period,
-      TimeUnit.MILLISECONDS
-    )
-    executor
-  }
 
   /** True while the background clock renewal runs. */
   private[jdbc] def renewingInBackground: Boolean = renewalTask.exists(task => !task.isShutdown)
@@ -306,23 +336,37 @@ final class JdbcBrowserPersistence[F[_], P](
   }
 
   /**
-   * A check's transaction. Without the concurrent-checks setting, or until the
-   * realm is known to be enrolled, it is the exclusive transaction above.
-   * Otherwise it takes the realm lock in shared mode, so checks run beside
-   * each other and exclude only writers, skips enrollment, and retries once
-   * after a deadlock abort that the runner reports as a settled rollback. An
-   * unresolved commit or any other failure is never retried.
+   * One transaction attempt of a check. A deadlock abort lets the check run
+   * once more only while the attempt is replayable: no host callback that may
+   * write, such as the held host's accepted hook, has started in it.
    */
-  private def readTransaction[A](body: Connection => A): F[Either[TransactionFailure, A]] =
-    if (concurrentChecks.isEmpty || !enrolled.get()) transaction(body)
+  private final class CheckAttempt {
+    private val started = new AtomicBoolean()
+    def nonReplayable(): Unit = started.set(true)
+    def replayable: Boolean   = !started.get()
+  }
+
+  /**
+   * A check's transaction. Without the concurrent-checks setting, until the
+   * realm is known to be enrolled, or when the caller chose the exclusive mode
+   * before opening it, it is the exclusive transaction above. Otherwise it
+   * takes the realm lock in shared mode, so checks run beside each other and
+   * exclude only writers, skips enrollment, and retries once after a deadlock
+   * abort that the runner reports as a settled rollback of a replayable
+   * attempt. An unresolved commit, any other failure, or an attempt whose host
+   * callback had started is never retried.
+   */
+  private def readTransaction[A](shared: Boolean)(body: (Connection, Option[CheckAttempt]) => A): F[Either[TransactionFailure, A]] =
+    if (!shared || concurrentChecks.isEmpty || !enrolled.get()) transaction(body(_, None))
     else {
       def attempt: F[(Either[TransactionFailure, A], Boolean)] = {
         val evaluated = new AtomicBoolean()
         val aborted   = new AtomicBoolean()
+        val check     = new CheckAttempt
         F.map(runner.transact { connection =>
           if (!evaluated.compareAndSet(false, true)) reject(OperationError.PermitUsed)
           if (connection.getAutoCommit) reject(OperationError.TransactionRequired)
-          try { sharedRealmLock(connection); body(connection) }
+          try { sharedRealmLock(connection); body(connection, Some(check)) }
           catch {
             case error: JdbcAuthException =>
               if (deadlock(error)) aborted.set(true)
@@ -331,17 +375,27 @@ final class JdbcBrowserPersistence[F[_], P](
               aborted.set(true)
               throw error
           }
-        })(result => (result, aborted.get()))
+        })(result => (result, aborted.get() && check.replayable))
       }
       F.flatMap(attempt) {
         case (Left(TransactionFailure.Rejected(_) | TransactionFailure.RolledBack), true) => F.map(attempt)(_._1)
         case (result, _)                                                                 => F.pure(result)
       }
     }
-  private def readRun[A](body: Connection => A): F[Either[BrowserFailure, A]] =
-    F.map(owned(if (concurrentChecks.isDefined) Lane.Check else Lane.Ordinary)(readTransaction(body)))(
+  private def readRun[A](shared: Boolean)(body: (Connection, Option[CheckAttempt]) => A): F[Either[BrowserFailure, A]] =
+    F.map(owned(if (concurrentChecks.isDefined) Lane.Check else Lane.Ordinary)(readTransaction(shared)(body)))(
       _.left.map(failure)
     )
+
+  /**
+   * Whether a check of this view may take the shared realm lock. An
+   * ExclusiveScope provider's checks may, as before. With SharedViews, only an
+   * eligible check of an authenticated view may: the one that resolves the
+   * host once and decides at one checkpoint. Every other check, and every
+   * writer, stays exclusive.
+   */
+  private def sharedCheck(view: BrowserView[P]): Boolean =
+    ownership == BrowserOwnership.ExclusiveScope || (heldHost.nonEmpty && heldEligible(view))
 
   /** Retry only pure admission after a separately settled pressure cleanup. */
   private def admission[A](body: Connection => A): F[Either[BrowserFailure, A]] =
@@ -498,14 +552,18 @@ final class JdbcBrowserPersistence[F[_], P](
     }
     identity -> revision
   }
-  private def current(connection: Connection, view: BrowserView[P]): BrowserIdentity[P] =
-    currentObserved(connection, view)._1
+  private def current(connection: Connection, view: BrowserView[P], attempt: Option[CheckAttempt] = None): BrowserIdentity[P] =
+    currentObserved(connection, view, attempt)._1
 
   /** One fresh observation of the view, with its snapshot revision read in the same locked view read. */
-  private def currentObserved(connection: Connection, view: BrowserView[P]): (BrowserIdentity[P], Long) = {
+  private def currentObserved(
+    connection: Connection,
+    view: BrowserView[P],
+    attempt: Option[CheckAttempt] = None
+  ): (BrowserIdentity[P], Long) = {
     if (!issuer.owns(view)) reject(OperationError.ForeignPermit)
     heldHost match {
-      case Some(held) if heldEligible(view) => heldCurrent(connection, view, held)
+      case Some(held) if heldEligible(view) => heldCurrent(connection, view, held, attempt)
       case _ =>
         val captured = view.identity
         val (fresh, revision) = captureObservedIn(
@@ -549,7 +607,8 @@ final class JdbcBrowserPersistence[F[_], P](
   private def heldCurrent(
     connection: Connection,
     view: BrowserView[P],
-    held: JdbcHeldHostSessions[P]
+    held: JdbcHeldHostSessions[P],
+    attempt: Option[CheckAttempt]
   ): (BrowserIdentity[P], Long) = {
     val captured = view.identity
     val token    = captured.token.getOrElse(reject())
@@ -574,6 +633,8 @@ final class JdbcBrowserPersistence[F[_], P](
     if (!captured.sameAuthority(fresh)) reject()
     renewOwnerLeaseAt(connection, viewKey, view.ownerId, view.epoch, decided.at)
     touchBindingAt(connection, captured.binding, decided.at)
+    // The hook may write: from here on, this attempt is never replayed.
+    attempt.foreach(_.nonReplayable())
     decided.resolution.onAcceptedAt(decided.at)
     fresh -> decided.snapshotRevision
   }
@@ -595,7 +656,7 @@ final class JdbcBrowserPersistence[F[_], P](
 
   override def inspectPrincipal(binding: String, token: Option[String])(using
     Effect[F]
-  ): F[Either[BrowserFailure, Option[P]]] = readRun { connection =>
+  ): F[Either[BrowserFailure, Option[P]]] = readRun(ownership == BrowserOwnership.ExclusiveScope) { (connection, _) =>
     if (!validSecret(binding) || token.exists(value => !validSecret(value))) reject()
     val exists = sql(
       connection,
@@ -768,7 +829,8 @@ final class JdbcBrowserPersistence[F[_], P](
     issuer.view(identity, qsid, connectionId, owner, epoch)
   }
 
-  def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]] = readRun(current(_, view))
+  def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]] =
+    readRun(sharedCheck(view))((connection, attempt) => current(connection, view, attempt))
 
   /**
    * One check of the view, as authorize, that also reads its snapshot revision
@@ -779,8 +841,8 @@ final class JdbcBrowserPersistence[F[_], P](
   override def guardedWriteObservations: Option[BrowserWriteObservations[F, P]] = Some(writeObservations)
   private object writeObservations extends BrowserWriteObservations[F, P] {
     def observeWrite(view: BrowserView[P]): F[Either[BrowserFailure, BrowserWriteObservation[P]]] =
-      F.map(readRun { connection =>
-        val (identity, revision) = currentObserved(connection, view)
+      F.map(readRun(sharedCheck(view)) { (connection, attempt) =>
+        val (identity, revision) = currentObserved(connection, view, attempt)
         identity -> ViewRevision.fromLong(revision).fold(_ => reject(OperationError.StorageFailure), value => value)
       })(_.flatMap { case (identity, revision) =>
         issuer.writeObservation(identity, view, revision).toRight(BrowserFailure.Closed)
@@ -793,14 +855,14 @@ final class JdbcBrowserPersistence[F[_], P](
    * frame admitted before takeover may still arrive afterward in transport.
    */
   override def admitOutput[A](view: BrowserView[P], output: A)(using Effect[F]): F[Either[BrowserFailure, A]] =
-    readRun { connection =>
-      current(connection, view); output
+    readRun(sharedCheck(view)) { (connection, attempt) =>
+      current(connection, view, attempt); output
     }
 
   override def admitOutputIf[A](view: BrowserView[P], output: A)(allowed: BrowserIdentity[P] => Boolean)(using
     Effect[F]
-  ): F[Either[BrowserFailure, A]] = readRun { connection =>
-    if (!allowed(current(connection, view))) reject()
+  ): F[Either[BrowserFailure, A]] = readRun(sharedCheck(view)) { (connection, attempt) =>
+    if (!allowed(current(connection, view, attempt))) reject()
     output
   }
 
@@ -1141,39 +1203,40 @@ final class JdbcBrowserPersistence[F[_], P](
       capability(view, record)
   }
 
-  def pending(view: BrowserView[P]): F[Either[BrowserFailure, Option[BrowserContinuation]]] = readRun { connection =>
-    if (!issuer.owns(view)) reject(OperationError.ForeignPermit)
-    val time = now()
-    val candidate = sql(
-      connection,
-      """SELECT c.id FROM spoonbill_auth_ceremony c
-      WHERE c.realm=? AND c.namespace=? AND c.binding_hash=? AND c.generation=? AND c.expires_at>?
-      AND NOT EXISTS (SELECT 1 FROM spoonbill_browser_replacement r WHERE r.realm=c.realm AND r.namespace=c.namespace AND r.ceremony_id=c.id)
-      AND (c.phase IN ('Challenged','Admitted') OR (c.phase='Committed' AND EXISTS (
-        SELECT 1 FROM spoonbill_auth_material m WHERE m.realm=c.realm AND m.namespace=c.namespace
-          AND m.attempt=c.attempt AND m.expires_at>? AND m.deliveries<?)))
-      ORDER BY c.expires_at DESC,c.id DESC LIMIT 1"""
-    ) { query =>
-      scope(query); query.setBytes(3, digest(view.identity.binding).bytes); query.setLong(4, view.identity.generation)
-      query.setTimestamp(5, Timestamp.from(time)); query.setTimestamp(6, Timestamp.from(time));
-      query.setInt(7, limits.maxDeliveries)
-      Using.resource(query.executeQuery()) { rows =>
-        if (rows.next()) Some(CeremonyId(rows.getObject(1, classOf[UUID]))) else None
+  def pending(view: BrowserView[P]): F[Either[BrowserFailure, Option[BrowserContinuation]]] =
+    readRun(ownership == BrowserOwnership.ExclusiveScope) { (connection, _) =>
+      if (!issuer.owns(view)) reject(OperationError.ForeignPermit)
+      val time = now()
+      val candidate = sql(
+        connection,
+        """SELECT c.id FROM spoonbill_auth_ceremony c
+        WHERE c.realm=? AND c.namespace=? AND c.binding_hash=? AND c.generation=? AND c.expires_at>?
+        AND NOT EXISTS (SELECT 1 FROM spoonbill_browser_replacement r WHERE r.realm=c.realm AND r.namespace=c.namespace AND r.ceremony_id=c.id)
+        AND (c.phase IN ('Challenged','Admitted') OR (c.phase='Committed' AND EXISTS (
+          SELECT 1 FROM spoonbill_auth_material m WHERE m.realm=c.realm AND m.namespace=c.namespace
+            AND m.attempt=c.attempt AND m.expires_at>? AND m.deliveries<?)))
+        ORDER BY c.expires_at DESC,c.id DESC LIMIT 1"""
+      ) { query =>
+        scope(query); query.setBytes(3, digest(view.identity.binding).bytes); query.setLong(4, view.identity.generation)
+        query.setTimestamp(5, Timestamp.from(time)); query.setTimestamp(6, Timestamp.from(time));
+        query.setInt(7, limits.maxDeliveries)
+        Using.resource(query.executeQuery()) { rows =>
+          if (rows.next()) Some(CeremonyId(rows.getObject(1, classOf[UUID]))) else None
+        }
+      }
+      val record = candidate.map(readCeremony(connection, _))
+      current(connection, view)
+      record.map { value =>
+        validate(value, view, value.purpose)
+        BrowserContinuation(
+          value.id,
+          value.purpose,
+          value.challenge,
+          value.phase == BrowserCeremonyPhase.Admitted || value.phase == BrowserCeremonyPhase.Committed,
+          value.expiresAt
+        )
       }
     }
-    val record = candidate.map(readCeremony(connection, _))
-    current(connection, view)
-    record.map { value =>
-      validate(value, view, value.purpose)
-      BrowserContinuation(
-        value.id,
-        value.purpose,
-        value.challenge,
-        value.phase == BrowserCeremonyPhase.Admitted || value.phase == BrowserCeremonyPhase.Committed,
-        value.expiresAt
-      )
-    }
-  }
 
   private val preparation = new BrowserPreparation[F, Direct, Connection, P](
     issuer,
@@ -2060,6 +2123,45 @@ final class JdbcBrowserPersistence[F[_], P](
   )
 }
 
+object JdbcBrowserPersistence {
+
+  /**
+   * A SharedViews provider whose eligible checks run concurrently. A check of
+   * a view captured as authenticated, through authorize, output admission or a
+   * guarded write observation, takes the realm lock in shared mode once the
+   * realm is enrolled; it resolves the held host once and takes one short
+   * row-locked clock checkpoint on checks.clockSource. Enrollment, every other
+   * check and every writer, including takeover, logout, snapshot saves and host
+   * transactions, keep the exclusive realm lock, so nodes without this opt-in
+   * stay ordered against these checks. The coordinator runs checks in read
+   * turns keyed by the browser binding, at most checks.maxConcurrentChecks at
+   * once plus one for maintenance.
+   *
+   * The host must be safe for concurrent calls and lock its rows in one global
+   * order before the framework's slot and view locks. A check aborted by a
+   * PostgreSQL deadlock is retried once, only while its accepted hook has not
+   * started. Size the main pool and the blocking executor for the cap plus
+   * maintenance and one writer, give the reserved clock source its own
+   * capacity, and bound connection acquisition, statement, lock and socket
+   * waits on both.
+   */
+  def sharedViewsWithConcurrentChecks[F[_], P](
+    source: DataSource,
+    blockingContext: ExecutionContext,
+    realm: String,
+    namespace: String,
+    clock: () => Instant,
+    host: JdbcHeldHostSessions[P],
+    vault: JdbcCredentialVault,
+    checks: JdbcConcurrentChecks,
+    limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
+    existingRunner: Option[TransactionExecutor[F, Direct, Connection]] = None,
+    newId: () => UUID = () => UUID.randomUUID()
+  )(using Effect[F]): JdbcBrowserPersistence[F, P] =
+    new JdbcBrowserPersistence(source, blockingContext, realm, namespace, clock, host, vault,
+      BrowserOwnership.SharedViews, limits, existingRunner, None, newId, Some(checks), sharedConcurrentChecks = true)
+}
+
 /**
  * The JDBC provider's opt-in to concurrent authority checks. The coordinator
  * then runs checks in concurrent read turns, keyed by the browser binding, at
@@ -2069,8 +2171,9 @@ final class JdbcBrowserPersistence[F[_], P](
  * never needs a second main-pool connection while it holds one; bound its own
  * pool, statement, lock and socket timeouts. Size the main pool for the cap
  * plus one, plus one exclusive writer. Hosts must make resolve safe for
- * concurrent calls and lock host rows in one global order. Not supported with
- * SharedViews ownership.
+ * concurrent calls and lock host rows in one global order. The provider's
+ * concurrentChecks parameter refuses SharedViews ownership; such a provider
+ * opts in through JdbcBrowserPersistence.sharedViewsWithConcurrentChecks.
  */
 final case class JdbcConcurrentChecks(clockSource: DataSource, maxConcurrentChecks: Int) {
   require(maxConcurrentChecks > 0, "maxConcurrentChecks must be positive")

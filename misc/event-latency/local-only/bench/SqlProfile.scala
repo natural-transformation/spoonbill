@@ -158,9 +158,11 @@ final case class ObservationBudget(
   clockStatements: Int,
   workCertified: Boolean,
   clockCertified: Boolean,
-  policyLock: Boolean
+  policyLock: Boolean,
+  sharedLock: Boolean = false
 ) {
-  val framework: Int     = 8
+  // A check under the shared realm lock skips the retention row, which only enrollment needs.
+  val framework: Int     = if (sharedLock) 7 else 8
   def hostStatements: Int = resolves * (if (policyLock) 2 else 1)
   def isolationSets: Int = (if (workCertified) 0 else 1) + (if (clockCertified) 0 else clockTransactions)
   def statements: Int    = framework + hostStatements + 2 + isolationSets + clockTransactions * clockStatements
@@ -183,7 +185,8 @@ object ObservationBudget {
    * row-locked checkpoint (BEGIN, SELECT … FOR UPDATE, UPDATE … RETURNING, COMMIT).
    */
   def of(switches: SharedSwitches): ObservationBudget = switches.host match {
-    case "held" => ObservationBudget(1, 1, 4, switches.workCertified, switches.clockCertified, switches.globalLock)
+    case "held" =>
+      ObservationBudget(1, 1, 4, switches.workCertified, switches.clockCertified, switches.globalLock, switches.cap > 0)
     case _      => ObservationBudget(2, 5, 3, switches.workCertified, switches.clockCertified, switches.globalLock)
   }
 }

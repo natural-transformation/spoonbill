@@ -94,8 +94,11 @@ tree (`local`). Results and their interpretation are in the
   (`persistence.projectedSnapshots`, a save per top-level write) or `guarded`
   (`persistence.projectedSnapshotsIfChanged`: one observation per top-level
   write, and a save only when the encoded projection changed).
-  `BENCH_SHARED_CAP` keeps its default, `0`; the server refuses other values
-  until the provider supports them.
+  `BENCH_SHARED_CAP` is `0` (checks serialized on the exclusive realm lock)
+  or a positive cap: `JdbcBrowserPersistence.sharedViewsWithConcurrentChecks`
+  with the clock pool as its reserved clock source, which needs
+  `BENCH_SHARED_HOST=held`. Its checks take the realm lock in shared mode and
+  skip the retention row, so their budget has seven framework statements.
 - `client/latency.mjs`: simulated browsers. Each loads the page, opens the
   WebSocket, waits until the view is ready and clicks in a closed loop. A click
   waits for the event-counter update, exactly as the browser bridge does. A

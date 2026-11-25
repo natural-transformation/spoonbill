@@ -172,6 +172,8 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     val hostAccepted = new AtomicInteger()
     val failAccepted = new AtomicBoolean()
     val holdPause    = new AtomicReference(Option.empty[(CountDownLatch, CountDownLatch)])
+    // When set, the accepted hook first locks this other host session's row.
+    val hookLocks    = new AtomicReference(Option.empty[UUID])
     val source: DataSource = new DataSource {
       // sbt can reload the test classloader after DriverManager's discovery.
       // Use this fixture's explicit driver instead of that ambient registry.
@@ -309,6 +311,13 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
                 override def onAcceptedAt(now: Instant): Unit = {
                   hostAccepted.incrementAndGet()
                   if (failAccepted.getAndSet(false)) throw new IllegalStateException("Synthetic accepted-hook failure")
+                  hookLocks.getAndSet(None).foreach { other =>
+                    Using.resource(
+                      connection.prepareStatement("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE")
+                    ) { lock =>
+                      lock.setString(1, realm); lock.setObject(2, other); Using.resource(lock.executeQuery())(_.next()); ()
+                    }
+                  }
                   if (refreshSeconds > 0 && idle.nonEmpty)
                     Using.resource(
                       connection.prepareStatement(
@@ -387,6 +396,19 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         ownership = ownership,
         existingRunner = Some(observed),
         concurrentChecks = Some(JdbcConcurrentChecks(source, cap))
+      )
+    /** A SharedViews node whose eligible checks run concurrently; requires held = true. */
+    def sharedConcurrent(cap: Int, clockSource: DataSource = source): JdbcBrowserPersistence[Future, String] =
+      JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[Future, String](
+        source,
+        ExecutionContext.global,
+        realm,
+        "session",
+        () => clock.get(),
+        heldHost,
+        vault,
+        JdbcConcurrentChecks(clockSource, cap),
+        existingRunner = Some(observed)
       )
     /** Another node over the same realm with its own wall clock. */
     def withClock(time: () => Instant): JdbcBrowserPersistence[Future, String] = withRunner(observed, time = time)
@@ -594,20 +616,23 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       }
       def update(text: String)(set: PreparedStatement => Unit): Unit =
         Using.resource(connection.prepareStatement(text)) { query => set(query); query.executeUpdate() shouldBe 1 }
+      /** One more locking read in this transaction; it waits for the rows, then reports whether it found any. */
+      def lock(text: String)(set: PreparedStatement => Unit): Boolean =
+        Using.resource(connection.prepareStatement(text)) { query => set(query); Using.resource(query.executeQuery())(_.next()) }
       def release(commit: Boolean = false): Unit =
         try { if (commit) connection.commit() else connection.rollback() } finally connection.close()
     }
-    /** Wait until another backend waits for a lock in a statement containing `fragment`. */
-    def awaitLockWait(fragment: String): Unit = Using.resource(source.getConnection) { observer =>
+    /** Wait until `count` other backends wait for a lock in statements containing `fragment`. */
+    def awaitLockWait(fragment: String, count: Int = 1): Unit = Using.resource(source.getConnection) { observer =>
       val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-      def waiting: Boolean = Using.resource(observer.prepareStatement(
-        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND pid<>pg_backend_pid() AND query LIKE ?)"
+      def waiting: Int = Using.resource(observer.prepareStatement(
+        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND pid<>pg_backend_pid() AND query LIKE ?"
       )) { query =>
         query.setString(1, s"%$fragment%")
-        Using.resource(query.executeQuery()) { rows => rows.next() && rows.getBoolean(1) }
+        Using.resource(query.executeQuery()) { rows => rows.next(); rows.getInt(1) }
       }
-      while (!waiting && System.nanoTime() < deadline) Thread.sleep(5)
-      withClue(s"no backend waits for a lock in $fragment: ")(waiting shouldBe true)
+      while (waiting < count && System.nanoTime() < deadline) Thread.sleep(5)
+      withClue(s"fewer than $count backends wait for a lock in $fragment: ")(waiting should be >= count)
     }
     /**
      * A runner that holds its next transaction open after its body, before it
@@ -3782,6 +3807,185 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       intercept[SessionAccessDenied](await(write.observe("draft", "secret")))
       intercept[SessionAccessDenied](await(guard.authorize("draft")))
     } finally await(browser.close())
+  }
+
+  private val secondBinding = "B" * 43
+  private val secondView    = Qsid("provider-device", "second-view")
+  private def realmKey(db: Fixture): String = s"spoonbill-auth:${db.realm.length}:${db.realm}session"
+
+  "Shared-view concurrent checks" should "be a named opt-in for a held host, with no background clock renewal" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      intercept[IllegalArgumentException](db.withConcurrentChecks(4, BrowserOwnership.SharedViews))
+      val provider = db.sharedConcurrent(4)
+      try {
+        provider.checkConcurrency shouldBe Some(BrowserCheckConcurrency(4))
+        provider.renewingInBackground shouldBe false
+      } finally await(provider.close())
+    }
+
+  it should "take the shared realm lock only for checks of authenticated views, and keep the rest exclusive" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val provider = db.sharedConcurrent(4)
+      try {
+        val (view, _) = signedIn(db, provider)
+        val anonymous = accepted(await(provider.claim(
+          accepted(await(provider.capture(secondBinding, None, activate = false))), secondView,
+          ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false
+        )))
+        provider.isEnrolled shouldBe true
+        def locks(operation: => Any): Vector[String] = {
+          db.statements.clear(); db.recordSql.set(true)
+          try operation finally db.recordSql.set(false)
+          db.statements.asScala.toVector.filter(_.contains("pg_advisory_xact_lock"))
+            .map(sql => if (sql.contains("lock_shared")) "shared" else "exclusive")
+        }
+        locks(accepted(await(provider.authorize(view)))) shouldBe Vector("shared")
+        locks(accepted(await(provider.admitOutputIf(view, "frame")(_ => true)))) shouldBe Vector("shared")
+        locks(accepted(await(provider.guardedWriteObservations.get.observeWrite(view)))) shouldBe Vector("shared")
+        locks(accepted(await(provider.authorize(anonymous)))) shouldBe Vector("exclusive")
+        locks(accepted(await(provider.pending(view)))) shouldBe Vector("exclusive")
+        locks(accepted(await(provider.transact(view)(_ => ())))) shouldBe Vector("exclusive")
+      } finally await(provider.close())
+    }
+
+  it should "let checks of different bindings on two nodes overlap until the clock row" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (first, second) = (db.sharedConcurrent(4), db.sharedConcurrent(4))
+    try {
+      val (one, _, _) = retentionLogin(db, first, binding, qsid, 600)
+      val (two, _, _) = retentionLogin(db, second, secondBinding, secondView, 600)
+      val clockRow    = new db.HeldLock("SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE", _.setString(1, db.realm))
+      val checks      = Vector(first.authorize(one), second.authorize(two))
+      // Both hold the shared realm lock and their host, slot and view rows, and wait for the clock row together.
+      db.awaitLockWait("spoonbill_auth_clock", count = 2)
+      clockRow.release()
+      checks.foreach(check => accepted(await(check)))
+    } finally { await(first.close()); await(second.close()) }
+  }
+
+  it should "admit a queued writer and an older exclusive check after running checks, and later checks after them" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (first, second) = (db.sharedConcurrent(4), db.sharedConcurrent(4))
+      // An older node takes the exclusive realm lock for every check.
+      val older = db.fresh()
+      try {
+        val (one, token, _) = retentionLogin(db, first, binding, qsid, 600)
+        val (two, _, _)     = retentionLogin(db, second, secondBinding, secondView, 600)
+        val olderView = accepted(await(older.claim(
+          accepted(await(older.capture("C" * 43, None, activate = false))), Qsid("provider-device", "older-view"),
+          ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false
+        )))
+        val clockRow = new db.HeldLock("SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE", _.setString(1, db.realm))
+        val running  = first.authorize(one)
+        db.awaitLockWait("spoonbill_auth_clock")
+        // A writer and an older exclusive check queue behind the running check; a later check queues behind them.
+        val logout = second.logout(binding, Some(token.value))
+        db.awaitLockWait("pg_advisory_xact_lock")
+        val exclusive = older.authorize(olderView)
+        db.awaitLockWait("pg_advisory_xact_lock", count = 2)
+        val later = first.authorize(one)
+        db.awaitLockWait("pg_advisory_xact_lock_shared")
+        (logout.isCompleted, exclusive.isCompleted, later.isCompleted) shouldBe (false, false, false)
+        clockRow.release()
+        accepted(await(running))
+        accepted(await(logout))
+        accepted(await(exclusive))
+        // The later check ran after the logout it queued behind.
+        await(later) shouldBe Left(BrowserFailure.Denied)
+        accepted(await(second.authorize(two)))
+      } finally { await(first.close()); await(second.close()); await(older.close()) }
+    }
+
+  it should "deny the old owner's shared checks after a takeover on another node" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (first, second) = (db.sharedConcurrent(4), db.sharedConcurrent(4))
+    try {
+      val (view, token, _) = retentionLogin(db, first, binding, qsid, 600)
+      val captured = accepted(await(second.capture(binding, Some(token.value), activate = true)))
+      val next     = accepted(await(second.claim(captured, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)))
+      await(first.authorize(view)) shouldBe Left(BrowserFailure.Denied)
+      await(first.admitOutputIf(view, "frame")(_ => true)) shouldBe Left(BrowserFailure.Denied)
+      accepted(await(second.authorize(next)))
+    } finally { await(first.close()); await(second.close()) }
+  }
+
+  it should "retry a deadlocked check once before its accepted hook, and never once the hook started" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val provider = db.sharedConcurrent(4)
+    try {
+      val (view, _, _)  = retentionLogin(db, provider, binding, qsid, 600)
+      val (other, _, _) = retentionLogin(db, provider, secondBinding, secondView, 600)
+      val viewKey       = BrowserView.key(qsid)
+      // Before the hook: the check holds its slot and waits for the view row, which the test holds.
+      val before = (db.domainTransactions.get(), db.hostAccepted.get())
+      val viewRow = new db.HeldLock(
+        "SELECT 1 FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace='session' AND view_id=? FOR UPDATE",
+        query => { query.setString(1, db.realm); query.setString(2, viewKey) }
+      )
+      val retried = provider.authorize(view)
+      db.awaitLockWait("spoonbill_browser_view")
+      // Waiting for the check's slot closes the cycle; PostgreSQL aborts the check, which runs once more.
+      viewRow.lock("SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace='session' FOR UPDATE")(
+        _.setString(1, db.realm)
+      ) shouldBe true
+      viewRow.release()
+      accepted(await(retried))
+      (db.domainTransactions.get() - before._1, db.hostAccepted.get() - before._2) shouldBe (2, 1)
+      // In the hook: it waits for another session's host row, held by a test transaction that then waits for this one's.
+      val after = (db.domainTransactions.get(), db.hostAccepted.get())
+      db.hookLocks.set(Some(other.identity.sessionId.get))
+      val otherRow  = new db.HeldLock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE", hostRow(db, other.identity.sessionId.get))
+      val abandoned = provider.authorize(view)
+      db.awaitLockWait("spoonbill_auth_test_host")
+      // The test transaction closes the cycle by waiting for this session's row; PostgreSQL aborts the check.
+      val closing = Future(
+        otherRow.lock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE")(
+          hostRow(db, view.identity.sessionId.get)
+        )
+      )
+      await(abandoned).isLeft shouldBe true
+      await(closing) shouldBe true
+      otherRow.release()
+      (db.domainTransactions.get() - after._1, db.hostAccepted.get() - after._2) shouldBe (1, 1)
+    } finally await(provider.close())
+  }
+
+  it should "fail closed within the pool's bound when the reserved clock pool is exhausted" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val exhausted = new AtomicBoolean()
+    // A clock pool that, once exhausted, refuses acquisition after its own timeout.
+    val clockPool = new DataSource {
+      def getConnection: Connection = {
+        if (exhausted.get()) { Thread.sleep(200); throw new SQLException("Synthetic clock pool acquisition timeout") }
+        db.source.getConnection
+      }
+      def getConnection(user: String, password: String): Connection = throw new SQLFeatureNotSupportedException()
+      def getLogWriter: PrintWriter                                 = throw new SQLFeatureNotSupportedException()
+      def setLogWriter(writer: PrintWriter): Unit                   = throw new SQLFeatureNotSupportedException()
+      def getLoginTimeout: Int                                      = 0
+      def setLoginTimeout(seconds: Int): Unit                       = throw new SQLFeatureNotSupportedException()
+      def getParentLogger: Logger                                   = Logger.getLogger("spoonbill.jdbc.clock.pool.test")
+      def isWrapperFor(kind: Class[?]): Boolean                     = false
+      def unwrap[T](kind: Class[T]): T                              = throw new SQLException("Not a wrapper")
+    }
+    val provider = db.sharedConcurrent(4, clockSource = clockPool)
+    try {
+      val (view, _, _) = retentionLogin(db, provider, binding, qsid, 600)
+      val accepted0    = db.hostAccepted.get()
+      exhausted.set(true)
+      val started = System.nanoTime()
+      var ran     = false
+      await(provider.authorize(view)).isLeft shouldBe true
+      await(provider.transact(view)(_ => ran = true)).isLeft shouldBe true
+      (System.nanoTime() - started) should be < TimeUnit.SECONDS.toNanos(5)
+      (ran, db.hostAccepted.get() - accepted0) shouldBe (false, 0)
+      exhausted.set(false)
+      accepted(await(provider.authorize(view)))
+    } finally await(provider.close())
   }
 }
 

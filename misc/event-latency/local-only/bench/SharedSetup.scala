@@ -69,8 +69,8 @@ object SharedSwitches {
 
   /** The selected settings this build cannot provide yet, each with the production support it needs. */
   def unavailable(switches: SharedSwitches): Vector[String] = Vector(
-    Option.when(switches.cap > 0)(
-      "BENCH_SHARED_CAP>0 is not available yet: it needs concurrent checks for shared views"
+    Option.when(switches.cap > 0 && switches.host != "held")(
+      "BENCH_SHARED_CAP>0 needs BENCH_SHARED_HOST=held: shared-view concurrent checks need a host that holds its resolution"
     )
   ).flatten
 }
@@ -212,17 +212,32 @@ final class SharedSetup(val switches: SharedSwitches, url: String) {
   // Benchmark-only key; never use a fixed key for real deployments.
   private val key = MessageDigest.getInstance("SHA-256").digest("bench-only".getBytes("UTF-8"))
 
-  val persistence: JdbcBrowserPersistence[Future, String] = new JdbcBrowserPersistence[Future, String](
-    workSource,
-    blocking,
-    GuardedMain.scope.realm,
-    GuardedMain.scope.cookieNamespace,
-    () => Instant.now(),
-    host,
-    JdbcCredentialVault.aesGcm(key),
-    BrowserOwnership.SharedViews,
-    clockSource = Some(clockSource)
-  )
+  // A positive cap opts the provider in to shared-view concurrent checks; the clock pool is the reserved clock source.
+  val persistence: JdbcBrowserPersistence[Future, String] = host match {
+    case held: SharedHeldHost if switches.cap > 0 =>
+      JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[Future, String](
+        workSource,
+        blocking,
+        GuardedMain.scope.realm,
+        GuardedMain.scope.cookieNamespace,
+        () => Instant.now(),
+        held,
+        JdbcCredentialVault.aesGcm(key),
+        JdbcConcurrentChecks(clockSource, switches.cap)
+      )
+    case _ =>
+      new JdbcBrowserPersistence[Future, String](
+        workSource,
+        blocking,
+        GuardedMain.scope.realm,
+        GuardedMain.scope.cookieNamespace,
+        () => Instant.now(),
+        host,
+        JdbcCredentialVault.aesGcm(key),
+        BrowserOwnership.SharedViews,
+        clockSource = Some(clockSource)
+      )
+  }
 
   /** The provider's explicit migration and the host table, once, outside every measurement. */
   def initialize(): Unit = Using.resource(pools.work.getConnection) { connection =>

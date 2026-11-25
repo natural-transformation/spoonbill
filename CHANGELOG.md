@@ -23,6 +23,12 @@ an opt-in, and the existing behavior stays the default.
   [Clustered browser authentication](docs/clustered-browser-authentication.md).
   `BrowserPersistence.guardedWriteObservations` is the provider capability
   behind it; it defaults to `None`, and a provider decorator can forward it.
+- `JdbcBrowserPersistence.sharedViewsWithConcurrentChecks` lets the checks of
+  authenticated `SharedViews` views run concurrently under the shared realm
+  lock, with a `JdbcHeldHostSessions` host and a reserved clock source.
+  Writers and every other check keep the exclusive lock. The
+  `concurrentChecks` constructor parameter still refuses `SharedViews`. See
+  [Concurrent authority checks](docs/browser-authentication.md#concurrent-authority-checks).
 
 ## 11.0.1 — 2026-11-25
 

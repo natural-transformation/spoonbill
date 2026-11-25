@@ -405,6 +405,14 @@ and that row is shared by the whole cluster, so its checks would serialize on
 the clock row. It needs its own design, such as one observation per provider
 transaction.
 
+A later opt-in covers it. With a `JdbcHeldHostSessions` host, the check of an
+authenticated `SharedViews` view takes one short row-locked checkpoint instead
+of one upsert per time sample, and
+`JdbcBrowserPersistence.sharedViewsWithConcurrentChecks` runs such checks under
+the shared realm lock. Their checkpoints still serialize on the clock row, but
+only for that one short transaction. See
+[Concurrent authority checks](browser-authentication.md#concurrent-authority-checks).
+
 ### 6. Optional phase 2: fewer round trips per check
 
 Merge the view read with its lease renewal, and the slot read with its
