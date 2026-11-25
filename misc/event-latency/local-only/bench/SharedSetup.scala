@@ -69,9 +69,6 @@ object SharedSwitches {
 
   /** The selected settings this build cannot provide yet, each with the production support it needs. */
   def unavailable(switches: SharedSwitches): Vector[String] = Vector(
-    Option.when(switches.snapshots == "guarded")(
-      "BENCH_SHARED_SNAPSHOTS=guarded is not available yet: it needs the guarded inline snapshot factory"
-    ),
     Option.when(switches.cap > 0)(
       "BENCH_SHARED_CAP>0 is not available yet: it needs concurrent checks for shared views"
     )
@@ -242,7 +239,13 @@ final class SharedSetup(val switches: SharedSwitches, url: String) {
   def restore(fresh: Counter, saved: CounterSnapshot): Counter =
     if (switches.changing) fresh.copy(count = saved.count) else fresh
 
-  /** The provider's own inline session, handed to the coordinator unwrapped. */
+  /**
+   * The provider's own inline session, handed to the coordinator unwrapped:
+   * ordinary saves every top-level write; guarded skips a write whose
+   * projection encodes to the bytes the session last saved.
+   */
   val snapshots: BrowserView[String] => Option[ViewSnapshotSession[Future, Counter]] =
-    persistence.projectedSnapshots[Counter, CounterSnapshot](SnapshotMain.format, project, restore)
+    if (switches.snapshots == "guarded")
+      persistence.projectedSnapshotsIfChanged[Counter, CounterSnapshot](SnapshotMain.format, project, restore)
+    else persistence.projectedSnapshots[Counter, CounterSnapshot](SnapshotMain.format, project, restore)
 }

@@ -16,7 +16,7 @@ import spoonbill.Qsid
 import spoonbill.auth.*
 import spoonbill.effect.{DrainGateMachine, Effect}
 import spoonbill.security.Identifiers.{ConnectionId, ViewOwnerId, ViewSessionId}
-import spoonbill.security.Versions.ViewOwnershipEpoch
+import spoonbill.security.Versions.{ViewOwnershipEpoch, ViewRevision}
 import spoonbill.security.ViewFence
 import spoonbill.security.transaction.*
 import spoonbill.server.BrowserSessionToken
@@ -468,11 +468,21 @@ final class JdbcBrowserPersistence[F[_], P](
     activate: Boolean,
     generation: Option[Long] = None,
     fence: Option[JdbcViewFence] = None
-  ): BrowserIdentity[P] = {
+  ): BrowserIdentity[P] = captureObservedIn(connection, binding, token, activate, generation, fence)._1
+
+  /** captureIn, also returning the fenced view's snapshot revision, read under its lock. */
+  private def captureObservedIn(
+    connection: Connection,
+    binding: String,
+    token: Option[String],
+    activate: Boolean,
+    generation: Option[Long],
+    fence: Option[JdbcViewFence]
+  ): (BrowserIdentity[P], Option[Long]) = {
     if (!validSecret(binding) || token.exists(value => !validSecret(value))) reject()
     val bindingHash = digest(binding)
     if (activate) token.foreach(value => browser.activateIn(connection, digest(value), bindingHash))
-    browser.authorizeIn(
+    val (decided, revision) = browser.authorizeObservedIn(
       connection,
       bindingHash,
       token.map(digest),
@@ -480,19 +490,25 @@ final class JdbcBrowserPersistence[F[_], P](
       generation,
       fence,
       allowPending = !activate
-    ) match {
+    )
+    val identity = decided match {
       case JdbcBrowserAuthorization.Anonymous(current) => issuer.identity(binding, token, current, None)
       case JdbcBrowserAuthorization.Authenticated(session, principal) =>
         issuer.identity(binding, token, session.generation, Some(principal), Some(session.hostSessionId))
     }
+    identity -> revision
   }
-  private def current(connection: Connection, view: BrowserView[P]): BrowserIdentity[P] = {
+  private def current(connection: Connection, view: BrowserView[P]): BrowserIdentity[P] =
+    currentObserved(connection, view)._1
+
+  /** One fresh observation of the view, with its snapshot revision read in the same locked view read. */
+  private def currentObserved(connection: Connection, view: BrowserView[P]): (BrowserIdentity[P], Long) = {
     if (!issuer.owns(view)) reject(OperationError.ForeignPermit)
     heldHost match {
       case Some(held) if heldEligible(view) => heldCurrent(connection, view, held)
       case _ =>
         val captured = view.identity
-        val fresh = captureIn(
+        val (fresh, revision) = captureObservedIn(
           connection,
           captured.binding,
           captured.token,
@@ -503,7 +519,7 @@ final class JdbcBrowserPersistence[F[_], P](
         if (!captured.sameAuthority(fresh)) reject()
         renewOwnerLease(connection, BrowserView.key(view.qsid), view.ownerId, view.epoch)
         touchBinding(connection, captured.binding)
-        fresh
+        fresh -> revision.getOrElse(reject(OperationError.StorageFailure))
     }
   }
 
@@ -530,7 +546,11 @@ final class JdbcBrowserPersistence[F[_], P](
    * view whose token, generation or owner changed is rejected; it never falls
    * back to the two-sample path.
    */
-  private def heldCurrent(connection: Connection, view: BrowserView[P], held: JdbcHeldHostSessions[P]): BrowserIdentity[P] = {
+  private def heldCurrent(
+    connection: Connection,
+    view: BrowserView[P],
+    held: JdbcHeldHostSessions[P]
+  ): (BrowserIdentity[P], Long) = {
     val captured = view.identity
     val token    = captured.token.getOrElse(reject())
     if (!validSecret(captured.binding) || !validSecret(token)) reject()
@@ -555,7 +575,7 @@ final class JdbcBrowserPersistence[F[_], P](
     renewOwnerLeaseAt(connection, viewKey, view.ownerId, view.epoch, decided.at)
     touchBindingAt(connection, captured.binding, decided.at)
     decided.resolution.onAcceptedAt(decided.at)
-    fresh
+    fresh -> decided.snapshotRevision
   }
 
   private def renewOwnerLease(connection: Connection, view: String, owner: UUID, epoch: Long): Unit =
@@ -751,6 +771,23 @@ final class JdbcBrowserPersistence[F[_], P](
   def authorize(view: BrowserView[P]): F[Either[BrowserFailure, BrowserIdentity[P]]] = readRun(current(_, view))
 
   /**
+   * One check of the view, as authorize, that also reads its snapshot revision
+   * in the same locked view read. The receipt is issued only after the
+   * transaction's acknowledged commit and binds this provider, the view, its
+   * owner and its epoch.
+   */
+  override def guardedWriteObservations: Option[BrowserWriteObservations[F, P]] = Some(writeObservations)
+  private object writeObservations extends BrowserWriteObservations[F, P] {
+    def observeWrite(view: BrowserView[P]): F[Either[BrowserFailure, BrowserWriteObservation[P]]] =
+      F.map(readRun { connection =>
+        val (identity, revision) = currentObserved(connection, view)
+        identity -> ViewRevision.fromLong(revision).fold(_ => reject(OperationError.StorageFailure), value => value)
+      })(_.flatMap { case (identity, revision) =>
+        issuer.writeObservation(identity, view, revision).toRight(BrowserFailure.Closed)
+      })
+  }
+
+  /**
    * Admit one already materialized output under the same authoritative lock as
    * takeover, logout and host writes. No frame escapes an unknown settlement. A
    * frame admitted before takeover may still arrive afterward in transport.
@@ -793,6 +830,27 @@ final class JdbcBrowserPersistence[F[_], P](
     restore: (S, D) => S
   ): BrowserView[P] => Option[spoonbill.snapshot.ViewSnapshotSession[F, S]] =
     JdbcBrowserSnapshots.projected(this, format, project, restore)
+
+  /**
+   * projectedSnapshots whose queued top-level write skips an unchanged
+   * projection. The coordinator pairs the session with this provider's
+   * guarded write observation: one fresh check that also reads the view's
+   * snapshot revision. When that revision is the session's expected revision
+   * and the candidate's encoded bytes equal those of the session's last
+   * acknowledged write, the write saves nothing; otherwise it saves those
+   * bytes once, with the expected revision, and a revision conflict fails the
+   * write. A restored projection has no confirmed copy, so its first write
+   * saves. The session's public commit always performs the ordinary fenced
+   * save, also for an owner that has lost the view. A session wrapped by
+   * application code keeps the ordinary path. Selecting projectedSnapshots
+   * restores ordinary guarded saves.
+   */
+  def projectedSnapshotsIfChanged[S, D](
+    format: spoonbill.snapshot.SnapshotFormat[D],
+    project: S => D,
+    restore: (S, D) => S
+  ): BrowserView[P] => Option[spoonbill.snapshot.ViewSnapshotSession[F, S]] =
+    JdbcBrowserSnapshots.projectedIfChanged(this, format, project, restore)
 
   /**
    * The optional publication capability for reference-backed snapshots: this

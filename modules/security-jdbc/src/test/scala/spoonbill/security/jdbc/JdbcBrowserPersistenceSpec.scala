@@ -26,7 +26,7 @@ import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
 import spoonbill.security.Versions.{SecurityGeneration, SlotGeneration, ViewOwnershipEpoch, ViewRevision}
 import spoonbill.security.transaction.*
 import spoonbill.server.*
-import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotBinaryCodec, SnapshotFormat, SnapshotIdentity, SnapshotKeys, SnapshotLoad, ViewSnapshotError, ViewSnapshotException}
+import spoonbill.snapshot.{ObservedSnapshotWrites, SchemaId, SchemaVersion, SnapshotBinaryCodec, SnapshotFormat, SnapshotIdentity, SnapshotKeys, SnapshotLoad, ViewSnapshotError, ViewSnapshotException, ViewSnapshotSession}
 import spoonbill.state.BoundedPresentationStore
 import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
@@ -563,6 +563,15 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         query =>
           query.setString(1, realm); query.setObject(2, session)
           Using.resource(query.executeQuery()) { rows => rows.next() shouldBe true; rows.getTimestamp(1).toInstant }
+      }
+    }
+    /** The stored snapshot revision of a view. */
+    def viewRevision(id: Qsid = qsid): Long = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement(
+        "SELECT snapshot_revision FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace='session' AND view_id=?"
+      )) { query =>
+        query.setString(1, realm); query.setString(2, BrowserView.key(id))
+        Using.resource(query.executeQuery()) { rows => rows.next() shouldBe true; rows.getLong(1) }
       }
     }
     /** The realm's durable clock floor. */
@@ -3558,4 +3567,260 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       }
     }
   }
+
+  private val draftFormat =
+    new SnapshotFormat[String](accepted(SchemaId.parse("guarded-draft")), accepted(SchemaVersion.fromInt(1)))
+  private case class Page(draft: String, other: String)
+  private def ifChanged(provider: JdbcBrowserPersistence[Future, String], view: BrowserView[String]): ViewSnapshotSession[Future, Page] =
+    provider.projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+  private def paired(session: ViewSnapshotSession[Future, Page]): ObservedSnapshotWrites[Future, Page] = session match {
+    case observed: ObservedSnapshotWrites[Future, Page] @unchecked => observed
+    case _                                                         => fail("The factory's session cannot skip an unchanged projection")
+  }
+  private def observation(provider: JdbcBrowserPersistence[Future, String], view: BrowserView[String]): BrowserWriteObservation[String] =
+    accepted(await(provider.guardedWriteObservations.get.observeWrite(view)))
+  /** One queued top-level write as the coordinator pairs it: an observation, then the session's write. */
+  private def guardedWrite(
+    provider: JdbcBrowserPersistence[Future, String],
+    view: BrowserView[String],
+    session: ViewSnapshotSession[Future, Page],
+    candidate: Page
+  ): Unit = await(paired(session).commitObserved(observation(provider, view).receipt, candidate))
+  private def snapshotError(operation: => Any): ViewSnapshotError = intercept[ViewSnapshotException](operation).error
+
+  "Guarded inline snapshots" should "save nothing for an unchanged projection and once for a changed one, which a reconnect restores" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, token) = signedIn(db, db.persistence)
+      val session       = ifChanged(db.persistence, view)
+      await(session.initialize(Page("", "a"))) shouldBe Page("", "a")
+      val seeded = db.viewRevision()
+      val before = db.domainTransactions.get()
+      guardedWrite(db.persistence, view, session, Page("", "b"))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (1, seeded)
+      guardedWrite(db.persistence, view, session, Page("typed", "b"))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (3, seeded + 1)
+      guardedWrite(db.persistence, view, session, Page("typed", "c"))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (4, seeded + 1)
+      val second = db.fresh()
+      try {
+        val captured = accepted(await(second.capture(binding, Some(token.value), activate = true)))
+        val next     = accepted(await(second.claim(captured, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)))
+        await(ifChanged(second, next).initialize(Page("", "node B"))) shouldBe Page("typed", "node B")
+      } finally await(second.close())
+    }
+
+  it should "return the locked view's revision from the two-sample path too" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val session   = ifChanged(db.persistence, view)
+    await(session.initialize(Page("", "a")))
+    val seeded = db.viewRevision()
+    guardedWrite(db.persistence, view, session, Page("", "b"))
+    guardedWrite(db.persistence, view, session, Page("typed", "b"))
+    db.viewRevision() shouldBe seeded + 1
+  }
+
+  it should "fence a takeover before the observation and the save after it, and keep public commits fenced" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, token) = signedIn(db, db.persistence)
+      val session       = ifChanged(db.persistence, view)
+      await(session.initialize(Page("", "a")))
+      val unchanged = observation(db.persistence, view)
+      val changed   = observation(db.persistence, view)
+      val takeover  = db.fresh()
+      try {
+        val captured = accepted(await(takeover.capture(binding, Some(token.value), activate = true)))
+        accepted(await(takeover.claim(captured, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)))
+        // Before an observation, the takeover denies it.
+        await(db.persistence.guardedWriteObservations.get.observeWrite(view)).isLeft shouldBe true
+        // An unchanged write was admitted at its earlier observation; a changed one must save and is fenced.
+        await(paired(session).commitObserved(unchanged.receipt, Page("", "b")))
+        snapshotError(await(paired(session).commitObserved(changed.receipt, Page("typed", "b")))) shouldBe
+          ViewSnapshotError.AccessDenied
+        // The public commit always saves, so the old owner is refused for equal and changed projections.
+        snapshotError(await(session.commit(Page("", "c")))) shouldBe ViewSnapshotError.AccessDenied
+        snapshotError(await(session.commit(Page("other", "c")))) shouldBe ViewSnapshotError.AccessDenied
+      } finally await(takeover.close())
+    }
+
+  it should "fail on a revision changed by the same owner in between, and never adopt it" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val session   = ifChanged(db.persistence, view)
+    await(session.initialize(Page("", "a")))
+    // A second session of the same view and owner saves meanwhile.
+    val other = db.persistence.projectedSnapshots[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+    await(other.initialize(Page("", "a")))
+    await(other.commit(Page("elsewhere", "a")))
+    snapshotError(guardedWrite(db.persistence, view, session, Page("", "b"))) shouldBe ViewSnapshotError.RevisionConflict
+    snapshotError(guardedWrite(db.persistence, view, session, Page("elsewhere", "b"))) shouldBe ViewSnapshotError.RevisionConflict
+  }
+
+  it should "fail closed after an unknown save outcome without advancing or adopting a revision" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val session   = ifChanged(db.persistence, view)
+    await(session.initialize(Page("", "a")))
+    val seeded = db.viewRevision()
+    val pending = observation(db.persistence, view)
+    // The save commits, but its acknowledgment is lost.
+    db.loseAcknowledgement.set(true)
+    intercept[ViewSnapshotException](await(paired(session).commitObserved(pending.receipt, Page("typed", "a"))))
+    db.viewRevision() shouldBe seeded + 1
+    snapshotError(guardedWrite(db.persistence, view, session, Page("typed", "a"))) shouldBe ViewSnapshotError.RevisionConflict
+  }
+
+  it should "save the first write after restoring an older schema, then skip an unchanged one" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val older     = db.persistence.projectedSnapshots[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+    await(older.initialize(Page("", "a")))
+    await(older.commit(Page("kept", "a")))
+    val current = new SnapshotFormat[String](accepted(SchemaId.parse("guarded-draft")), accepted(SchemaVersion.fromInt(2)))
+      .reading(draftFormat)(Right(_))
+    val session = db.persistence.projectedSnapshotsIfChanged[Page, String](current, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+    await(session.initialize(Page("", "b"))) shouldBe Page("kept", "b")
+    val restored = db.viewRevision()
+    guardedWrite(db.persistence, view, session, Page("kept", "b"))
+    db.viewRevision() shouldBe restored + 1
+    guardedWrite(db.persistence, view, session, Page("kept", "c"))
+    db.viewRevision() shouldBe restored + 1
+  }
+
+  it should "refuse a receipt of another view and a receipt used twice" in Using.resource(new Fixture(exclusive = false, held = true)) {
+    db =>
+      val (view, token) = signedIn(db, db.persistence)
+      val session       = ifChanged(db.persistence, view)
+      await(session.initialize(Page("", "a")))
+      val identity  = accepted(await(db.persistence.capture(binding, Some(token.value), activate = false)))
+      val otherView = accepted(await(db.persistence.claim(identity, Qsid("provider-device", "other-view"), ConnectionId.fromUuid(UUID.randomUUID()), false)))
+      snapshotError(await(paired(session).commitObserved(observation(db.persistence, otherView).receipt, Page("", "a")))) shouldBe
+        ViewSnapshotError.AccessDenied
+      val once = observation(db.persistence, view)
+      await(paired(session).commitObserved(once.receipt, Page("", "b")))
+      snapshotError(await(paired(session).commitObserved(once.receipt, Page("", "b")))) shouldBe ViewSnapshotError.AccessDenied
+  }
+
+  it should "compare encoded bytes, not application equality" in Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val format    = new SnapshotFormat[LooseDraft](accepted(SchemaId.parse("loose-draft")), accepted(SchemaVersion.fromInt(1)))
+    val session = db.persistence
+      .projectedSnapshotsIfChanged[Page, LooseDraft](format, page => LooseDraft(page.draft, page.other), (fresh, saved) => fresh.copy(draft = saved.kept))(view)
+      .get
+    await(session.initialize(Page("same", "x")))
+    LooseDraft("same", "x") shouldBe LooseDraft("same", "y")
+    val seeded = db.viewRevision()
+    guardedWrite(db.persistence, view, session, Page("same", "y"))
+    db.viewRevision() shouldBe seeded + 1
+  }
+
+  it should "pair the observation only with its own session and a provider or decorator that offers it" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (_, token) = signedIn(db, db.persistence)
+    val origin     = "https://app.example"
+    def factory(provider: JdbcBrowserPersistence[Future, String]): BrowserView[String] => Option[ViewSnapshotSession[Future, String]] =
+      provider.projectedSnapshotsIfChanged[String, String](draftFormat, page => page, (_, draft) => draft)
+    // A session wrapped by application code no longer offers the capability.
+    def wrapped(inner: BrowserView[String] => Option[ViewSnapshotSession[Future, String]]) =
+      (view: BrowserView[String]) =>
+        inner(view).map { session =>
+          new ViewSnapshotSession[Future, String] {
+            def ownerEpoch: ViewOwnershipEpoch          = session.ownerEpoch
+            def initialize(fresh: String): Future[String] = session.initialize(fresh)
+            def commit(candidate: String): Future[Unit]   = session.commit(candidate)
+          }
+        }
+    def open(
+      provider: BrowserPersistence[Future, String],
+      snapshots: BrowserView[String] => Option[ViewSnapshotSession[Future, String]]
+    ): (SessionGuard[Future, String], BrowserAuthentication[Future, String, String]) = {
+      val browser = new BrowserAuthentication[Future, String, String](
+        provider,
+        BrowserPresentation(() => "fresh", (page, _) => page != "secret", (page, _, _) => page),
+        BrowserConfiguration(provider.scope, Set(origin)),
+        clock = () => db.clock.get(),
+        snapshots = snapshots
+      )
+      val configured = browser.configure(
+        SpoonbillServiceConfig[Future, String, Any](stateLoader = StateLoader.default("fresh"), document = page => Html(body(div(page))))
+      )
+      val cookies = Seq(browser.configuration.bindingCookieName + "=" + binding, browser.configuration.sessionCookieName + "=" + token.value)
+      val request = Request(Request.Method.Get, PathAndQuery.Root, Seq("Origin" -> origin), None, Stream.empty[Future, Bytes], cookies.mkString("; "))
+      await(configured.sessionAccessControl.get.open(qsid, request, ConnectionId.fromUuid(UUID.randomUUID()))) -> browser
+    }
+    def offered(provider: JdbcBrowserPersistence[Future, String], snapshots: BrowserView[String] => Option[ViewSnapshotSession[Future, String]],
+      decorated: Option[Boolean] = None): Boolean = {
+      val (guard, browser) = open(decorated.fold[BrowserPersistence[Future, String]](provider)(new Forwarding(provider, _)), snapshots)
+      try guard.observedRootWrite.nonEmpty
+      finally await(browser.close())
+    }
+    val own = db.fresh()
+    offered(own, factory(own)) shouldBe true
+    val ordinary = db.fresh()
+    offered(ordinary, ordinary.projectedSnapshots[String, String](draftFormat, page => page, (_, draft) => draft)) shouldBe false
+    val plain = db.fresh()
+    offered(plain, wrapped(factory(plain))) shouldBe false
+    val forwarding = db.fresh()
+    offered(forwarding, factory(forwarding), decorated = Some(true)) shouldBe true
+    val hiding = db.fresh()
+    offered(hiding, factory(hiding), decorated = Some(false)) shouldBe false
+
+    // Through the coordinator: one observation admits both presentations; an unchanged candidate saves nothing.
+    val provider         = db.fresh()
+    val (guard, browser) = open(provider, factory(provider))
+    try {
+      val write = guard.observedRootWrite.get
+      await(guard.viewSnapshots.get.initialize("draft")) shouldBe "draft"
+      val seeded = db.viewRevision()
+      val before = db.domainTransactions.get()
+      await(write.observe("draft", "draft").flatMap(receipt => write.commit(receipt, "draft")))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (1, seeded)
+      // A disallowed candidate is denied like any check, and the view is detached.
+      intercept[SessionAccessDenied](await(write.observe("draft", "secret")))
+      intercept[SessionAccessDenied](await(guard.authorize("draft")))
+    } finally await(browser.close())
+  }
+}
+
+/** A provider decorator that forwards, or hides, the inner provider's guarded write observations. */
+private final class Forwarding(inner: JdbcBrowserPersistence[Future, String], forward: Boolean)(using Effect[Future])
+    extends BrowserPersistence[Future, String] {
+  def scope: BrowserProviderScope                                    = inner.scope
+  def capabilities: BrowserProviderCapabilities                      = inner.capabilities
+  def accepts(receipt: CommittedAuthentication): Boolean             = inner.accepts(receipt)
+  def capture(binding: String, token: Option[String], activate: Boolean) = inner.capture(binding, token, activate)
+  override def inspectPrincipal(binding: String, token: Option[String])(using Effect[Future]) =
+    inner.inspectPrincipal(binding, token)
+  override def registerView(identity: BrowserIdentity[String], qsid: Qsid)(using Effect[Future]) =
+    inner.registerView(identity, qsid)
+  def claim(identity: BrowserIdentity[String], qsid: Qsid, connectionId: ConnectionId, existingOnly: Boolean) =
+    inner.claim(identity, qsid, connectionId, existingOnly)
+  def authorize(view: BrowserView[String])                          = inner.authorize(view)
+  override def admitOutputIf[A](view: BrowserView[String], output: A)(allowed: BrowserIdentity[String] => Boolean)(using
+    Effect[Future]
+  ) = inner.admitOutputIf(view, output)(allowed)
+  override def guardedWriteObservations: Option[BrowserWriteObservations[Future, String]] =
+    if (forward) inner.guardedWriteObservations else None
+  def release(view: BrowserView[String])                            = inner.release(view)
+  def begin(view: BrowserView[String], purpose: String)             = inner.begin(view, purpose)
+  def bindChallenge(ceremony: BrowserCeremony, challenge: BrowserChallenge) = inner.bindChallenge(ceremony, challenge)
+  def resume(view: BrowserView[String], id: CeremonyId, purpose: String) = inner.resume(view, id, purpose)
+  def pending(view: BrowserView[String])                            = inner.pending(view)
+  def recover(view: BrowserView[String], id: CeremonyId)            = inner.recover(view, id)
+  def deliver(completionId: UUID, binding: String)                  = inner.deliver(completionId, binding)
+  def logout(binding: String, token: Option[String])                = inner.logout(binding, token)
+  def maintenance(): Future[Unit]                                   = inner.maintenance()
+  def close(): Future[Unit]                                         = inner.close()
+}
+
+/** A projection whose application equality ignores a field that it serializes. */
+final case class LooseDraft(kept: String, ignored: String) derives spoonbill.snapshot.StateSchema {
+  override def equals(other: Any): Boolean = other match {
+    case that: LooseDraft => kept == that.kept
+    case _                => false
+  }
+  override def hashCode: Int = kept.hashCode
 }

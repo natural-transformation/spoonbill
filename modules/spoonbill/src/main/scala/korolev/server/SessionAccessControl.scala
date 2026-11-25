@@ -109,11 +109,31 @@ trait SessionGuard[F[_], S] {
     states.foldLeft(effect.unit)((checked, state) => effect.flatMap(checked)(_ => authorize(state)))
 
   /**
+   * The coordinator's pairing of a provider's guarded write observation with
+   * this guard's snapshot session, for the queued top-level write. None, the
+   * default, keeps authorizeEach followed by the session's ordinary commit.
+   */
+  private[spoonbill] def observedRootWrite: Option[ObservedRootWrite[F, S]] = None
+
+  /**
    * Derive connected presentation from freshly verified server authority.
    * Called after rebuilding the existing DOM baseline and before user events.
    */
   def connected(state: S): F[S]
   def close(): F[Unit]
+}
+
+/**
+ * The queued top-level write of a guard whose snapshot session skips unchanged
+ * projections. observe is one fresh authority observation that admits both the
+ * current and the candidate presentation, as authorizeEach does, and returns
+ * the observation's one-use receipt. commit hands that receipt and the
+ * candidate to the paired snapshot session. Both run inside one queued write,
+ * and the in-memory root is published only after both succeed.
+ */
+private[spoonbill] trait ObservedRootWrite[F[_], S] {
+  def observe(current: S, candidate: S): F[spoonbill.auth.SnapshotRevisionReceipt]
+  def commit(receipt: spoonbill.auth.SnapshotRevisionReceipt, candidate: S): F[Unit]
 }
 
 final class SessionAccessDenied extends SecurityException("Session access denied")

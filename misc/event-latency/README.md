@@ -90,9 +90,12 @@ tree (`local`). Results and their interpretation are in the
   is `session` (the row lock only) or `global` (a fixed transaction-scoped
   advisory lock first, as a host with one policy lock takes);
   `BENCH_SHARED_PROJECTION` is `constant` (the projection omits the count) or
-  `changing`. `BENCH_SHARED_SNAPSHOTS` and `BENCH_SHARED_CAP` keep their
-  defaults (`ordinary`, `0`); the server refuses other values until the
-  provider supports them.
+  `changing`; `BENCH_SHARED_SNAPSHOTS` is `ordinary`
+  (`persistence.projectedSnapshots`, a save per top-level write) or `guarded`
+  (`persistence.projectedSnapshotsIfChanged`: one observation per top-level
+  write, and a save only when the encoded projection changed).
+  `BENCH_SHARED_CAP` keeps its default, `0`; the server refuses other values
+  until the provider supports them.
 - `client/latency.mjs`: simulated browsers. Each loads the page, opens the
   WebSocket, waits until the view is ready and clicks in a closed loop. A click
   waits for the event-counter update, exactly as the browser bridge does. A

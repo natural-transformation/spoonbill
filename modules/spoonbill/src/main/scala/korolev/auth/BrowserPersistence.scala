@@ -198,6 +198,15 @@ trait BrowserPersistence[F[_], P] {
     F: spoonbill.effect.Effect[F]
   ): F[Either[BrowserFailure, A]] =
     F.map(authorize(view))(_.flatMap(identity => Either.cond(allowed(identity), output, BrowserFailure.Denied)))
+
+  /**
+   * Optional: the observation the coordinator pairs with a snapshot session
+   * that skips unchanged projections in its queued top-level write. None, the
+   * default, keeps the ordinary authorization and commit of every such write.
+   * A decorator forwards the inner provider's value only when it preserves the
+   * inner provider's checks.
+   */
+  def guardedWriteObservations: Option[BrowserWriteObservations[F, P]] = None
   def release(view: BrowserView[P]): F[Unit]
 
   /**
@@ -277,6 +286,23 @@ final class BrowserCapabilityScope[P] {
   }
   def admit(value: BrowserCeremony): Boolean                 = owns(value) && value.admitted.compareAndSet(false, true)
   def committed(completionId: UUID): CommittedAuthentication = new CommittedAuthentication(owner, completionId)
+
+  /**
+   * Trusted provider factory for a guarded write observation; call only after
+   * the observing transaction's acknowledged commit. None once this scope no
+   * longer owns the identity or the view.
+   */
+  private[spoonbill] def writeObservation(
+    identity: BrowserIdentity[P],
+    view: BrowserView[P],
+    revision: spoonbill.security.Versions.ViewRevision
+  ): Option[BrowserWriteObservation[P]] =
+    Option.when(owns(identity) && owns(view))(
+      new BrowserWriteObservation(
+        identity,
+        new SnapshotRevisionReceipt(owner, view, view.ownerId, view.epoch, revision)
+      )
+    )
 
   def owns(value: BrowserReplacementCeremony): Boolean   = !isClosed && (value.issuer eq owner)
   def owns(value: BrowserReplacementInvocation): Boolean = !isClosed && (value.issuer eq owner)

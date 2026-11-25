@@ -16,6 +16,13 @@ an opt-in, and the existing behavior stays the default.
   durable clock checkpoint, sampled under the clock row lock after the check's
   last wait. Such a check used to resolve the host twice and commit five
   checkpoints. Other flows and hosts without the capability are unchanged.
+- `JdbcBrowserPersistence.projectedSnapshotsIfChanged` is
+  `projectedSnapshots` whose queued top-level write saves nothing when the
+  encoded projection is unchanged: one provider transaction checks the view
+  and reads its snapshot revision, instead of a check followed by a save. See
+  [Clustered browser authentication](docs/clustered-browser-authentication.md).
+  `BrowserPersistence.guardedWriteObservations` is the provider capability
+  behind it; it defaults to `None`, and a provider decorator can forward it.
 
 ## 11.0.1 — 2026-11-25
 

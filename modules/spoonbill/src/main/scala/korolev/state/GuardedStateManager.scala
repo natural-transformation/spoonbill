@@ -18,7 +18,11 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
   authorize: S => F[Unit],
   persist: Option[S => F[Unit]] = None,
   onPersistenceFailure: Option[Throwable => F[Unit]] = None,
-  authorizeEach: Option[List[S] => F[Unit]] = None
+  authorizeEach: Option[List[S] => F[Unit]] = None,
+  // Admits the current and the candidate presentation and persists the
+  // candidate in one step, replacing authorizeEach followed by persist for a
+  // top-level write. It fails the write on any refusal, with no fallback.
+  observedRootWrite: Option[(S, S) => F[Unit]] = None
 ) extends StateManager[F] {
   // A top-level write's current and candidate presentation share one fresh
   // authority observation when the guard supports it; otherwise each one is
@@ -76,13 +80,19 @@ private[spoonbill] final class GuardedStateManager[F[_]: Effect, S: StateDeseria
 
   def write[T: StateSerializer](nodeId: Id, value: T): F[Unit] = mutation(inWriteOrder {
     // Top-level identity is the runtime's existing StateManager type boundary.
-    val checked =
-      if (nodeId == Id.TopLevel) current.flatMap(live => authorizeAll(List(live, value.asInstanceOf[S])))
-      else check
-    checked.flatMap { _ =>
-      if (nodeId == Id.TopLevel) persist.fold(Effect[F].unit)(save => save(value.asInstanceOf[S]))
-      else Effect[F].unit
-    }.flatMap(_ => Effect[F].delayAsync(underlying.write(nodeId, value)))
+    val admitted =
+      if (nodeId != Id.TopLevel) check
+      else
+        current.flatMap { live =>
+          val candidate = value.asInstanceOf[S]
+          observedRootWrite match {
+            case Some(write) => write(live, candidate)
+            case None =>
+              authorizeAll(List(live, candidate)).flatMap(_ => persist.fold(Effect[F].unit)(save => save(candidate)))
+          }
+        }
+    // The in-memory root is published only after its authorization and persistence succeeded.
+    admitted.flatMap(_ => Effect[F].delayAsync(underlying.write(nodeId, value)))
   })
 
   def delete(nodeId: Id): F[Unit] = mutation(inWriteOrder(check.flatMap { _ =>

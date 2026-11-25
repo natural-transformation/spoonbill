@@ -66,7 +66,7 @@ final class JdbcBrowserSessions private[jdbc] (
     acknowledged: Boolean,
     replacement: Option[HostPrincipalStamp]
   )
-  private case class View(binding: Digest256, owner: Option[UUID], epoch: Long)
+  private case class View(binding: Digest256, owner: Option[UUID], epoch: Long, snapshotRevision: Long)
 
   private[jdbc] def snapshotRealm: String           = realm
   private[jdbc] def snapshotCookieNamespace: String = cookieNamespace
@@ -471,7 +471,22 @@ final class JdbcBrowserSessions private[jdbc] (
     expectedGeneration: Option[Long] = None,
     viewFence: Option[JdbcViewFence] = None,
     allowPending: Boolean = false
-  ): JdbcBrowserAuthorization[P] = {
+  ): JdbcBrowserAuthorization[P] =
+    authorizeObservedIn(connection, bindingHash, tokenHash, authorization, expectedGeneration, viewFence, allowPending)._1
+
+  /**
+   * authorizeIn, also returning the fenced view's snapshot revision, read in
+   * the same locked view read; None without a view fence.
+   */
+  private[jdbc] def authorizeObservedIn[P](
+    connection: Connection,
+    bindingHash: Digest256,
+    tokenHash: Option[Digest256],
+    authorization: HostSessionAuthorization[P],
+    expectedGeneration: Option[Long],
+    viewFence: Option[JdbcViewFence],
+    allowPending: Boolean
+  ): (JdbcBrowserAuthorization[P], Option[Long]) = {
     checkManagedCreation(connection)
     def reject(error: JdbcAuthError): Nothing            = throw new JdbcAuthException(error)
     def required[A](result: Either[JdbcAuthError, A]): A = result.fold(reject, identity)
@@ -494,11 +509,12 @@ final class JdbcBrowserSessions private[jdbc] (
       }
       val current = slot(connection, bindingHash).getOrElse(reject(JdbcAuthError.NotFound))
       if (expectedGeneration.exists(_ != current.generation)) reject(JdbcAuthError.StaleGeneration)
-      viewFence.foreach { fence =>
+      val revision = viewFence.map { fence =>
         val owned = view(connection, fence.viewId).getOrElse(reject(JdbcAuthError.NotFound))
         required(checkView(owned, bindingHash, fence.ownerId, fence.epoch))
+        owned.snapshotRevision
       }
-      initial match {
+      val decided = initial match {
         case None =>
           if (current.current.nonEmpty) reject(JdbcAuthError.HostDenied)
           JdbcBrowserAuthorization.Anonymous(current.generation)
@@ -517,6 +533,7 @@ final class JdbcBrowserSessions private[jdbc] (
             JdbcBrowserAuthorization.Anonymous(current.generation)
           } else JdbcBrowserAuthorization.Authenticated(required(active(current, latest)), fresh)
       }
+      decided -> revision
     } catch {
       case error: JdbcAuthException => throw error
       // Keep the cause: a deadlock abort is recognized by its SQLSTATE and retried.
@@ -565,7 +582,7 @@ final class JdbcBrowserSessions private[jdbc] (
         _       <- Either.cond(latest.prepared == before.prepared, (), JdbcAuthError.Conflict)
         _       <- Either.cond(!latest.revoked, (), JdbcAuthError.Revoked)
         session <- active(current, latest)
-      } yield session
+      } yield session -> owned.snapshotRevision
       // The one durable instant, after every lock this check waits for.
       val at = checkpoint()
       val deadlines = resolution.map(held =>
@@ -573,7 +590,9 @@ final class JdbcBrowserSessions private[jdbc] (
       )
       JdbcHeldAuthority
         .decide(before.prepared.sessionExpiresAt, deadlines, structural, at)
-        .flatMap(session => resolution.map(JdbcHeldAuthorization(session, _, at)).toRight(JdbcAuthError.HostDenied))
+        .flatMap { case (session, revision) =>
+          resolution.map(JdbcHeldAuthorization(session, _, at, revision)).toRight(JdbcAuthError.HostDenied)
+        }
         .fold(reject, identity)
     } catch {
       case error: JdbcAuthException => throw error
@@ -750,7 +769,7 @@ final class JdbcBrowserSessions private[jdbc] (
   private def view(connection: Connection, id: String): Option[View] =
     statement(
       connection,
-      """SELECT binding_hash, owner_id, epoch FROM spoonbill_browser_view
+      """SELECT binding_hash, owner_id, epoch, snapshot_revision FROM spoonbill_browser_view
       WHERE realm = ? AND cookie_namespace = ? AND view_id = ? FOR UPDATE"""
     ) { query =>
       scope(query); query.setString(3, id)
@@ -760,7 +779,7 @@ final class JdbcBrowserSessions private[jdbc] (
           val binding = Digest256
             .fromBytes(result.getBytes(1))
             .fold(_ => throw new JdbcAuthException(JdbcAuthError.StorageFailure), identity)
-          Some(View(binding, Option(result.getObject(2, classOf[UUID])), result.getLong(3)))
+          Some(View(binding, Option(result.getObject(2, classOf[UUID])), result.getLong(3), result.getLong(4)))
         }
       }
     }
