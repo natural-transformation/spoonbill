@@ -3,7 +3,9 @@
 Measured 2026-11-03 on one Apple-silicon machine (16 cores, JDK 21, PostgreSQL 14),
 with the [end-to-end click harness](../misc/event-latency/README.md); the
 [authenticated snapshot modes](#authenticated-views-with-durable-snapshots-inline-and-reference-backed)
-were measured on 2026-11-08 on the same machine.
+were measured on 2026-11-08 on the same machine, and the
+[authenticated shared views](#authenticated-shared-views-sharedviews) on
+2026-11-25 on a 16-core Apple M4 Max.
 
 **Result.** Unguarded and in-memory guarded apps were never the problem: a click
 takes about 1 ms in 1.1.1, 8.0.1 and now. The lag came from guarded sessions with
@@ -286,6 +288,58 @@ the provider, so this is not an external store's network cost; one node served
 everything, so restoration never crossed a process; every cell is one pass on a
 loaded shared machine; and the client does not render.
 
+### Authenticated shared views (`SharedViews`)
+
+The harness's `jdbc-shared` mode serves authenticated views with
+`BrowserOwnership.SharedViews`, separate provider and clock pools, a host that
+locks and reads one session row per resolution, and inline presentation
+snapshots of 1 KiB. Every message to the database was delayed by 0.25 ms,
+statement logging was on in every run, and maintenance ran every 30 seconds.
+Before the clicks, each run's probe counted the statements of 20 single
+`authorize` calls from the PostgreSQL statement log; every call matched its
+budget.
+
+| Mode | Host | Pools certified | Snapshot writes | Cap | Statements per observation |
+| --- | --- | --- | --- | ---: | ---: |
+| Baseline, as 11.0.1 | resolved twice | neither | every write saved | 0 | 33 |
+| Serialized | held, resolved once | both | unchanged ones skipped | 0 | 15 |
+| Concurrent | held, resolved once | both | unchanged ones skipped | 8 | 14 |
+
+The baseline's 33 statements are eight framework statements, two host reads,
+the provider transaction's `SET`, `BEGIN` and `COMMIT`, and five clock
+checkpoints of four statements each. The serialized mode keeps the eight
+framework statements and one host read, sends no `SET`, and takes one
+row-locked checkpoint of four statements. A concurrent check holds the realm
+lock in shared mode and skips the retention row, which only enrollment needs,
+so it makes 14. A fixed policy lock in the host adds one statement per
+resolution: 35, 16 and 15. Certified pools alone measured 27 statements, and
+the held host alone 17.
+
+Click-to-patch latency and completed clicks per second are the median of
+three interleaved runs. One user made 100 measured clicks after 30 warmup
+clicks, four users 50 each after 20. The projection is constant, so every
+click's write keeps it.
+
+| Users | Host lock | Baseline clicks/s, p50 / p99 ms | Serialized clicks/s, p50 / p99 ms | Concurrent clicks/s, p50 / p99 ms |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | session row | 13.7, 73.2 / 79.4 | 36.2, 27.3 / 29.8 | 38.8, 25.5 / 28.5 |
+| 4 | session row | 13.9, 284.9 / 315.9 | 36.0, 110.8 / 122.8 | 185.5, 21.3 / 26.7 |
+| 1 | fixed policy lock | 12.8, 78.2 / 82.9 | 33.7, 29.3 / 33.1 | 36.2, 27.5 / 30.8 |
+| 4 | fixed policy lock | 13.0, 306.1 / 339.8 | 33.6, 119.0 / 127.0 | 49.6, 79.8 / 95.6 |
+
+A click made 202 round trips in the baseline: six observations, one of them the
+snapshot save. It made 75 in the serialized mode and 70 in the concurrent mode:
+five observations and no save. With a projection that changes on every click,
+the guarded write saves once; four users then completed 14.5, 28.8 and 85.2
+clicks per second, and a click made 202, 94 and 89 round trips. No run had a
+failed click, a denial or a reconnect.
+
+With independent host rows, four concurrent users completed 5.2 times as many
+clicks per second as the serialized mode. With one fixed policy lock, the
+host's resolutions queue behind that lock and the gain is 1.5 times; a host
+with such a lock needs its own measurement before it enables concurrent checks.
+[Evidence](../misc/event-latency/evidence/2026-11-25-shared-views-round-trips.json)
+
 ### Extensions
 
 Measured 2026-11-14 for the [extension contract](extension-contract-design.md),
@@ -344,8 +398,10 @@ remains:
 3. Authorizing concurrent views in one provider transaction was considered and
    not pursued; it keeps the serialization.
 
-Shared-ownership (`SharedViews`) deployments cannot opt in: their clock
-observations still commit on every call.
+`SharedViews` deployments opt in through
+`JdbcBrowserPersistence.sharedViewsWithConcurrentChecks` with a host that holds
+its resolution. A host that takes one cluster-wide policy lock still
+serializes its checks on that lock, as the fixed-policy-lock rows above show.
 
 ## Reproduce
 
@@ -372,6 +428,15 @@ nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 BENCH_PAYLOAD_BYTES=65536 \
   bash misc/event-latency/run.sh local jdbc-reference 16 60 10 200
+# The shared-view modes: the observation probe first, then the clicks. The run
+# exits with status 1 when one observation misses its statement budget.
+nix develop --no-write-lock-file --command env SPOONBILL_BENCH_SQL_PROFILE=1 \
+  bash scripts/with-test-postgres.sh env PG_DELAY_MS=0.25 \
+  bash misc/event-latency/run.sh local jdbc-shared 4 50 20
+nix develop --no-write-lock-file --command env SPOONBILL_BENCH_SQL_PROFILE=1 \
+  bash scripts/with-test-postgres.sh env PG_DELAY_MS=0.25 BENCH_SHARED_HOST=held \
+  BENCH_SHARED_ISOLATION=both BENCH_SHARED_SNAPSHOTS=guarded BENCH_SHARED_CAP=8 \
+  bash misc/event-latency/run.sh local jdbc-shared 4 50 20
 # Restoration, maintenance every second and a slower payload store.
 nix develop --no-write-lock-file --command bash scripts/with-test-postgres.sh \
   env PG_DELAY_MS=0.25 BENCH_RECONNECT=1 \
