@@ -65,12 +65,15 @@ tree (`local`). Results and their interpretation are in the
     row, token row twice, slot, view and two last-seen renewals), the host's
     statements for each resolve (one row lock, plus the fixed policy lock with
     `BENCH_SHARED_LOCK=global`), the provider transaction's `BEGIN` and
-    `COMMIT`, one isolation `SET` per transaction, and three statements per
-    clock checkpoint (`BEGIN`, the upsert and `COMMIT`). A shared clock commits
-    a checkpoint for every time sample: five per observation, so the budget
-    is 33 statements with two resolves. A missing marker, a failed check, an
-    unexpected number of resolves or checkpoints, or any one observation over
-    budget fails the run.
+    `COMMIT`, one isolation `SET` per transaction on a pool that is not
+    certified, and the clock checkpoints. With the legacy host a shared clock
+    commits a checkpoint for every time sample, five per observation of three
+    statements each (`BEGIN`, the upsert and `COMMIT`), so the budget is 33
+    statements with two resolves. The held host is resolved once and the
+    check takes one row-locked checkpoint of four statements (`BEGIN`, the
+    locking read, the update and `COMMIT`): 17 statements, or 15 with both
+    pools certified. A missing marker, a failed check, an unexpected number of
+    resolves or checkpoints, or any one observation over budget fails the run.
   - **Click cost.** The client signs in, opens every user, warms up and waits
     at a barrier; the counters are taken there and again once the measured
     clicks' outstanding server work has drained. `clicks` reports completed
@@ -80,13 +83,16 @@ tree (`local`). Results and their interpretation are in the
     checkpoints, host resolves and protocol round trips, with rollbacks and
     reconnects.
 
-  Switches: `BENCH_SHARED_LOCK` is `session` (the row lock only) or `global`
-  (a fixed transaction-scoped advisory lock first, as a host with one policy
-  lock takes); `BENCH_SHARED_PROJECTION` is `constant` (the projection omits
-  the count) or `changing`. `BENCH_SHARED_HOST`, `BENCH_SHARED_ISOLATION`,
-  `BENCH_SHARED_SNAPSHOTS` and `BENCH_SHARED_CAP` keep their defaults
-  (`legacy`, `neither`, `ordinary`, `0`); the server refuses other values
-  until the provider supports them.
+  Switches: `BENCH_SHARED_HOST` is `legacy` (`resolve` twice per check) or
+  `held` (`JdbcHeldHostSessions`: the same locks and read, once per check);
+  `BENCH_SHARED_ISOLATION` is `neither`, `work`, `clock` or `both`, the pools
+  passed through `JdbcIsolation.readCommittedOnCheckout`; `BENCH_SHARED_LOCK`
+  is `session` (the row lock only) or `global` (a fixed transaction-scoped
+  advisory lock first, as a host with one policy lock takes);
+  `BENCH_SHARED_PROJECTION` is `constant` (the projection omits the count) or
+  `changing`. `BENCH_SHARED_SNAPSHOTS` and `BENCH_SHARED_CAP` keep their
+  defaults (`ordinary`, `0`); the server refuses other values until the
+  provider supports them.
 - `client/latency.mjs`: simulated browsers. Each loads the page, opens the
   WebSocket, waits until the view is ready and clicks in a closed loop. A click
   waits for the event-counter update, exactly as the browser bridge does. A

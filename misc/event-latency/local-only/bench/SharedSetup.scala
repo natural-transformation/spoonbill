@@ -69,12 +69,6 @@ object SharedSwitches {
 
   /** The selected settings this build cannot provide yet, each with the production support it needs. */
   def unavailable(switches: SharedSwitches): Vector[String] = Vector(
-    Option.when(switches.host == "held")(
-      "BENCH_SHARED_HOST=held is not available yet: it needs a host contract that holds its resolution until settlement"
-    ),
-    Option.when(switches.isolation != "neither")(
-      s"BENCH_SHARED_ISOLATION=${switches.isolation} is not available yet: it needs a data source certified to establish read committed on checkout"
-    ),
     Option.when(switches.snapshots == "guarded")(
       "BENCH_SHARED_SNAPSHOTS=guarded is not available yet: it needs the guarded inline snapshot factory"
     ),
@@ -138,7 +132,7 @@ object SharedPools {
  * one fixed transaction-scoped advisory lock, as a host with one cluster-wide
  * policy lock would. The principal is stable: its expiry is the row's.
  */
-final class SharedHost(globalLock: Boolean) extends JdbcHostSessions[String] {
+class SharedHost(globalLock: Boolean) extends JdbcHostSessions[String] {
   /** Every resolve call, successful or not. */
   val resolutions = new AtomicLong()
 
@@ -147,6 +141,23 @@ final class SharedHost(globalLock: Boolean) extends JdbcHostSessions[String] {
     SharedHost.lockAndRead(connection, sessionId, globalLock).filter(principal => now.isBefore(principal.expiresAt))
   }
   def acknowledge(connection: Connection, completionId: UUID, sessionId: UUID, now: Instant): Unit = ()
+}
+
+/**
+ * The same host, holding its resolution (BENCH_SHARED_HOST=held): it takes the
+ * same locks and reads the same row once per check, and leaves time to the
+ * provider. Its cutoff is the row's expiry; it has no idle refresh.
+ */
+final class SharedHeldHost(globalLock: Boolean) extends SharedHost(globalLock) with JdbcHeldHostSessions[String] {
+  def lockResolution(connection: Connection, sessionId: UUID): Option[JdbcHeldResolution[String]] = {
+    resolutions.incrementAndGet()
+    SharedHost.lockAndRead(connection, sessionId, globalLock).map { held =>
+      new JdbcHeldResolution[String] {
+        val principal: HostPrincipal[String] = held
+        val validUntilExclusive: Instant     = held.expiresAt
+      }
+    }
+  }
 }
 
 object SharedHost {
@@ -190,11 +201,16 @@ object SharedHost {
 final class SharedSetup(val switches: SharedSwitches, url: String) {
   val pools                      = new SharedPools(url)
   val blocking: ExecutionContext = ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(16))
-  val host                       = new SharedHost(switches.globalLock)
+  val host: SharedHost =
+    if (switches.host == "held") new SharedHeldHost(switches.globalLock) else new SharedHost(switches.globalLock)
 
   // The data sources the provider receives; the counting wrappers only attribute transactions.
-  private val workSource: DataSource  = pools.workCounted
-  private val clockSource: DataSource = pools.clockCounted
+  // A certification is the outermost wrapper, as a deployment passes it. Hikari keeps
+  // the server default, READ COMMITTED, on every checkout here: nothing changes the level.
+  private def certified(source: DataSource, certify: Boolean): DataSource =
+    if (certify) JdbcIsolation.readCommittedOnCheckout(source) else source
+  private val workSource: DataSource  = certified(pools.workCounted, switches.workCertified)
+  private val clockSource: DataSource = certified(pools.clockCounted, switches.clockCertified)
 
   // Benchmark-only key; never use a fixed key for real deployments.
   private val key = MessageDigest.getInstance("SHA-256").digest("bench-only".getBytes("UTF-8"))
