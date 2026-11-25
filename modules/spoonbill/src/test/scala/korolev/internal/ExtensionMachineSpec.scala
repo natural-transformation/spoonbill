@@ -101,8 +101,6 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
     mayCall(active, passed(active, other), first) shouldBe false
     mayCall(active, admitted, Step.Call(check, -1, "bad")) shouldBe false
     mayCall(active, admitted, Step.Call(check, 2, "bad")) shouldBe false
-    received(Some(3), check.notification) shouldBe Some(7)
-    received(Some(3), Notification.Message("message")) shouldBe Some(3)
     val failed = step(active, Event.Failed(second, Failure.Other))
     failed._1 shouldBe active
     failed._2 shouldBe Vector(Command.Report("Extension b: onState failed"))
@@ -199,11 +197,25 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
     }
   }
 
+  it should "keep the entered state notification across messages, including a delivered null" in {
+    val state: Notification[String, String] = Notification.State(null)
+    val seen = received(NeverReceived, state)
+    seen should be theSameInstanceAs state
+    received(seen, Notification.Message("message")) should be theSameInstanceAs state
+    lastState(seen, Some("fallback")) shouldBe Some(null)
+    val unseen: Received[String, String] = received(NeverReceived, Notification.Message("before state"))
+    unseen shouldBe NeverReceived
+    lastState(unseen, Some("fallback")) shouldBe Some("fallback")
+    lastState(unseen, Some(null)) shouldBe Some(null)
+    lastState(unseen, None) shouldBe None
+  }
+
   it should "track the last entered state independently for generated lane histories" in {
     forAll(Gen.listOf(Gen.zip(Gen.choose(0, 1000), Gen.oneOf(true, false), Gen.oneOf(true, false)))) { history =>
       val (active, _) = delivering()
+      val unseen = Vector.fill[Received[Int, String]](2)(NeverReceived)
       val (actual, expected) =
-        history.foldLeft((Vector.fill(2)(Option.empty[Int]), Vector.fill(2)(Option.empty[Int]))) {
+        history.foldLeft((unseen, Vector.fill(2)(Option.empty[Int]))) {
           case ((previous, expected), (value, firstStarts, secondStarts)) =>
             val (_, items) = emitted(step(active, Event.Written(value)))
             val check      = items.head.asInstanceOf[Step.Check[Int, String]]
@@ -216,11 +228,11 @@ class ExtensionMachineSpec extends AnyFlatSpec with Matchers with ScalaCheckProp
             }.toVector
             (next, expected.indices.map(i => if (starts(i)) Some(value) else expected(i)).toVector)
         }
-      actual shouldBe expected
+      actual.map(lastState(_, Option.empty[Int])) shouldBe expected
       val (taken, _) = step(active, Event.Take)
       step(taken, Event.Take)._2 shouldBe empty
       step(taken, Event.Written(42))._2 shouldBe empty
-      actual.map(_.orElse(taken.admitted)) shouldBe expected.map(_.orElse(Some(7)))
+      actual.map(lastState(_, taken.admitted)) shouldBe expected.map(_.orElse(Some(7)))
     }
   }
 }

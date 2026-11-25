@@ -68,7 +68,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
   private type Handlers = Extension.Handlers[F, S, M]
   private final class Active(val handlers: Handlers) {
     // Written only by the lane, read by teardown after its bounded wait.
-    @volatile var received = Option.empty[S]
+    @volatile var received: ExtensionMachine.Received[S, M] = ExtensionMachine.NeverReceived
   }
   private final case class Held(machine: State[S, M], handlers: Vector[Active])
   private val lock           = new Object
@@ -332,7 +332,7 @@ private[spoonbill] final class ExtensionRuntime[F[_]: Effect, S, M](
     def next(remaining: List[Command[S, M]], handlers: Vector[Active]): F[Unit] = remaining match {
       case Command.Destroy(slot, name, admitted) :: rest =>
         val entry = handlers(slot)
-        destroyOne(name, entry.handlers, entry.received.orElse(admitted)).flatMap(_ => next(rest, handlers))
+        destroyOne(name, entry.handlers, ExtensionMachine.lastState(entry.received, admitted)).flatMap(_ => next(rest, handlers))
       case _ :: rest => next(rest, handlers)
       case Nil       => Effect[F].unit
     }

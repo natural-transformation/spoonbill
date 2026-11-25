@@ -57,6 +57,28 @@ p99 rose from 22.7 to 23.1 ms. Both runs were diagnostic, with startup loads
 of 5.03 and 4.48. The fixture checks callback order, delivery counts, backlog
 drain and teardown in every JVM. [Measurements and source identities](evidence/2026-11-25-serial-lane-wake.json)
 
+## Recording the last state received by each handler
+
+The interpreter publishes the immutable state notification that the handler
+entered. The pure extension machine selects this token and resolves the last
+state during teardown. An entered state whose value is null remains distinct
+from a handler that entered no state callback. Message callbacks preserve
+the previous state.
+
+The three-arm diagnostic compared released 11.0.0, the busy-lane change above,
+and that change plus notification reuse. Relative to the busy-lane change,
+median allocation fell from 1,065.52 to 1,017.12 B/notification for three
+handlers on one view, and from 2,377.43 to 2,249.68 for eight handlers.
+All three pairs in each workload showed lower allocation. The combined
+candidate met all four workloads’ budgets against both comparison builds.
+
+Evidence verification briefly overlapped one independent-view trial.
+A separate nine-JVM comparison retained all three arms and also met the
+budgets. Relative to the busy-lane change, independent-view p99 fell from
+2.542 to 2.489 ms in the original run and rose from 2.382 to 2.524 ms
+in the separate check. The allocation saving repeated in both.
+[All trials and the separate control](evidence/2026-11-25-extension-received-state.json)
+
 ## Workloads and controls
 
 Each fresh JVM uses G1, a 256 MiB heap and `ActiveProcessorCount=8`. Five-second
@@ -157,6 +179,7 @@ Retained evidence files:
 - [Delivery progress compared with its parent](evidence/2026-11-24-extension-delivery-progress.json).
   All four workloads met the parent-relative budgets in a diagnostic run.
 - [Waking a busy lane](evidence/2026-11-25-serial-lane-wake.json). Both the screen and the four-workload confirmation use the 11.0.0 release.
+- [Last state received by each handler](evidence/2026-11-25-extension-received-state.json). The parent and combined candidate are compared separately with v11.0.0.
 
 Intermediate exploratory screens and variant patches from earlier pilot iterations
 were pruned before merge.
