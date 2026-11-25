@@ -32,10 +32,10 @@ database adapter is shipped.
 
 ```scala
 // build.sbt
-libraryDependencies += "com.natural-transformation" %% "spoonbill" % "11.0.0"
+libraryDependencies += "com.natural-transformation" %% "spoonbill" % "11.0.1"
 ```
 
-The latest release is [Spoonbill 11.0.0](https://github.com/natural-transformation/spoonbill/releases/tag/v11.0.0),
+The latest release is [Spoonbill 11.0.1](https://github.com/natural-transformation/spoonbill/releases/tag/v11.0.1),
 published for Scala 3. Upgrade every Spoonbill module together and recompile
 consumers. The [11.0 migration guide](docs/migration-v11.md) covers extensions,
 Future effect instances and stream behavior. Upgrades from 10.0.1 use the
