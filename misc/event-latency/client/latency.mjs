@@ -21,6 +21,12 @@
 //                      apart from steady-state saves.
 //   BENCH_RECONNECT=1  after warmup every user drops its socket and reconnects
 //                      to the same view, which restores the saved projection.
+//   BENCH_WARMUP_BARRIER=1  with BENCH_PHASES=1: every user finishes its warmup
+//                      before anyone starts the measured clicks, and the
+//                      counters are recorded at that boundary (afterWarmup)
+//                      and again once the measured clicks' outstanding server
+//                      work has drained (afterDrain). measuredSeconds covers
+//                      the measured clicks only.
 //
 // BENCH_TRANSPORT=long-polling uses long polling instead of the WebSocket, as
 // a browser does when its WebSocket is blocked (unguarded pages only). A page
@@ -34,6 +40,7 @@ const users = Number(usersArg), clicks = Number(clicksArg), warmup = Number(warm
 const login = process.env.BENCH_LOGIN === '1';
 const phased = process.env.BENCH_PHASES === '1';
 const reconnectAfterWarmup = process.env.BENCH_RECONNECT === '1';
+const warmupBarrier = phased && process.env.BENCH_WARMUP_BARRIER === '1';
 const countFile = process.env.BENCH_COUNT_FILE;
 const polling = process.env.BENCH_TRANSPORT === 'long-polling';
 if (polling && (login || reconnectAfterWarmup)) throw new Error('Long polling is measured on unguarded pages only');
@@ -212,10 +219,28 @@ async function reopen(page, session) {
   }
 }
 
+// The warmup barrier: the last user to finish its warmup lets the main flow
+// record the boundary, which then releases every user into the measured clicks.
+let arrivals = 0;
+let allWarmedUp;
+const warmedUp = new Promise(resolve => { allWarmedUp = resolve; });
+let releaseMeasured;
+const measuredReleased = new Promise(resolve => { releaseMeasured = resolve; });
+async function arriveAfterWarmup() {
+  arrivals += 1;
+  if (arrivals === users) allWarmedUp();
+  await measuredReleased;
+}
+
 async function run(opened, results) {
   let { page, session } = opened;
   let count = 0;
+  let arrived = false;
   for (let i = 1; i <= warmup + clicks; i++) {
+    if (warmupBarrier && !arrived && i === warmup + 1) {
+      arrived = true;
+      await arriveAfterWarmup();
+    }
     if (reconnectAfterWarmup && i === warmup + 1) {
       // Restoration: drop the socket and reconnect to the same view, which
       // loads the saved projection; the count it shows is adopted.
@@ -251,14 +276,39 @@ async function phaseStats() {
   return { stats, roundTrips, atMs: Math.round(performance.now() - started) };
 }
 
+// The counters once the server's outstanding work has drained: read until two
+// consecutive readings agree, so work still running after the last measured
+// click (a save, an output admission) is inside the measured window.
+async function drainedStats() {
+  const began = performance.now();
+  let previous = await phaseStats();
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const next = await phaseStats();
+    if (JSON.stringify(next.stats) === JSON.stringify(previous.stats) && next.roundTrips === previous.roundTrips)
+      return { ...next, drained: true, drainMs: Math.round(performance.now() - began) };
+    previous = next;
+  }
+  return { ...previous, drained: false, drainMs: Math.round(performance.now() - began) };
+}
+
 const pct = (values, q) => values[Math.min(values.length - 1, Math.max(0, Math.ceil(q * values.length) - 1))];
 const results = [];
 const started = performance.now();
-let afterOpen = null;
+let afterOpen = null, afterWarmup = null, afterDrain = null, measuredSeconds = null;
 if (phased) {
   const opened = await Promise.all(Array.from({ length: users }, () => open()));
   afterOpen = await phaseStats();
-  await Promise.all(opened.map(value => run(value, results)));
+  const runs = Promise.all(opened.map(value => run(value, results)));
+  if (warmupBarrier) {
+    // A user that fails before the barrier rejects runs, which ends the wait.
+    await Promise.race([warmedUp, runs]);
+    afterWarmup = await phaseStats();
+    const measuredStarted = performance.now();
+    releaseMeasured();
+    await runs;
+    measuredSeconds = (performance.now() - measuredStarted) / 1000;
+    afterDrain = await drainedStats();
+  } else await runs;
 } else {
   await Promise.all(Array.from({ length: users }, () => open().then(value => run(value, results))));
 }
@@ -276,4 +326,6 @@ console.log(JSON.stringify({ base, transport: polling ? 'long-polling' : 'web-so
   openMs: round(summary(totals.openMs)), restores: totals.restoreMs.length, restoreAttempts: totals.restoreAttempts,
   restoreMs: round(summary(totals.restoreMs)),
   patchMs: round(summary(results.map(sample => sample.patch))), readyMs: round(summary(results.map(sample => sample.ready))),
-  afterOpen }));
+  afterOpen,
+  ...(warmupBarrier ? { measuredSeconds: Math.round(measuredSeconds * 1000) / 1000,
+    measuredClicksPerSecond: Math.round(results.length / measuredSeconds * 10) / 10, afterWarmup, afterDrain } : {}) }));
