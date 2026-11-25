@@ -2,7 +2,10 @@ package spoonbill.internal
 
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
+import scala.concurrent.duration.*
+import spoonbill.Extension
+import spoonbill.internal.TimerTestSupport.{Reports, Worker}
 import spoonbill.server.SessionAccessDenied
 import spoonbill.snapshot.{ViewSnapshotError, ViewSnapshotException}
 
@@ -158,6 +161,32 @@ class ExtensionRuntimeLifecycleSpec extends AnyFlatSpec with Matchers {
     f.taken() shouldBe Vector("c.onDestroy(4)", "b.onDestroy(4)", "a.onDestroy(4)")
     f.result(f.runtime.destroy())
     f.taken() shouldBe empty
+  }
+
+  it should "pass a delivered null state to teardown" in {
+    val worker             = new Worker
+    given ExecutionContext = worker
+    val states             = Vector.newBuilder[String]
+    val destroyed          = Vector.newBuilder[String]
+    val observer = Extension[Future, String, String]("observer") { _ =>
+      Future.successful(Extension.Handlers[Future, String, String](
+        onState = state => { states += state; Future.unit },
+        onDestroy = last => { destroyed += last; Future.unit }
+      ))
+    }
+    val runtime = new ExtensionRuntime(List(observer), new Reports, new ExtensionRuntimeFixture.ManualBound, None)
+
+    Await.result(runtime.setup(null, "initial", () => Future.unit), 5.seconds)
+    Await.result(runtime.start(), 5.seconds)
+    worker.drain()
+    runtime.state(null)
+    worker.drain()
+    states.result() shouldBe Vector("initial", null)
+
+    val done = runtime.destroy()
+    worker.drain()
+    Await.result(done, 5.seconds)
+    destroyed.result() shouldBe Vector(null)
   }
 
   it should "pass each extension the last state that its own onState received" in {

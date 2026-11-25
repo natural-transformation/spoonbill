@@ -187,6 +187,7 @@ Retained evidence files:
   All four workloads met the parent-relative budgets in a diagnostic run.
 - [Waking a busy lane](evidence/2026-11-25-serial-lane-wake.json). Both the screen and the four-workload confirmation use the 11.0.0 release.
 - [Last state received by each handler](evidence/2026-11-25-extension-received-state.json). The parent and combined candidate are compared separately with v11.0.0.
+- [Failed extension performance experiments](evidence/2026-11-25-failed-experiments.json).
 
 Intermediate exploratory screens and variant patches from earlier pilot iterations
 were pruned before merge.

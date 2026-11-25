@@ -1,5 +1,15 @@
 # Changelog
 
+## 11.0.1 — 2026-11-25
+
+This patch reduces work during extension delivery. Applications upgrading
+from 11.0.0 can keep their extension code and database schema.
+
+- Writers skip a queue check when a worker already owns the delivery lane.
+- Each handler reuses the notification from its most recent state callback
+  to supply the last state to `onDestroy`, avoiding a per-handler allocation
+  on state delivery. See the [benchmark results](misc/extension-contention/README.md#recording-the-last-state-received-by-each-handler).
+
 ## 11.0.0 — 2026-11-24
 
 Spoonbill 11.0.0 changes the extension contract, Future effect instances
