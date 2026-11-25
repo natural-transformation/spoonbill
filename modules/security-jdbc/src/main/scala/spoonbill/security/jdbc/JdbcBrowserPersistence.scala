@@ -36,7 +36,10 @@ import spoonbill.server.BrowserSessionToken
  * ownership=BrowserOwnership.SharedViews when multiple providers share this
  * scope: each view is fenced independently, clock observations always consult
  * storage, and claim admission rejects delayed acquisitions overtaken by
- * another owner. Pass concurrentChecks to let the coordinator run authority
+ * another owner. With SharedViews and a JdbcHeldHostSessions host, the check
+ * of a view captured as authenticated resolves the host once and decides
+ * expiry at one durable clock checkpoint; other flows keep resolve and the
+ * ordinary clock. Pass concurrentChecks to let the coordinator run authority
  * checks concurrently under a shared realm lock; see JdbcConcurrentChecks.
  */
 final class JdbcBrowserPersistence[F[_], P](
@@ -430,9 +433,10 @@ final class JdbcBrowserPersistence[F[_], P](
     true
   }
 
-  private def touchBinding(connection: Connection, binding: String): Unit = sql(connection,
+  private def touchBinding(connection: Connection, binding: String): Unit = touchBindingAt(connection, binding, now())
+  private def touchBindingAt(connection: Connection, binding: String, time: Instant): Unit = sql(connection,
     "UPDATE spoonbill_browser_slot SET last_seen=GREATEST(last_seen,?) WHERE realm=? AND cookie_namespace=? AND binding_hash=?") { query =>
-    query.setTimestamp(1, Timestamp.from(now())); query.setString(2, realm); query.setString(3, namespace)
+    query.setTimestamp(1, Timestamp.from(time)); query.setString(2, realm); query.setString(3, namespace)
     query.setBytes(4, digest(binding).bytes); query.executeUpdate(); ()
   }
 
@@ -484,23 +488,80 @@ final class JdbcBrowserPersistence[F[_], P](
   }
   private def current(connection: Connection, view: BrowserView[P]): BrowserIdentity[P] = {
     if (!issuer.owns(view)) reject(OperationError.ForeignPermit)
+    heldHost match {
+      case Some(held) if heldEligible(view) => heldCurrent(connection, view, held)
+      case _ =>
+        val captured = view.identity
+        val fresh = captureIn(
+          connection,
+          captured.binding,
+          captured.token,
+          false,
+          Some(captured.generation),
+          Some(JdbcViewFence(BrowserView.key(view.qsid), view.ownerId, view.epoch))
+        )
+        if (!captured.sameAuthority(fresh)) reject()
+        renewOwnerLease(connection, BrowserView.key(view.qsid), view.ownerId, view.epoch)
+        touchBinding(connection, captured.binding)
+        fresh
+    }
+  }
+
+  /**
+   * A host that holds its resolution, when this provider shares views: its
+   * authenticated checks then resolve the host once and decide at one instant.
+   */
+  private val heldHost: Option[JdbcHeldHostSessions[P]] = host match {
+    case held: JdbcHeldHostSessions[P] @unchecked if ownership == BrowserOwnership.SharedViews => Some(held)
+    case _                                                                                   => None
+  }
+
+  /** Decided from the captured view alone, before any host code runs. */
+  private def heldEligible(view: BrowserView[P]): Boolean = {
     val captured = view.identity
-    val fresh = captureIn(
+    captured.host.nonEmpty && captured.token.nonEmpty && captured.sessionId.nonEmpty
+  }
+
+  /**
+   * One authenticated shared-view observation at one durable instant. The host
+   * is resolved once under its locks, one clock checkpoint decides expiry, and
+   * both renewals use that instant on the rows already locked. The host's
+   * accepted hook runs last, after every authority and owner-lease check. A
+   * view whose token, generation or owner changed is rejected; it never falls
+   * back to the two-sample path.
+   */
+  private def heldCurrent(connection: Connection, view: BrowserView[P], held: JdbcHeldHostSessions[P]): BrowserIdentity[P] = {
+    val captured = view.identity
+    val token    = captured.token.getOrElse(reject())
+    if (!validSecret(captured.binding) || !validSecret(token)) reject()
+    val viewKey = BrowserView.key(view.qsid)
+    val decided = browser.authorizeHeldIn(
       connection,
+      digest(captured.binding),
+      digest(token),
+      captured.generation,
+      JdbcViewFence(viewKey, view.ownerId, view.epoch),
+      sessionId => held.lockResolution(connection, sessionId),
+      () => durableClock.checkpoint()
+    )
+    val fresh = issuer.identity(
       captured.binding,
       captured.token,
-      false,
-      Some(captured.generation),
-      Some(JdbcViewFence(BrowserView.key(view.qsid), view.ownerId, view.epoch))
+      decided.session.generation,
+      Some(decided.resolution.principal),
+      Some(decided.session.hostSessionId)
     )
     if (!captured.sameAuthority(fresh)) reject()
-    renewOwnerLease(connection, BrowserView.key(view.qsid), view.ownerId, view.epoch)
-    touchBinding(connection, captured.binding)
+    renewOwnerLeaseAt(connection, viewKey, view.ownerId, view.epoch, decided.at)
+    touchBindingAt(connection, captured.binding, decided.at)
+    decided.resolution.onAcceptedAt(decided.at)
     fresh
   }
 
-  private def renewOwnerLease(connection: Connection, view: String, owner: UUID, epoch: Long): Unit = {
-    val time = now()
+  private def renewOwnerLease(connection: Connection, view: String, owner: UUID, epoch: Long): Unit =
+    renewOwnerLeaseAt(connection, view, owner, epoch, now())
+
+  private def renewOwnerLeaseAt(connection: Connection, view: String, owner: UUID, epoch: Long, time: Instant): Unit = {
     val renewed = sql(connection,
       """UPDATE spoonbill_browser_view SET last_seen=GREATEST(last_seen,?) WHERE realm=? AND cookie_namespace=?
       AND view_id=? AND owner_id=? AND epoch=? AND last_seen>?""") { query =>

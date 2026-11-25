@@ -26,6 +26,59 @@ trait JdbcHostSessions[P] {
 }
 
 /**
+ * Optional host capability that lets a shared-view authority check resolve the
+ * host once. The host locks and reads first; Spoonbill then evaluates every
+ * time rule at one durable instant that it samples after the last lock.
+ *
+ * The JDBC provider calls lockResolution only for a BrowserOwnership.SharedViews
+ * view that was captured as authenticated, inside the provider transaction,
+ * after the browser token row and before the slot and view locks. It must
+ * acquire the host locks the decision needs and capture every non-time input
+ * under them, and it must not decide by time. It returns None for a stable
+ * denial. The returned principal and cutoff must stay valid for evaluation at
+ * the final instant, with every other input of the decision held stable until
+ * the transaction settles. A host whose time rule a single exclusive cutoff
+ * cannot express keeps the resolve contract instead.
+ *
+ * resolve and acknowledge keep their contract. Activation, replacement,
+ * anonymous and pending flows, ExclusiveScope providers and explicit host
+ * tx.now still use resolve and the provider's ordinary clock.
+ */
+trait JdbcHeldHostSessions[P] extends JdbcHostSessions[P] {
+  def lockResolution(connection: Connection, sessionId: UUID): Option[JdbcHeldResolution[P]]
+}
+
+/**
+ * One check's held host resolution. It belongs to that invocation and its
+ * connection; the provider never keeps it after the check.
+ */
+trait JdbcHeldResolution[P] {
+
+  /**
+   * The principal. Keep the stable absolute expiry in its expiresAt: that field
+   * is part of the captured authority identity, so it must not move with idle
+   * refreshes.
+   */
+  def principal: HostPrincipal[P]
+
+  /**
+   * The decision holds for instants strictly before this cutoff, for example
+   * the earliest of the idle expiry before any refresh, the absolute expiry and
+   * an unacknowledged-completion deadline. Equality fails.
+   */
+  def validUntilExclusive: Instant
+
+  /**
+   * Runs once at the decision instant, after every authority and owner-lease
+   * check passed, in the same transaction. It may stage rollback-safe writes on
+   * the rows this resolution locked, such as a conditional idle refresh, and may
+   * throw to fail the transaction. It must not settle the connection. The
+   * provider owns settlement and never replays a check once this call starts.
+   */
+  def onAcceptedAt(now: Instant): Unit = ()
+}
+
+/**
  * Deployment-owned encryption and key rotation. Implementations authenticate
  * associatedData and must never log plaintext. Keys must survive process
  * restart for the intended delivery retention period.

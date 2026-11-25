@@ -11,6 +11,11 @@ an opt-in, and the existing behavior stays the default.
   a certified source skip the isolation setter, which the PostgreSQL driver
   sends as one `SET` per transaction. See
   [JDBC deployment](docs/browser-authentication.md#jdbc-deployment-and-credential-custody).
+- A host that implements `JdbcHeldHostSessions` lets a `SharedViews` check of
+  an authenticated view resolve the host once and decide every deadline at one
+  durable clock checkpoint, sampled under the clock row lock after the check's
+  last wait. Such a check used to resolve the host twice and commit five
+  checkpoints. Other flows and hosts without the capability are unchanged.
 
 ## 11.0.1 — 2026-11-25
 

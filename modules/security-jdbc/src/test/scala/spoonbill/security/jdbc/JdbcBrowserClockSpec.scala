@@ -29,6 +29,8 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
     val loseCommitAcknowledgement = new AtomicBoolean()
     // Holds the next checkpoint connection's acquisition: (entered, resume).
     val pause = new AtomicReference(Option.empty[(CountDownLatch, CountDownLatch)])
+    // Runs on the calling thread before each statement is prepared, with its SQL.
+    val prepareHook = new AtomicReference[String => Unit](_ => ())
     val realm                     = "clock-" + UUID.randomUUID()
     val source: DataSource = new DataSource {
       // Keep connection creation independent of sbt's driver-discovery context.
@@ -48,7 +50,10 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
             Array(classOf[Connection]),
             new InvocationHandler {
               def invoke(proxy: Object, method: Method, arguments: Array[Object]): Object = {
-                if (method.getName == "prepareStatement") statements.incrementAndGet()
+                if (method.getName == "prepareStatement") {
+                  statements.incrementAndGet()
+                  prepareHook.get()(String.valueOf(args0(arguments)))
+                }
                 if (method.getName == "commit") commits.incrementAndGet()
                 val args = Option(arguments).getOrElse(Array.empty[Object])
                 val result =
@@ -76,6 +81,50 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
     Using.resource(source.getConnection)(clock().initialize)
     connections.set(0); statements.set(0); commits.set(0)
     def counts: (Int, Int, Int) = (connections.get(), statements.get(), commits.get())
+
+    /** Lock this realm's clock row in a separate open transaction; the result releases it. */
+    def lockRow(): () => Unit = {
+      val connection = source.getConnection
+      connection.setAutoCommit(false)
+      Using.resource(connection.prepareStatement(
+        "SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE"
+      )) { query =>
+        query.setString(1, realm); Using.resource(query.executeQuery())(_.next()) shouldBe true
+      }
+      () => try connection.rollback() finally connection.close()
+    }
+
+    /** Wait until another backend waits for a lock on the clock table. */
+    def awaitClockWait(): Unit = Using.resource(source.getConnection) { observer =>
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+      def waiting: Boolean = Using.resource(observer.prepareStatement(
+        """SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock'
+        AND pid<>pg_backend_pid() AND query LIKE '%spoonbill_auth_clock%')"""
+      ))(query => Using.resource(query.executeQuery())(rows => rows.next() && rows.getBoolean(1)))
+      while (!waiting && System.nanoTime() < deadline) Thread.sleep(5)
+      waiting shouldBe true
+    }
+
+    def stored: Instant = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement(
+        "SELECT epoch_second,nano FROM spoonbill_auth_clock WHERE realm=? AND namespace='session'"
+      )) { query =>
+        query.setString(1, realm)
+        Using.resource(query.executeQuery()) { rows =>
+          rows.next() shouldBe true; Instant.ofEpochSecond(rows.getLong(1), rows.getInt(2).toLong)
+        }
+      }
+    }
+  }
+
+  private def args0(arguments: Array[Object]): Object = if (arguments.isEmpty) null else arguments(0)
+
+  /** Runs a checkpoint on its own thread; the outcome is kept for the assertions. */
+  private final class Checkpoint(clock: JdbcBrowserClock) {
+    val result = new AtomicReference[Either[Throwable, Instant]]()
+    val thread = new Thread(() => result.set(scala.util.Try(clock.checkpoint()).toEither))
+    thread.start()
+    def outcome: Either[Throwable, Instant] = { thread.join(10000); result.get() }
   }
 
   "An exclusively owned JDBC clock" should "reuse only acknowledged equal/backward checkpoints with no JDBC work" in {
@@ -341,5 +390,88 @@ class JdbcBrowserClockSpec extends AnyFlatSpec with Matchers {
     f.counts shouldBe ((failed._1 + 1, failed._2 + 1, failed._3 + 1))
     f.time.set(start.plusMillis(1800))
     clock.now() shouldBe f.time.get()
+  }
+
+  "A shared JDBC clock checkpoint" should "insert the first floor of a scope, then lock and update the row once per call" in {
+    val f     = new Fixture
+    val clock = f.clock(exclusive = false)
+    clock.checkpoint() shouldBe start
+    // The locking read, the first-use insert, the locking read again and the update, in one transaction.
+    f.counts shouldBe ((1, 4, 1))
+    f.time.set(start.plusNanos(1))
+    clock.checkpoint() shouldBe start.plusNanos(1)
+    f.counts shouldBe ((2, 6, 2))
+    f.stored shouldBe start.plusNanos(1)
+  }
+
+  it should "sample the instant after waiting for the clock row" in {
+    val f     = new Fixture
+    val clock = f.clock(exclusive = false)
+    clock.checkpoint() shouldBe start
+    val release = f.lockRow()
+    val waiting = new Checkpoint(clock)
+    f.awaitClockWait()
+    f.time.set(start.plusSeconds(5))
+    release()
+    waiting.outcome shouldBe Right(start.plusSeconds(5))
+    f.stored shouldBe start.plusSeconds(5)
+  }
+
+  it should "never return below the stored floor, this process's floor or the wall clock" in {
+    val f = new Fixture
+    f.time.set(start.plusSeconds(2))
+    f.clock(exclusive = false).now() shouldBe start.plusSeconds(2)
+    // A restarted instance with an earlier wall clock gets the stored floor.
+    f.time.set(start)
+    val clock = f.clock(exclusive = false)
+    clock.checkpoint() shouldBe start.plusSeconds(2)
+    // A failed observation still sampled a later wall time; the next checkpoint stays at or above it.
+    f.time.set(start.plusSeconds(4))
+    f.failAcquire.set(true)
+    an[JdbcAuthException] should be thrownBy clock.now()
+    f.time.set(start.plusSeconds(1))
+    clock.checkpoint() shouldBe start.plusSeconds(4)
+    f.time.set(start.plusSeconds(6))
+    clock.checkpoint() shouldBe start.plusSeconds(6)
+  }
+
+  it should "let two writers bootstrap an empty row, ordered by its lock" in {
+    val f        = new Fixture
+    val first    = f.clock(exclusive = false)
+    val second   = f.clock(exclusive = false)
+    val updating = new CountDownLatch(1)
+    val resume   = new CountDownLatch(1)
+    val holder   = new AtomicReference[Thread]()
+    // Hold the first writer after its insert and its wall sample, before its update.
+    f.prepareHook.set { sql =>
+      if ((Thread.currentThread() eq holder.get()) && sql.trim.startsWith("UPDATE spoonbill_auth_clock")) {
+        updating.countDown(); resume.await(5, TimeUnit.SECONDS)
+      }
+    }
+    val earlier = new Checkpoint(first)
+    holder.set(earlier.thread)
+    updating.await(5, TimeUnit.SECONDS) shouldBe true
+    // The second writer finds no committed row and waits on the first one's insert.
+    f.time.set(start.plusSeconds(1))
+    val later = new Checkpoint(second)
+    f.awaitClockWait()
+    resume.countDown()
+    earlier.outcome shouldBe Right(start)
+    later.outcome shouldBe Right(start.plusSeconds(1))
+    f.stored shouldBe start.plusSeconds(1)
+  }
+
+  it should "publish no instant from a failed or uncertain checkpoint" in {
+    val f     = new Fixture
+    val clock = f.clock(exclusive = false)
+    clock.checkpoint() shouldBe start
+    f.time.set(start.plusSeconds(1))
+    f.loseCommitAcknowledgement.set(true)
+    intercept[JdbcAuthException](clock.checkpoint()).error shouldBe JdbcAuthError.StorageFailure
+    // The commit reached the server, so even an earlier wall clock now gets that floor.
+    f.time.set(start)
+    clock.checkpoint() shouldBe start.plusSeconds(1)
+    f.failAcquire.set(true)
+    intercept[JdbcAuthException](clock.checkpoint()).error shouldBe JdbcAuthError.StorageFailure
   }
 }

@@ -6,7 +6,7 @@ import avocet.dsl.html.*
 import java.io.PrintWriter
 import java.lang.reflect.{InvocationHandler, InvocationTargetException, Method, Proxy}
 import java.security.{MessageDigest, SecureRandom}
-import java.sql.{Connection, SQLException, SQLFeatureNotSupportedException, Timestamp}
+import java.sql.{Connection, PreparedStatement, SQLException, SQLFeatureNotSupportedException, Timestamp}
 import java.time.Instant
 import java.util.{Base64, Properties, UUID}
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit, TimeoutException}
@@ -139,8 +139,17 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     def toFuture[A](value: Deferred[A]): Future[A]       = value()
   }
 
-  private class Fixture(exclusive: Boolean = true, isolatedSchema: Boolean = false, hostExpiryNanos: Int = 0)
-      extends BrowserReplacementConformance.Fixture {
+  /**
+   * held selects a host that holds its resolution (JdbcHeldHostSessions) over
+   * the same table; refreshSeconds makes its accepted hook extend idle expiry.
+   */
+  private class Fixture(
+    exclusive: Boolean = true,
+    isolatedSchema: Boolean = false,
+    hostExpiryNanos: Int = 0,
+    held: Boolean = false,
+    refreshSeconds: Long = 0
+  ) extends BrowserReplacementConformance.Fixture {
     private val url =
       sys.env.getOrElse("SPOONBILL_JDBC_TEST_URL", cancel("Use the owned disposable PostgreSQL test database"))
     val clock = new AtomicReference(BrowserPersistenceConformance.start)
@@ -155,6 +164,14 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     val replacementCallbacks  = new AtomicInteger()
     val recordSql = new AtomicBoolean()
     val statements = new ConcurrentLinkedQueue[String]()
+    // Committed transactions that touched the durable clock, and a lost acknowledgment of the next one.
+    val clockCommits             = new AtomicInteger()
+    val loseClockAcknowledgement = new AtomicBoolean()
+    // Held host calls: lockResolution calls, accepted hooks, a pause before the next host lock.
+    val hostHolds    = new AtomicInteger()
+    val hostAccepted = new AtomicInteger()
+    val failAccepted = new AtomicBoolean()
+    val holdPause    = new AtomicReference(Option.empty[(CountDownLatch, CountDownLatch)])
     val source: DataSource = new DataSource {
       // sbt can reload the test classloader after DriverManager's discovery.
       // Use this fixture's explicit driver instead of that ambient registry.
@@ -173,12 +190,28 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         }
         openedConnections.incrementAndGet()
         Proxy.newProxyInstance(getClass.getClassLoader, Array(classOf[Connection]), new InvocationHandler {
+          // Whether the open transaction on this connection touched the durable clock.
+          private var clockTransaction = false
           def invoke(proxy: Object, method: Method, args: Array[Object]): Object = {
             val arguments = Option(args).getOrElse(Array.empty[Object])
-            if (recordSql.get() && method.getName == "prepareStatement" && arguments.nonEmpty)
-              statements.add(arguments(0).toString.replaceAll("\\s+", " ").trim)
-            try method.invoke(connection, arguments*)
-            catch { case error: InvocationTargetException => throw error.getCause }
+            if (method.getName == "prepareStatement" && arguments.nonEmpty) {
+              val text = arguments(0).toString
+              if (recordSql.get()) statements.add(text.replaceAll("\\s+", " ").trim)
+              if (text.contains("spoonbill_auth_clock")) clockTransaction = true
+            }
+            val result =
+              try method.invoke(connection, arguments*)
+              catch { case error: InvocationTargetException => throw error.getCause }
+            method.getName match {
+              case "commit" if clockTransaction =>
+                clockTransaction = false
+                clockCommits.incrementAndGet()
+                if (loseClockAcknowledgement.getAndSet(false))
+                  throw new SQLException("Synthetic lost clock commit acknowledgment")
+              case "rollback" => clockTransaction = false
+              case _          => ()
+            }
+            result
           }
         }).asInstanceOf[Connection]
       }
@@ -209,14 +242,15 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         hostResolutions.incrementAndGet()
         Using.resource(
           connection.prepareStatement(
-            "SELECT subject,version,expires_at,enabled FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE"
+            "SELECT subject,version,expires_at,enabled,idle_until FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE"
           )
         ) { query =>
           query.setString(1, realm); query.setObject(2, sessionId)
           Using.resource(query.executeQuery()) { rows =>
             if (
               !rows.next() || !rows
-                .getBoolean(4) || !time.isBefore(rows.getTimestamp(3).toInstant.plusNanos(hostExpiryNanos.toLong))
+                .getBoolean(4) || !time.isBefore(rows.getTimestamp(3).toInstant.plusNanos(hostExpiryNanos.toLong)) ||
+              Option(rows.getTimestamp(5)).exists(idle => !time.isBefore(idle.toInstant))
             ) None
             else
               Some(
@@ -241,6 +275,58 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           if (query.executeUpdate() != 1) throw new OperationProtocolException(OperationError.HostDenied)
         }
     }
+    /**
+     * The same host policy, holding its resolution: it locks and reads the row
+     * without deciding by time. Its cutoff is the earlier of absolute and idle
+     * expiry; its accepted hook optionally extends idle expiry from the
+     * decision instant on the row it locked.
+     */
+    private val heldHost = new JdbcHeldHostSessions[String] {
+      def resolve(connection: Connection, sessionId: UUID, time: Instant): Option[HostPrincipal[String]] =
+        host.resolve(connection, sessionId, time)
+      def acknowledge(connection: Connection, completionId: UUID, sessionId: UUID, time: Instant): Unit =
+        host.acknowledge(connection, completionId, sessionId, time)
+      def lockResolution(connection: Connection, sessionId: UUID): Option[JdbcHeldResolution[String]] = {
+        hostHolds.incrementAndGet()
+        holdPause.getAndSet(None).foreach { case (entered, resume) =>
+          entered.countDown(); resume.await(15, TimeUnit.SECONDS)
+        }
+        Using.resource(
+          connection.prepareStatement(
+            "SELECT subject,version,expires_at,enabled,idle_until FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE"
+          )
+        ) { query =>
+          query.setString(1, realm); query.setObject(2, sessionId)
+          Using.resource(query.executeQuery()) { rows =>
+            if (!rows.next() || !rows.getBoolean(4)) None
+            else {
+              val absolute = rows.getTimestamp(3).toInstant.plusNanos(hostExpiryNanos.toLong)
+              val idle     = Option(rows.getTimestamp(5)).map(_.toInstant)
+              val stamp    = HostPrincipal(rows.getString(1), rows.getString(1), rows.getLong(2), rows.getLong(2), absolute)
+              Some(new JdbcHeldResolution[String] {
+                val principal: HostPrincipal[String] = stamp
+                val validUntilExclusive: Instant     = idle.filter(_.isBefore(absolute)).getOrElse(absolute)
+                override def onAcceptedAt(now: Instant): Unit = {
+                  hostAccepted.incrementAndGet()
+                  if (failAccepted.getAndSet(false)) throw new IllegalStateException("Synthetic accepted-hook failure")
+                  if (refreshSeconds > 0 && idle.nonEmpty)
+                    Using.resource(
+                      connection.prepareStatement(
+                        "UPDATE spoonbill_auth_test_host SET idle_until=? WHERE realm=? AND id=? AND idle_until<?"
+                      )
+                    ) { update =>
+                      val next = Timestamp.from(now.plusSeconds(refreshSeconds))
+                      update.setTimestamp(1, next); update.setString(2, realm); update.setObject(3, sessionId)
+                      update.setTimestamp(4, next); update.executeUpdate(); ()
+                    }
+                }
+              })
+            }
+          }
+        }
+      }
+    }
+    private def selectedHost: JdbcHostSessions[String] = if (held) heldHost else host
     private val outer = new JdbcTransactionExecutor[Future](source, ExecutionContext.global)
     private val observed = new TransactionExecutor[Future, Direct, Connection] {
       val program     = TransactionProgram.direct
@@ -261,7 +347,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         realm,
         "session",
         () => clock.get(),
-        host,
+        selectedHost,
         vault,
         ownership = if (exclusive) BrowserOwnership.ExclusiveScope else BrowserOwnership.SharedViews
       )
@@ -269,15 +355,16 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       runner: TransactionExecutor[Future, Direct, Connection],
       limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
       newId: () => UUID = () => UUID.randomUUID(),
-      concurrent: Option[JdbcConcurrentChecks] = None
+      concurrent: Option[JdbcConcurrentChecks] = None,
+      time: () => Instant = () => clock.get()
     ): JdbcBrowserPersistence[Future, String] =
       new JdbcBrowserPersistence(
         source,
         ExecutionContext.global,
         realm,
         "session",
-        () => clock.get(),
-        host,
+        time,
+        selectedHost,
         vault,
         ownership = if (exclusive) BrowserOwnership.ExclusiveScope else BrowserOwnership.SharedViews,
         limits = limits,
@@ -295,12 +382,14 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         realm,
         "session",
         () => clock.get(),
-        host,
+        selectedHost,
         vault,
         ownership = ownership,
         existingRunner = Some(observed),
         concurrentChecks = Some(JdbcConcurrentChecks(source, cap))
       )
+    /** Another node over the same realm with its own wall clock. */
+    def withClock(time: () => Instant): JdbcBrowserPersistence[Future, String] = withRunner(observed, time = time)
     def withViewLimit(value: Int): JdbcBrowserPersistence[Future, String] =
       withRunner(observed, BrowserPersistenceLimits(retainedViews = value))
     def withLimits(limits: BrowserPersistenceLimits, newId: () => UUID = () => UUID.randomUUID()): JdbcBrowserPersistence[Future, String] =
@@ -314,6 +403,10 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         realm TEXT NOT NULL,id UUID NOT NULL,completion UUID NOT NULL,subject TEXT NOT NULL,
         version BIGINT NOT NULL,expires_at TIMESTAMP WITH TIME ZONE NOT NULL,enabled BOOLEAN NOT NULL,
         acknowledged BOOLEAN NOT NULL DEFAULT FALSE,PRIMARY KEY(realm,id))""")
+      )
+      // Idle expiry for the held host's cutoff; NULL means none.
+      Using.resource(connection.createStatement())(
+        _.executeUpdate("ALTER TABLE spoonbill_auth_test_host ADD COLUMN IF NOT EXISTS idle_until TIMESTAMP WITH TIME ZONE")
       )
     }
     def prepare(
@@ -456,6 +549,80 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       Using.resource(connection.prepareStatement("UPDATE spoonbill_auth_test_host SET enabled=FALSE WHERE realm=?")) {
         query =>
           query.setString(1, realm); query.executeUpdate(); ()
+      }
+    }
+    def setIdle(session: UUID, until: Instant): Unit = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement("UPDATE spoonbill_auth_test_host SET idle_until=? WHERE realm=? AND id=?")) {
+        query =>
+          query.setTimestamp(1, Timestamp.from(until)); query.setString(2, realm); query.setObject(3, session)
+          query.executeUpdate() shouldBe 1
+      }
+    }
+    def idleOf(session: UUID): Instant = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement("SELECT idle_until FROM spoonbill_auth_test_host WHERE realm=? AND id=?")) {
+        query =>
+          query.setString(1, realm); query.setObject(2, session)
+          Using.resource(query.executeQuery()) { rows => rows.next() shouldBe true; rows.getTimestamp(1).toInstant }
+      }
+    }
+    /** The realm's durable clock floor. */
+    def clockFloor: Instant = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement(
+        "SELECT epoch_second,nano FROM spoonbill_auth_clock WHERE realm=? AND namespace='session'"
+      )) { query =>
+        query.setString(1, realm)
+        Using.resource(query.executeQuery()) { rows =>
+          rows.next() shouldBe true; Instant.ofEpochSecond(rows.getLong(1), rows.getInt(2).toLong)
+        }
+      }
+    }
+    /** Row locks taken in a separate open transaction, until release. */
+    final class HeldLock(sql: String, bind: PreparedStatement => Unit) {
+      private val connection = source.getConnection
+      connection.setAutoCommit(false)
+      Using.resource(connection.prepareStatement(sql)) { query =>
+        bind(query); Using.resource(query.executeQuery())(_.next()) shouldBe true
+      }
+      def update(text: String)(set: PreparedStatement => Unit): Unit =
+        Using.resource(connection.prepareStatement(text)) { query => set(query); query.executeUpdate() shouldBe 1 }
+      def release(commit: Boolean = false): Unit =
+        try { if (commit) connection.commit() else connection.rollback() } finally connection.close()
+    }
+    /** Wait until another backend waits for a lock in a statement containing `fragment`. */
+    def awaitLockWait(fragment: String): Unit = Using.resource(source.getConnection) { observer =>
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+      def waiting: Boolean = Using.resource(observer.prepareStatement(
+        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND pid<>pg_backend_pid() AND query LIKE ?)"
+      )) { query =>
+        query.setString(1, s"%$fragment%")
+        Using.resource(query.executeQuery()) { rows => rows.next() && rows.getBoolean(1) }
+      }
+      while (!waiting && System.nanoTime() < deadline) Thread.sleep(5)
+      withClue(s"no backend waits for a lock in $fragment: ")(waiting shouldBe true)
+    }
+    /**
+     * A runner that holds its next transaction open after its body, before it
+     * settles, once armed: skip transactions pass first. The transaction keeps
+     * its realm lock and staged writes while paused.
+     */
+    final class PausingRunner {
+      private val armed   = new AtomicReference(Option.empty[(Int, CountDownLatch, CountDownLatch)])
+      def arm(skip: Int = 0): (CountDownLatch, CountDownLatch) = {
+        val latches = (new CountDownLatch(1), new CountDownLatch(1))
+        armed.set(Some((skip, latches._1, latches._2))); latches
+      }
+      val runner: TransactionExecutor[Future, Direct, Connection] = new TransactionExecutor[Future, Direct, Connection] {
+        val program     = TransactionProgram.direct
+        val scopePolicy = TransactionScopePolicy.ThreadConfined
+        def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact { connection =>
+          val value = body(connection)
+          armed.getAndUpdate(_.map { case (skip, entered, resume) => (skip - 1, entered, resume) }) match {
+            case Some((0, entered, resume)) =>
+              armed.set(None); entered.countDown(); resume.await(15, TimeUnit.SECONDS)
+            case _ => ()
+          }
+          value
+        }
       }
     }
     def close(): Unit = {
@@ -3164,5 +3331,231 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.openedConnections.get() should be > before
     } finally await(provider.close())
     provider.renewingInBackground shouldBe false
+  }
+
+  /** What one operation adds: held host locks, host resolutions, clock commits and provider transactions. */
+  private def heldCounts(db: Fixture)(operation: => Unit): (Int, Int, Int, Int) = {
+    val before = (db.hostHolds.get(), db.hostResolutions.get(), db.clockCommits.get(), db.domainTransactions.get())
+    operation
+    (
+      db.hostHolds.get() - before._1,
+      db.hostResolutions.get() - before._2,
+      db.clockCommits.get() - before._3,
+      db.domainTransactions.get() - before._4
+    )
+  }
+  private def hostRow(db: Fixture, session: UUID): PreparedStatement => Unit = query => {
+    query.setString(1, db.realm); query.setObject(2, session)
+  }
+
+  "Held shared-view checks" should "resolve the host once and commit one clock checkpoint per authenticated check" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      heldCounts(db)(accepted(await(db.persistence.authorize(view)))) shouldBe (1, 0, 1, 1)
+      heldCounts(db)(accepted(await(db.persistence.admitOutputIf(view, "frame")(_ => true)))) shouldBe (1, 0, 1, 1)
+      heldCounts(db)(accepted(await(db.persistence.transact(view)(_ => ())))) shouldBe (1, 0, 1, 1)
+      db.hostAccepted.get() shouldBe 3
+    }
+
+  it should "keep two resolutions and the ordinary clock for a legacy host, an exclusive scope and an anonymous view" in {
+    Using.resource(new Fixture(exclusive = false)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      heldCounts(db)(accepted(await(db.persistence.authorize(view)))) shouldBe (0, 2, 5, 1)
+    }
+    Using.resource(new Fixture(held = true)) { db =>
+      val (view, _)                          = signedIn(db, db.persistence)
+      val (holds, resolutions, _, checks) = heldCounts(db)(accepted(await(db.persistence.authorize(view))))
+      (holds, resolutions, checks) shouldBe (0, 2, 1)
+    }
+    Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+      val anonymous                    = open(db.persistence)
+      val (holds, resolutions, _, _) = heldCounts(db)(accepted(await(db.persistence.authorize(anonymous))))
+      (holds, resolutions) shouldBe (0, 0)
+    }
+  }
+
+  it should "judge session expiry, the host cutoff and the idle view cutoff at the checkpoint, with equality failing" in {
+    val start = BrowserPersistenceConformance.start
+    Using.resource(new Fixture(exclusive = false, held = true, hostExpiryNanos = 1)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      // The host's absolute expiry is one nanosecond after the framework session expiry.
+      val expiry = view.identity.principal.get.expiresAt.minusNanos(1)
+      db.clock.set(expiry.minusNanos(1)); accepted(await(db.persistence.authorize(view)))
+      db.clock.set(expiry); await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+      var ran = false
+      await(db.persistence.transact(view)(_ => ran = true)).isLeft shouldBe true
+      ran shouldBe false
+    }
+    Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      val idle      = start.plusSeconds(100)
+      db.setIdle(view.identity.sessionId.get, idle)
+      db.clock.set(idle.minusNanos(1)); accepted(await(db.persistence.authorize(view)))
+      db.clock.set(idle); await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Denied)
+    }
+    Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+      val provider = db.withLimits(BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleViewSeconds = 60)))
+      try {
+        val (view, _) = signedIn(db, provider)
+        // Timestamp columns keep microseconds, so the renewal instant is whole microseconds.
+        val renewed = start.plusSeconds(60).minusNanos(1000)
+        db.clock.set(renewed); accepted(await(provider.authorize(view)))
+        db.clock.set(renewed.plusSeconds(60)); await(provider.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+      } finally await(provider.close())
+    }
+  }
+
+  it should "extend idle expiry only from an accepted check, so a due refresh cannot revive an expired session" in Using
+    .resource(new Fixture(exclusive = false, held = true, refreshSeconds = 30)) { db =>
+      val start     = BrowserPersistenceConformance.start
+      val (view, _) = signedIn(db, db.persistence)
+      val session   = view.identity.sessionId.get
+      db.setIdle(session, start.plusSeconds(10))
+      db.clock.set(start.plusSeconds(5)); accepted(await(db.persistence.authorize(view)))
+      db.idleOf(session) shouldBe start.plusSeconds(35)
+      db.clock.set(start.plusSeconds(35)); await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Denied)
+      db.idleOf(session) shouldBe start.plusSeconds(35)
+      db.hostAccepted.get() shouldBe 1
+    }
+
+  it should "sample the decision instant after waiting for the host row, the slot row and the clock row" in {
+    for (table <- Vector("spoonbill_auth_test_host", "spoonbill_browser_slot", "spoonbill_auth_clock"))
+      withClue(s"waiting for $table: ") {
+        Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+          val (view, _) = signedIn(db, db.persistence)
+          val lock = table match {
+            case "spoonbill_auth_test_host" =>
+              new db.HeldLock(
+                "SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE",
+                hostRow(db, view.identity.sessionId.get)
+              )
+            case "spoonbill_browser_slot" =>
+              new db.HeldLock(
+                "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace='session' FOR UPDATE",
+                _.setString(1, db.realm)
+              )
+            case _ =>
+              new db.HeldLock(
+                "SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE",
+                _.setString(1, db.realm)
+              )
+          }
+          val checked = db.persistence.authorize(view)
+          db.awaitLockWait(table)
+          // The session deadline passes while the check waits.
+          db.clock.set(view.identity.principal.get.expiresAt)
+          lock.release()
+          await(checked) shouldBe Left(BrowserFailure.Expired)
+        }
+      }
+  }
+
+  it should "observe a later checkpoint that a peer commits while the check waits, also through the capacity path" in {
+    for (peer <- Vector("clock", "capacity")) withClue(s"peer $peer: ") {
+      Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+        val (view, _)         = signedIn(db, db.persistence)
+        val ahead             = view.identity.principal.get.expiresAt.plusSeconds(1)
+        val (entered, resume) = (new CountDownLatch(1), new CountDownLatch(1))
+        db.holdPause.set(Some(entered -> resume))
+        val checked = db.persistence.authorize(view)
+        entered.await(10, TimeUnit.SECONDS) shouldBe true
+        // A node whose wall clock is past the deadline commits a checkpoint meanwhile.
+        val node = Option.when(peer == "capacity")(db.withClock(() => ahead))
+        val usage = node match {
+          case Some(provider) => Some(provider.capacity)
+          case None           => new JdbcBrowserClock(db.source, db.realm, "session", () => ahead).now(); None
+        }
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (db.clockFloor.isBefore(ahead) && System.nanoTime() < deadline) Thread.sleep(5)
+        db.clockFloor shouldBe ahead
+        resume.countDown()
+        await(checked) shouldBe Left(BrowserFailure.Expired)
+        usage.foreach(await(_))
+        node.foreach(provider => await(provider.close()))
+      }
+    }
+  }
+
+  it should "keep every committed decision instant after a rollback, a backward clock and a restart" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val start         = BrowserPersistenceConformance.start
+    val (view, token) = signedIn(db, db.persistence)
+    val expiry        = view.identity.principal.get.expiresAt
+    // An accepted check whose transaction then fails keeps its committed checkpoint.
+    db.clock.set(start.plusSeconds(1)); db.failAccepted.set(true)
+    await(db.persistence.authorize(view)).isLeft shouldBe true
+    db.clockFloor shouldBe start.plusSeconds(1)
+    // A denial at the deadline holds after the wall clock moves back, and after a restart.
+    db.clock.set(expiry)
+    await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+    db.clockFloor shouldBe expiry
+    db.clock.set(start)
+    await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+    val restarted = db.fresh()
+    try await(restarted.capture(binding, Some(token.value), activate = false)) shouldBe Left(BrowserFailure.Expired)
+    finally await(restarted.close())
+  }
+
+  it should "fail closed on an uncertain clock commit, before the accepted hook and the protected body" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _)      = signedIn(db, db.persistence)
+    val acceptedBefore = db.hostAccepted.get()
+    db.loseClockAcknowledgement.set(true)
+    var ran = false
+    await(db.persistence.transact(view)(_ => ran = true)).isLeft shouldBe true
+    ran shouldBe false
+    db.hostAccepted.get() shouldBe acceptedBefore
+    accepted(await(db.persistence.authorize(view)))
+  }
+
+  it should "deny a waiting check once a revocation, logout, takeover or replacement commits" in {
+    for (change <- Vector("revocation", "logout", "takeover", "replacement")) withClue(s"$change: ") {
+      Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+        val (view, token) = signedIn(db, db.persistence)
+        val session       = view.identity.sessionId.get
+        if (change == "revocation") {
+          // The host revokes the session while the check waits for the host row.
+          val lock    = new db.HeldLock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE", hostRow(db, session))
+          val checked = db.persistence.authorize(view)
+          db.awaitLockWait("spoonbill_auth_test_host")
+          lock.update("UPDATE spoonbill_auth_test_host SET enabled=FALSE WHERE realm=? AND id=?")(hostRow(db, session))
+          lock.release(commit = true)
+          await(checked) shouldBe Left(BrowserFailure.Denied)
+        } else {
+          // The writer holds the realm lock with its changes staged while the check waits for that lock.
+          val pausing = new db.PausingRunner
+          val writer  = db.withRunner(pausing.runner)
+          try {
+            val (entered, resume, written) = change match {
+              case "logout" =>
+                val (entered, resume) = pausing.arm()
+                (entered, resume, writer.logout(binding, Some(token.value)).map(_.isRight))
+              case "takeover" =>
+                val identity          = accepted(await(writer.capture(binding, Some(token.value), activate = false)))
+                // A shared claim reads its admission first and writes in its second transaction.
+                val (entered, resume) = pausing.arm(skip = 1)
+                val claimed           = writer.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)
+                (entered, resume, claimed.map(_.isRight))
+              case _ =>
+                val ceremony          = accepted(await(db.persistence.beginReplacement(view, "replace-factor")))
+                val (entered, resume) = (new CountDownLatch(1), new CountDownLatch(1))
+                val replaced = db.replaceWith(
+                  db.persistence, ceremony, replacementInvocation(view), session, version = 2L,
+                  afterHost = () => { entered.countDown(); resume.await(15, TimeUnit.SECONDS); () }
+                )
+                (entered, resume, replaced.map(_.isRight))
+            }
+            entered.await(10, TimeUnit.SECONDS) shouldBe true
+            val checked = db.persistence.authorize(view)
+            db.awaitLockWait("pg_advisory_xact_lock")
+            resume.countDown()
+            await(written) shouldBe true
+            await(checked) shouldBe Left(BrowserFailure.Denied)
+          } finally await(writer.close())
+        }
+      }
+    }
   }
 }

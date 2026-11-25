@@ -470,6 +470,27 @@ directly: another wrapper around it hides the certification, and the ordinary
 path then sets the level as before. A caller-supplied `existingRunner` keeps its
 own transaction setup.
 
+With `BrowserOwnership.SharedViews`, the check of an authenticated view
+normally resolves the host twice and commits a clock checkpoint for each of its
+five time samples. A host that implements `JdbcHeldHostSessions` lets that
+check resolve the host once and decide at one checkpoint. The provider calls
+`lockResolution(connection, sessionId)` inside its transaction, after the
+browser token row and before the slot and view locks. The host acquires its
+locks there and returns the principal and an exclusive cutoff,
+`validUntilExclusive`, without deciding by time, or `None` for a stable denial.
+The provider then takes one checkpoint in its own transaction on the clock
+source: it locks the scope's clock row, samples the wall clock after the lock,
+and commits the latest of the stored floor, its own floor and that sample. That
+instant decides session expiry, the principal's expiry, the host cutoff and the
+idle view lease, each failing at equality, and both `last_seen` renewals use
+it. The host's `onAcceptedAt(now)` runs last, in the same transaction, after
+every check passed; it may stage a conditional idle refresh on the rows it
+locked, and the provider never replays a check once it has started. Keep the
+stable absolute expiry in `HostPrincipal.expiresAt`, since it is part of the
+captured authority. Activation, replacement, anonymous and pending flows,
+`ExclusiveScope` providers and `tx.now` keep `resolve` and the ordinary clock,
+and a host without the capability is resolved twice as before.
+
 ## Recovery and release
 
 Keep the original ceremony ID when preparation reports `CommitUnknown` or an

@@ -24,6 +24,13 @@ private[jdbc] object JdbcClockMachine {
   def externallyAdvanced(target: Instant, persisted: Instant): Boolean =
     persisted.isAfter(target)
 
+  /**
+   * A shared writer's checkpoint, decided under the clock row lock: never below
+   * the stored floor, this process's floor or the wall sample taken after the lock.
+   */
+  def sharedCheckpoint(stored: Instant, process: Instant, wall: Instant): Instant =
+    observe(observe(stored, process), wall)
+
   /** Signed subtraction preserves the interpreter's monotonic-counter wrap rule. */
   def failedWhileWaiting(failedAt: Option[Long], waiting: Long): Boolean =
     failedAt.exists(time => time - waiting > 0)
