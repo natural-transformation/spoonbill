@@ -41,6 +41,44 @@ bytes per notification across the three JVMs. Main ranged from 1,071.21 to
 1,072.33. The reported 91.22% is the ratio of their medians. The cause of
 the lower allocation in two candidate trials remains unverified.
 
+## Waking a busy lane in 11.0.0
+
+A writer enqueues its work and calls `wake()`. When a worker already owns the
+lane, the candidate skips the queue inspection and the attempt to claim it.
+An idle lane still requires a successful compare-and-set to schedule a worker,
+and the worker still checks for arrivals when it gives up ownership.
+
+In the six-round screen against the 11.0.0 release, the four-writer workload
+delivered 11.5% more notifications per second and median delivery p99 fell
+from 0.662 to 0.508 ms. In an independent three-pair confirmation, throughput
+rose 12.9% and p99 fell from 0.637 to 0.518 ms. All four workloads met the
+throughput, p99 and allocation budgets. The eight-extension workload's median
+p99 rose from 22.7 to 23.1 ms. Both runs were diagnostic, with startup loads
+of 5.03 and 4.48. The fixture checks callback order, delivery counts, backlog
+drain and teardown in every JVM. [Measurements and source identities](evidence/2026-11-25-serial-lane-wake.json)
+
+## Recording the last state received by each handler
+
+The interpreter publishes the immutable state notification that the handler
+entered. The pure extension machine selects this token and resolves the last
+state during teardown. An entered state whose value is null remains distinct
+from a handler that entered no state callback. Message callbacks preserve
+the previous state.
+
+The three-arm diagnostic compared released 11.0.0, the busy-lane change above,
+and that change plus notification reuse. Relative to the busy-lane change,
+median allocation fell from 1,065.52 to 1,017.12 B/notification for three
+handlers on one view, and from 2,377.43 to 2,249.68 for eight handlers.
+All three pairs in each workload showed lower allocation. The combined
+candidate met all four workloads’ budgets against both comparison builds.
+
+Evidence verification briefly overlapped one independent-view trial.
+A separate nine-JVM comparison retained all three arms and also met the
+budgets. Relative to the busy-lane change, independent-view p99 fell from
+2.542 to 2.489 ms in the original run and rose from 2.382 to 2.524 ms
+in the separate check. The allocation saving repeated in both.
+[All trials and the separate control](evidence/2026-11-25-extension-received-state.json)
+
 ## Workloads and controls
 
 Each fresh JVM uses G1, a 256 MiB heap and `ActiveProcessorCount=8`. Five-second
@@ -119,6 +157,13 @@ it (`locked` by default). This collects 36 rows in three rotating orders; analyz
 with `3 baseline,cas,locked` (or the chosen third label). Workloads and controls
 are unchanged. Report each workload and candidate separately.
 
+## Experiments excluded from PR #47
+
+The follow-up compared handoff changes, direct admission tokens and Future
+completion shortcuts. The [failed-experiments note](../../docs/failed-extension-performance-experiments-2026-11-25.md)
+records the failed checks, the allocation and latency tradeoffs, and the
+results of the independent fallback and backend tests.
+
 ## Historical diagnostics and evidence
 
 `StateCellRetryBenchmark` supports the CAS implementation through `18548af3`,
@@ -140,6 +185,8 @@ Retained evidence files:
   delivery p99 misses the guide; aggregate acceptance remains unresolved.
 - [Delivery progress compared with its parent](evidence/2026-11-24-extension-delivery-progress.json).
   All four workloads met the parent-relative budgets in a diagnostic run.
+- [Waking a busy lane](evidence/2026-11-25-serial-lane-wake.json). Both the screen and the four-workload confirmation use the 11.0.0 release.
+- [Last state received by each handler](evidence/2026-11-25-extension-received-state.json). The parent and combined candidate are compared separately with v11.0.0.
 
 Intermediate exploratory screens and variant patches from earlier pilot iterations
 were pruned before merge.

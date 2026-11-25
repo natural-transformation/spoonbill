@@ -57,7 +57,7 @@ private[internal] final class SerialLane[F[_]: Effect, A <: AnyRef](
 
   /** Starts the loop on the execution context, unless it runs already. */
   def wake(): Unit =
-    if (!queue.isEmpty && state.compareAndSet(Idle, Scheduled)) schedule()
+    if (state.get() == Idle && !queue.isEmpty && state.compareAndSet(Idle, Scheduled)) schedule()
 
   def offer(item: A): Unit = {
     enqueue(item)

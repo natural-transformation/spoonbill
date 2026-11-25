@@ -124,13 +124,19 @@ private[spoonbill] object ExtensionMachine {
     case _                         => false
   }
 
-  /**
-   * Only an entered call updates this independently published per-extension
-   * state.
-   */
-  def received[S, M](before: Option[S], notification: Notification[S, M]): Option[S] = notification match {
+  object NeverReceived
+  type Received[S, M] = Notification.State[S, M] | NeverReceived.type
+
+  /** Each handler keeps the state notification whose callback it last entered. */
+  def received[S, M](before: Received[S, M], notification: Notification[S, M]): Received[S, M] = notification match {
+    case state @ Notification.State(_) => state
+    case Notification.Message(_)       => before
+  }
+
+  /** Only a handler that entered no state callback falls back to the admitted state. */
+  def lastState[S, M](received: Received[S, M], admitted: Option[S]): Option[S] = received match {
     case Notification.State(value) => Some(value)
-    case _                         => before
+    case NeverReceived             => admitted
   }
 
   def reportOf(name: String, callback: Callback, failure: Failure, stopped: Boolean): Option[String] =
