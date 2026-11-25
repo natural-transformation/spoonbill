@@ -157,6 +157,13 @@ it (`locked` by default). This collects 36 rows in three rotating orders; analyz
 with `3 baseline,cas,locked` (or the chosen third label). Workloads and controls
 are unchanged. Report each workload and candidate separately.
 
+## Experiments excluded from PR #47
+
+The follow-up compared handoff changes, direct admission tokens and Future
+completion shortcuts. The [failed-experiments note](../../docs/failed-extension-performance-experiments-2026-11-25.md)
+records the failed checks, the allocation and latency tradeoffs, and the
+results of the independent fallback and backend tests.
+
 ## Historical diagnostics and evidence
 
 `StateCellRetryBenchmark` supports the CAS implementation through `18548af3`,
