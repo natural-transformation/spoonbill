@@ -1,0 +1,1408 @@
+{
+  "schema": "spoonbill-v11-serial-lane-wake-v1",
+  "interpretation": "Two separately classified diagnostic collections on v11.0.0. The three-arm screen selected wake under the declared priority. Token qualified for the allocation criterion and stayed screen-only. Confirmation compares wake and release on all four workloads. Keep collection-specific rows separate; ratios are candidate/release. No release qualification or causal hardware measurement.",
+  "release": {
+    "tag": "v11.0.0",
+    "revision": "61395265023bcfe2b4b5e374617d7c679531dcc5",
+    "numberOfTrackedSourceAndBuildInputsCheckedAgainstTag": 792
+  },
+  "candidatePatches": {
+    "token": {
+      "changedFiles": {
+        "modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala": {
+          "releaseSha256": "62efe037bfb0c0a43debe09f3cedb24b92e7e121bae253899487823ca5458c11",
+          "candidateSha256": "eff00abefd0afc82ffb4bc5f8d910f620b3b38e6eb17aa445f13f987f84fb98e"
+        },
+        "modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala": {
+          "releaseSha256": "0902b4026bf42dce38e19ec3504611060c6fd1c0c9c0b8fe7b849e9d3d18a0f0",
+          "candidateSha256": "34f2cc2667f11c284bec51da3f555600b2fb5f802af366aa8d9e424dfa4686b9"
+        },
+        "modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala": {
+          "releaseSha256": "4933902966356eea5112eb84a5ab03b38815bf5d3f06c0498b06c316acd695b2",
+          "candidateSha256": "41acc6ef53fd00ece83c27109274dd1d84b73e7419f484d98a44681f0670cdd6"
+        }
+      },
+      "patchSha256": "d051bba2f5698434cbdfe5bab1f75f2d02b513bac8bda9182c13e2c7360ade82",
+      "unifiedDiff": "--- a/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala\n+++ b/modules/spoonbill/src/main/scala/korolev/internal/ExtensionMachine.scala\n@@ -63,8 +63,9 @@\n   enum CheckAction        { case Skip, Run, Pass         }\n   enum NotificationAction { case Record, Deliver, Ignore }\n \n-  /** The lane owns progress; unrelated producer writes never change it. */\n-  type Progress[S, M] = Option[Step.Check[S, M]]\n+  /** The lane retains the admitted check itself until its final call enters. */\n+  object NoProgress\n+  type Progress[S, M] = Step.Check[S, M] | NoProgress.type\n \n   def initial[S, M](guarded: Boolean): State[S, M] =\n     State(guarded, Phase.Recording(None, Vector.empty), None, Some(Vector.empty), false)\n@@ -106,15 +107,15 @@\n   }\n \n   def passed[S, M](state: State[S, M], check: Step.Check[S, M]): Progress[S, M] = state.phase match {\n-    case Phase.Delivering(targets) if targets > 0 => Some(check)\n-    case _                                        => None\n+    case Phase.Delivering(targets) if targets > 0 => check\n+    case _                                        => NoProgress\n   }\n \n   def mayCall[S, M](state: State[S, M], progress: Progress[S, M], call: Step.Call[S, M]): Boolean =\n     state.phase match {\n       case Phase.Delivering(targets) =>\n         call.slot >= 0 && call.slot < targets && state.slots.exists(_.size > call.slot) &&\n-          progress.exists(_ eq call.check)\n+          (call.check eq progress)\n       case _ => false\n     }\n \n--- a/modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala\n+++ b/modules/spoonbill/src/main/scala/korolev/internal/ExtensionRuntime.scala\n@@ -57,6 +57,7 @@\n     Command,\n     Event,\n     Failure,\n+    NoProgress,\n     Notification,\n     NotificationAction,\n     Progress,\n@@ -76,7 +77,7 @@\n   private val lane           = new SerialLane[F, Step[S, M]](handle, failed, unscheduled)\n   // The lane writes progress on every delivery. Give it its own cell so these writes\n   // do not update the runtime object that concurrent writers read during admission.\n-  private val progress = new AtomicReference[Progress[S, M]](None)\n+  private val progress = new AtomicReference[Progress[S, M]](NoProgress)\n \n   private def stopped: Boolean = ExtensionMachine.stopped(held.machine)\n \n@@ -123,7 +124,7 @@\n           woken = true\n           lane.wake()\n         }\n-      case Command.Close        => progress.set(None); lane.close()\n+      case Command.Close        => progress.set(NoProgress); lane.close()\n       case Command.Report(text) => error.foreach(reportError(text, _))\n       case _                    => () // register, handle and destroyAll interpret the effect commands.\n     }\n@@ -223,7 +224,7 @@\n     progress.set(ExtensionMachine.passed(held.machine, check))\n     // Close can race the publication above. Neither order retains a delivery\n     // after close, including a guarded check completing after the teardown bound.\n-    if (stopped) progress.set(None)\n+    if (stopped) progress.set(NoProgress)\n   }\n \n   /**\n@@ -234,7 +235,7 @@\n     val current = held\n     if (!ExtensionMachine.mayCall(current.machine, progress.get(), call)) null\n     else {\n-      if (ExtensionMachine.endsDelivery(current.machine, call)) progress.set(None)\n+      if (ExtensionMachine.endsDelivery(current.machine, call)) progress.set(NoProgress)\n       val entry = current.handlers(call.slot)\n       call.check.notification match {\n         case Notification.State(_) =>\n@@ -279,7 +280,7 @@\n    */\n   private def failed(step: Step[S, M], error: Throwable): Unit = {\n     step match {\n-      case call: Step.Call[S, M] if ExtensionMachine.endsDelivery(held.machine, call) => progress.set(None)\n+      case call: Step.Call[S, M] if ExtensionMachine.endsDelivery(held.machine, call) => progress.set(NoProgress)\n       case _                                                                          => ()\n     }\n     feed(Event.Failed(step, classify(error)), Some(error))\n@@ -399,7 +400,7 @@\n   /**\n    * Whether admission still needs a delivery identity; idle lanes retain none.\n    */\n-  private[spoonbill] def retainedDelivery: Boolean = progress.get().nonEmpty\n+  private[spoonbill] def retainedDelivery: Boolean = progress.get() ne NoProgress\n \n   /**\n    * What is kept before delivery starts: at most one state, and every message.\n--- a/modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala\n+++ b/modules/spoonbill/src/test/scala/korolev/internal/ExtensionMachineSpec.scala\n@@ -90,8 +90,10 @@\n     val second          = items(2).asInstanceOf[Step.Call[Int, String]]\n     checkAction(active) shouldBe CheckAction.Run\n     checkAction(delivering()._1) shouldBe CheckAction.Pass\n-    mayCall(active, None, first) shouldBe false\n+    mayCall(active, NoProgress, first) shouldBe false\n+    passed(registered(), check) shouldBe NoProgress\n     val admitted = passed(active, check)\n+    admitted should be theSameInstanceAs check\n     mayCall(active, admitted, first) shouldBe true\n     mayCall(active, admitted, second) shouldBe true\n     endsDelivery(active, first) shouldBe false\n@@ -112,7 +114,7 @@\n     step(taken._1, Event.Register(\"late\"))._2 shouldBe Vector(Command.Reject(Some(7)))\n     endsDelivery(taken._1, second) shouldBe false\n     val noTargets = step(initial[Int, String](false), Event.Begin)._1\n-    passed(noTargets, check) shouldBe empty\n+    passed(noTargets, check) shouldBe NoProgress\n   }\n \n   it should \"keep failures identifiable after halt and take and suppress only expected reports\" in {\n@@ -130,9 +132,9 @@\n       step(state, Event.Failed(check, Failure.Denied))._2 shouldBe Vector(Command.Close)\n     }\n     for (state <- Vector(halted, taken)) {\n-      passed(state, check) shouldBe empty\n+      passed(state, check) shouldBe NoProgress\n       checkAction(state) shouldBe CheckAction.Skip\n-      mayCall(state, Some(check), call) shouldBe false\n+      mayCall(state, check, call) shouldBe false\n       step(state, Event.Written(9))._2 shouldBe empty\n       step(state, Event.Published(\"late\"))._2 shouldBe empty\n       step(state, Event.Failed(call, Failure.Denied))._2 shouldBe empty\n@@ -155,7 +157,7 @@\n       commands should contain(Command.Close)\n       checkAction(closed) shouldBe CheckAction.Skip\n       offered.tail.foreach { item =>\n-        mayCall(closed, Some(check), item.asInstanceOf[Step.Call[Int, String]]) shouldBe false\n+        mayCall(closed, check, item.asInstanceOf[Step.Call[Int, String]]) shouldBe false\n       }\n       step(closed, Event.Written(8))._2 shouldBe empty\n     }\n"
+    },
+    "wake": {
+      "changedFiles": {
+        "modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala": {
+          "releaseSha256": "a0b3b8937efa9673dae57b3458061fb3d0e59c713e0c2764cd78b09c875fd83f",
+          "candidateSha256": "72fc67025a6318421fa0188048da7bd811bdf923ebe36394a9364f155af8c6d5"
+        }
+      },
+      "patchSha256": "9e542bccb3adf6099b13808d2abc4ff5b3bf897b3034884b67673bdb685f7289",
+      "unifiedDiff": "--- a/modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala\n+++ b/modules/spoonbill/src/main/scala/korolev/internal/SerialLane.scala\n@@ -57,7 +57,7 @@\n \n   /** Starts the loop on the execution context, unless it runs already. */\n   def wake(): Unit =\n-    if (!queue.isEmpty && state.compareAndSet(Idle, Scheduled)) schedule()\n+    if (state.get() == Idle && !queue.isEmpty && state.compareAndSet(Idle, Scheduled)) schedule()\n \n   def offer(item: A): Unit = {\n     enqueue(item)\n"
+    }
+  },
+  "method": {
+    "criteria": [
+      "Select at most one candidate for a separate confirmation. Both must preserve the 95% throughput floor and 110% p99/allocation ceilings against the release. Prefer the wake candidate for contention if it improves median throughput by at least 2% or median p99 by at least 5%, with that metric improving in at least four of six rounds. Otherwise select the token candidate for allocation if median bytes per notification falls by at least 12 bytes with lower allocation in at least four of six rounds. If neither qualifies, record both results and stop this screen. Do not combine the two changes.",
+      "Confirm on the four canonical workloads using three alternating release/candidate pairs per workload in fresh JVMs. Keep the focused sample separate from confirmation. Retain a change only if it passes all functional checks, meets the three parent-relative budgets on every workload, and its targeted benefit repeats in the contended confirmation (throughput or p99 in the direction used to select wake, or at least 12 fewer B/notification for token). Publish the individual trial rows and relevant uncertainty. No dropping rows or repeating an unchanged failing treatment to erase the result."
+    ],
+    "loadAveragesMinutes": [
+      1,
+      5,
+      15
+    ],
+    "warmupSeconds": 5,
+    "measurementSeconds": 5,
+    "freshJvmForEveryRow": true,
+    "allocationBoundary": "producers-alive-through-sample",
+    "harness": {
+      "ExtensionRuntimeBenchmark.scala": "afdaa6b4fb2ab0ac9e1e7e13d4c09a15fecb6212019c5dc5fb375f284bab511b",
+      "prepare.sh": "1555de0c805d5f8d1c2df83ab9317e2a1d7f3681e381d0fca169233e3eeb2e03",
+      "run.sh": "8faaf233949d95de7b0a199db6ef09da74246b8490e975c68080226886759e44",
+      "analyze.mjs": "9d706ff51143a25caca4b5f75ba6fe701f07d5f7333ff81cd4d1fbcaaf0a32f1",
+      "check-gate.mjs": "b2443613c7385149f569055abaa11d17fee4ddfeb9e16022cec8ef2e1e99d004"
+    },
+    "fixture": "misc/extension-contention/ExtensionRuntimeBenchmark.scala",
+    "protocolHash": "d8443e17a20acd24cebb35d12bb1b767e9426d84ab433691649e97b53d91faec",
+    "statistics": "Per-arm medians and ranges over independent JVMs; paired directions compare arms within each round; no pooling across collections."
+  },
+  "binaryProvenance": {
+    "digestAlgorithm": "SHA-256; JAR entries hash raw artifact bytes. Directory entries hash UTF-8 JSON of sorted recursively traversed [relative path, raw file SHA-256] pairs. Candidate entries omitted from differences have exactly the release digest. In changedClassfiles keys the prefix is the zero-based classpath index.",
+    "releaseClasspath": [
+      {
+        "index": 0,
+        "entry": "modules/spoonbill/target/scala-3.3.8/test-classes",
+        "sha256": "e7f1d1bba0858b4de8e4b0bff036820feeac321c6ebf920cfa365ae499a1fb4c"
+      },
+      {
+        "index": 1,
+        "entry": "modules/spoonbill/target/scala-3.3.8/classes",
+        "sha256": "ba301a174aaaa64143341e25f438ef8f65c5d398800b794af7ce013389b19c4c"
+      },
+      {
+        "index": 2,
+        "entry": "modules/core/target/scala-3.3.8/classes",
+        "sha256": "19c8eaf6ba1d953b451f26e15d5668ba6bf28629d37550beb81d6db7203acb04"
+      },
+      {
+        "index": 3,
+        "entry": "modules/effect/target/scala-3.3.8/classes",
+        "sha256": "94470b4e773c6d0311d6c97a629abfad9163542f0f17ac48ab3571a788501072"
+      },
+      {
+        "index": 4,
+        "entry": "modules/bytes/target/scala-3.3.8/classes",
+        "sha256": "049a523069b3490817f4673ee4daf939f08e57d33c2d415700ae5f43c5b4bb5a"
+      },
+      {
+        "index": 5,
+        "entry": "modules/web/target/scala-3.3.8/classes",
+        "sha256": "cb287ce1a4169b763968e6a7aa33ddeae61cd0458b8cabec2165073e390fd1f5"
+      },
+      {
+        "index": 6,
+        "entry": "scala3-library_3-3.3.8.jar",
+        "sha256": "2c6eace9158df8ee4485a06128a479d968c1ebfc83ae9b1a394b58429f0d1492"
+      },
+      {
+        "index": 7,
+        "entry": "scalatest_3-3.2.9.jar",
+        "sha256": "6a528ed38912f9c69bf2a1be157871fe801bbff590eecb1a56fa25c62570e147"
+      },
+      {
+        "index": 8,
+        "entry": "scalacheck-1-15_3-3.2.9.0.jar",
+        "sha256": "e893f07e81c2adaf61d03abdddcb67e1f81883522132fce52003b50325b92d94"
+      },
+      {
+        "index": 9,
+        "entry": "avocet-core_3-2.0.1.jar",
+        "sha256": "196730cb718065ae1f4995d7ed1eb51ab054fdfa4cdf7b8258627fd96386dc84"
+      },
+      {
+        "index": 10,
+        "entry": "avocet-events_3-2.0.1.jar",
+        "sha256": "7f1f61d1be7a9bac25ca09b3576e4994e4247d2dbdb3829ebc8f103b1bc9ce7a"
+      },
+      {
+        "index": 11,
+        "entry": "scala-library-2.13.18.jar",
+        "sha256": "4e85d96ff7bc7dc627985523c3541b9917aaa08e956391380c42db21a2c4e5a0"
+      },
+      {
+        "index": 12,
+        "entry": "scalatest-core_3-3.2.9.jar",
+        "sha256": "248674b6269578bc2f57d595f1e484fc02837ef567ba461eafb81294bce611a8"
+      },
+      {
+        "index": 13,
+        "entry": "scalatest-featurespec_3-3.2.9.jar",
+        "sha256": "db51db398582b656cc0b90fbd1c6e5c2495125706b1f860b4cdfc5aba1832d0d"
+      },
+      {
+        "index": 14,
+        "entry": "scalatest-flatspec_3-3.2.9.jar",
+        "sha256": "b558319f8b4835d25424381dc9b7dcc3b27353cf36dc2c28270dac59e8c8b827"
+      },
+      {
+        "index": 15,
+        "entry": "scalatest-freespec_3-3.2.9.jar",
+        "sha256": "dfcbce7d8315dca731b2829ad233893f2dec8895543267c086f7c88a618bda97"
+      },
+      {
+        "index": 16,
+        "entry": "scalatest-funsuite_3-3.2.9.jar",
+        "sha256": "f3aa7a6414a6f0217ab386be38da537738239f073512a00e93967ac34ff3c9d3"
+      },
+      {
+        "index": 17,
+        "entry": "scalatest-funspec_3-3.2.9.jar",
+        "sha256": "a4d0b15fea0f73cc7af7f1e35ae291966f8652fbf811d6525294691fa6fb54d2"
+      },
+      {
+        "index": 18,
+        "entry": "scalatest-propspec_3-3.2.9.jar",
+        "sha256": "bae00b7ce007b8cc86ffddb44246f5aa8e47055414337ddf322a9ae7c95ea809"
+      },
+      {
+        "index": 19,
+        "entry": "scalatest-refspec_3-3.2.9.jar",
+        "sha256": "3f7a1cab9d46d6f57c694e0ddc65db009f7cd0951bbf3a3c3a660c2f52a28dee"
+      },
+      {
+        "index": 20,
+        "entry": "scalatest-wordspec_3-3.2.9.jar",
+        "sha256": "28a649d8f73fbd7a9d02e702a5f23577b4f6e301840d002d5574728a6ba5c473"
+      },
+      {
+        "index": 21,
+        "entry": "scalatest-diagrams_3-3.2.9.jar",
+        "sha256": "20a310d96298a2cde22e1d990f6ef61320ff38f273902aa31592e04e02d902ed"
+      },
+      {
+        "index": 22,
+        "entry": "scalatest-matchers-core_3-3.2.9.jar",
+        "sha256": "4aee69baf7cbbd2f8c28e02fab7aead12093bf905b322a4aca9c987de58dffab"
+      },
+      {
+        "index": 23,
+        "entry": "scalatest-shouldmatchers_3-3.2.9.jar",
+        "sha256": "5866c9f28faf5389a82d0a66f3539933325eed3a03425c9bf2f495c34f4bb370"
+      },
+      {
+        "index": 24,
+        "entry": "scalatest-mustmatchers_3-3.2.9.jar",
+        "sha256": "2755b8558acf71603b70d10a02f9df43a216f305318dbcb442d5451f0da32c46"
+      },
+      {
+        "index": 25,
+        "entry": "scalacheck_3-1.15.4.jar",
+        "sha256": "a344fc84ec8478b9faf550116df51e9fff822448bfe279a05fec8e16bfab34e3"
+      },
+      {
+        "index": 26,
+        "entry": "scalactic_3-3.2.9.jar",
+        "sha256": "dde6c79aeb8ca632ac9aede0a00462b6b75d0db857bf0e9f264a2ed36efcb800"
+      },
+      {
+        "index": 27,
+        "entry": "scalatest-compatible-3.2.9.jar",
+        "sha256": "7e5f1193af2fd88c432c4b80ce3641e4b1d062f421d8a0fcc43af9a19bb7c2eb"
+      },
+      {
+        "index": 28,
+        "entry": "scala-xml_3-2.0.0.jar",
+        "sha256": "98485486ec710ac1851491d318a31bceef372935bc468431c0bc8aff36401ef7"
+      },
+      {
+        "index": 29,
+        "entry": "test-interface-1.0.jar",
+        "sha256": "15f70b38bb95f3002fec9aea54030f19bb4ecfbad64c67424b5e5fea09cd749e"
+      }
+    ],
+    "differences": {
+      "token": {
+        "differentClasspathEntries": [
+          {
+            "index": 0,
+            "entry": "modules/spoonbill/target/scala-3.3.8/test-classes",
+            "sha256": "d6f4d4c4f67549d02a74f09205306d1d851ee2d892060a23afa1565405023b14"
+          },
+          {
+            "index": 1,
+            "entry": "modules/spoonbill/target/scala-3.3.8/classes",
+            "sha256": "dec62f8cd0ee3b765a4130413f0f713301b6ef197cdbe697d741d8a096db8a9f"
+          }
+        ],
+        "changedClassfiles": {
+          "0/spoonbill/internal/ExtensionRuntimeBenchmark.class": {
+            "release": "1084e7199a8aba16b47e16bfd58d7b2db35192ea68c7d728a588a03ebd13d99e",
+            "candidate": "9524d3015ac866f916450bd1297d36b423a71937f5111269d8bed1db10be9581"
+          },
+          "1/spoonbill/internal/ExtensionMachine$.class": {
+            "release": "261d42987ec11475b677fc76a9e407fb05629bd40a5fa36a9457909ff204b07b",
+            "candidate": "dbebf520b8466b32b624757dae8db726acceec69122a39a503769e8e553ff884"
+          },
+          "1/spoonbill/internal/ExtensionMachine$NoProgress$.class": {
+            "release": null,
+            "candidate": "9a6f05553264fa3a760a47419987f11dc262afe71db5fc2bd8eb85ba5081d700"
+          },
+          "1/spoonbill/internal/ExtensionMachine.class": {
+            "release": "1dfa84d570fd89525fa3e4b2138544cc7707992e2c677f506db4c78918ace753",
+            "candidate": "652f81ec17b9cc5c5a34a96049631d3ee67324e27099f23a3165d8b644d56fa9"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$$anon$1.class": {
+            "release": "bcf525d5faa4e09b062caf5775e8f27b98eee1053ba8c6b2144962a0f51f2117",
+            "candidate": "91caa45ed60af907af8b896f9c86b33a25475482bb16735b0e1af172361b5911"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$$anon$2.class": {
+            "release": "ee42d9ded0dec697a493d99ddc565b517b99e6b7845d4cc6dd73e2787b58358f",
+            "candidate": "e13682b8897cf0825ada67507fe4ab80f05454243b2470e44053af7d3601085b"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$$anon$3.class": {
+            "release": "4a709e4b9cfbf08a4e3dd7953fd470a46c25a6409d5555cc2919532770de0da6",
+            "candidate": "9c3b4fcf13ba45fc4e032c4b6b36b44a3dffd2405ad8a545d2e96f33f11474e7"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$$anon$4.class": {
+            "release": "bcb16137d421393e0150f73c61fc566f759f772b53612260e643ba1d4785c742",
+            "candidate": "68536f41325cbe20fbf271711291828737fc757dce71f8372d1d684ba269d03a"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$.class": {
+            "release": "ff18c4ab7c16c888259823da1523382583d21b7369250e6043c6b491b0371af3",
+            "candidate": "50e46946b429bc10ce38edb709ba3ac43f5f1b3240148681766970744d7c72d8"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$Active.class": {
+            "release": "794899b36b55d730a525dea5a294c316041343c50c3b58d20d862cb445f1b618",
+            "candidate": "848bcf4d4384a5338c5d7ee159a17c3e380784832c9c6b30788cae00844f9c74"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$Held$.class": {
+            "release": "099d923d0baefc103d029fe369235f84dd878df9a33f52274ef14e6b197d504f",
+            "candidate": "cf56589eff0db7439b5981054f87b907a1cdbaac5af2e6d02e354817baa0cd3f"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$Held.class": {
+            "release": "a56af9449cb24181a0eb366b67c5d8522e7ac5b8eb65a1482ed63f100f318eee",
+            "candidate": "054dbaf8b465bbab7ea3f382ae5f3fa2874adcb97fd33d491e57c9a6cedfdd5d"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$SetupAborted.class": {
+            "release": "48b9e44890bcf04311f14f77d38aaf49a4c7d1269cb64a8d45f2670782166d1d",
+            "candidate": "6cfd082981c8956e9b68478a2a1f79df0bc7f030aac39ebcb2602f11c1583ce1"
+          },
+          "1/spoonbill/internal/ExtensionRuntime$TimedOut.class": {
+            "release": "de97e5535afe650914040813305763ad486afbfba34c462ac2ed2328a0d04d09",
+            "candidate": "9133994e0f50ae4ded82650d4af43ad4a3162fbbcca9e1f2b5646c144b97a6b0"
+          },
+          "1/spoonbill/internal/ExtensionRuntime.class": {
+            "release": "e824d73d31bc1fd399607f7741e6dd991c00cb3dfbdfd680d6d78b76b1f963f3",
+            "candidate": "fa9388cd4285800baf92a5995b5dd8ed559c8bb08650ff507ab2ec36a20c702c"
+          }
+        }
+      },
+      "wake": {
+        "differentClasspathEntries": [
+          {
+            "index": 0,
+            "entry": "modules/spoonbill/target/scala-3.3.8/test-classes",
+            "sha256": "d6f4d4c4f67549d02a74f09205306d1d851ee2d892060a23afa1565405023b14"
+          },
+          {
+            "index": 1,
+            "entry": "modules/spoonbill/target/scala-3.3.8/classes",
+            "sha256": "01f7698ee41a67096c4ca32f5583c9402af58e2eccfed28b19a61ae3c8286ea3"
+          }
+        ],
+        "changedClassfiles": {
+          "0/spoonbill/internal/ExtensionRuntimeBenchmark.class": {
+            "release": "1084e7199a8aba16b47e16bfd58d7b2db35192ea68c7d728a588a03ebd13d99e",
+            "candidate": "9524d3015ac866f916450bd1297d36b423a71937f5111269d8bed1db10be9581"
+          },
+          "1/spoonbill/internal/SerialLane.class": {
+            "release": "c3e2eb295c2adad252d6526b5038546c0222d13d8c9183a71d6afc07965136a8",
+            "candidate": "173a04edeff02a448867bb5e32556d609e6dbbcb98248170cbe1b6ea86c6e68b"
+          }
+        }
+      }
+    },
+    "selectedClassFingerprints": {
+      "release": {
+        "spoonbill/internal/ExtensionRuntimeBenchmark$.class": "dfe47bbc5dc8487c209624a81c71a8e16208f21759fac68809833dd711027709",
+        "spoonbill/internal/ExtensionRuntime.class": "e824d73d31bc1fd399607f7741e6dd991c00cb3dfbdfd680d6d78b76b1f963f3",
+        "spoonbill/internal/ExtensionMachine$.class": "261d42987ec11475b677fc76a9e407fb05629bd40a5fa36a9457909ff204b07b",
+        "spoonbill/internal/SerialLane.class": "c3e2eb295c2adad252d6526b5038546c0222d13d8c9183a71d6afc07965136a8",
+        "spoonbill/effect/Effect.class": "6deddb172e822ef84f249687814d0586c528ff7edcddc0317233d1e67ffcf5e7"
+      },
+      "token": {
+        "spoonbill/internal/ExtensionRuntimeBenchmark$.class": "dfe47bbc5dc8487c209624a81c71a8e16208f21759fac68809833dd711027709",
+        "spoonbill/internal/ExtensionRuntime.class": "fa9388cd4285800baf92a5995b5dd8ed559c8bb08650ff507ab2ec36a20c702c",
+        "spoonbill/internal/ExtensionMachine$.class": "dbebf520b8466b32b624757dae8db726acceec69122a39a503769e8e553ff884",
+        "spoonbill/internal/SerialLane.class": "c3e2eb295c2adad252d6526b5038546c0222d13d8c9183a71d6afc07965136a8",
+        "spoonbill/effect/Effect.class": "6deddb172e822ef84f249687814d0586c528ff7edcddc0317233d1e67ffcf5e7"
+      },
+      "wake": {
+        "spoonbill/internal/ExtensionRuntimeBenchmark$.class": "dfe47bbc5dc8487c209624a81c71a8e16208f21759fac68809833dd711027709",
+        "spoonbill/internal/ExtensionRuntime.class": "e824d73d31bc1fd399607f7741e6dd991c00cb3dfbdfd680d6d78b76b1f963f3",
+        "spoonbill/internal/ExtensionMachine$.class": "261d42987ec11475b677fc76a9e407fb05629bd40a5fa36a9457909ff204b07b",
+        "spoonbill/internal/SerialLane.class": "173a04edeff02a448867bb5e32556d609e6dbbcb98248170cbe1b6ea86c6e68b",
+        "spoonbill/effect/Effect.class": "6deddb172e822ef84f249687814d0586c528ff7edcddc0317233d1e67ffcf5e7"
+      }
+    }
+  },
+  "functionalChecks": {
+    "wake": {
+      "suites": [
+        "spoonbill/testOnly *Extension* *SerialLane*",
+        "ce3/testOnly *Extension*",
+        "zio2/testOnly *Extension*"
+      ],
+      "countsOrder": [
+        "succeeded",
+        "failed",
+        "canceled",
+        "ignored",
+        "pending"
+      ],
+      "counts": [
+        [
+          155,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          14,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          10,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "purity": {
+        "coreFiles": 12,
+        "machineFiles": 47,
+        "failures": []
+      }
+    },
+    "token": {
+      "suites": [
+        "spoonbill/testOnly *Extension* *SerialLane*",
+        "ce3/testOnly *Extension*",
+        "zio2/testOnly *Extension*"
+      ],
+      "countsOrder": [
+        "succeeded",
+        "failed",
+        "canceled",
+        "ignored",
+        "pending"
+      ],
+      "counts": [
+        [
+          155,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          14,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          10,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "purity": {
+        "coreFiles": 12,
+        "machineFiles": 47,
+        "failures": []
+      }
+    }
+  },
+  "selection": {
+    "winner": "wake",
+    "arms": {
+      "wake": {
+        "qualifies": [
+          "throughput",
+          "deliveryP99Ms"
+        ],
+        "withinBudgets": true,
+        "ratios": {
+          "throughput": 1.1146358756466495,
+          "deliveryP99Ms": 0.7671957671957673,
+          "bytesPerNotification": 0.9996437462879059
+        },
+        "wins": {
+          "throughput": 6,
+          "deliveryP99Ms": 5,
+          "bytesPerNotification": 6
+        },
+        "bytesSaved": 0.37983467036974616
+      },
+      "token": {
+        "qualifies": [
+          "bytesPerNotification"
+        ],
+        "withinBudgets": true,
+        "ratios": {
+          "throughput": 0.9945576738961959,
+          "deliveryP99Ms": 0.8775510204081634,
+          "bytesPerNotification": 0.9848761292376719
+        },
+        "wins": {
+          "throughput": 3,
+          "deliveryP99Ms": 4,
+          "bytesPerNotification": 6
+        },
+        "bytesSaved": 16.124942058724173
+      }
+    },
+    "medians": {
+      "release": {
+        "throughput": 2565142.5692514153,
+        "deliveryP99Ms": 0.6615,
+        "bytesPerNotification": 1066.1914738711962
+      },
+      "token": {
+        "throughput": 2551182.226886799,
+        "deliveryP99Ms": 0.5805,
+        "bytesPerNotification": 1050.066531812472
+      },
+      "wake": {
+        "throughput": 2859199.9338360475,
+        "deliveryP99Ms": 0.5075000000000001,
+        "bytesPerNotification": 1065.8116392008264
+      }
+    }
+  },
+  "confirmationDecision": {
+    "selected": "wake",
+    "allFourWorkloadsWithinBudgets": true,
+    "contendedImprovementsRepeated": [
+      "throughput",
+      "deliveryP99Ms"
+    ]
+  },
+  "collections": {
+    "screen": {
+      "sourceRecordSha256": "6d0e9eb0969fb07b6afcbc09e0ddd04f4b467750da1f92c00bf94ea980c82e08",
+      "mode": "focused",
+      "arms": [
+        "release",
+        "token",
+        "wake"
+      ],
+      "protocol": {
+        "rounds": 6,
+        "order": [
+          "release token wake",
+          "token wake release",
+          "wake release token",
+          "wake token release",
+          "release wake token",
+          "token release wake"
+        ],
+        "java": "21.0.8",
+        "flags": [
+          "-Xms256m",
+          "-Xmx256m",
+          "-XX:+UseG1GC",
+          "-XX:ActiveProcessorCount=8"
+        ],
+        "fixtureLabels": null,
+        "warmupSeconds": 5,
+        "measurementSeconds": 5,
+        "statistics": "Ratios of independent arm medians; paired directions are within round. No pooling.",
+        "declarationSha256": "d8443e17a20acd24cebb35d12bb1b767e9426d84ab433691649e97b53d91faec",
+        "runnerSha256": "490ab81f42da1856955204500ea498ea48bce832266991986d770978a271ae07",
+        "analysisSha256": "1308f5842ea9b584a6bef6db5956d41303125d7fdaef8004819134ad946edd0a"
+      },
+      "startup": {
+        "utc": "2026-11-25T05:23:38Z",
+        "loadAverages": [
+          5.03,
+          5.39,
+          4.31
+        ],
+        "loadOrderMinutes": [
+          1,
+          5,
+          15
+        ]
+      },
+      "workloads": [
+        {
+          "scenario": "contended",
+          "groups": {
+            "release": {
+              "throughput": {
+                "min": 2532533.086310047,
+                "median": 2565142.5692514153,
+                "max": 2591272.5878046104
+              },
+              "deliveryP99Ms": {
+                "min": 0.622,
+                "median": 0.6615,
+                "max": 0.926
+              },
+              "bytesPerNotification": {
+                "min": 1066.0503787960904,
+                "median": 1066.1914738711962,
+                "max": 1066.2492362185158
+              }
+            },
+            "token": {
+              "throughput": {
+                "min": 2446290.4921211656,
+                "median": 2551182.226886799,
+                "max": 2699695.378723189
+              },
+              "deliveryP99Ms": {
+                "min": 0.537,
+                "median": 0.5805,
+                "max": 0.941
+              },
+              "bytesPerNotification": {
+                "min": 1049.921828807207,
+                "median": 1050.066531812472,
+                "max": 1050.3467042317168
+              }
+            },
+            "wake": {
+              "throughput": {
+                "min": 2760245.0018814225,
+                "median": 2859199.9338360475,
+                "max": 3512261.554836997
+              },
+              "deliveryP99Ms": {
+                "min": 0.396,
+                "median": 0.5075000000000001,
+                "max": 0.652
+              },
+              "bytesPerNotification": {
+                "min": 1064.284719178578,
+                "median": 1065.8116392008264,
+                "max": 1065.8542196866422
+              }
+            }
+          },
+          "compared": {
+            "token": {
+              "sourceOverRelease": {
+                "throughput": 0.9945576738961959,
+                "deliveryP99Ms": 0.8775510204081634,
+                "bytesPerNotification": 0.9848761292376719
+              },
+              "paired": {
+                "throughput": [
+                  {
+                    "round": 1,
+                    "release": 2579144.9558440535,
+                    "candidate": 2446290.4921211656,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 2546154.5356943645,
+                    "candidate": 2533203.646263886,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 2570389.544659022,
+                    "candidate": 2699695.378723189,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 4,
+                    "release": 2559895.593843809,
+                    "candidate": 2569160.8075097124,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 5,
+                    "release": 2591272.5878046104,
+                    "candidate": 2489008.638980847,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 6,
+                    "release": 2532533.086310047,
+                    "candidate": 2663106.4273224673,
+                    "direction": "higher"
+                  }
+                ],
+                "deliveryP99Ms": [
+                  {
+                    "round": 1,
+                    "release": 0.715,
+                    "candidate": 0.577,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 0.622,
+                    "candidate": 0.66,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 0.926,
+                    "candidate": 0.584,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 4,
+                    "release": 0.65,
+                    "candidate": 0.566,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 5,
+                    "release": 0.627,
+                    "candidate": 0.941,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 6,
+                    "release": 0.673,
+                    "candidate": 0.537,
+                    "direction": "lower"
+                  }
+                ],
+                "bytesPerNotification": [
+                  {
+                    "round": 1,
+                    "release": 1066.204985496602,
+                    "candidate": 1050.178063803035,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 1066.0503787960904,
+                    "candidate": 1050.123828674241,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 1066.2492362185158,
+                    "candidate": 1049.9592747212125,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 4,
+                    "release": 1066.1086277276345,
+                    "candidate": 1050.0092349507029,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 5,
+                    "release": 1066.1943168500607,
+                    "candidate": 1050.3467042317168,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 6,
+                    "release": 1066.1886308923315,
+                    "candidate": 1049.921828807207,
+                    "direction": "lower"
+                  }
+                ]
+              }
+            },
+            "wake": {
+              "sourceOverRelease": {
+                "throughput": 1.1146358756466495,
+                "deliveryP99Ms": 0.7671957671957673,
+                "bytesPerNotification": 0.9996437462879059
+              },
+              "paired": {
+                "throughput": [
+                  {
+                    "round": 1,
+                    "release": 2579144.9558440535,
+                    "candidate": 2798379.388021561,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 2,
+                    "release": 2546154.5356943645,
+                    "candidate": 2760245.0018814225,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 2570389.544659022,
+                    "candidate": 3512261.554836997,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 4,
+                    "release": 2559895.593843809,
+                    "candidate": 2834742.9632077827,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 5,
+                    "release": 2591272.5878046104,
+                    "candidate": 2917029.414892524,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 6,
+                    "release": 2532533.086310047,
+                    "candidate": 2883656.904464312,
+                    "direction": "higher"
+                  }
+                ],
+                "deliveryP99Ms": [
+                  {
+                    "round": 1,
+                    "release": 0.715,
+                    "candidate": 0.574,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 0.622,
+                    "candidate": 0.652,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 0.926,
+                    "candidate": 0.396,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 4,
+                    "release": 0.65,
+                    "candidate": 0.457,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 5,
+                    "release": 0.627,
+                    "candidate": 0.481,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 6,
+                    "release": 0.673,
+                    "candidate": 0.534,
+                    "direction": "lower"
+                  }
+                ],
+                "bytesPerNotification": [
+                  {
+                    "round": 1,
+                    "release": 1066.204985496602,
+                    "candidate": 1065.786410120532,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 1066.0503787960904,
+                    "candidate": 1065.8542196866422,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 1066.2492362185158,
+                    "candidate": 1064.284719178578,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 4,
+                    "release": 1066.1086277276345,
+                    "candidate": 1065.8483222325005,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 5,
+                    "release": 1066.1943168500607,
+                    "candidate": 1065.486725819039,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 6,
+                    "release": 1066.1886308923315,
+                    "candidate": 1065.836868281121,
+                    "direction": "lower"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "confirmation": {
+      "sourceRecordSha256": "b41018e11cdf2ab614738b1d84092f954254f2e289491d752ec710bd828e8393",
+      "mode": "confirm",
+      "arms": [
+        "release",
+        "wake"
+      ],
+      "protocol": {
+        "rounds": 3,
+        "order": [
+          "baseline pilot",
+          "pilot baseline",
+          "baseline pilot"
+        ],
+        "java": "21.0.8",
+        "flags": [
+          "-Xms256m",
+          "-Xmx256m",
+          "-XX:+UseG1GC",
+          "-XX:ActiveProcessorCount=8"
+        ],
+        "fixtureLabels": {
+          "baseline": "release",
+          "pilot": "wake"
+        },
+        "warmupSeconds": 5,
+        "measurementSeconds": 5,
+        "statistics": "Ratios of independent arm medians; paired directions are within round. No pooling.",
+        "declarationSha256": "d8443e17a20acd24cebb35d12bb1b767e9426d84ab433691649e97b53d91faec",
+        "runnerSha256": "490ab81f42da1856955204500ea498ea48bce832266991986d770978a271ae07",
+        "analysisSha256": "1308f5842ea9b584a6bef6db5956d41303125d7fdaef8004819134ad946edd0a"
+      },
+      "startup": {
+        "utc": "2026-11-25T05:27:00Z",
+        "loadAverages": [
+          4.48,
+          5.12,
+          4.43
+        ],
+        "loadOrderMinutes": [
+          1,
+          5,
+          15
+        ]
+      },
+      "workloads": [
+        {
+          "scenario": "isolated",
+          "groups": {
+            "release": {
+              "throughput": {
+                "min": 1164069.0869419517,
+                "median": 1172551.6514417292,
+                "max": 1182375.171708766
+              },
+              "deliveryP99Ms": {
+                "min": 2.484,
+                "median": 2.534,
+                "max": 2.537
+              },
+              "bytesPerNotification": {
+                "min": 977.4300192228499,
+                "median": 1071.9751229601986,
+                "max": 1072.0251373065505
+              }
+            },
+            "wake": {
+              "throughput": {
+                "min": 1149850.7842825237,
+                "median": 1178466.2739136103,
+                "max": 1183354.7902445926
+              },
+              "deliveryP99Ms": {
+                "min": 2.439,
+                "median": 2.528,
+                "max": 2.596
+              },
+              "bytesPerNotification": {
+                "min": 1071.8593805479782,
+                "median": 1072.282700709786,
+                "max": 1072.4053288846537
+              }
+            }
+          },
+          "compared": {
+            "wake": {
+              "sourceOverRelease": {
+                "throughput": 1.0050442319232664,
+                "deliveryP99Ms": 0.9976322020520917,
+                "bytesPerNotification": 1.0002869262009906
+              },
+              "paired": {
+                "throughput": [
+                  {
+                    "round": 1,
+                    "release": 1182375.171708766,
+                    "candidate": 1149850.7842825237,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 1172551.6514417292,
+                    "candidate": 1178466.2739136103,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 1164069.0869419517,
+                    "candidate": 1183354.7902445926,
+                    "direction": "higher"
+                  }
+                ],
+                "deliveryP99Ms": [
+                  {
+                    "round": 1,
+                    "release": 2.484,
+                    "candidate": 2.596,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 2,
+                    "release": 2.537,
+                    "candidate": 2.528,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 2.534,
+                    "candidate": 2.439,
+                    "direction": "lower"
+                  }
+                ],
+                "bytesPerNotification": [
+                  {
+                    "round": 1,
+                    "release": 1071.9751229601986,
+                    "candidate": 1072.4053288846537,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 2,
+                    "release": 1072.0251373065505,
+                    "candidate": 1072.282700709786,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 977.4300192228499,
+                    "candidate": 1071.8593805479782,
+                    "direction": "higher"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "scenario": "contended",
+          "groups": {
+            "release": {
+              "throughput": {
+                "min": 2552199.3084524292,
+                "median": 2618652.6650605258,
+                "max": 2807303.785685273
+              },
+              "deliveryP99Ms": {
+                "min": 0.548,
+                "median": 0.637,
+                "max": 0.672
+              },
+              "bytesPerNotification": {
+                "min": 1066.0003817028548,
+                "median": 1066.040925985668,
+                "max": 1066.1103231349055
+              }
+            },
+            "wake": {
+              "throughput": {
+                "min": 2718873.87949186,
+                "median": 2955532.9754729676,
+                "max": 2968665.591562725
+              },
+              "deliveryP99Ms": {
+                "min": 0.419,
+                "median": 0.518,
+                "max": 0.58
+              },
+              "bytesPerNotification": {
+                "min": 1065.3245081688685,
+                "median": 1065.3965700337887,
+                "max": 1066.0105257885054
+              }
+            }
+          },
+          "compared": {
+            "wake": {
+              "sourceOverRelease": {
+                "throughput": 1.1286464275721941,
+                "deliveryP99Ms": 0.8131868131868132,
+                "bytesPerNotification": 0.999395561712339
+              },
+              "paired": {
+                "throughput": [
+                  {
+                    "round": 1,
+                    "release": 2618652.6650605258,
+                    "candidate": 2718873.87949186,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 2,
+                    "release": 2552199.3084524292,
+                    "candidate": 2955532.9754729676,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 2807303.785685273,
+                    "candidate": 2968665.591562725,
+                    "direction": "higher"
+                  }
+                ],
+                "deliveryP99Ms": [
+                  {
+                    "round": 1,
+                    "release": 0.637,
+                    "candidate": 0.58,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 0.672,
+                    "candidate": 0.419,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 0.548,
+                    "candidate": 0.518,
+                    "direction": "lower"
+                  }
+                ],
+                "bytesPerNotification": [
+                  {
+                    "round": 1,
+                    "release": 1066.1103231349055,
+                    "candidate": 1066.0105257885054,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 1066.040925985668,
+                    "candidate": 1065.3965700337887,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 1066.0003817028548,
+                    "candidate": 1065.3245081688685,
+                    "direction": "lower"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "scenario": "extensions",
+          "groups": {
+            "release": {
+              "throughput": {
+                "min": 107621.28657879373,
+                "median": 108627.47458760184,
+                "max": 109252.51655883949
+              },
+              "deliveryP99Ms": {
+                "min": 21.9,
+                "median": 22.7,
+                "max": 23.3
+              },
+              "bytesPerNotification": {
+                "min": 2377.549715809157,
+                "median": 2378.0483284187953,
+                "max": 2378.2062650637768
+              }
+            },
+            "wake": {
+              "throughput": {
+                "min": 107815.49329064898,
+                "median": 108898.29538265744,
+                "max": 109507.44477170942
+              },
+              "deliveryP99Ms": {
+                "min": 22.5,
+                "median": 23.1,
+                "max": 26.4
+              },
+              "bytesPerNotification": {
+                "min": 2377.576977244358,
+                "median": 2378.39101788107,
+                "max": 2378.4177529257636
+              }
+            }
+          },
+          "compared": {
+            "wake": {
+              "sourceOverRelease": {
+                "throughput": 1.0024931150805425,
+                "deliveryP99Ms": 1.0176211453744495,
+                "bytesPerNotification": 1.0001441053397357
+              },
+              "paired": {
+                "throughput": [
+                  {
+                    "round": 1,
+                    "release": 108627.47458760184,
+                    "candidate": 109507.44477170942,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 2,
+                    "release": 107621.28657879373,
+                    "candidate": 108898.29538265744,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 109252.51655883949,
+                    "candidate": 107815.49329064898,
+                    "direction": "lower"
+                  }
+                ],
+                "deliveryP99Ms": [
+                  {
+                    "round": 1,
+                    "release": 23.3,
+                    "candidate": 22.5,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 22.7,
+                    "candidate": 23.1,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 21.9,
+                    "candidate": 26.4,
+                    "direction": "higher"
+                  }
+                ],
+                "bytesPerNotification": [
+                  {
+                    "round": 1,
+                    "release": 2378.2062650637768,
+                    "candidate": 2377.576977244358,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 2377.549715809157,
+                    "candidate": 2378.4177529257636,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 2378.0483284187953,
+                    "candidate": 2378.39101788107,
+                    "direction": "higher"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "scenario": "backlog",
+          "groups": {
+            "release": {
+              "throughput": {
+                "min": 144124.28558548266,
+                "median": 144128.45539743223,
+                "max": 144166.4152499
+              },
+              "deliveryP99Ms": {
+                "min": 63.9,
+                "median": 64.1,
+                "max": 64.2
+              },
+              "bytesPerNotification": {
+                "min": 1087.7859383164214,
+                "median": 1087.8349342378683,
+                "max": 1088.320050472494
+              }
+            },
+            "wake": {
+              "throughput": {
+                "min": 144632.34536058607,
+                "median": 144692.3743445781,
+                "max": 144892.6066447569
+              },
+              "deliveryP99Ms": {
+                "min": 62.5,
+                "median": 63.6,
+                "max": 63.8
+              },
+              "bytesPerNotification": {
+                "min": 1087.74435246055,
+                "median": 1087.8420631168128,
+                "max": 1088.2483226328288
+              }
+            }
+          },
+          "compared": {
+            "wake": {
+              "sourceOverRelease": {
+                "throughput": 1.0039126135473448,
+                "deliveryP99Ms": 0.9921996879875196,
+                "bytesPerNotification": 1.0000065532726705
+              },
+              "paired": {
+                "throughput": [
+                  {
+                    "round": 1,
+                    "release": 144166.4152499,
+                    "candidate": 144632.34536058607,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 2,
+                    "release": 144128.45539743223,
+                    "candidate": 144892.6066447569,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 144124.28558548266,
+                    "candidate": 144692.3743445781,
+                    "direction": "higher"
+                  }
+                ],
+                "deliveryP99Ms": [
+                  {
+                    "round": 1,
+                    "release": 63.9,
+                    "candidate": 62.5,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 64.1,
+                    "candidate": 63.6,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 3,
+                    "release": 64.2,
+                    "candidate": 63.8,
+                    "direction": "lower"
+                  }
+                ],
+                "bytesPerNotification": [
+                  {
+                    "round": 1,
+                    "release": 1087.8349342378683,
+                    "candidate": 1087.74435246055,
+                    "direction": "lower"
+                  },
+                  {
+                    "round": 2,
+                    "release": 1087.7859383164214,
+                    "candidate": 1088.2483226328288,
+                    "direction": "higher"
+                  },
+                  {
+                    "round": 3,
+                    "release": 1088.320050472494,
+                    "candidate": 1087.8420631168128,
+                    "direction": "lower"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "budgets": {
+        "thresholds": {
+          "throughputMin": 0.95,
+          "deliveryP99Max": 1.1,
+          "allocationMax": 1.1
+        },
+        "results": [
+          {
+            "scenario": "isolated",
+            "pass": true
+          },
+          {
+            "scenario": "contended",
+            "pass": true
+          },
+          {
+            "scenario": "extensions",
+            "pass": true
+          },
+          {
+            "scenario": "backlog",
+            "pass": true
+          }
+        ],
+        "allWithin": true
+      }
+    }
+  },
+  "trials": [
+    {"collection":"screen","scenario":"contended","round":1,"arm":"release","metrics":{"label":"contended-release-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12896288,"callbacks":38688864,"elapsedSeconds":5.000218375,"notificationsPerSecond":2579144.9558440535,"allocatedBytes":13750086560,"producerAllocatedBytes":3018099904,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.204985496602,"allocatedBytesPerSecond":2749897210.2393427,"gcPauses":87,"gcPauseTotalMs":47.91979,"gcPauseP99Ms":0.655709,"gcPauseMaxMs":0.655709,"delivery":{"count":12896288,"p50Ms":0.383,"p95Ms":0.416,"p99Ms":0.715,"p999Ms":1.976,"maxMs":8.213666,"overflow":0},"admission":{"count":12896288,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.009,"maxMs":0.728417,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:23:38Z","averages":[5.03,5.39,4.31]},"after":{"utc":"2026-11-25T05:23:48Z","averages":[4.94,5.36,4.31]}},"sha256":{"jsonl":"46a341263e9a89ef5a45bebc1d706a82a5f7444d05dbda7c0ad1a6bf8914aa86","jfr":"b6ab17c7ebadf9669561fca9d4b1aa7c702e3c567b0810cd326080a287de6633"}},
+    {"collection":"screen","scenario":"contended","round":1,"arm":"token","metrics":{"label":"contended-token-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12232020,"callbacks":36696060,"elapsedSeconds":5.000232,"notificationsPerSecond":2446290.4921211656,"allocatedBytes":12845799080,"producerAllocatedBytes":2862633680,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1050.178063803035,"allocatedBytesPerSecond":2569040612.5155797,"gcPauses":82,"gcPauseTotalMs":45.202211,"gcPauseP99Ms":0.680333,"gcPauseMaxMs":0.680333,"delivery":{"count":12232020,"p50Ms":0.408,"p95Ms":0.441,"p99Ms":0.577,"p999Ms":1.42,"maxMs":5.251709,"overflow":0},"admission":{"count":12232020,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.012,"maxMs":0.704416,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:23:48Z","averages":[4.94,5.36,4.31]},"after":{"utc":"2026-11-25T05:23:59Z","averages":[5.28,5.41,4.34]}},"sha256":{"jsonl":"08c849a2160a79b4675f87da01de91327a99c0404b0b50a8b18cd42db55e844b","jfr":"40d5b84b7f8cdd70ab314cd70fb7037fb044620c9992336a9d534251666f16c8"}},
+    {"collection":"screen","scenario":"contended","round":1,"arm":"wake","metrics":{"label":"contended-wake-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13992545,"callbacks":41977635,"elapsedSeconds":5.000231584,"notificationsPerSecond":2798379.388021561,"allocatedBytes":14913064304,"producerAllocatedBytes":3268308080,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.786410120532,"allocatedBytesPerSecond":2982474722.114791,"gcPauses":94,"gcPauseTotalMs":52.187918,"gcPauseP99Ms":0.659417,"gcPauseMaxMs":0.659417,"delivery":{"count":13992545,"p50Ms":0.356,"p95Ms":0.387,"p99Ms":0.574,"p999Ms":1.365,"maxMs":7.491083,"overflow":0},"admission":{"count":13992545,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.008,"p999Ms":0.025,"maxMs":1.086417,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:23:59Z","averages":[5.28,5.41,4.34]},"after":{"utc":"2026-11-25T05:24:09Z","averages":[5.48,5.44,4.37]}},"sha256":{"jsonl":"5c91f20f6165b1211d5a4954d1dba154912c3afa6dba3a9c80dfdab4eeb2f50c","jfr":"29f2b54ae492f349c6108a57800dabac6fcbb567171a566014c3e58949afb816"}},
+    {"collection":"screen","scenario":"contended","round":2,"arm":"token","metrics":{"label":"contended-token-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12666630,"callbacks":37999890,"elapsedSeconds":5.0002415,"notificationsPerSecond":2533203.646263886,"allocatedBytes":13301529992,"producerAllocatedBytes":2963033944,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1050.123828674241,"allocatedBytesPerSecond":2660177511.826179,"gcPauses":85,"gcPauseTotalMs":47.001461,"gcPauseP99Ms":0.666458,"gcPauseMaxMs":0.666458,"delivery":{"count":12666630,"p50Ms":0.391,"p95Ms":0.424,"p99Ms":0.66,"p999Ms":1.731,"maxMs":6.826167,"overflow":0},"admission":{"count":12666630,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.012,"maxMs":0.717666,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:24:09Z","averages":[5.48,5.44,4.37]},"after":{"utc":"2026-11-25T05:24:19Z","averages":[5.39,5.43,4.37]}},"sha256":{"jsonl":"7afe7031a89a1a6d7db98fc524cfe5694cb5b2ad8ecc4750dc92a6d3547ac127","jfr":"cbfbd826d78af126307610c1200a47f2c4f575dea5934214932e8dd49f07f388"}},
+    {"collection":"screen","scenario":"contended","round":2,"arm":"wake","metrics":{"label":"contended-wake-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13801795,"callbacks":41405385,"elapsedSeconds":5.0002065,"notificationsPerSecond":2760245.0018814225,"allocatedBytes":14710701440,"producerAllocatedBytes":3224566816,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.8542196866422,"allocatedBytesPerSecond":2942018782.6242776,"gcPauses":93,"gcPauseTotalMs":50.714001,"gcPauseP99Ms":0.703,"gcPauseMaxMs":0.703,"delivery":{"count":13801795,"p50Ms":0.36,"p95Ms":0.388,"p99Ms":0.652,"p999Ms":1.944,"maxMs":7.6825,"overflow":0},"admission":{"count":13801795,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.008,"p999Ms":0.025,"maxMs":1.117,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:24:19Z","averages":[5.39,5.43,4.37]},"after":{"utc":"2026-11-25T05:24:30Z","averages":[5.18,5.38,4.37]}},"sha256":{"jsonl":"6d497b79d9350e2f2d9f1ca31193e17acce64807e938b7053ceec149da8d6f1c","jfr":"7015d80864642dd6f2a679b8862e0a30a18f0734abbee61bb8f0e3d67ccdd496"}},
+    {"collection":"screen","scenario":"contended","round":2,"arm":"release","metrics":{"label":"contended-release-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12731388,"callbacks":38194164,"elapsedSeconds":5.000241667,"notificationsPerSecond":2546154.5356943645,"allocatedBytes":13572301000,"producerAllocatedBytes":2978010192,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.0503787960904,"allocatedBytesPerSecond":2714329007.250361,"gcPauses":85,"gcPauseTotalMs":47.23791,"gcPauseP99Ms":0.817667,"gcPauseMaxMs":0.817667,"delivery":{"count":12731388,"p50Ms":0.389,"p95Ms":0.426,"p99Ms":0.622,"p999Ms":1.644,"maxMs":8.199584,"overflow":0},"admission":{"count":12731388,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.015,"maxMs":0.791708,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:24:30Z","averages":[5.18,5.38,4.37]},"after":{"utc":"2026-11-25T05:24:40Z","averages":[5.3,5.4,4.39]}},"sha256":{"jsonl":"85c1fa3003fabacbad6c1b4ace46c4d99cf5969d3852552fb2e379171f7ea4a2","jfr":"806b6fd2e560a8621d8563808cb9c610b7f1e113ef739b365bc076dbdaf3e876"}},
+    {"collection":"screen","scenario":"contended","round":3,"arm":"wake","metrics":{"label":"contended-wake-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":17561641,"callbacks":52684923,"elapsedSeconds":5.000094875,"notificationsPerSecond":3512261.554836997,"allocatedBytes":18690586160,"producerAllocatedBytes":4077092976,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1064.284719178578,"allocatedBytesPerSecond":3738046302.5714083,"gcPauses":118,"gcPauseTotalMs":49.858833,"gcPauseP99Ms":0.644375,"gcPauseMaxMs":0.648875,"delivery":{"count":17561641,"p50Ms":0.142,"p95Ms":0.353,"p99Ms":0.396,"p999Ms":1.228,"maxMs":7.986584,"overflow":0},"admission":{"count":17561641,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.022,"p999Ms":0.052,"maxMs":1.117791,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:24:40Z","averages":[5.3,5.4,4.39]},"after":{"utc":"2026-11-25T05:24:50Z","averages":[5.17,5.37,4.39]}},"sha256":{"jsonl":"3bd48be9b62dec38c1e07d94b4ee54c2f8d8ad3a0609dce0742eaf9e848f98db","jfr":"8c4d49b92c77f9a050a064eb034b48700423a1bfa3ccef80c39d85ffc7a92720"}},
+    {"collection":"screen","scenario":"contended","round":3,"arm":"release","metrics":{"label":"contended-release-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12852498,"callbacks":38557494,"elapsedSeconds":5.000214083,"notificationsPerSecond":2570389.544659022,"allocatedBytes":13703966176,"producerAllocatedBytes":3007239256,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.2492362185158,"allocatedBytesPerSecond":2740675888.7767406,"gcPauses":87,"gcPauseTotalMs":47.656581,"gcPauseP99Ms":0.664042,"gcPauseMaxMs":0.664042,"delivery":{"count":12852498,"p50Ms":0.383,"p95Ms":0.421,"p99Ms":0.926,"p999Ms":2.438,"maxMs":10.695625,"overflow":0},"admission":{"count":12852498,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.011,"maxMs":0.779709,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:24:50Z","averages":[5.17,5.37,4.39]},"after":{"utc":"2026-11-25T05:25:01Z","averages":[5.14,5.36,4.4]}},"sha256":{"jsonl":"f14d47b05819d662c3cd03b8db0c53feb57c2ddf766f1c47d30170b81bb24867","jfr":"1243c4035082a35894ab86e102912d4be25d91e1b9fcbab3d317f88ba03b65c9"}},
+    {"collection":"screen","scenario":"contended","round":3,"arm":"token","metrics":{"label":"contended-token-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13499085,"callbacks":40497255,"elapsedSeconds":5.00022525,"notificationsPerSecond":2699695.378723189,"allocatedBytes":14173489496,"producerAllocatedBytes":3156422584,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1049.9592747212125,"allocatedBytesPerSecond":2834570201.8124084,"gcPauses":90,"gcPauseTotalMs":49.340291,"gcPauseP99Ms":0.67,"gcPauseMaxMs":0.67,"delivery":{"count":13499085,"p50Ms":0.366,"p95Ms":0.413,"p99Ms":0.584,"p999Ms":1.389,"maxMs":7.18025,"overflow":0},"admission":{"count":13499085,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.013,"maxMs":0.767167,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:25:01Z","averages":[5.14,5.36,4.4]},"after":{"utc":"2026-11-25T05:25:11Z","averages":[4.89,5.29,4.38]}},"sha256":{"jsonl":"5e2ed996d2128f79a7f31ac36623431a7a9a13c485a7537c7752c966d0768f8f","jfr":"9da3a235c3dc0569768e71698f64e2072529174a3406ad24dbeb77f4d2bb57e2"}},
+    {"collection":"screen","scenario":"contended","round":4,"arm":"wake","metrics":{"label":"contended-wake-4","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":14174312,"callbacks":42522936,"elapsedSeconds":5.000210666,"notificationsPerSecond":2834742.9632077827,"allocatedBytes":15107666664,"producerAllocatedBytes":3312051712,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.8483222325005,"allocatedBytesPerSecond":3021406031.295402,"gcPauses":95,"gcPauseTotalMs":51.9405,"gcPauseP99Ms":0.694417,"gcPauseMaxMs":0.694417,"delivery":{"count":14174312,"p50Ms":0.352,"p95Ms":0.381,"p99Ms":0.457,"p999Ms":1.365,"maxMs":7.956625,"overflow":0},"admission":{"count":14174312,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.006,"p999Ms":0.022,"maxMs":0.803166,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:25:11Z","averages":[4.89,5.29,4.38]},"after":{"utc":"2026-11-25T05:25:21Z","averages":[4.91,5.28,4.39]}},"sha256":{"jsonl":"c18257ad20d9258c888eb94f866b1ba71072672e448b5a856ea757c3dca5c2c1","jfr":"bea0df1ca0eb665a342359daf07e52879cd6a0590eefa49291b8e84acc1048ce"}},
+    {"collection":"screen","scenario":"contended","round":4,"arm":"token","metrics":{"label":"contended-token-4","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12846414,"callbacks":38539242,"elapsedSeconds":5.000237417,"notificationsPerSecond":2569160.8075097124,"allocatedBytes":13488853336,"producerAllocatedBytes":3004236960,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1050.0092349507029,"allocatedBytesPerSecond":2697642573.958604,"gcPauses":85,"gcPauseTotalMs":46.250583,"gcPauseP99Ms":0.685125,"gcPauseMaxMs":0.685125,"delivery":{"count":12846414,"p50Ms":0.387,"p95Ms":0.419,"p99Ms":0.566,"p999Ms":1.332,"maxMs":6.538166,"overflow":0},"admission":{"count":12846414,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.016,"maxMs":0.689542,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:25:21Z","averages":[4.91,5.28,4.39]},"after":{"utc":"2026-11-25T05:25:32Z","averages":[4.91,5.27,4.4]}},"sha256":{"jsonl":"4238ad9db38cdcd3d05fc2be676b5f4366ece97a888fd120297f059edb79f68e","jfr":"9407bb7ba85876f3b02cd264c2966549af0504b0d3f1a43b3a2be239b1022982"}},
+    {"collection":"screen","scenario":"contended","round":4,"arm":"release","metrics":{"label":"contended-release-4","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12800010,"callbacks":38400030,"elapsedSeconds":5.000207833,"notificationsPerSecond":2559895.593843809,"allocatedBytes":13646201096,"producerAllocatedBytes":2994541584,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1086277276345,"allocatedBytesPerSecond":2729126778.678841,"gcPauses":87,"gcPauseTotalMs":47.824621,"gcPauseP99Ms":0.693375,"gcPauseMaxMs":0.693375,"delivery":{"count":12800010,"p50Ms":0.386,"p95Ms":0.426,"p99Ms":0.65,"p999Ms":1.472,"maxMs":7.087042,"overflow":0},"admission":{"count":12800010,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.014,"maxMs":0.780292,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:25:32Z","averages":[4.91,5.27,4.4]},"after":{"utc":"2026-11-25T05:25:42Z","averages":[5,5.28,4.41]}},"sha256":{"jsonl":"2ebd56e906676f368e3afea22edb3af7070ed198000c122c9bbcd47679d158cd","jfr":"d27ae9b45bcbf871ffc1159c4cf38a484ae9544431d714e52d109bd249425a52"}},
+    {"collection":"screen","scenario":"contended","round":5,"arm":"release","metrics":{"label":"contended-release-5","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12957075,"callbacks":38871225,"elapsedSeconds":5.000274792,"notificationsPerSecond":2591272.5878046104,"allocatedBytes":13814759728,"producerAllocatedBytes":3031376488,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1943168500607,"allocatedBytesPerSecond":2762800106.5266256,"gcPauses":88,"gcPauseTotalMs":48.076332,"gcPauseP99Ms":0.687667,"gcPauseMaxMs":0.687667,"delivery":{"count":12957075,"p50Ms":0.383,"p95Ms":0.418,"p99Ms":0.627,"p999Ms":2.046,"maxMs":6.947083,"overflow":0},"admission":{"count":12957075,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.014,"maxMs":0.664083,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:25:42Z","averages":[5,5.28,4.41]},"after":{"utc":"2026-11-25T05:25:52Z","averages":[5.15,5.3,4.43]}},"sha256":{"jsonl":"6ae757a21ba9e4f91aeb1b9f64f974262136989adc90ece6ea1ce29282889a8a","jfr":"0845c2aeb755a9262a88fea9430122238c34a13ca1ae2c1dbae663e2f35fcc21"}},
+    {"collection":"screen","scenario":"contended","round":5,"arm":"wake","metrics":{"label":"contended-wake-5","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":14585721,"callbacks":43757163,"elapsedSeconds":5.00019675,"notificationsPerSecond":2917029.414892524,"allocatedBytes":15540892112,"producerAllocatedBytes":3403272616,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.486725819039,"allocatedBytesPerSecond":3108056120.3916626,"gcPauses":99,"gcPauseTotalMs":54.270591,"gcPauseP99Ms":0.660583,"gcPauseMaxMs":0.660583,"delivery":{"count":14585721,"p50Ms":0.342,"p95Ms":0.37,"p99Ms":0.481,"p999Ms":1.406,"maxMs":7.358542,"overflow":0},"admission":{"count":14585721,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.009,"p999Ms":0.032,"maxMs":0.936041,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:25:52Z","averages":[5.15,5.3,4.43]},"after":{"utc":"2026-11-25T05:26:03Z","averages":[4.97,5.26,4.42]}},"sha256":{"jsonl":"f283859cc45ef6aca7eb49f355870be3c8138ce0b4468883607ee2ca7491e312","jfr":"f7c54041d5ff0b202914bf68fe478390b0cb67cbeab9d2dc3c12ef65fd52f917"}},
+    {"collection":"screen","scenario":"contended","round":5,"arm":"token","metrics":{"label":"contended-token-5","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12445611,"callbacks":37336833,"elapsedSeconds":5.000228125,"notificationsPerSecond":2489008.638980847,"allocatedBytes":13072206496,"producerAllocatedBytes":2913007232,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1050.3467042317168,"allocatedBytesPerSecond":2614322020.757803,"gcPauses":83,"gcPauseTotalMs":45.880417,"gcPauseP99Ms":0.744083,"gcPauseMaxMs":0.744083,"delivery":{"count":12445611,"p50Ms":0.396,"p95Ms":0.436,"p99Ms":0.941,"p999Ms":2.302,"maxMs":6.800959,"overflow":0},"admission":{"count":12445611,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.013,"maxMs":1.057584,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:26:03Z","averages":[4.97,5.26,4.42]},"after":{"utc":"2026-11-25T05:26:13Z","averages":[4.97,5.25,4.43]}},"sha256":{"jsonl":"d94d17a954a229fd21183e6545b48e5782d14b552685b3de532715b279a8676e","jfr":"2e2705eddf25874c64794f90e9ac1d30b28465bea6e6c6446ea4d2cfa8823f5f"}},
+    {"collection":"screen","scenario":"contended","round":6,"arm":"token","metrics":{"label":"contended-token-6","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13316133,"callbacks":39948399,"elapsedSeconds":5.000225625,"notificationsPerSecond":2663106.4273224673,"allocatedBytes":13980898712,"producerAllocatedBytes":3112693912,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1049.921828807207,"allocatedBytesPerSecond":2796053570.482632,"gcPauses":88,"gcPauseTotalMs":48.49471,"gcPauseP99Ms":0.700833,"gcPauseMaxMs":0.700833,"delivery":{"count":13316133,"p50Ms":0.373,"p95Ms":0.407,"p99Ms":0.537,"p999Ms":1.474,"maxMs":9.400375,"overflow":0},"admission":{"count":13316133,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.016,"maxMs":0.699166,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:26:13Z","averages":[4.97,5.25,4.43]},"after":{"utc":"2026-11-25T05:26:23Z","averages":[4.97,5.24,4.44]}},"sha256":{"jsonl":"881f5560647f945d0ea568172003ce8e892ac9c42452946f86f69c99c483d8e1","jfr":"13e1b6f9aac571d076edaaf6706e8aca885ef4a7908f5539cafb9492c80f5876"}},
+    {"collection":"screen","scenario":"contended","round":6,"arm":"release","metrics":{"label":"contended-release-6","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12663175,"callbacks":37989525,"elapsedSeconds":5.000201209,"notificationsPerSecond":2532533.086310047,"allocatedBytes":13501333216,"producerAllocatedBytes":2963595344,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1886308923315,"allocatedBytesPerSecond":2700157983.98244,"gcPauses":85,"gcPauseTotalMs":47.030034,"gcPauseP99Ms":0.672208,"gcPauseMaxMs":0.672208,"delivery":{"count":12663175,"p50Ms":0.391,"p95Ms":0.426,"p99Ms":0.673,"p999Ms":1.405,"maxMs":7.207958,"overflow":0},"admission":{"count":12663175,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.009,"maxMs":0.779875,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:26:23Z","averages":[4.97,5.24,4.44]},"after":{"utc":"2026-11-25T05:26:34Z","averages":[5.19,5.28,4.46]}},"sha256":{"jsonl":"4bcf2d3caa83aa56144c63a09b6a5a0a8d9aec999ffe2ea8b23cf56600a12516","jfr":"f9a7da491be5bf469f5c21e4ac6d8f7ab0286430f55c684e81855a6fb8104e4c"}},
+    {"collection":"screen","scenario":"contended","round":6,"arm":"wake","metrics":{"label":"contended-wake-6","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":14419072,"callbacks":43257216,"elapsedSeconds":5.000273083,"notificationsPerSecond":2883656.904464312,"allocatedBytes":15368378544,"producerAllocatedBytes":3369069896,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.836868281121,"allocatedBytesPerSecond":3073507844.251474,"gcPauses":97,"gcPauseTotalMs":53.34641,"gcPauseP99Ms":0.671583,"gcPauseMaxMs":0.671583,"delivery":{"count":14419072,"p50Ms":0.344,"p95Ms":0.377,"p99Ms":0.534,"p999Ms":1.145,"maxMs":7.300458,"overflow":0},"admission":{"count":14419072,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.019,"maxMs":0.818125,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:26:34Z","averages":[5.19,5.28,4.46]},"after":{"utc":"2026-11-25T05:26:44Z","averages":[5.37,5.32,4.48]}},"sha256":{"jsonl":"cbfdc2cc5b7ea0d37c21c11b562b9cf2c241710cbc208b1fb2aa98223e293e80","jfr":"ccc808e9f2910a3ceffb54dfb9f9f82c84d9c0033bd80fc36c0cf2d4224bb774"}},
+    {"collection":"confirmation","scenario":"isolated","round":1,"arm":"release","metrics":{"label":"isolated-baseline-1","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5912279,"callbacks":17736837,"elapsedSeconds":5.000340959,"notificationsPerSecond":1182375.171708766,"allocatedBytes":6337816008,"producerAllocatedBytes":1413169496,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1071.9751229601986,"allocatedBytesPerSecond":1267476770.0775902,"gcPauses":40,"gcPauseTotalMs":16.67396,"gcPauseP99Ms":0.679833,"gcPauseMaxMs":0.679833,"delivery":{"count":5912279,"p50Ms":0.251,"p95Ms":1.049,"p99Ms":2.484,"p999Ms":6.462,"maxMs":97.289834,"overflow":0},"admission":{"count":5912279,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.003,"p999Ms":0.004,"maxMs":2.681542,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:27:00Z","averages":[4.48,5.12,4.43]},"after":{"utc":"2026-11-25T05:27:11Z","averages":[7.79,5.81,4.68]}},"sha256":{"jsonl":"45b810b070093f1ca1311abbf72892b662590146f07408e0d1145ab149462b39","jfr":"0d3d6869475da5b7701e6249d2a0bb33fda2f5c2220f1c4afc7a9417e8fe9594"}},
+    {"collection":"confirmation","scenario":"isolated","round":1,"arm":"wake","metrics":{"label":"isolated-pilot-1","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5749721,"callbacks":17249163,"elapsedSeconds":5.000406208,"notificationsPerSecond":1149850.7842825237,"allocatedBytes":6166031440,"producerAllocatedBytes":1379190752,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1072.4053288846537,"allocatedBytesPerSecond":1233106108.4867766,"gcPauses":39,"gcPauseTotalMs":17.112294,"gcPauseP99Ms":0.7625,"gcPauseMaxMs":0.7625,"delivery":{"count":5749721,"p50Ms":0.259,"p95Ms":1.129,"p99Ms":2.596,"p999Ms":7.231,"maxMs":125.913708,"overflow":0},"admission":{"count":5749721,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.004,"maxMs":1.418375,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:27:11Z","averages":[7.79,5.81,4.68]},"after":{"utc":"2026-11-25T05:27:21Z","averages":[10.51,6.46,4.92]}},"sha256":{"jsonl":"c1f4132af7aa2b387f28fc97b4ea294101fddcff36f6f1061afb9b2f525f0625","jfr":"9f8c90915637778ade3faf6baa3b5ac4a9c81a2a6bcc2149ce58abb1b19f822f"}},
+    {"collection":"confirmation","scenario":"isolated","round":2,"arm":"wake","metrics":{"label":"isolated-pilot-2","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5892762,"callbacks":17678286,"elapsedSeconds":5.000365416,"notificationsPerSecond":1178466.2739136103,"allocatedBytes":6318706752,"producerAllocatedBytes":1410967752,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1072.282700709786,"allocatedBytesPerSecond":1263648998.8874846,"gcPauses":41,"gcPauseTotalMs":17.261915,"gcPauseP99Ms":0.676417,"gcPauseMaxMs":0.676417,"delivery":{"count":5892762,"p50Ms":0.251,"p95Ms":1.144,"p99Ms":2.528,"p999Ms":6.39,"maxMs":63.121083,"overflow":0},"admission":{"count":5892762,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.002,"p999Ms":0.007,"maxMs":2.76075,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:27:21Z","averages":[10.51,6.46,4.92]},"after":{"utc":"2026-11-25T05:27:31Z","averages":[14.4,7.42,5.28]}},"sha256":{"jsonl":"352ced4c3dacd711945ddd008cd0a0505458bc09a1471118d3b096e3ecc4fc7a","jfr":"c213ba1a028ad1fbeca957e3c87639bd7b3a817e40f8fc500d11b9b2f455455c"}},
+    {"collection":"confirmation","scenario":"isolated","round":2,"arm":"release","metrics":{"label":"isolated-baseline-2","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5863158,"callbacks":17589474,"elapsedSeconds":5.000340917,"notificationsPerSecond":1172551.6514417292,"allocatedBytes":6285452760,"producerAllocatedBytes":1403347744,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1072.0251373065505,"allocatedBytesPerSecond":1257004845.135842,"gcPauses":41,"gcPauseTotalMs":17.275333,"gcPauseP99Ms":0.682542,"gcPauseMaxMs":0.682542,"delivery":{"count":5863158,"p50Ms":0.254,"p95Ms":1.107,"p99Ms":2.537,"p999Ms":6.732,"maxMs":29.0095,"overflow":0},"admission":{"count":5863158,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.003,"p999Ms":0.004,"maxMs":1.577333,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:27:31Z","averages":[14.4,7.42,5.28]},"after":{"utc":"2026-11-25T05:27:42Z","averages":[16.04,7.99,5.51]}},"sha256":{"jsonl":"111f59bbc0d7bf97a083b70c168b09321a391bc91bdf77ed4b819d5b258917b2","jfr":"ea9be3bbe255b3ce3ca825693c0c6cae4fec85725512081b4dd362d872feeba6"}},
+    {"collection":"confirmation","scenario":"isolated","round":3,"arm":"release","metrics":{"label":"isolated-baseline-3","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5820677,"callbacks":17462031,"elapsedSeconds":5.000284833,"notificationsPerSecond":1164069.0869419517,"allocatedBytes":5689304432,"producerAllocatedBytes":1394793672,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":977.4300192228499,"allocatedBytesPerSecond":1137796070.0263972,"gcPauses":37,"gcPauseTotalMs":15.563749,"gcPauseP99Ms":0.677958,"gcPauseMaxMs":0.677958,"delivery":{"count":5820677,"p50Ms":0.258,"p95Ms":1.121,"p99Ms":2.534,"p999Ms":6.232,"maxMs":124.218125,"overflow":0},"admission":{"count":5820677,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.003,"p999Ms":0.004,"maxMs":1.880292,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:27:42Z","averages":[16.04,7.99,5.51]},"after":{"utc":"2026-11-25T05:27:52Z","averages":[17.5,8.57,5.74]}},"sha256":{"jsonl":"339a2d4360d59ffa283bbe3e8a5741c8834c59defdaff9a89c5d57eeba17bab9","jfr":"dbed8e6119c769a84e229da29ba58f5e1778309157aa348f0d560b5414d67743"}},
+    {"collection":"confirmation","scenario":"isolated","round":3,"arm":"wake","metrics":{"label":"isolated-pilot-3","views":16,"writers":16,"extensions":3,"windowPerView":32,"callbackNanos":1000,"workers":16,"seconds":5,"warmupSeconds":5,"completed":5917133,"callbacks":17751399,"elapsedSeconds":5.000303416,"notificationsPerSecond":1183354.7902445926,"allocatedBytes":6342334512,"producerAllocatedBytes":1415442408,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1071.8593805479782,"allocatedBytesPerSecond":1268389932.4400516,"gcPauses":40,"gcPauseTotalMs":16.730621,"gcPauseP99Ms":0.71025,"gcPauseMaxMs":0.71025,"delivery":{"count":5917133,"p50Ms":0.254,"p95Ms":1.031,"p99Ms":2.439,"p999Ms":6.775,"maxMs":25.968917,"overflow":0},"admission":{"count":5917133,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.003,"p999Ms":0.004,"maxMs":2.6425,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:27:52Z","averages":[17.5,8.57,5.74]},"after":{"utc":"2026-11-25T05:28:02Z","averages":[19.2,9.23,6.01]}},"sha256":{"jsonl":"cc0b36f65721622f476d866a7047164a671106c47f54e116dba690e72a6309fa","jfr":"67f3be7040df4cbcbf2d24cfb941b4ba4c4301343516023676c1f47dd7f755d2"}},
+    {"collection":"confirmation","scenario":"contended","round":1,"arm":"release","metrics":{"label":"contended-baseline-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13093881,"callbacks":39281643,"elapsedSeconds":5.000235875,"notificationsPerSecond":2618652.6650605258,"allocatedBytes":13959521704,"producerAllocatedBytes":3063451488,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.1103231349055,"allocatedBytesPerSecond":2791772638.9257584,"gcPauses":88,"gcPauseTotalMs":48.39004,"gcPauseP99Ms":0.668917,"gcPauseMaxMs":0.668917,"delivery":{"count":13093881,"p50Ms":0.378,"p95Ms":0.417,"p99Ms":0.637,"p999Ms":1.378,"maxMs":7.929708,"overflow":0},"admission":{"count":13093881,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.013,"maxMs":0.904541,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:28:02Z","averages":[19.2,9.23,6.01]},"after":{"utc":"2026-11-25T05:28:13Z","averages":[17.18,9.12,6.01]}},"sha256":{"jsonl":"d782a01633b67778caeee6a5abbc7979a7ce2ca4f61461f0be81143e940caaf5","jfr":"b41de6e348605080bb354cc68eb3ac5c3e7140841d6c937111c28b1af993cc89"}},
+    {"collection":"confirmation","scenario":"contended","round":1,"arm":"wake","metrics":{"label":"contended-pilot-1","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":13594991,"callbacks":40784973,"elapsedSeconds":5.000228625,"notificationsPerSecond":2718873.87949186,"allocatedBytes":14492403504,"producerAllocatedBytes":3178714320,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.0105257885054,"allocatedBytesPerSecond":2898348173.8297515,"gcPauses":92,"gcPauseTotalMs":50.93012,"gcPauseP99Ms":0.69775,"gcPauseMaxMs":0.69775,"delivery":{"count":13594991,"p50Ms":0.366,"p95Ms":0.4,"p99Ms":0.58,"p999Ms":1.584,"maxMs":7.89925,"overflow":0},"admission":{"count":13594991,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.019,"maxMs":0.732625,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:28:13Z","averages":[17.18,9.12,6.01]},"after":{"utc":"2026-11-25T05:28:23Z","averages":[15.23,8.97,5.99]}},"sha256":{"jsonl":"6ded217195f2e49e3a61ecca0bcec207aa87b78185c29fdf21f8b004a1b20cbf","jfr":"b42c11f582cee678e008114313d73aec19ebc4a7c5deaa01e4faabf2b77166f1"}},
+    {"collection":"confirmation","scenario":"contended","round":2,"arm":"wake","metrics":{"label":"contended-pilot-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":14778338,"callbacks":44335014,"elapsedSeconds":5.00022775,"notificationsPerSecond":2955532.9754729676,"allocatedBytes":15744790616,"producerAllocatedBytes":3447114816,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.3965700337887,"allocatedBytesPerSecond":3148814694.690657,"gcPauses":99,"gcPauseTotalMs":54.43817,"gcPauseP99Ms":0.711625,"gcPauseMaxMs":0.711625,"delivery":{"count":14778338,"p50Ms":0.338,"p95Ms":0.362,"p99Ms":0.419,"p999Ms":1.107,"maxMs":7.187417,"overflow":0},"admission":{"count":14778338,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.011,"p999Ms":0.03,"maxMs":0.819084,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:28:23Z","averages":[15.23,8.97,5.99]},"after":{"utc":"2026-11-25T05:28:33Z","averages":[13.9,8.89,6]}},"sha256":{"jsonl":"c7ee6377ad9502a5c90ce45a57dace40517f9dffbfce52d953bf43cd040db0b7","jfr":"eecaa6d4f6ccc7fea099c98b6c0ab22c4ec8fca5e2037094942dc69424b5f917"}},
+    {"collection":"confirmation","scenario":"contended","round":2,"arm":"release","metrics":{"label":"contended-baseline-2","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":12761623,"callbacks":38284869,"elapsedSeconds":5.000245458,"notificationsPerSecond":2552199.3084524292,"allocatedBytes":13604412400,"producerAllocatedBytes":2984687016,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.040925985668,"allocatedBytesPerSecond":2720748914.082609,"gcPauses":86,"gcPauseTotalMs":47.310458,"gcPauseP99Ms":0.679875,"gcPauseMaxMs":0.679875,"delivery":{"count":12761623,"p50Ms":0.387,"p95Ms":0.427,"p99Ms":0.672,"p999Ms":1.409,"maxMs":5.714125,"overflow":0},"admission":{"count":12761623,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.003,"p999Ms":0.017,"maxMs":0.776125,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:28:33Z","averages":[13.9,8.89,6]},"after":{"utc":"2026-11-25T05:28:44Z","averages":[12.39,8.73,5.97]}},"sha256":{"jsonl":"7207bf7dd9d521ca9650a7e5ec8cdc00251bb35a31d846476c2bd4f4d551b814","jfr":"927d23ffc73eada50de48db5f2f9bbdf45fd7ad41fdec2fe2641174cc779a363"}},
+    {"collection":"confirmation","scenario":"contended","round":3,"arm":"release","metrics":{"label":"contended-baseline-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":14037097,"callbacks":42111291,"elapsedSeconds":5.000205917,"notificationsPerSecond":2807303.785685273,"allocatedBytes":14963550760,"producerAllocatedBytes":3282058664,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1066.0003817028548,"allocatedBytesPerSecond":2992586907.09637,"gcPauses":94,"gcPauseTotalMs":51.241416,"gcPauseP99Ms":0.6795,"gcPauseMaxMs":0.6795,"delivery":{"count":14037097,"p50Ms":0.35,"p95Ms":0.403,"p99Ms":0.548,"p999Ms":1.485,"maxMs":7.902167,"overflow":0},"admission":{"count":14037097,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.008,"maxMs":0.691666,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:28:44Z","averages":[12.39,8.73,5.97]},"after":{"utc":"2026-11-25T05:28:54Z","averages":[11.65,8.69,5.99]}},"sha256":{"jsonl":"198192a453f888d10e481de74d2754cf16231538ef9c27ce8acfcd63398aa5b2","jfr":"cf0c55c52f1927323cdc860437e519007446dcecc4ec63db4b3fa2ea03845665"}},
+    {"collection":"confirmation","scenario":"contended","round":3,"arm":"wake","metrics":{"label":"contended-pilot-3","views":1,"writers":4,"extensions":3,"windowPerView":1024,"callbackNanos":0,"workers":4,"seconds":5,"warmupSeconds":5,"completed":14843916,"callbacks":44531748,"elapsedSeconds":5.000198083,"notificationsPerSecond":2968665.591562725,"allocatedBytes":15813587512,"producerAllocatedBytes":3460993120,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1065.3245081688685,"allocatedBytesPerSecond":3162592211.249404,"gcPauses":100,"gcPauseTotalMs":55.161788,"gcPauseP99Ms":0.6435,"gcPauseMaxMs":0.67,"delivery":{"count":14843916,"p50Ms":0.335,"p95Ms":0.369,"p99Ms":0.518,"p999Ms":1.727,"maxMs":14.857792,"overflow":0},"admission":{"count":14843916,"p50Ms":0.001,"p95Ms":0.002,"p99Ms":0.012,"p999Ms":0.033,"maxMs":2.405959,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:28:54Z","averages":[11.65,8.69,5.99]},"after":{"utc":"2026-11-25T05:29:04Z","averages":[10.41,8.55,5.99]}},"sha256":{"jsonl":"69b919ad1e2b36e6f8e807db5f4ddd67060ed87a8d39bc3ccf8acbbc10d6f9d0","jfr":"356535783afab11d3058405811738671e276a1161d67060c46d4f0c1cca3c0c6"}},
+    {"collection":"confirmation","scenario":"extensions","round":1,"arm":"release","metrics":{"label":"extensions-baseline-1","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":545182,"callbacks":4361456,"elapsedSeconds":5.018822375,"notificationsPerSecond":108627.47458760184,"allocatedBytes":1296555248,"producerAllocatedBytes":274464496,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2378.2062650637768,"allocatedBytesPerSecond":258338540.6222909,"gcPauses":9,"gcPauseTotalMs":15.141335,"gcPauseP99Ms":1.874834,"gcPauseMaxMs":1.874834,"delivery":{"count":545182,"p50Ms":18.6,"p95Ms":20.2,"p99Ms":23.3,"p999Ms":28.9,"maxMs":31.997583,"overflow":0},"admission":{"count":545182,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.008,"maxMs":1.959208,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:29:04Z","averages":[10.41,8.55,5.99]},"after":{"utc":"2026-11-25T05:29:15Z","averages":[9.36,8.39,5.96]}},"sha256":{"jsonl":"65e9f20bae2f4d2542522ee7ace39e86b92eb8d0334d11950140c6daaa65ff4d","jfr":"3682ac7c57b43824ee432c7c0df4c15fe1588320bdfac1b788657047d30868b2"}},
+    {"collection":"confirmation","scenario":"extensions","round":1,"arm":"wake","metrics":{"label":"extensions-pilot-1","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":549578,"callbacks":4396624,"elapsedSeconds":5.018635958,"notificationsPerSecond":109507.44477170942,"allocatedBytes":1306664000,"producerAllocatedBytes":276760256,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2377.576977244358,"allocatedBytesPerSecond":260362379.5260744,"gcPauses":9,"gcPauseTotalMs":14.817668,"gcPauseP99Ms":1.754792,"gcPauseMaxMs":1.754792,"delivery":{"count":549578,"p50Ms":18.6,"p95Ms":19.5,"p99Ms":22.5,"p999Ms":29.5,"maxMs":33.276125,"overflow":0},"admission":{"count":549578,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.005,"maxMs":1.826834,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:29:15Z","averages":[9.36,8.39,5.96]},"after":{"utc":"2026-11-25T05:29:25Z","averages":[8.45,8.23,5.93]}},"sha256":{"jsonl":"970b878eb5465982a598dc0435b482dee62257f4a5fd9b193ddd1e681b27b39b","jfr":"58216e56cd657228a4af52702e02e6ec42ef46e301a2f8c5c1fe421dfb449f59"}},
+    {"collection":"confirmation","scenario":"extensions","round":2,"arm":"wake","metrics":{"label":"extensions-pilot-2","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":546524,"callbacks":4372192,"elapsedSeconds":5.018664416,"notificationsPerSecond":108898.29538265744,"allocatedBytes":1299862384,"producerAllocatedBytes":275224960,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2378.4177529257636,"allocatedBytesPerSecond":259005639.00146616,"gcPauses":8,"gcPauseTotalMs":12.901251,"gcPauseP99Ms":1.861083,"gcPauseMaxMs":1.861083,"delivery":{"count":546524,"p50Ms":18.6,"p95Ms":19.8,"p99Ms":23.1,"p999Ms":29.2,"maxMs":32.490042,"overflow":0},"admission":{"count":546524,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.005,"maxMs":1.941458,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:29:25Z","averages":[8.45,8.23,5.93]},"after":{"utc":"2026-11-25T05:29:35Z","averages":[7.54,8.04,5.89]}},"sha256":{"jsonl":"0c233ddc01d176f485c1a9b1d58f6d2cd0084edc6e34f543628cf46cd9a517b4","jfr":"25aa60afab64a7fb60e59cea2fdf151bf1428f38da8809630adaf16dbac3108a"}},
+    {"collection":"confirmation","scenario":"extensions","round":2,"arm":"release","metrics":{"label":"extensions-baseline-2","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":540130,"callbacks":4321040,"elapsedSeconds":5.018802666,"notificationsPerSecond":107621.28657879373,"allocatedBytes":1284185928,"producerAllocatedBytes":271853200,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2377.549715809157,"allocatedBytesPerSecond":255874959.32042688,"gcPauses":8,"gcPauseTotalMs":12.171542,"gcPauseP99Ms":1.741083,"gcPauseMaxMs":1.741083,"delivery":{"count":540130,"p50Ms":18.8,"p95Ms":20.5,"p99Ms":22.7,"p999Ms":29.9,"maxMs":33.364542,"overflow":0},"admission":{"count":540130,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.008,"maxMs":1.741334,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:29:35Z","averages":[7.54,8.04,5.89]},"after":{"utc":"2026-11-25T05:29:46Z","averages":[7.15,7.94,5.88]}},"sha256":{"jsonl":"fd787339384521f1e4ccb80716954f3e627a84d52a2fa9261d5e1f5d3982005b","jfr":"b54c07b0efdadab19a0aaf5d8e43b0dacc90cf4412587e7d4f79b0ee6321ca31"}},
+    {"collection":"confirmation","scenario":"extensions","round":3,"arm":"release","metrics":{"label":"extensions-baseline-3","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":548373,"callbacks":4386984,"elapsedSeconds":5.019316875,"notificationsPerSecond":109252.51655883949,"allocatedBytes":1304057496,"producerAllocatedBytes":276118984,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2378.0483284187953,"allocatedBytesPerSecond":259807764.37829497,"gcPauses":9,"gcPauseTotalMs":13.547791,"gcPauseP99Ms":1.791791,"gcPauseMaxMs":1.791791,"delivery":{"count":548373,"p50Ms":18.6,"p95Ms":19.1,"p99Ms":21.9,"p999Ms":28.2,"maxMs":30.678625,"overflow":0},"admission":{"count":548373,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.009,"maxMs":1.805708,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:29:46Z","averages":[7.15,7.94,5.88]},"after":{"utc":"2026-11-25T05:29:56Z","averages":[6.51,7.77,5.85]}},"sha256":{"jsonl":"22b09c7298e5ae3c52092634c469efaebe536b7f71b3372652ad007ef9b8f324","jfr":"a1ca6e76adb3dd6635ab357e53c6c0259e73c1c137f40a258532d0fc37bd028d"}},
+    {"collection":"confirmation","scenario":"extensions","round":3,"arm":"wake","metrics":{"label":"extensions-pilot-3","views":1,"writers":8,"extensions":8,"windowPerView":2048,"callbackNanos":1000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":541075,"callbacks":4328600,"elapsedSeconds":5.018527333,"notificationsPerSecond":107815.49329064898,"allocatedBytes":1286887920,"producerAllocatedBytes":272266280,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":2378.39101788107,"allocatedBytesPerSecond":256427400.83089632,"gcPauses":9,"gcPauseTotalMs":14.773498,"gcPauseP99Ms":1.810625,"gcPauseMaxMs":1.810625,"delivery":{"count":541075,"p50Ms":18.5,"p95Ms":20.6,"p99Ms":26.4,"p999Ms":37.1,"maxMs":38.120458,"overflow":0},"admission":{"count":541075,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.007,"maxMs":1.681917,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:29:56Z","averages":[6.51,7.77,5.85]},"after":{"utc":"2026-11-25T05:30:06Z","averages":[6.06,7.63,5.82]}},"sha256":{"jsonl":"e0a23f014801005bb1540a9a60b25b769a0a04f3e7981b01a126567bc8f4ed70","jfr":"02c0e78047ec975406cdb094a86f6481c63ca2e187844e1df36b2786da88880b"}},
+    {"collection":"confirmation","scenario":"backlog","round":1,"arm":"release","metrics":{"label":"backlog-baseline-1","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":729067,"callbacks":2187201,"elapsedSeconds":5.057120958,"notificationsPerSecond":144166.4152499,"allocatedBytes":793104552,"producerAllocatedBytes":185285280,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.8349342378683,"allocatedBytesPerSecond":156829262.8526842,"gcPauses":5,"gcPauseTotalMs":15.15225,"gcPauseP99Ms":3.226708,"gcPauseMaxMs":3.226708,"delivery":{"count":729067,"p50Ms":56.3,"p95Ms":59.5,"p99Ms":63.9,"p999Ms":70.2,"maxMs":72.649167,"overflow":0},"admission":{"count":729067,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.006,"maxMs":3.296875,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:30:06Z","averages":[6.06,7.63,5.82]},"after":{"utc":"2026-11-25T05:30:17Z","averages":[5.58,7.48,5.78]}},"sha256":{"jsonl":"b0e19a158630b0e5676e64ee431112a3a6735680fdf26244580ab55707011b64","jfr":"5dec988fe7b14993bbb41553919eb1faaa780f470f551734f00bd6db47deaa0f"}},
+    {"collection":"confirmation","scenario":"backlog","round":1,"arm":"wake","metrics":{"label":"backlog-pilot-1","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":732133,"callbacks":2196399,"elapsedSeconds":5.062028125,"notificationsPerSecond":144632.34536058607,"allocatedBytes":796373536,"producerAllocatedBytes":186377144,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.74435246055,"allocatedBytesPerSecond":157323016.84910136,"gcPauses":5,"gcPauseTotalMs":14.725957,"gcPauseP99Ms":3.028375,"gcPauseMaxMs":3.028375,"delivery":{"count":732133,"p50Ms":56.3,"p95Ms":58.9,"p99Ms":62.5,"p999Ms":66.9,"maxMs":67.631542,"overflow":0},"admission":{"count":732133,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.005,"maxMs":2.931417,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:30:17Z","averages":[5.58,7.48,5.78]},"after":{"utc":"2026-11-25T05:30:27Z","averages":[5.27,7.35,5.76]}},"sha256":{"jsonl":"502206cf51c94951c395971b2b260e1a0582ecf14f655c4883887a0ef793c107","jfr":"a78160cdde9c8f4b30f364870e77acf76f5d21a4a3d3f8d9b16a6dcea91a1897"}},
+    {"collection":"confirmation","scenario":"backlog","round":2,"arm":"wake","metrics":{"label":"backlog-pilot-2","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":733143,"callbacks":2199429,"elapsedSeconds":5.059906209,"notificationsPerSecond":144892.6066447569,"allocatedBytes":797841640,"producerAllocatedBytes":186610688,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1088.2483226328288,"allocatedBytesPerSecond":157679136.14305493,"gcPauses":5,"gcPauseTotalMs":15.057584,"gcPauseP99Ms":3.117417,"gcPauseMaxMs":3.117417,"delivery":{"count":733143,"p50Ms":56.1,"p95Ms":59.2,"p99Ms":63.6,"p999Ms":69.3,"maxMs":70.456084,"overflow":0},"admission":{"count":733143,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.001,"p999Ms":0.008,"maxMs":3.059333,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:30:27Z","averages":[5.27,7.35,5.76]},"after":{"utc":"2026-11-25T05:30:38Z","averages":[5.14,7.25,5.74]}},"sha256":{"jsonl":"c6fb616be270b5613a1a21e9e2a647ed9940c558ec4ddb1d590fa077160b9129","jfr":"901f013d05b110ae2783df595c9d5d4a33f5c71af75b861b2d08658f5c154258"}},
+    {"collection":"confirmation","scenario":"backlog","round":2,"arm":"release","metrics":{"label":"backlog-baseline-2","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":729173,"callbacks":2187519,"elapsedSeconds":5.059188333,"notificationsPerSecond":144128.45539743223,"allocatedBytes":793184136,"producerAllocatedBytes":185582888,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.7859383164214,"allocatedBytesPerSecond":156780907.09259233,"gcPauses":5,"gcPauseTotalMs":15.177958,"gcPauseP99Ms":3.208583,"gcPauseMaxMs":3.208583,"delivery":{"count":729173,"p50Ms":56.4,"p95Ms":59.5,"p99Ms":64.1,"p999Ms":68.7,"maxMs":70.174333,"overflow":0},"admission":{"count":729173,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.011,"maxMs":3.17575,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:30:38Z","averages":[5.14,7.25,5.74]},"after":{"utc":"2026-11-25T05:30:48Z","averages":[5.62,7.28,5.77]}},"sha256":{"jsonl":"c9df89d1b0d66250dd206fabf50ffbb08a0363101efc5c74daa813a299d9dbb1","jfr":"46d2d81ecedb2e9fe1a3f7876cf48183a4f8e9a632f7f793520bdb492eaf5ff6"}},
+    {"collection":"confirmation","scenario":"backlog","round":3,"arm":"release","metrics":{"label":"backlog-baseline-3","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":729110,"callbacks":2187330,"elapsedSeconds":5.058897583,"notificationsPerSecond":144124.28558548266,"allocatedBytes":793505032,"producerAllocatedBytes":185747248,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1088.320050472494,"allocatedBytesPerSecond":156853349.7627046,"gcPauses":5,"gcPauseTotalMs":15.003959,"gcPauseP99Ms":3.084667,"gcPauseMaxMs":3.084667,"delivery":{"count":729110,"p50Ms":56.4,"p95Ms":59.4,"p99Ms":64.2,"p999Ms":68.7,"maxMs":70.019958,"overflow":0},"admission":{"count":729110,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.008,"maxMs":3.188833,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:30:48Z","averages":[5.62,7.28,5.77]},"after":{"utc":"2026-11-25T05:30:59Z","averages":[5.06,7.1,5.72]}},"sha256":{"jsonl":"3be0ef2ab5620dc778511a53d3b33523567eb336d5cceafda071690ed3be4b60","jfr":"059f59e4e25385d060880f1f3c199e6533f113112d211dc2442410479fbb3243"}},
+    {"collection":"confirmation","scenario":"backlog","round":3,"arm":"wake","metrics":{"label":"backlog-pilot-3","views":1,"writers":4,"extensions":3,"windowPerView":8192,"callbackNanos":2000,"workers":4,"seconds":5,"warmupSeconds":5,"completed":731786,"callbacks":2195358,"elapsedSeconds":5.057529834,"notificationsPerSecond":144692.3743445781,"allocatedBytes":796067592,"producerAllocatedBytes":186189520,"allocationBoundary":"producers-alive-through-sample","bytesPerNotification":1087.8420631168128,"allocatedBytesPerSecond":157402451.02427605,"gcPauses":5,"gcPauseTotalMs":15.017124,"gcPauseP99Ms":3.097041,"gcPauseMaxMs":3.097041,"delivery":{"count":731786,"p50Ms":56.3,"p95Ms":59.3,"p99Ms":63.8,"p999Ms":69.1,"maxMs":71.477958,"overflow":0},"admission":{"count":731786,"p50Ms":0.001,"p95Ms":0.001,"p99Ms":0.002,"p999Ms":0.007,"maxMs":3.074792,"overflow":0},"java":"21.0.8","processors":8,"maxHeapBytes":268435456,"correct":true},"loads":{"before":{"utc":"2026-11-25T05:30:59Z","averages":[5.06,7.1,5.72]},"after":{"utc":"2026-11-25T05:31:09Z","averages":[4.61,6.9,5.68]}},"sha256":{"jsonl":"09d562fcc20c5e58682609cd4181e66d969751c50c6fdde00f6082460dea28ce","jfr":"e573735dab2081783bd0b9e225e63243e0a272469cd764c5787f3301fa58f04d"}}
+  ]
+}

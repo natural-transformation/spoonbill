@@ -41,6 +41,22 @@ bytes per notification across the three JVMs. Main ranged from 1,071.21 to
 1,072.33. The reported 91.22% is the ratio of their medians. The cause of
 the lower allocation in two candidate trials remains unverified.
 
+## Waking a busy lane in 11.0.0
+
+A writer enqueues its work and calls `wake()`. When a worker already owns the
+lane, the candidate skips the queue inspection and the attempt to claim it.
+An idle lane still requires a successful compare-and-set to schedule a worker,
+and the worker still checks for arrivals when it gives up ownership.
+
+In the six-round screen against the 11.0.0 release, the four-writer workload
+delivered 11.5% more notifications per second and median delivery p99 fell
+from 0.662 to 0.508 ms. In an independent three-pair confirmation, throughput
+rose 12.9% and p99 fell from 0.637 to 0.518 ms. All four workloads met the
+throughput, p99 and allocation budgets. The eight-extension workload's median
+p99 rose from 22.7 to 23.1 ms. Both runs were diagnostic, with startup loads
+of 5.03 and 4.48. The fixture checks callback order, delivery counts, backlog
+drain and teardown in every JVM. [Measurements and source identities](evidence/2026-11-25-serial-lane-wake.json)
+
 ## Workloads and controls
 
 Each fresh JVM uses G1, a 256 MiB heap and `ActiveProcessorCount=8`. Five-second
@@ -140,6 +156,7 @@ Retained evidence files:
   delivery p99 misses the guide; aggregate acceptance remains unresolved.
 - [Delivery progress compared with its parent](evidence/2026-11-24-extension-delivery-progress.json).
   All four workloads met the parent-relative budgets in a diagnostic run.
+- [Waking a busy lane](evidence/2026-11-25-serial-lane-wake.json). Both the screen and the four-workload confirmation use the 11.0.0 release.
 
 Intermediate exploratory screens and variant patches from earlier pilot iterations
 were pruned before merge.
