@@ -117,9 +117,10 @@ final class HostSessionPrepared(
  * maxConcurrentChecks at once plus one for maintenance revalidation, which
  * revalidates one view at a time. Every other coordinator turn stays
  * exclusive. A provider returns it only when its own calls and the host's
- * session resolution are safe to run concurrently.
+ * session resolution are safe to run concurrently. Only Spoonbill's providers
+ * create it; a provider decorator can forward the inner provider's value.
  */
-private[spoonbill] final case class BrowserCheckConcurrency(maxConcurrentChecks: Int) {
+final case class BrowserCheckConcurrency private[spoonbill] (maxConcurrentChecks: Int) {
   require(maxConcurrentChecks > 0, "maxConcurrentChecks must be positive")
 }
 
@@ -138,8 +139,11 @@ trait BrowserPersistence[F[_], P] {
    * Concurrent checks are an opt-in, never inherited: None keeps every
    * coordinator turn exclusive. A provider returns a setting only when its
    * checks, and the host's session resolution, are safe to run concurrently.
+   * The coordinator reads it from the provider it is given, so a decorator
+   * keeps concurrent checks only by returning the inner provider's value, and
+   * it may do so only when its own calls are safe to run concurrently too.
    */
-  private[spoonbill] def checkConcurrency: Option[BrowserCheckConcurrency] = None
+  def checkConcurrency: Option[BrowserCheckConcurrency] = None
   def accepts(receipt: CommittedAuthentication): Boolean
   def capture(binding: String, token: Option[String], activate: Boolean): F[Either[BrowserFailure, BrowserIdentity[P]]]
   /**
@@ -198,6 +202,15 @@ trait BrowserPersistence[F[_], P] {
     F: spoonbill.effect.Effect[F]
   ): F[Either[BrowserFailure, A]] =
     F.map(authorize(view))(_.flatMap(identity => Either.cond(allowed(identity), output, BrowserFailure.Denied)))
+
+  /**
+   * Optional: the observation the coordinator pairs with a snapshot session
+   * that skips unchanged projections in its queued top-level write. None, the
+   * default, keeps the ordinary authorization and commit of every such write.
+   * A decorator forwards the inner provider's value only when it preserves the
+   * inner provider's checks.
+   */
+  def guardedWriteObservations: Option[BrowserWriteObservations[F, P]] = None
   def release(view: BrowserView[P]): F[Unit]
 
   /**
@@ -277,6 +290,23 @@ final class BrowserCapabilityScope[P] {
   }
   def admit(value: BrowserCeremony): Boolean                 = owns(value) && value.admitted.compareAndSet(false, true)
   def committed(completionId: UUID): CommittedAuthentication = new CommittedAuthentication(owner, completionId)
+
+  /**
+   * Trusted provider factory for a guarded write observation; call only after
+   * the observing transaction's acknowledged commit. None once this scope no
+   * longer owns the identity or the view.
+   */
+  private[spoonbill] def writeObservation(
+    identity: BrowserIdentity[P],
+    view: BrowserView[P],
+    revision: spoonbill.security.Versions.ViewRevision
+  ): Option[BrowserWriteObservation[P]] =
+    Option.when(owns(identity) && owns(view))(
+      new BrowserWriteObservation(
+        identity,
+        new SnapshotRevisionReceipt(owner, view, view.ownerId, view.epoch, revision)
+      )
+    )
 
   def owns(value: BrowserReplacementCeremony): Boolean   = !isClosed && (value.issuer eq owner)
   def owns(value: BrowserReplacementInvocation): Boolean = !isClosed && (value.issuer eq owner)

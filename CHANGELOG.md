@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+These changes reduce the database round trips of JDBC authority checks.
+Applications upgrading from 11.0.1 keep their database schema; every change is
+an opt-in, and the existing behavior stays the default.
+
+- `JdbcIsolation.readCommittedOnCheckout(source)` certifies that a pool
+  establishes `READ COMMITTED` on every checkout. Spoonbill's transactions on
+  a certified source skip the isolation setter, which the PostgreSQL driver
+  sends as one `SET` per transaction. See
+  [JDBC deployment](docs/browser-authentication.md#jdbc-deployment-and-credential-custody).
+- A host that implements `JdbcHeldHostSessions` lets a `SharedViews` check of
+  an authenticated view resolve the host once and decide every deadline at one
+  durable clock checkpoint, sampled under the clock row lock after the check's
+  last wait. Such a check used to resolve the host twice and commit five
+  checkpoints. Other flows and hosts without the capability are unchanged.
+- `JdbcBrowserPersistence.projectedSnapshotsIfChanged` is
+  `projectedSnapshots` whose queued top-level write saves nothing when the
+  encoded projection is unchanged: one provider transaction checks the view
+  and reads its snapshot revision, instead of a check followed by a save. See
+  [Clustered browser authentication](docs/clustered-browser-authentication.md).
+  `BrowserPersistence.guardedWriteObservations` is the provider capability
+  behind it; it defaults to `None`, and a provider decorator can forward it.
+- `JdbcBrowserPersistence.sharedViewsWithConcurrentChecks` lets the checks of
+  authenticated `SharedViews` views run concurrently under the shared realm
+  lock, with a `JdbcHeldHostSessions` host and a reserved clock source.
+  Writers and every other check keep the exclusive lock. The
+  `concurrentChecks` constructor parameter still refuses `SharedViews`. See
+  [Concurrent authority checks](docs/browser-authentication.md#concurrent-authority-checks).
+- `BrowserPersistence.checkConcurrency` and `BrowserCheckConcurrency` are
+  public, so a provider decorator can forward the inner provider's
+  concurrent-check setting to the coordinator. Only Spoonbill's providers
+  create the setting.
+
 ## 11.0.1 — 2026-11-25
 
 This patch reduces work during extension delivery. Applications upgrading

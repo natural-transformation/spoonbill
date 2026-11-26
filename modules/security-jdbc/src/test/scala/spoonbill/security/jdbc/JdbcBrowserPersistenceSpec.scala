@@ -3,13 +3,15 @@ package spoonbill.security.jdbc
 import avocet.Id
 import avocet.dsl.*
 import avocet.dsl.html.*
+import cats.effect.{FiberIO, IO}
+import cats.effect.unsafe.{IORuntime, IORuntimeConfig}
 import java.io.PrintWriter
 import java.lang.reflect.{InvocationHandler, InvocationTargetException, Method, Proxy}
 import java.security.{MessageDigest, SecureRandom}
-import java.sql.{Connection, SQLException, SQLFeatureNotSupportedException, Timestamp}
+import java.sql.{Connection, PreparedStatement, SQLException, SQLFeatureNotSupportedException, Timestamp}
 import java.time.Instant
 import java.util.{Base64, Properties, UUID}
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit, TimeoutException}
+import java.util.concurrent.{CancellationException, ConcurrentLinkedQueue, CountDownLatch, LinkedBlockingQueue, TimeUnit, TimeoutException}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
@@ -26,7 +28,7 @@ import spoonbill.security.Identifiers.{ConnectionId, InvocationId}
 import spoonbill.security.Versions.{SecurityGeneration, SlotGeneration, ViewOwnershipEpoch, ViewRevision}
 import spoonbill.security.transaction.*
 import spoonbill.server.*
-import spoonbill.snapshot.{SchemaId, SchemaVersion, SnapshotBinaryCodec, SnapshotFormat, SnapshotIdentity, SnapshotKeys, SnapshotLoad, ViewSnapshotError, ViewSnapshotException}
+import spoonbill.snapshot.{ObservedSnapshotWrites, SchemaId, SchemaVersion, SnapshotBinaryCodec, SnapshotFormat, SnapshotIdentity, SnapshotKeys, SnapshotLoad, ViewSnapshotError, ViewSnapshotException, ViewSnapshotSession}
 import spoonbill.state.BoundedPresentationStore
 import spoonbill.state.javaSerialization.*
 import spoonbill.web.{PathAndQuery, Request}
@@ -139,8 +141,29 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     def toFuture[A](value: Deferred[A]): Future[A]       = value()
   }
 
-  private class Fixture(exclusive: Boolean = true, isolatedSchema: Boolean = false, hostExpiryNanos: Int = 0)
-      extends BrowserReplacementConformance.Fixture {
+  /**
+   * While `early` is set, runs a guarantee's finalizer before its task, and the
+   * task still runs once afterwards. The Cats Effect 2 and Monix instances do
+   * this when another thread cancels a task that has installed its finalizer
+   * and not yet claimed what the finalizer gives back.
+   */
+  private final class EarlyFinalizerEffect extends DeferredFutureEffect {
+    val early = new AtomicBoolean()
+    override def guarantee[A](task: Deferred[A])(finalizer: => Deferred[Unit]): Deferred[A] =
+      () => if (early.get()) flatMap(finalizer)(_ => task)() else super.guarantee(task)(finalizer)()
+  }
+
+  /**
+   * held selects a host that holds its resolution (JdbcHeldHostSessions) over
+   * the same table; refreshSeconds makes its accepted hook extend idle expiry.
+   */
+  private class Fixture(
+    exclusive: Boolean = true,
+    isolatedSchema: Boolean = false,
+    hostExpiryNanos: Int = 0,
+    held: Boolean = false,
+    refreshSeconds: Long = 0
+  ) extends BrowserReplacementConformance.Fixture {
     private val url =
       sys.env.getOrElse("SPOONBILL_JDBC_TEST_URL", cancel("Use the owned disposable PostgreSQL test database"))
     val clock = new AtomicReference(BrowserPersistenceConformance.start)
@@ -155,6 +178,16 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     val replacementCallbacks  = new AtomicInteger()
     val recordSql = new AtomicBoolean()
     val statements = new ConcurrentLinkedQueue[String]()
+    // Committed transactions that touched the durable clock, and a lost acknowledgment of the next one.
+    val clockCommits             = new AtomicInteger()
+    val loseClockAcknowledgement = new AtomicBoolean()
+    // Held host calls: lockResolution calls, accepted hooks, a pause before the next host lock.
+    val hostHolds    = new AtomicInteger()
+    val hostAccepted = new AtomicInteger()
+    val failAccepted = new AtomicBoolean()
+    val holdPause    = new AtomicReference(Option.empty[(CountDownLatch, CountDownLatch)])
+    // When set, the accepted hook first locks this other host session's row.
+    val hookLocks    = new AtomicReference(Option.empty[UUID])
     val source: DataSource = new DataSource {
       // sbt can reload the test classloader after DriverManager's discovery.
       // Use this fixture's explicit driver instead of that ambient registry.
@@ -173,12 +206,28 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         }
         openedConnections.incrementAndGet()
         Proxy.newProxyInstance(getClass.getClassLoader, Array(classOf[Connection]), new InvocationHandler {
+          // Whether the open transaction on this connection touched the durable clock.
+          private var clockTransaction = false
           def invoke(proxy: Object, method: Method, args: Array[Object]): Object = {
             val arguments = Option(args).getOrElse(Array.empty[Object])
-            if (recordSql.get() && method.getName == "prepareStatement" && arguments.nonEmpty)
-              statements.add(arguments(0).toString.replaceAll("\\s+", " ").trim)
-            try method.invoke(connection, arguments*)
-            catch { case error: InvocationTargetException => throw error.getCause }
+            if (method.getName == "prepareStatement" && arguments.nonEmpty) {
+              val text = arguments(0).toString
+              if (recordSql.get()) statements.add(text.replaceAll("\\s+", " ").trim)
+              if (text.contains("spoonbill_auth_clock")) clockTransaction = true
+            }
+            val result =
+              try method.invoke(connection, arguments*)
+              catch { case error: InvocationTargetException => throw error.getCause }
+            method.getName match {
+              case "commit" if clockTransaction =>
+                clockTransaction = false
+                clockCommits.incrementAndGet()
+                if (loseClockAcknowledgement.getAndSet(false))
+                  throw new SQLException("Synthetic lost clock commit acknowledgment")
+              case "rollback" => clockTransaction = false
+              case _          => ()
+            }
+            result
           }
         }).asInstanceOf[Connection]
       }
@@ -209,14 +258,15 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         hostResolutions.incrementAndGet()
         Using.resource(
           connection.prepareStatement(
-            "SELECT subject,version,expires_at,enabled FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE"
+            "SELECT subject,version,expires_at,enabled,idle_until FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE"
           )
         ) { query =>
           query.setString(1, realm); query.setObject(2, sessionId)
           Using.resource(query.executeQuery()) { rows =>
             if (
               !rows.next() || !rows
-                .getBoolean(4) || !time.isBefore(rows.getTimestamp(3).toInstant.plusNanos(hostExpiryNanos.toLong))
+                .getBoolean(4) || !time.isBefore(rows.getTimestamp(3).toInstant.plusNanos(hostExpiryNanos.toLong)) ||
+              Option(rows.getTimestamp(5)).exists(idle => !time.isBefore(idle.toInstant))
             ) None
             else
               Some(
@@ -241,6 +291,68 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
           if (query.executeUpdate() != 1) throw new OperationProtocolException(OperationError.HostDenied)
         }
     }
+    /**
+     * The same host policy, holding its resolution: it locks and reads the row
+     * without deciding by time. Its cutoff is the earlier of absolute and idle
+     * expiry; its accepted hook optionally extends idle expiry from the
+     * decision instant on the row it locked.
+     */
+    private val heldHost = new JdbcHeldHostSessions[String] {
+      def resolve(connection: Connection, sessionId: UUID, time: Instant): Option[HostPrincipal[String]] =
+        host.resolve(connection, sessionId, time)
+      def acknowledge(connection: Connection, completionId: UUID, sessionId: UUID, time: Instant): Unit =
+        host.acknowledge(connection, completionId, sessionId, time)
+      def lockResolution(connection: Connection, sessionId: UUID): Option[JdbcHeldResolution[String]] = {
+        hostHolds.incrementAndGet()
+        holdPause.getAndSet(None).foreach { case (entered, resume) =>
+          entered.countDown(); resume.await(15, TimeUnit.SECONDS)
+        }
+        Using.resource(
+          connection.prepareStatement(
+            "SELECT subject,version,expires_at,enabled,idle_until FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE"
+          )
+        ) { query =>
+          query.setString(1, realm); query.setObject(2, sessionId)
+          Using.resource(query.executeQuery()) { rows =>
+            if (!rows.next() || !rows.getBoolean(4)) None
+            else {
+              val absolute = rows.getTimestamp(3).toInstant.plusNanos(hostExpiryNanos.toLong)
+              val idle     = Option(rows.getTimestamp(5)).map(_.toInstant)
+              val stamp    = HostPrincipal(rows.getString(1), rows.getString(1), rows.getLong(2), rows.getLong(2), absolute)
+              Some(new JdbcHeldResolution[String] {
+                val principal: HostPrincipal[String] = stamp
+                val validUntilExclusive: Instant     = idle.filter(_.isBefore(absolute)).getOrElse(absolute)
+                override def onAcceptedAt(now: Instant): Unit = {
+                  hostAccepted.incrementAndGet()
+                  if (failAccepted.getAndSet(false)) throw new IllegalStateException("Synthetic accepted-hook failure")
+                  hookLocks.getAndSet(None).foreach { other =>
+                    Using.resource(
+                      connection.prepareStatement("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE")
+                    ) { lock =>
+                      lock.setString(1, realm); lock.setObject(2, other); Using.resource(lock.executeQuery())(_.next()); ()
+                    }
+                  }
+                  if (refreshSeconds > 0 && idle.nonEmpty)
+                    Using.resource(
+                      connection.prepareStatement(
+                        "UPDATE spoonbill_auth_test_host SET idle_until=? WHERE realm=? AND id=? AND idle_until<?"
+                      )
+                    ) { update =>
+                      val next = Timestamp.from(now.plusSeconds(refreshSeconds))
+                      update.setTimestamp(1, next); update.setString(2, realm); update.setObject(3, sessionId)
+                      update.setTimestamp(4, next); update.executeUpdate(); ()
+                    }
+                }
+              })
+            }
+          }
+        }
+      }
+    }
+    private def selectedHost: JdbcHostSessions[String] = if (held) heldHost else host
+    /** The held host and the vault, for a provider of another effect over the same realm. */
+    def heldHostSessions: JdbcHeldHostSessions[String] = heldHost
+    def credentialVault: JdbcCredentialVault           = vault
     private val outer = new JdbcTransactionExecutor[Future](source, ExecutionContext.global)
     private val observed = new TransactionExecutor[Future, Direct, Connection] {
       val program     = TransactionProgram.direct
@@ -261,7 +373,7 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         realm,
         "session",
         () => clock.get(),
-        host,
+        selectedHost,
         vault,
         ownership = if (exclusive) BrowserOwnership.ExclusiveScope else BrowserOwnership.SharedViews
       )
@@ -269,15 +381,16 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       runner: TransactionExecutor[Future, Direct, Connection],
       limits: BrowserPersistenceLimits = BrowserPersistenceLimits(),
       newId: () => UUID = () => UUID.randomUUID(),
-      concurrent: Option[JdbcConcurrentChecks] = None
+      concurrent: Option[JdbcConcurrentChecks] = None,
+      time: () => Instant = () => clock.get()
     ): JdbcBrowserPersistence[Future, String] =
       new JdbcBrowserPersistence(
         source,
         ExecutionContext.global,
         realm,
         "session",
-        () => clock.get(),
-        host,
+        time,
+        selectedHost,
         vault,
         ownership = if (exclusive) BrowserOwnership.ExclusiveScope else BrowserOwnership.SharedViews,
         limits = limits,
@@ -295,12 +408,27 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         realm,
         "session",
         () => clock.get(),
-        host,
+        selectedHost,
         vault,
         ownership = ownership,
         existingRunner = Some(observed),
         concurrentChecks = Some(JdbcConcurrentChecks(source, cap))
       )
+    /** A SharedViews node whose eligible checks run concurrently; requires held = true. */
+    def sharedConcurrent(cap: Int, clockSource: DataSource = source): JdbcBrowserPersistence[Future, String] =
+      JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[Future, String](
+        source,
+        ExecutionContext.global,
+        realm,
+        "session",
+        () => clock.get(),
+        heldHost,
+        vault,
+        JdbcConcurrentChecks(clockSource, cap),
+        existingRunner = Some(observed)
+      )
+    /** Another node over the same realm with its own wall clock. */
+    def withClock(time: () => Instant): JdbcBrowserPersistence[Future, String] = withRunner(observed, time = time)
     def withViewLimit(value: Int): JdbcBrowserPersistence[Future, String] =
       withRunner(observed, BrowserPersistenceLimits(retainedViews = value))
     def withLimits(limits: BrowserPersistenceLimits, newId: () => UUID = () => UUID.randomUUID()): JdbcBrowserPersistence[Future, String] =
@@ -314,6 +442,10 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
         realm TEXT NOT NULL,id UUID NOT NULL,completion UUID NOT NULL,subject TEXT NOT NULL,
         version BIGINT NOT NULL,expires_at TIMESTAMP WITH TIME ZONE NOT NULL,enabled BOOLEAN NOT NULL,
         acknowledged BOOLEAN NOT NULL DEFAULT FALSE,PRIMARY KEY(realm,id))""")
+      )
+      // Idle expiry for the held host's cutoff; NULL means none.
+      Using.resource(connection.createStatement())(
+        _.executeUpdate("ALTER TABLE spoonbill_auth_test_host ADD COLUMN IF NOT EXISTS idle_until TIMESTAMP WITH TIME ZONE")
       )
     }
     def prepare(
@@ -456,6 +588,107 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       Using.resource(connection.prepareStatement("UPDATE spoonbill_auth_test_host SET enabled=FALSE WHERE realm=?")) {
         query =>
           query.setString(1, realm); query.executeUpdate(); ()
+      }
+    }
+    def setIdle(session: UUID, until: Instant): Unit = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement("UPDATE spoonbill_auth_test_host SET idle_until=? WHERE realm=? AND id=?")) {
+        query =>
+          query.setTimestamp(1, Timestamp.from(until)); query.setString(2, realm); query.setObject(3, session)
+          query.executeUpdate() shouldBe 1
+      }
+    }
+    def idleOf(session: UUID): Instant = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement("SELECT idle_until FROM spoonbill_auth_test_host WHERE realm=? AND id=?")) {
+        query =>
+          query.setString(1, realm); query.setObject(2, session)
+          Using.resource(query.executeQuery()) { rows => rows.next() shouldBe true; rows.getTimestamp(1).toInstant }
+      }
+    }
+    /** The stored snapshot revision of a view. */
+    def viewRevision(id: Qsid = qsid): Long = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement(
+        "SELECT snapshot_revision FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace='session' AND view_id=?"
+      )) { query =>
+        query.setString(1, realm); query.setString(2, BrowserView.key(id))
+        Using.resource(query.executeQuery()) { rows => rows.next() shouldBe true; rows.getLong(1) }
+      }
+    }
+    /** The realm's durable clock floor. */
+    def clockFloor: Instant = Using.resource(source.getConnection) { connection =>
+      Using.resource(connection.prepareStatement(
+        "SELECT epoch_second,nano FROM spoonbill_auth_clock WHERE realm=? AND namespace='session'"
+      )) { query =>
+        query.setString(1, realm)
+        Using.resource(query.executeQuery()) { rows =>
+          rows.next() shouldBe true; Instant.ofEpochSecond(rows.getLong(1), rows.getInt(2).toLong)
+        }
+      }
+    }
+    /** Row locks taken in a separate open transaction, until release. */
+    final class HeldLock(sql: String, bind: PreparedStatement => Unit) {
+      private val connection = source.getConnection
+      connection.setAutoCommit(false)
+      Using.resource(connection.prepareStatement(sql)) { query =>
+        bind(query); Using.resource(query.executeQuery())(_.next()) shouldBe true
+      }
+      def update(text: String)(set: PreparedStatement => Unit): Unit =
+        Using.resource(connection.prepareStatement(text)) { query => set(query); query.executeUpdate() shouldBe 1 }
+      /**
+       * PostgreSQL ends a deadlock by aborting the backend whose wait first
+       * outlasts deadlock_timeout. A long timeout here makes the other side of
+       * a test's deadlock the one that is aborted.
+       */
+      def deferDeadlockDetection(): Unit =
+        Using.resource(connection.createStatement())(_.execute("SET LOCAL deadlock_timeout = '60s'"))
+      /** One more locking read in this transaction; it waits for the rows, then reports whether it found any. */
+      def lock(text: String)(set: PreparedStatement => Unit): Boolean =
+        Using.resource(connection.prepareStatement(text)) { query => set(query); Using.resource(query.executeQuery())(_.next()) }
+      private val released = new AtomicBoolean()
+      /** Settles and closes the transaction once; later calls do nothing. */
+      def release(commit: Boolean = false): Unit =
+        if (released.compareAndSet(false, true))
+          try { if (commit) connection.commit() else connection.rollback() } finally connection.close()
+      /**
+       * Runs the steps that need the rows held and releases them afterwards,
+       * also when an assertion fails, so that the checks waiting for them end.
+       */
+      def holding[A](body: => A): A = try body finally release()
+    }
+    /** Wait until `count` other backends wait for a lock in statements containing `fragment`. */
+    def awaitLockWait(fragment: String, count: Int = 1): Unit = Using.resource(source.getConnection) { observer =>
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+      def waiting: Int = Using.resource(observer.prepareStatement(
+        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND pid<>pg_backend_pid() AND query LIKE ?"
+      )) { query =>
+        query.setString(1, s"%$fragment%")
+        Using.resource(query.executeQuery()) { rows => rows.next(); rows.getInt(1) }
+      }
+      while (waiting < count && System.nanoTime() < deadline) Thread.sleep(5)
+      withClue(s"fewer than $count backends wait for a lock in $fragment: ")(waiting should be >= count)
+    }
+    /**
+     * A runner that holds its next transaction open after its body, before it
+     * settles, once armed: skip transactions pass first. The transaction keeps
+     * its realm lock and staged writes while paused.
+     */
+    final class PausingRunner {
+      private val armed   = new AtomicReference(Option.empty[(Int, CountDownLatch, CountDownLatch)])
+      def arm(skip: Int = 0): (CountDownLatch, CountDownLatch) = {
+        val latches = (new CountDownLatch(1), new CountDownLatch(1))
+        armed.set(Some((skip, latches._1, latches._2))); latches
+      }
+      val runner: TransactionExecutor[Future, Direct, Connection] = new TransactionExecutor[Future, Direct, Connection] {
+        val program     = TransactionProgram.direct
+        val scopePolicy = TransactionScopePolicy.ThreadConfined
+        def transact[A](body: Connection => A): Future[Either[TransactionFailure, A]] = outer.transact { connection =>
+          val value = body(connection)
+          armed.getAndUpdate(_.map { case (skip, entered, resume) => (skip - 1, entered, resume) }) match {
+            case Some((0, entered, resume)) =>
+              armed.set(None); entered.countDown(); resume.await(15, TimeUnit.SECONDS)
+            case _ => ()
+          }
+          value
+        }
       }
     }
     def close(): Unit = {
@@ -3165,4 +3398,1023 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
     } finally await(provider.close())
     provider.renewingInBackground shouldBe false
   }
+
+  /** What one operation adds: held host locks, host resolutions, clock commits and provider transactions. */
+  private def heldCounts(db: Fixture)(operation: => Unit): (Int, Int, Int, Int) = {
+    val before = (db.hostHolds.get(), db.hostResolutions.get(), db.clockCommits.get(), db.domainTransactions.get())
+    operation
+    (
+      db.hostHolds.get() - before._1,
+      db.hostResolutions.get() - before._2,
+      db.clockCommits.get() - before._3,
+      db.domainTransactions.get() - before._4
+    )
+  }
+  private def hostRow(db: Fixture, session: UUID): PreparedStatement => Unit = query => {
+    query.setString(1, db.realm); query.setObject(2, session)
+  }
+
+  "Held shared-view checks" should "resolve the host once and commit one clock checkpoint per authenticated check" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      heldCounts(db)(accepted(await(db.persistence.authorize(view)))) shouldBe (1, 0, 1, 1)
+      heldCounts(db)(accepted(await(db.persistence.admitOutputIf(view, "frame")(_ => true)))) shouldBe (1, 0, 1, 1)
+      heldCounts(db)(accepted(await(db.persistence.transact(view)(_ => ())))) shouldBe (1, 0, 1, 1)
+      db.hostAccepted.get() shouldBe 3
+    }
+
+  it should "keep two resolutions and the ordinary clock for a legacy host, an exclusive scope and an anonymous view" in {
+    Using.resource(new Fixture(exclusive = false)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      heldCounts(db)(accepted(await(db.persistence.authorize(view)))) shouldBe (0, 2, 5, 1)
+    }
+    Using.resource(new Fixture(held = true)) { db =>
+      val (view, _)                          = signedIn(db, db.persistence)
+      val (holds, resolutions, _, checks) = heldCounts(db)(accepted(await(db.persistence.authorize(view))))
+      (holds, resolutions, checks) shouldBe (0, 2, 1)
+    }
+    Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+      val anonymous                    = open(db.persistence)
+      val (holds, resolutions, _, _) = heldCounts(db)(accepted(await(db.persistence.authorize(anonymous))))
+      (holds, resolutions) shouldBe (0, 0)
+    }
+  }
+
+  it should "judge session expiry, the host cutoff and the idle view cutoff at the checkpoint, with equality failing" in {
+    val start = BrowserPersistenceConformance.start
+    Using.resource(new Fixture(exclusive = false, held = true, hostExpiryNanos = 1)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      // The host's absolute expiry is one nanosecond after the framework session expiry.
+      val expiry = view.identity.principal.get.expiresAt.minusNanos(1)
+      db.clock.set(expiry.minusNanos(1)); accepted(await(db.persistence.authorize(view)))
+      db.clock.set(expiry); await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+      var ran = false
+      await(db.persistence.transact(view)(_ => ran = true)).isLeft shouldBe true
+      ran shouldBe false
+    }
+    Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      val idle      = start.plusSeconds(100)
+      db.setIdle(view.identity.sessionId.get, idle)
+      db.clock.set(idle.minusNanos(1)); accepted(await(db.persistence.authorize(view)))
+      db.clock.set(idle); await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Denied)
+    }
+    Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+      val provider = db.withLimits(BrowserPersistenceLimits(retention = BrowserRetentionPolicy(idleViewSeconds = 60)))
+      try {
+        val (view, _) = signedIn(db, provider)
+        // Timestamp columns keep microseconds, so the renewal instant is whole microseconds.
+        val renewed = start.plusSeconds(60).minusNanos(1000)
+        db.clock.set(renewed); accepted(await(provider.authorize(view)))
+        db.clock.set(renewed.plusSeconds(60)); await(provider.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+      } finally await(provider.close())
+    }
+  }
+
+  it should "extend idle expiry only from an accepted check, so a due refresh cannot revive an expired session" in Using
+    .resource(new Fixture(exclusive = false, held = true, refreshSeconds = 30)) { db =>
+      val start     = BrowserPersistenceConformance.start
+      val (view, _) = signedIn(db, db.persistence)
+      val session   = view.identity.sessionId.get
+      db.setIdle(session, start.plusSeconds(10))
+      db.clock.set(start.plusSeconds(5)); accepted(await(db.persistence.authorize(view)))
+      db.idleOf(session) shouldBe start.plusSeconds(35)
+      db.clock.set(start.plusSeconds(35)); await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Denied)
+      db.idleOf(session) shouldBe start.plusSeconds(35)
+      db.hostAccepted.get() shouldBe 1
+    }
+
+  it should "sample the decision instant after waiting for the host row, the slot row and the clock row" in {
+    for (table <- Vector("spoonbill_auth_test_host", "spoonbill_browser_slot", "spoonbill_auth_clock"))
+      withClue(s"waiting for $table: ") {
+        Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+          val (view, _) = signedIn(db, db.persistence)
+          val lock = table match {
+            case "spoonbill_auth_test_host" =>
+              new db.HeldLock(
+                "SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE",
+                hostRow(db, view.identity.sessionId.get)
+              )
+            case "spoonbill_browser_slot" =>
+              new db.HeldLock(
+                "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace='session' FOR UPDATE",
+                _.setString(1, db.realm)
+              )
+            case _ =>
+              new db.HeldLock(
+                "SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE",
+                _.setString(1, db.realm)
+              )
+          }
+          val checked = lock.holding {
+            val checked = db.persistence.authorize(view)
+            db.awaitLockWait(table)
+            // The session deadline passes while the check waits.
+            db.clock.set(view.identity.principal.get.expiresAt)
+            checked
+          }
+          await(checked) shouldBe Left(BrowserFailure.Expired)
+        }
+      }
+  }
+
+  it should "observe a later checkpoint that a peer commits while the check waits, also through the capacity path" in {
+    for (peer <- Vector("clock", "capacity")) withClue(s"peer $peer: ") {
+      Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+        val (view, _)         = signedIn(db, db.persistence)
+        val ahead             = view.identity.principal.get.expiresAt.plusSeconds(1)
+        val (entered, resume) = (new CountDownLatch(1), new CountDownLatch(1))
+        db.holdPause.set(Some(entered -> resume))
+        val checked = db.persistence.authorize(view)
+        entered.await(10, TimeUnit.SECONDS) shouldBe true
+        // A node whose wall clock is past the deadline commits a checkpoint meanwhile.
+        val node = Option.when(peer == "capacity")(db.withClock(() => ahead))
+        val usage = node match {
+          case Some(provider) => Some(provider.capacity)
+          case None           => new JdbcBrowserClock(db.source, db.realm, "session", () => ahead).now(); None
+        }
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (db.clockFloor.isBefore(ahead) && System.nanoTime() < deadline) Thread.sleep(5)
+        db.clockFloor shouldBe ahead
+        resume.countDown()
+        await(checked) shouldBe Left(BrowserFailure.Expired)
+        usage.foreach(await(_))
+        node.foreach(provider => await(provider.close()))
+      }
+    }
+  }
+
+  it should "keep every committed decision instant after a rollback, a backward clock and a restart" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val start         = BrowserPersistenceConformance.start
+    val (view, token) = signedIn(db, db.persistence)
+    val expiry        = view.identity.principal.get.expiresAt
+    // An accepted check whose transaction then fails keeps its committed checkpoint.
+    db.clock.set(start.plusSeconds(1)); db.failAccepted.set(true)
+    await(db.persistence.authorize(view)).isLeft shouldBe true
+    db.clockFloor shouldBe start.plusSeconds(1)
+    // A denial at the deadline holds after the wall clock moves back, and after a restart.
+    db.clock.set(expiry)
+    await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+    db.clockFloor shouldBe expiry
+    db.clock.set(start)
+    await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+    val restarted = db.fresh()
+    try await(restarted.capture(binding, Some(token.value), activate = false)) shouldBe Left(BrowserFailure.Expired)
+    finally await(restarted.close())
+  }
+
+  it should "fail closed on an uncertain clock commit, before the accepted hook and the protected body" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _)      = signedIn(db, db.persistence)
+    val acceptedBefore = db.hostAccepted.get()
+    db.loseClockAcknowledgement.set(true)
+    var ran = false
+    await(db.persistence.transact(view)(_ => ran = true)).isLeft shouldBe true
+    ran shouldBe false
+    db.hostAccepted.get() shouldBe acceptedBefore
+    accepted(await(db.persistence.authorize(view)))
+  }
+
+  it should "deny a waiting check once a revocation, logout, takeover or replacement commits" in {
+    for (change <- Vector("revocation", "logout", "takeover", "replacement")) withClue(s"$change: ") {
+      Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+        val (view, token) = signedIn(db, db.persistence)
+        val session       = view.identity.sessionId.get
+        if (change == "revocation") {
+          // The host revokes the session while the check waits for the host row.
+          val lock    = new db.HeldLock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE", hostRow(db, session))
+          val checked = db.persistence.authorize(view)
+          lock.holding {
+            db.awaitLockWait("spoonbill_auth_test_host")
+            lock.update("UPDATE spoonbill_auth_test_host SET enabled=FALSE WHERE realm=? AND id=?")(hostRow(db, session))
+            lock.release(commit = true)
+          }
+          await(checked) shouldBe Left(BrowserFailure.Denied)
+        } else {
+          // The writer holds the realm lock with its changes staged while the check waits for that lock.
+          val pausing = new db.PausingRunner
+          val writer  = db.withRunner(pausing.runner)
+          try {
+            val (entered, resume, written) = change match {
+              case "logout" =>
+                val (entered, resume) = pausing.arm()
+                (entered, resume, writer.logout(binding, Some(token.value)).map(_.isRight))
+              case "takeover" =>
+                val identity          = accepted(await(writer.capture(binding, Some(token.value), activate = false)))
+                // A shared claim reads its admission first and writes in its second transaction.
+                val (entered, resume) = pausing.arm(skip = 1)
+                val claimed           = writer.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = true)
+                (entered, resume, claimed.map(_.isRight))
+              case _ =>
+                val ceremony          = accepted(await(db.persistence.beginReplacement(view, "replace-factor")))
+                val (entered, resume) = (new CountDownLatch(1), new CountDownLatch(1))
+                val replaced = db.replaceWith(
+                  db.persistence, ceremony, replacementInvocation(view), session, version = 2L,
+                  afterHost = () => { entered.countDown(); resume.await(15, TimeUnit.SECONDS); () }
+                )
+                (entered, resume, replaced.map(_.isRight))
+            }
+            entered.await(10, TimeUnit.SECONDS) shouldBe true
+            val checked = db.persistence.authorize(view)
+            db.awaitLockWait("pg_advisory_xact_lock")
+            resume.countDown()
+            await(written) shouldBe true
+            await(checked) shouldBe Left(BrowserFailure.Denied)
+          } finally await(writer.close())
+        }
+      }
+    }
+  }
+
+  it should "keep resolve and the ordinary clock for ceremony and replacement flows of an authenticated view" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, _) = signedIn(db, db.persistence)
+      // Each of these runs the two-sample path: resolve twice, no held host lock and no accepted hook.
+      def legacy(name: String)(operation: => Any): Unit = withClue(s"$name: ") {
+        val (holds, resolutions, _, _) = heldCounts(db)(operation)
+        holds shouldBe 0
+        resolutions should be >= 2
+      }
+      legacy("pending")(accepted(await(db.persistence.pending(view))))
+      legacy("begin")(accepted(await(db.persistence.begin(view, "login"))))
+      var ceremony = Option.empty[BrowserReplacementCeremony]
+      legacy("beginReplacement") { ceremony = Some(accepted(await(db.persistence.beginReplacement(view, "replace-factor")))) }
+      legacy("bindReplacementChallenge")(
+        accepted(await(db.persistence.bindReplacementChallenge(ceremony.get, BrowserChallenge("subject", 1L, 1L, "factor"))))
+      )
+      legacy("withSuccessorCompletion")(await(db.persistence.withSuccessorCompletion(view)((_, completion) => completion)))
+      db.hostAccepted.get() shouldBe 0
+      // The checks and protected host writes take the held path.
+      heldCounts(db)(accepted(await(db.persistence.transact(view)(_ => ())))) shouldBe (1, 0, 1, 1)
+      db.hostAccepted.get() shouldBe 1
+    }
+
+  it should "refuse a stable host denial without waiting for the slot and view locks" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    db.disable()
+    val slot = new db.HeldLock(
+      "SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace='session' FOR UPDATE",
+      _.setString(1, db.realm)
+    )
+    try Await.result(db.persistence.authorize(view), 5.seconds) shouldBe Left(BrowserFailure.Denied)
+    finally slot.release()
+    // Session expiry still outranks the host's denial.
+    db.clock.set(view.identity.principal.get.expiresAt)
+    await(db.persistence.authorize(view)) shouldBe Left(BrowserFailure.Expired)
+  }
+
+  private val draftFormat =
+    new SnapshotFormat[String](accepted(SchemaId.parse("guarded-draft")), accepted(SchemaVersion.fromInt(1)))
+  private case class Page(draft: String, other: String)
+  private def ifChanged(provider: JdbcBrowserPersistence[Future, String], view: BrowserView[String]): ViewSnapshotSession[Future, Page] =
+    provider.projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+  private def paired(session: ViewSnapshotSession[Future, Page]): ObservedSnapshotWrites[Future, Page] = session match {
+    case observed: ObservedSnapshotWrites[Future, Page] @unchecked => observed
+    case _                                                         => fail("The factory's session cannot skip an unchanged projection")
+  }
+  private def observation(provider: JdbcBrowserPersistence[Future, String], view: BrowserView[String]): BrowserWriteObservation[String] =
+    accepted(await(provider.guardedWriteObservations.get.observeWrite(view)))
+  /** One queued top-level write as the coordinator pairs it: an observation, then the session's write. */
+  private def guardedWrite(
+    provider: JdbcBrowserPersistence[Future, String],
+    view: BrowserView[String],
+    session: ViewSnapshotSession[Future, Page],
+    candidate: Page
+  ): Unit = await(paired(session).commitObserved(observation(provider, view).receipt, candidate))
+  private def snapshotError(operation: => Any): ViewSnapshotError = intercept[ViewSnapshotException](operation).error
+
+  "Guarded inline snapshots" should "save nothing for an unchanged projection and once for a changed one, which a reconnect restores" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, token) = signedIn(db, db.persistence)
+      val session       = ifChanged(db.persistence, view)
+      await(session.initialize(Page("", "a"))) shouldBe Page("", "a")
+      val seeded = db.viewRevision()
+      val before = db.domainTransactions.get()
+      guardedWrite(db.persistence, view, session, Page("", "b"))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (1, seeded)
+      guardedWrite(db.persistence, view, session, Page("typed", "b"))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (3, seeded + 1)
+      guardedWrite(db.persistence, view, session, Page("typed", "c"))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (4, seeded + 1)
+      val second = db.fresh()
+      try {
+        val captured = accepted(await(second.capture(binding, Some(token.value), activate = true)))
+        val next     = accepted(await(second.claim(captured, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)))
+        await(ifChanged(second, next).initialize(Page("", "node B"))) shouldBe Page("typed", "node B")
+      } finally await(second.close())
+    }
+
+  it should "return the locked view's revision from the two-sample path too" in Using.resource(new Fixture(exclusive = false)) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val session   = ifChanged(db.persistence, view)
+    await(session.initialize(Page("", "a")))
+    val seeded = db.viewRevision()
+    guardedWrite(db.persistence, view, session, Page("", "b"))
+    guardedWrite(db.persistence, view, session, Page("typed", "b"))
+    db.viewRevision() shouldBe seeded + 1
+  }
+
+  it should "fence a takeover before the observation and the save after it, and keep public commits fenced" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (view, token) = signedIn(db, db.persistence)
+      val session       = ifChanged(db.persistence, view)
+      await(session.initialize(Page("", "a")))
+      val unchanged = observation(db.persistence, view)
+      val changed   = observation(db.persistence, view)
+      val takeover  = db.fresh()
+      try {
+        val captured = accepted(await(takeover.capture(binding, Some(token.value), activate = true)))
+        accepted(await(takeover.claim(captured, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)))
+        // Before an observation, the takeover denies it.
+        await(db.persistence.guardedWriteObservations.get.observeWrite(view)).isLeft shouldBe true
+        // An unchanged write was admitted at its earlier observation; a changed one must save and is fenced.
+        await(paired(session).commitObserved(unchanged.receipt, Page("", "b")))
+        snapshotError(await(paired(session).commitObserved(changed.receipt, Page("typed", "b")))) shouldBe
+          ViewSnapshotError.AccessDenied
+        // The public commit always saves, so the old owner is refused for equal and changed projections.
+        snapshotError(await(session.commit(Page("", "c")))) shouldBe ViewSnapshotError.AccessDenied
+        snapshotError(await(session.commit(Page("other", "c")))) shouldBe ViewSnapshotError.AccessDenied
+      } finally await(takeover.close())
+    }
+
+  it should "fail on a revision changed by the same owner in between, and never adopt it" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val session   = ifChanged(db.persistence, view)
+    await(session.initialize(Page("", "a")))
+    // A second session of the same view and owner saves meanwhile.
+    val other = db.persistence.projectedSnapshots[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+    await(other.initialize(Page("", "a")))
+    await(other.commit(Page("elsewhere", "a")))
+    snapshotError(guardedWrite(db.persistence, view, session, Page("", "b"))) shouldBe ViewSnapshotError.RevisionConflict
+    snapshotError(guardedWrite(db.persistence, view, session, Page("elsewhere", "b"))) shouldBe ViewSnapshotError.RevisionConflict
+  }
+
+  it should "fail closed after an unknown save outcome without advancing or adopting a revision" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val session   = ifChanged(db.persistence, view)
+    await(session.initialize(Page("", "a")))
+    val seeded = db.viewRevision()
+    val pending = observation(db.persistence, view)
+    // The save commits, but its acknowledgment is lost.
+    db.loseAcknowledgement.set(true)
+    intercept[ViewSnapshotException](await(paired(session).commitObserved(pending.receipt, Page("typed", "a"))))
+    db.viewRevision() shouldBe seeded + 1
+    snapshotError(guardedWrite(db.persistence, view, session, Page("typed", "a"))) shouldBe ViewSnapshotError.RevisionConflict
+  }
+
+  it should "save the first write after restoring an older schema, then skip an unchanged one" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val older     = db.persistence.projectedSnapshots[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+    await(older.initialize(Page("", "a")))
+    await(older.commit(Page("kept", "a")))
+    val current = new SnapshotFormat[String](accepted(SchemaId.parse("guarded-draft")), accepted(SchemaVersion.fromInt(2)))
+      .reading(draftFormat)(Right(_))
+    val session = db.persistence.projectedSnapshotsIfChanged[Page, String](current, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view).get
+    await(session.initialize(Page("", "b"))) shouldBe Page("kept", "b")
+    val restored = db.viewRevision()
+    guardedWrite(db.persistence, view, session, Page("kept", "b"))
+    db.viewRevision() shouldBe restored + 1
+    guardedWrite(db.persistence, view, session, Page("kept", "c"))
+    db.viewRevision() shouldBe restored + 1
+  }
+
+  it should "refuse a receipt of another view and a receipt used twice" in Using.resource(new Fixture(exclusive = false, held = true)) {
+    db =>
+      val (view, token) = signedIn(db, db.persistence)
+      val session       = ifChanged(db.persistence, view)
+      await(session.initialize(Page("", "a")))
+      val identity  = accepted(await(db.persistence.capture(binding, Some(token.value), activate = false)))
+      val otherView = accepted(await(db.persistence.claim(identity, Qsid("provider-device", "other-view"), ConnectionId.fromUuid(UUID.randomUUID()), false)))
+      snapshotError(await(paired(session).commitObserved(observation(db.persistence, otherView).receipt, Page("", "a")))) shouldBe
+        ViewSnapshotError.AccessDenied
+      val once = observation(db.persistence, view)
+      await(paired(session).commitObserved(once.receipt, Page("", "b")))
+      snapshotError(await(paired(session).commitObserved(once.receipt, Page("", "b")))) shouldBe ViewSnapshotError.AccessDenied
+  }
+
+  it should "compare encoded bytes, not application equality" in Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+    val (view, _) = signedIn(db, db.persistence)
+    val format    = new SnapshotFormat[LooseDraft](accepted(SchemaId.parse("loose-draft")), accepted(SchemaVersion.fromInt(1)))
+    val session = db.persistence
+      .projectedSnapshotsIfChanged[Page, LooseDraft](format, page => LooseDraft(page.draft, page.other), (fresh, saved) => fresh.copy(draft = saved.kept))(view)
+      .get
+    await(session.initialize(Page("same", "x")))
+    LooseDraft("same", "x") shouldBe LooseDraft("same", "y")
+    val seeded = db.viewRevision()
+    guardedWrite(db.persistence, view, session, Page("same", "y"))
+    db.viewRevision() shouldBe seeded + 1
+  }
+
+  it should "pair the observation only with its own session and a provider or decorator that offers it" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (_, token) = signedIn(db, db.persistence)
+    val origin     = "https://app.example"
+    def factory(provider: JdbcBrowserPersistence[Future, String]): BrowserView[String] => Option[ViewSnapshotSession[Future, String]] =
+      provider.projectedSnapshotsIfChanged[String, String](draftFormat, page => page, (_, draft) => draft)
+    // A session wrapped by application code no longer offers the capability.
+    def wrapped(inner: BrowserView[String] => Option[ViewSnapshotSession[Future, String]]) =
+      (view: BrowserView[String]) =>
+        inner(view).map { session =>
+          new ViewSnapshotSession[Future, String] {
+            def ownerEpoch: ViewOwnershipEpoch          = session.ownerEpoch
+            def initialize(fresh: String): Future[String] = session.initialize(fresh)
+            def commit(candidate: String): Future[Unit]   = session.commit(candidate)
+          }
+        }
+    def open(
+      provider: BrowserPersistence[Future, String],
+      snapshots: BrowserView[String] => Option[ViewSnapshotSession[Future, String]]
+    ): (SessionGuard[Future, String], BrowserAuthentication[Future, String, String]) = {
+      val browser = new BrowserAuthentication[Future, String, String](
+        provider,
+        BrowserPresentation(() => "fresh", (page, _) => page != "secret", (page, _, _) => page),
+        BrowserConfiguration(provider.scope, Set(origin)),
+        clock = () => db.clock.get(),
+        snapshots = snapshots
+      )
+      val configured = browser.configure(
+        SpoonbillServiceConfig[Future, String, Any](stateLoader = StateLoader.default("fresh"), document = page => Html(body(div(page))))
+      )
+      val cookies = Seq(browser.configuration.bindingCookieName + "=" + binding, browser.configuration.sessionCookieName + "=" + token.value)
+      val request = Request(Request.Method.Get, PathAndQuery.Root, Seq("Origin" -> origin), None, Stream.empty[Future, Bytes], cookies.mkString("; "))
+      await(configured.sessionAccessControl.get.open(qsid, request, ConnectionId.fromUuid(UUID.randomUUID()))) -> browser
+    }
+    def offered(provider: JdbcBrowserPersistence[Future, String], snapshots: BrowserView[String] => Option[ViewSnapshotSession[Future, String]],
+      decorated: Option[Boolean] = None): Boolean = {
+      val (guard, browser) = open(decorated.fold[BrowserPersistence[Future, String]](provider)(new Forwarding(provider, _)), snapshots)
+      try guard.observedRootWrite.nonEmpty
+      finally await(browser.close())
+    }
+    val own = db.fresh()
+    offered(own, factory(own)) shouldBe true
+    val ordinary = db.fresh()
+    offered(ordinary, ordinary.projectedSnapshots[String, String](draftFormat, page => page, (_, draft) => draft)) shouldBe false
+    val plain = db.fresh()
+    offered(plain, wrapped(factory(plain))) shouldBe false
+    val forwarding = db.fresh()
+    offered(forwarding, factory(forwarding), decorated = Some(true)) shouldBe true
+    val hiding = db.fresh()
+    offered(hiding, factory(hiding), decorated = Some(false)) shouldBe false
+
+    // Through the coordinator: one observation admits both presentations; an unchanged candidate saves nothing.
+    val provider         = db.fresh()
+    val (guard, browser) = open(provider, factory(provider))
+    try {
+      val write = guard.observedRootWrite.get
+      await(guard.viewSnapshots.get.initialize("draft")) shouldBe "draft"
+      val seeded = db.viewRevision()
+      val before = db.domainTransactions.get()
+      await(write.observe("draft", "draft").flatMap(receipt => write.commit(receipt, "draft")))
+      (db.domainTransactions.get() - before, db.viewRevision()) shouldBe (1, seeded)
+      // A disallowed candidate is denied like any check, and the view is detached.
+      intercept[SessionAccessDenied](await(write.observe("draft", "secret")))
+      intercept[SessionAccessDenied](await(guard.authorize("draft")))
+    } finally await(browser.close())
+  }
+
+  it should "publish a write acknowledged while a second commit of the session waits, so the next write proceeds" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val pausing  = new db.PausingRunner
+      val provider = db.withRunner(pausing.runner)
+      try {
+        val (view, _) = signedIn(db, provider)
+        val session   = ifChanged(provider, view)
+        await(session.initialize(Page("", "a")))
+        val seeded = db.viewRevision()
+        // The first save holds its transaction open before commit; the second waits for the realm lock.
+        val (entered, resume) = pausing.arm()
+        val first = session.commit(Page("one", "a"))
+        entered.await(10, TimeUnit.SECONDS) shouldBe true
+        val second = session.commit(Page("two", "a"))
+        db.awaitLockWait("pg_advisory_xact_lock")
+        resume.countDown()
+        await(first)
+        snapshotError(await(second)) shouldBe ViewSnapshotError.RevisionConflict
+        db.viewRevision() shouldBe seeded + 1
+        // The first write's acknowledged revision is what the session expects now.
+        await(session.commit(Page("three", "a")))
+        db.viewRevision() shouldBe seeded + 2
+      } finally await(provider.close())
+    }
+
+  /** Runs a fiber's tasks one at a time on the test's thread, so the test chooses where a cancellation lands. */
+  private final class SteppedExecutor extends ExecutionContext {
+    private val tasks                         = new LinkedBlockingQueue[Runnable]()
+    def execute(task: Runnable): Unit         = tasks.put(task)
+    def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
+    /** Runs the next task; after a blocking call, it waits until the call hands the fiber back. */
+    def step(): Unit = Option(tasks.poll(10, TimeUnit.SECONDS)).fold(fail("The stepped fiber made no progress"))(_.run())
+    /** Takes the queued tasks out, so that a task queued after them runs first. */
+    def hold(): List[Runnable] = { val held = new java.util.ArrayList[Runnable](); tasks.drainTo(held); held.asScala.toList }
+    def resume(held: List[Runnable]): Unit = held.foreach(tasks.put)
+    /** A Cats Effect runtime whose fibers run here; blocking calls and timers use the global ones. */
+    def runtime(config: IORuntimeConfig): IORuntime =
+      IORuntime(this, ExecutionContext.global, IORuntime.global.scheduler, () => (), config)
+  }
+
+  /**
+   * A Cats Effect runner that, once armed, holds the result of the next
+   * settled transaction until `delivery` completes. The transaction has
+   * committed by then; only its result waits.
+   */
+  private final class HeldResultRunner(source: DataSource)(using Effect[IO]) extends TransactionExecutor[IO, Direct, Connection] {
+    val armed         = new AtomicBoolean()
+    val settled       = new CountDownLatch(1)
+    val delivery      = Promise[Unit]()
+    private val inner = new JdbcTransactionExecutor[IO](source, ExecutionContext.global)
+    val program       = TransactionProgram.direct
+    val scopePolicy   = TransactionScopePolicy.ThreadConfined
+    def transact[A](body: Connection => A): IO[Either[TransactionFailure, A]] =
+      inner.transact(body).flatMap { result =>
+        if (armed.compareAndSet(true, false)) IO(settled.countDown()) *> IO.fromFuture(IO(delivery.future)).as(result)
+        else IO.pure(result)
+      }
+    /**
+     * Cancels `fiber` while the held result waits, then hands the result
+     * back. The cancellation runs on the test's own executor, so it is in
+     * place before the result arrives.
+     */
+    def cancelBeforeDelivery(fiber: FiberIO[?]): Unit = {
+      val stepped   = new SteppedExecutor
+      val cancelled = fiber.cancel.unsafeToFuture()(stepped.runtime(IORuntimeConfig()))
+      stepped.step() // Marks the fiber cancelled, then waits for it to end.
+      delivery.success(())
+      while (!cancelled.isCompleted) stepped.step()
+    }
+  }
+
+  /** Runs body, then close. A failure of close is attached to a failure of body instead of replacing it. */
+  private def closing[A](close: => Unit)(body: => A): A = {
+    val result =
+      try body
+      catch {
+        case failure: Throwable =>
+          try close
+          catch { case suppressed: Throwable => failure.addSuppressed(suppressed) }
+          throw failure
+      }
+    close
+    result
+  }
+
+  /** The shared-view provider on Cats Effect, with the fixture's held host. */
+  private def ioProvider(db: Fixture, runner: Option[TransactionExecutor[IO, Direct, Connection]] = None)(using
+    Effect[IO]
+  ): JdbcBrowserPersistence[IO, String] =
+    JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[IO, String](
+      db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
+      JdbcConcurrentChecks(db.source, 4), existingRunner = runner
+    )
+  private def ifChangedIO(provider: JdbcBrowserPersistence[IO, String], view: BrowserView[String])(using
+    Effect[IO]
+  ): ViewSnapshotSession[IO, Page] =
+    provider.projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view).get
+
+  it should "let a cancelled initialization be retried, and commit after it, on the same session" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    import cats.effect.kernel.Outcome
+    import cats.effect.unsafe.implicits.global as runtime
+    given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
+    val (_, token) = signedIn(db, db.persistence)
+    val runner     = new HeldResultRunner(db.source)
+    val provider   = ioProvider(db, Some(runner))
+    // A held result is handed back first, so closing never waits for it, also when a check below failed.
+    closing { runner.delivery.trySuccess(()); await(provider.close().unsafeToFuture()) } {
+      val identity       = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
+      val view           = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
+      val session        = ifChangedIO(provider, view)
+      val initialization = session.initialize(Page("", "draft"))
+      runner.armed.set(true)
+      val fiber = initialization.start.unsafeRunSync()
+      runner.settled.await(10, TimeUnit.SECONDS) shouldBe true
+      // While the attempt holds the session, the same effect runs twice more and is refused both times: each
+      // execution is its own attempt, and a refused attempt leaves the running attempt's claim alone.
+      for (_ <- 1 to 2)
+        initialization.attempt.unsafeRunSync() should matchPattern { case Left(_: IllegalStateException) => }
+      // The load settled; its result waits. Cancel the initialization, then let the result arrive.
+      runner.cancelBeforeDelivery(fiber)
+      fiber.join.unsafeRunSync() shouldBe Outcome.Canceled()
+      session.initialize(Page("", "draft")).unsafeRunSync() shouldBe Page("", "draft")
+      session.commit(Page("typed", "draft")).unsafeRunSync()
+      db.viewRevision() should be > 0L
+    }
+  }
+
+  it should "leave the same session usable after a cancellation at any scheduling point of its initialization" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      import cats.effect.unsafe.implicits.global as runtime
+      given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
+      val (_, token) = signedIn(db, db.persistence)
+      val provider   = ioProvider(db)
+      closing(await(provider.close().unsafeToFuture())) {
+        val identity = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
+        def claimed(id: Qsid, existingOnly: Boolean): BrowserView[String] =
+          accepted(provider.claim(identity, id, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly).unsafeRunSync())
+        val fresh = Page("", "draft")
+        // Steps before the task move its scheduling points against the yields.
+        def shifted(prefix: Int, task: IO[Page]): IO[Page] =
+          if (prefix == 0) task else IO.unit.flatMap(_ => shifted(prefix - 1, task))
+        /*
+         * One initialization of a new session on `view`, cancelled after
+         * `steps` of its tasks; then the same session must go on. False when
+         * the initialization finished within those steps.
+         */
+        def cancelledAfter(view: BrowserView[String], prefix: Int, steps: Int): Boolean = {
+          val before  = db.viewRevision(view.qsid)
+          val session = ifChangedIO(provider, view)
+          val stepped = new SteppedExecutor
+          // A cancellation check at every step of the fiber, and a yield to the executor after each step on the
+          // pinned Cats Effect (after a few on some versions), so the test can cancel between any two steps.
+          val (outcome, cancel) =
+            shifted(prefix, session.initialize(fresh)).unsafeToFutureCancelable()(stepped.runtime(IORuntimeConfig(1, 2)))
+          (1 to steps).iterator.takeWhile(_ => !outcome.isCompleted).foreach(_ => stepped.step())
+          val cancelling = !outcome.isCompleted
+          if (cancelling) {
+            // The cancellation is requested before the paused initialization runs on.
+            val paused    = stepped.hold()
+            val cancelled = cancel()
+            stepped.step()
+            stepped.resume(paused)
+            while (!cancelled.isCompleted || !outcome.isCompleted) stepped.step()
+          }
+          withClue(s"Cancelled after $steps steps, with $prefix steps before the initialization, at revision $before: ") {
+            // An initialization that finished before the cancellation succeeded. A cancelled one ended by the
+            // cancellation, or it had succeeded first; no other failure counts as a pass.
+            if (!cancelling) outcome.value.exists(_.isSuccess) shouldBe true
+            outcome.value.foreach(_.failed.foreach(_ shouldBe a[CancellationException]))
+            val retried = session.initialize(fresh).attempt.unsafeRunSync()
+            // A finished initialization refuses another. A cancelled one put its claim back, or it had published first.
+            if (outcome.value.exists(_.isSuccess)) retried.isLeft shouldBe true
+            retried.left.foreach(_ shouldBe an[IllegalStateException])
+            // One initial save at most: a retry finds the save that a cancelled attempt committed.
+            db.viewRevision(view.qsid) shouldBe (if (before == 0L) 1L else before)
+            session.commit(Page("typed", "draft")).attempt.unsafeRunSync() shouldBe Right(())
+          }
+          cancelling
+        }
+        // Each shift moves the yields by one step, for a Cats Effect version that yields only every few steps.
+        // On a view with a stored projection, every attempt after the first restores it.
+        val stored    = claimed(qsid, existingOnly = true)
+        val restoring = (0 until 3).map(prefix => Iterator.from(1).takeWhile(cancelledAfter(stored, prefix, _)).size)
+        // On a new view, every attempt makes the initial save. Each round releases its view, to stay within the limit.
+        def onNewView(prefix: Int)(steps: Int): Boolean = {
+          val view = claimed(Qsid("provider-device", s"seed-$prefix-$steps"), existingOnly = false)
+          closing(provider.release(view).unsafeRunSync())(cancelledAfter(view, prefix, steps))
+        }
+        val seeding = (0 until 3).map(prefix => Iterator.from(1).takeWhile(onNewView(prefix)).size)
+        info(s"Cancellation points for each shift: restoring ${restoring.mkString(", ")}; seeding ${seeding.mkString(", ")}")
+        all(restoring ++ seeding) should be > 1
+      }
+    }
+
+  it should "go on committing on the same session after a cancelled commit whose write landed" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    import cats.effect.unsafe.implicits.global as runtime
+    given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
+    val (_, token) = signedIn(db, db.persistence)
+    val runner     = new HeldResultRunner(db.source)
+    val provider   = ioProvider(db, Some(runner))
+    // A held result is handed back first, so closing never waits for it, also when a check below failed.
+    closing { runner.delivery.trySuccess(()); await(provider.close().unsafeToFuture()) } {
+      val identity = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
+      val view     = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
+      val session  = ifChangedIO(provider, view)
+      session.initialize(Page("", "draft")).unsafeRunSync()
+      val before = db.viewRevision()
+      runner.armed.set(true)
+      val fiber = session.commit(Page("typed", "draft")).start.unsafeRunSync()
+      runner.settled.await(10, TimeUnit.SECONDS) shouldBe true
+      // The write committed and its result waits. Cancel the commit, then let the result arrive.
+      runner.cancelBeforeDelivery(fiber)
+      db.viewRevision() shouldBe before + 1
+      // The session recorded the write it made, so its next commit expects the stored revision.
+      session.commit(Page("again", "draft")).attempt.unsafeRunSync() shouldBe Right(())
+      db.viewRevision() shouldBe before + 2
+    }
+  }
+
+  it should "give the session back when a cancelled initialization's finalizer runs before its claim" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val effect             = new EarlyFinalizerEffect
+      given Effect[Deferred] = effect
+      val (_, token) = signedIn(db, db.persistence)
+      // Once armed, the next transaction fails without running: a load failure after such a claim kept it for good.
+      val failNext = new AtomicBoolean()
+      val inner    = new JdbcTransactionExecutor[Deferred](db.source, ExecutionContext.global)
+      val runner = new TransactionExecutor[Deferred, Direct, Connection] {
+        val program     = TransactionProgram.direct
+        val scopePolicy = TransactionScopePolicy.ThreadConfined
+        def transact[A](body: Connection => A): Deferred[Either[TransactionFailure, A]] =
+          if (failNext.compareAndSet(true, false)) effect.pure[Either[TransactionFailure, A]](Left(TransactionFailure.StorageFailure))
+          else inner.transact(body)
+      }
+      val provider = JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[Deferred, String](
+        db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
+        JdbcConcurrentChecks(db.source, 4), existingRunner = Some(runner)
+      )
+      closing(await(provider.close().apply())) {
+        val identity = accepted(await(provider.capture(binding, Some(token.value), activate = true)()))
+        val view     = accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)()))
+        val session = provider
+          .projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view)
+          .get
+        // The cancelling thread runs the finalizer first. The attempt runs on: it claims, and its load fails.
+        effect.early.set(true)
+        failNext.set(true)
+        scala.util.Try(await(session.initialize(Page("", "draft"))())).isFailure shouldBe true
+        effect.early.set(false)
+        failNext.set(false)
+        // The same session object initializes and commits.
+        await(session.initialize(Page("", "draft"))()) shouldBe Page("", "draft")
+        await(session.commit(Page("typed", "draft"))())
+        db.viewRevision() should be > 0L
+      }
+    }
+
+  private val secondBinding = "B" * 43
+  private val secondView    = Qsid("provider-device", "second-view")
+  private def realmKey(db: Fixture): String = s"spoonbill-auth:${db.realm.length}:${db.realm}session"
+
+  "Shared-view concurrent checks" should "be a named opt-in for a held host, with no background clock renewal" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      intercept[IllegalArgumentException](db.withConcurrentChecks(4, BrowserOwnership.SharedViews))
+      val provider = db.sharedConcurrent(4)
+      try {
+        provider.checkConcurrency shouldBe Some(BrowserCheckConcurrency(4))
+        provider.renewingInBackground shouldBe false
+      } finally await(provider.close())
+    }
+
+  it should "take the shared realm lock only for checks of authenticated views, and keep the rest exclusive" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val provider = db.sharedConcurrent(4)
+      try {
+        val (view, _) = signedIn(db, provider)
+        val anonymous = accepted(await(provider.claim(
+          accepted(await(provider.capture(secondBinding, None, activate = false))), secondView,
+          ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false
+        )))
+        provider.isEnrolled shouldBe true
+        def locks(operation: => Any): Vector[String] = {
+          db.statements.clear(); db.recordSql.set(true)
+          try operation finally db.recordSql.set(false)
+          db.statements.asScala.toVector.filter(_.contains("pg_advisory_xact_lock"))
+            .map(sql => if (sql.contains("lock_shared")) "shared" else "exclusive")
+        }
+        locks(accepted(await(provider.authorize(view)))) shouldBe Vector("shared")
+        locks(accepted(await(provider.admitOutputIf(view, "frame")(_ => true)))) shouldBe Vector("shared")
+        locks(accepted(await(provider.guardedWriteObservations.get.observeWrite(view)))) shouldBe Vector("shared")
+        locks(accepted(await(provider.authorize(anonymous)))) shouldBe Vector("exclusive")
+        locks(accepted(await(provider.pending(view)))) shouldBe Vector("exclusive")
+        locks(accepted(await(provider.transact(view)(_ => ())))) shouldBe Vector("exclusive")
+      } finally await(provider.close())
+    }
+
+  it should "let checks of different bindings on two nodes overlap until the clock row" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (first, second) = (db.sharedConcurrent(4), db.sharedConcurrent(4))
+    try {
+      val (one, _, _) = retentionLogin(db, first, binding, qsid, 600)
+      val (two, _, _) = retentionLogin(db, second, secondBinding, secondView, 600)
+      val clockRow    = new db.HeldLock("SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE", _.setString(1, db.realm))
+      val checks = clockRow.holding {
+        val checks = Vector(first.authorize(one), second.authorize(two))
+        // Both hold the shared realm lock and their host, slot and view rows, and wait for the clock row together.
+        db.awaitLockWait("spoonbill_auth_clock", count = 2)
+        checks
+      }
+      checks.foreach(check => accepted(await(check)))
+    } finally { await(first.close()); await(second.close()) }
+  }
+
+  it should "admit a queued writer and an older exclusive check after running checks, and later checks after them" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val (first, second) = (db.sharedConcurrent(4), db.sharedConcurrent(4))
+      // An older node takes the exclusive realm lock for every check.
+      val older = db.fresh()
+      try {
+        val (one, token, _) = retentionLogin(db, first, binding, qsid, 600)
+        val (two, _, _)     = retentionLogin(db, second, secondBinding, secondView, 600)
+        val olderView = accepted(await(older.claim(
+          accepted(await(older.capture("C" * 43, None, activate = false))), Qsid("provider-device", "older-view"),
+          ConnectionId.fromUuid(UUID.randomUUID()), existingOnly = false
+        )))
+        val clockRow = new db.HeldLock("SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE", _.setString(1, db.realm))
+        val (running, logout, exclusive, later) = clockRow.holding {
+          val running = first.authorize(one)
+          db.awaitLockWait("spoonbill_auth_clock")
+          // A writer and an older exclusive check queue behind the running check; a later check queues behind them.
+          val logout = second.logout(binding, Some(token.value))
+          db.awaitLockWait("pg_advisory_xact_lock")
+          val exclusive = older.authorize(olderView)
+          db.awaitLockWait("pg_advisory_xact_lock", count = 2)
+          val later = first.authorize(one)
+          db.awaitLockWait("pg_advisory_xact_lock_shared")
+          (logout.isCompleted, exclusive.isCompleted, later.isCompleted) shouldBe (false, false, false)
+          (running, logout, exclusive, later)
+        }
+        accepted(await(running))
+        accepted(await(logout))
+        accepted(await(exclusive))
+        // The later check ran after the logout it queued behind.
+        await(later) shouldBe Left(BrowserFailure.Denied)
+        accepted(await(second.authorize(two)))
+      } finally { await(first.close()); await(second.close()); await(older.close()) }
+    }
+
+  it should "deny the old owner's shared checks after a takeover on another node" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val (first, second) = (db.sharedConcurrent(4), db.sharedConcurrent(4))
+    try {
+      val (view, token, _) = retentionLogin(db, first, binding, qsid, 600)
+      val captured = accepted(await(second.capture(binding, Some(token.value), activate = true)))
+      val next     = accepted(await(second.claim(captured, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)))
+      await(first.authorize(view)) shouldBe Left(BrowserFailure.Denied)
+      await(first.admitOutputIf(view, "frame")(_ => true)) shouldBe Left(BrowserFailure.Denied)
+      accepted(await(second.authorize(next)))
+    } finally { await(first.close()); await(second.close()) }
+  }
+
+  it should "retry a deadlocked check once before its accepted hook, and never once the hook started" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val provider = db.sharedConcurrent(4)
+    try {
+      val (view, _, _)  = retentionLogin(db, provider, binding, qsid, 600)
+      val (other, _, _) = retentionLogin(db, provider, secondBinding, secondView, 600)
+      val viewKey       = BrowserView.key(qsid)
+      // Before the hook: the check holds its slot and waits for the view row, which the test holds.
+      val before = (db.domainTransactions.get(), db.hostAccepted.get())
+      val viewRow = new db.HeldLock(
+        "SELECT 1 FROM spoonbill_browser_view WHERE realm=? AND cookie_namespace='session' AND view_id=? FOR UPDATE",
+        query => { query.setString(1, db.realm); query.setString(2, viewKey) }
+      )
+      val retried = viewRow.holding {
+        viewRow.deferDeadlockDetection()
+        val retried = provider.authorize(view)
+        db.awaitLockWait("spoonbill_browser_view")
+        // Waiting for the check's slot closes the cycle; PostgreSQL aborts the check, which runs once more.
+        viewRow.lock("SELECT 1 FROM spoonbill_browser_slot WHERE realm=? AND cookie_namespace='session' FOR UPDATE")(
+          _.setString(1, db.realm)
+        ) shouldBe true
+        retried
+      }
+      accepted(await(retried))
+      (db.domainTransactions.get() - before._1, db.hostAccepted.get() - before._2) shouldBe (2, 1)
+      // In the hook: it waits for another session's host row, held by a test transaction that then waits for this one's.
+      val after = (db.domainTransactions.get(), db.hostAccepted.get())
+      db.hookLocks.set(Some(other.identity.sessionId.get))
+      val otherRow  = new db.HeldLock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE", hostRow(db, other.identity.sessionId.get))
+      otherRow.holding {
+        otherRow.deferDeadlockDetection()
+        val abandoned = provider.authorize(view)
+        db.awaitLockWait("spoonbill_auth_test_host")
+        // The test transaction closes the cycle by waiting for this session's row; PostgreSQL aborts the check.
+        val closing = Future(
+          otherRow.lock("SELECT 1 FROM spoonbill_auth_test_host WHERE realm=? AND id=? FOR UPDATE")(
+            hostRow(db, view.identity.sessionId.get)
+          )
+        )
+        await(abandoned).isLeft shouldBe true
+        await(closing) shouldBe true
+      }
+      (db.domainTransactions.get() - after._1, db.hostAccepted.get() - after._2) shouldBe (1, 1)
+    } finally await(provider.close())
+  }
+
+  it should "fail closed within the pool's bound when the reserved clock pool is exhausted" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    val exhausted = new AtomicBoolean()
+    // A clock pool that, once exhausted, refuses acquisition after its own timeout.
+    val clockPool = new DataSource {
+      def getConnection: Connection = {
+        if (exhausted.get()) { Thread.sleep(200); throw new SQLException("Synthetic clock pool acquisition timeout") }
+        db.source.getConnection
+      }
+      def getConnection(user: String, password: String): Connection = throw new SQLFeatureNotSupportedException()
+      def getLogWriter: PrintWriter                                 = throw new SQLFeatureNotSupportedException()
+      def setLogWriter(writer: PrintWriter): Unit                   = throw new SQLFeatureNotSupportedException()
+      def getLoginTimeout: Int                                      = 0
+      def setLoginTimeout(seconds: Int): Unit                       = throw new SQLFeatureNotSupportedException()
+      def getParentLogger: Logger                                   = Logger.getLogger("spoonbill.jdbc.clock.pool.test")
+      def isWrapperFor(kind: Class[?]): Boolean                     = false
+      def unwrap[T](kind: Class[T]): T                              = throw new SQLException("Not a wrapper")
+    }
+    val provider = db.sharedConcurrent(4, clockSource = clockPool)
+    try {
+      val (view, _, _) = retentionLogin(db, provider, binding, qsid, 600)
+      val accepted0    = db.hostAccepted.get()
+      exhausted.set(true)
+      val started = System.nanoTime()
+      var ran     = false
+      await(provider.authorize(view)).isLeft shouldBe true
+      await(provider.transact(view)(_ => ran = true)).isLeft shouldBe true
+      (System.nanoTime() - started) should be < TimeUnit.SECONDS.toNanos(5)
+      (ran, db.hostAccepted.get() - accepted0) shouldBe (false, 0)
+      exhausted.set(false)
+      accepted(await(provider.authorize(view)))
+    } finally await(provider.close())
+  }
+  it should "run checks of two bindings at once through an application decorator only when it forwards the setting" in {
+    for (forward <- Vector(true, false)) withClue(s"forwarding $forward: ") {
+      Using.resource(new Fixture(exclusive = false, held = true)) { db =>
+        val origin    = "https://app.example"
+        val provider  = db.sharedConcurrent(4)
+        val decorated = new example.forwarding.ConcurrencyForwarding(provider, forward)
+        val browser = new BrowserAuthentication[Future, String, String](
+          decorated,
+          BrowserPresentation(() => "fresh", (_, _) => true, (page, _, _) => page),
+          BrowserConfiguration(decorated.scope, Set(origin)),
+          clock = () => db.clock.get()
+        )
+        try {
+          val configured = browser.configure(
+            SpoonbillServiceConfig[Future, String, Any](stateLoader = StateLoader.default("fresh"), document = page => Html(body(div(page))))
+          )
+          def guard(rawBinding: String, id: Qsid): SessionGuard[Future, String] = {
+            val (_, token, _) = retentionLogin(db, provider, rawBinding, id, 600)
+            val cookies = Seq(browser.configuration.bindingCookieName + "=" + rawBinding, browser.configuration.sessionCookieName + "=" + token.value)
+            val request = Request(Request.Method.Get, PathAndQuery.Root, Seq("Origin" -> origin), None, Stream.empty[Future, Bytes], cookies.mkString("; "))
+            await(configured.sessionAccessControl.get.open(id, request, ConnectionId.fromUuid(UUID.randomUUID())))
+          }
+          val (one, two) = (guard(binding, qsid), guard(secondBinding, secondView))
+          val clockRow   = new db.HeldLock("SELECT 1 FROM spoonbill_auth_clock WHERE realm=? AND namespace='session' FOR UPDATE", _.setString(1, db.realm))
+          val checks = clockRow.holding {
+            val checks = Vector(one.authorize("fresh"), two.authorize("fresh"))
+            if (forward) {
+              // Both checks run in read turns and wait for the clock row together.
+              db.awaitLockWait("spoonbill_auth_clock", count = 2)
+              browser.coordinatorStatistics.runningReads shouldBe 2
+            } else {
+              // Without the setting every check is an exclusive turn: the second one waits in the coordinator.
+              db.awaitLockWait("spoonbill_auth_clock")
+              val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+              while (browser.coordinatorStatistics.queuedWrites < 1 && System.nanoTime() < deadline) Thread.sleep(5)
+              browser.coordinatorStatistics.queuedWrites shouldBe 1
+              browser.coordinatorStatistics.runningReads shouldBe 0
+            }
+            checks
+          }
+          checks.foreach(check => await(check))
+        } finally await(browser.close())
+      }
+    }
+  }
+}
+
+/** A provider decorator that forwards, or hides, the inner provider's guarded write observations. */
+private final class Forwarding(inner: JdbcBrowserPersistence[Future, String], forward: Boolean)(using Effect[Future])
+    extends BrowserPersistence[Future, String] {
+  def scope: BrowserProviderScope                                    = inner.scope
+  def capabilities: BrowserProviderCapabilities                      = inner.capabilities
+  def accepts(receipt: CommittedAuthentication): Boolean             = inner.accepts(receipt)
+  def capture(binding: String, token: Option[String], activate: Boolean) = inner.capture(binding, token, activate)
+  override def inspectPrincipal(binding: String, token: Option[String])(using Effect[Future]) =
+    inner.inspectPrincipal(binding, token)
+  override def registerView(identity: BrowserIdentity[String], qsid: Qsid)(using Effect[Future]) =
+    inner.registerView(identity, qsid)
+  def claim(identity: BrowserIdentity[String], qsid: Qsid, connectionId: ConnectionId, existingOnly: Boolean) =
+    inner.claim(identity, qsid, connectionId, existingOnly)
+  def authorize(view: BrowserView[String])                          = inner.authorize(view)
+  override def admitOutputIf[A](view: BrowserView[String], output: A)(allowed: BrowserIdentity[String] => Boolean)(using
+    Effect[Future]
+  ) = inner.admitOutputIf(view, output)(allowed)
+  override def guardedWriteObservations: Option[BrowserWriteObservations[Future, String]] =
+    if (forward) inner.guardedWriteObservations else None
+  def release(view: BrowserView[String])                            = inner.release(view)
+  def begin(view: BrowserView[String], purpose: String)             = inner.begin(view, purpose)
+  def bindChallenge(ceremony: BrowserCeremony, challenge: BrowserChallenge) = inner.bindChallenge(ceremony, challenge)
+  def resume(view: BrowserView[String], id: CeremonyId, purpose: String) = inner.resume(view, id, purpose)
+  def pending(view: BrowserView[String])                            = inner.pending(view)
+  def recover(view: BrowserView[String], id: CeremonyId)            = inner.recover(view, id)
+  def deliver(completionId: UUID, binding: String)                  = inner.deliver(completionId, binding)
+  def logout(binding: String, token: Option[String])                = inner.logout(binding, token)
+  def maintenance(): Future[Unit]                                   = inner.maintenance()
+  def close(): Future[Unit]                                         = inner.close()
+}
+
+/** A projection whose application equality ignores a field that it serializes. */
+final case class LooseDraft(kept: String, ignored: String) derives spoonbill.snapshot.StateSchema {
+  override def equals(other: Any): Boolean = other match {
+    case that: LooseDraft => kept == that.kept
+    case _                => false
+  }
+  override def hashCode: Int = kept.hashCode
 }

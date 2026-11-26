@@ -161,6 +161,38 @@ class ViewSnapshotSessionSpec extends AsyncFlatSpec with Matchers {
     }
   }
 
+  it should "replace authorization and commit with one observed root write, publishing the root only after it" in {
+    val raw        = StateManager.cached[Future](Map(Id.TopLevel -> fresh))
+    val ordinary   = new AtomicInteger()
+    val observed   = new java.util.concurrent.ConcurrentLinkedQueue[(State, State)]()
+    val refuse     = new AtomicBoolean()
+    val guarded = new GuardedStateManager[Future, State](
+      raw,
+      _ => Future { ordinary.incrementAndGet(); () },
+      Some(_ => Future { ordinary.incrementAndGet(); () }),
+      None,
+      Some(_ => Future { ordinary.incrementAndGet(); () }),
+      Some { (current, candidate) =>
+        if (refuse.get()) Future.failed(new ViewSnapshotException(ViewSnapshotError.RevisionConflict))
+        else Future { observed.add(current -> candidate); () }
+      }
+    )
+    for {
+      _        <- guarded.write(Id.TopLevel, fresh.copy(counter = 1))
+      first    <- raw.read[State](Id.TopLevel)
+      _         = refuse.set(true)
+      rejected <- guarded.write(Id.TopLevel, fresh.copy(counter = 2)).failed
+      second   <- raw.read[State](Id.TopLevel)
+      _        <- guarded.closeAndDrain()
+    } yield {
+      observed.toArray.toVector shouldBe Vector(fresh -> fresh.copy(counter = 1))
+      ordinary.get() shouldBe 0
+      first shouldBe Some(fresh.copy(counter = 1))
+      rejected.asInstanceOf[ViewSnapshotException].error shouldBe ViewSnapshotError.RevisionConflict
+      second shouldBe Some(fresh.copy(counter = 1))
+    }
+  }
+
   it should "drain an admitted snapshot commit before closing the local manager" in {
     val admitted = Promise[Unit]()
     val finish = Promise[Unit]()

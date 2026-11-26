@@ -13,7 +13,8 @@ import scala.util.Using
  * independently of the domain transaction, so a rejected authorization cannot
  * roll back observed expiry. A new instance always consults storage. Only an
  * explicit exclusive clock writer may reuse a locally acknowledged checkpoint;
- * shared writers consult storage on every call. After its first exact
+ * shared writers consult storage on every call, and an authority check of a
+ * shared writer may instead take one row-locked checkpoint. After its first exact
  * checkpoint, an exclusive writer commits each checkpoint one lease ahead of the
  * observation it returns. Later observations within the lease reuse it without
  * JDBC work, and every returned time stays at or below an acknowledged durable
@@ -71,6 +72,73 @@ final class JdbcBrowserClock(
         covered(current).getOrElse(renew(current))
       })
   }
+
+  /**
+   * One durable instant for an authority decision of a shared writer, in its
+   * own transaction on the clock source: lock the scope's clock row, sample the
+   * wall clock after the lock is held, store the latest of the stored floor,
+   * this process's floor and that sample, read it back and commit. Later calls
+   * see the instant only after the commit is acknowledged. The row lock orders
+   * this checkpoint against every other checkpoint of the scope, including the
+   * upsert of now() on other nodes, so expiry is judged at an instant
+   * established under that lock. A scope without a row gets its first floor
+   * inserted in the same transaction. A failed or uncertain commit throws a
+   * storage failure and returns no instant. The clock connection takes no other
+   * lock. The caller uses the returned instant for one decision only.
+   */
+  def checkpoint(): Instant = {
+    val persisted = JdbcTransactions
+      .run[JdbcAuthError, Instant](source, JdbcAuthError.StorageFailure, JdbcAuthError.StorageFailure) { connection =>
+        val stored = lockFloor(connection).orElse {
+          // First use of the scope: insert a floor, then lock whichever row won.
+          insertFloor(connection, sample())
+          lockFloor(connection)
+        }
+        stored.toRight(JdbcAuthError.StorageFailure).flatMap { floor =>
+          // Sampled after the row lock, so the instant is later than every wait.
+          // The sample enters this process's floor at once, as now() records its
+          // samples: a checkpoint that then rolls back still bounds later calls.
+          val target = JdbcClockMachine.sharedCheckpoint(floor, sample())
+          storeFloor(connection, target).filter(_ == target).toRight(JdbcAuthError.StorageFailure)
+        }
+      }
+      .fold(error => throw new JdbcAuthException(error), identity)
+    adopt(persisted)
+    persisted
+  }
+
+  private def lockFloor(connection: Connection): Option[Instant] =
+    Using.resource(connection.prepareStatement(
+      "SELECT epoch_second,nano FROM spoonbill_auth_clock WHERE realm=? AND namespace=? FOR UPDATE"
+    )) { query =>
+      query.setString(1, realm); query.setString(2, namespace)
+      Using.resource(query.executeQuery()) { rows =>
+        if (rows.next()) Some(Instant.ofEpochSecond(rows.getLong(1), rows.getInt(2).toLong)) else None
+      }
+    }
+
+  private def insertFloor(connection: Connection, floor: Instant): Unit =
+    Using.resource(connection.prepareStatement(
+      """INSERT INTO spoonbill_auth_clock(realm,namespace,epoch_second,nano) VALUES (?,?,?,?)
+      ON CONFLICT(realm,namespace) DO NOTHING"""
+    )) { query =>
+      query.setString(1, realm); query.setString(2, namespace)
+      query.setLong(3, floor.getEpochSecond); query.setInt(4, floor.getNano)
+      query.executeUpdate(); ()
+    }
+
+  /** Under the row lock: the stored value after the update, read back. */
+  private def storeFloor(connection: Connection, target: Instant): Option[Instant] =
+    Using.resource(connection.prepareStatement(
+      """UPDATE spoonbill_auth_clock SET epoch_second=?,nano=? WHERE realm=? AND namespace=?
+      RETURNING epoch_second,nano"""
+    )) { query =>
+      query.setLong(1, target.getEpochSecond); query.setInt(2, target.getNano)
+      query.setString(3, realm); query.setString(4, namespace)
+      Using.resource(query.executeQuery()) { rows =>
+        if (rows.next()) Some(Instant.ofEpochSecond(rows.getLong(1), rows.getInt(2).toLong)) else None
+      }
+    }
 
   /**
    * Renew the lease ahead of its expiry, from a thread the provider owns: when

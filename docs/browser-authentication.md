@@ -405,10 +405,44 @@ checkpoint otherwise keeps its caller's realm lock. Any failed check, including
 a coordinator rejection or the ten-second bound on a guard call, closes the
 session, and the reconnect is an exclusive turn with exclusive provider
 transactions. The queue bound is therefore an overload limit, not a load
-shedder: size the cap so that rejections stay rare. `SharedViews` deployments
-cannot opt in. Without the setting nothing changes. The
-[design](concurrent-authorization-design.md) records the reasoning and the
-measurements.
+shedder: size the cap so that rejections stay rare. Without the setting
+nothing changes. The [design](concurrent-authorization-design.md) records the
+reasoning and the measurements.
+
+The `concurrentChecks` parameter refuses `SharedViews` ownership. A
+`SharedViews` deployment opts in through the named factory
+`JdbcBrowserPersistence.sharedViewsWithConcurrentChecks`, which takes a
+`JdbcConcurrentChecks` setting and a host that implements
+`JdbcHeldHostSessions` (see [JDBC deployment](#jdbc-deployment-and-credential-custody)):
+
+- Only an eligible check takes the realm lock in shared mode, once the realm
+  is enrolled: `authorize`, output admission or the guarded write observation
+  of a view captured as authenticated. Each resolves the held host once and
+  takes one short row-locked clock checkpoint on the reserved `clockSource`;
+  there is no background clock renewal. Enrollment, every other check and
+  every writer, including takeover, logout, snapshot saves and host
+  transactions, keep the exclusive realm lock, so nodes without the opt-in
+  stay ordered against these checks during a rolling upgrade.
+- A check aborted by a PostgreSQL deadlock is retried once only while the
+  host's `onAcceptedAt` hook has not started; an uncertain clock or provider
+  settlement fails closed without a retry.
+- Checks of different bindings run beside each other until the clock row,
+  which orders their checkpoints. The host must be safe for concurrent calls
+  and lock its rows in one global order. A host that takes one cluster-wide
+  policy lock in `lockResolution` serializes its checks there, so measure the
+  gain for such a host before enabling the opt-in.
+
+Size the main pool and the blocking executor for the cap plus maintenance and
+one writer, give the reserved clock source capacity of its own, and bound
+connection acquisition, statement, lock and socket waits on both.
+
+The coordinator reads `checkConcurrency` from the provider it is given. A
+provider decorator, such as one that adds a logout audit, keeps concurrent
+checks only by forwarding the inner provider's value:
+`override def checkConcurrency = inner.checkConcurrency`. Forward it only when
+the decorator's own calls are safe to run concurrently. Only Spoonbill's
+providers create a `BrowserCheckConcurrency`, so a decorator cannot opt in on
+its own; `guardedWriteObservations` is forwarded the same way.
 
 ## JDBC deployment and credential custody
 
@@ -451,6 +485,49 @@ are real additional transactions, not a free or implicit clock guarantee. With
 [concurrent checks](#concurrent-authority-checks), the provider renews the lease
 ahead of its expiry from its own thread while observations happen, and the
 reserved `clockSource` is required.
+
+Every Spoonbill JDBC transaction runs at `READ COMMITTED`. By default each one
+sets that level first, and the PostgreSQL driver sends a `SET` for the call even
+when the session already has the level. A pool that establishes `READ COMMITTED`
+on every checkout can be certified instead: pass
+`JdbcIsolation.readCommittedOnCheckout(pool)` where the pool was passed.
+Transactions on the certified source then neither set nor read the level, which
+saves one round trip per transaction, clock checkpoints included. The pool must
+establish the level on new and replaced physical connections and on reuse after
+another borrower changed it. HikariCP restores a level that a borrower changed
+through `Connection.setTransactionIsolation` when the connection returns, but
+not one changed by a SQL `SET` statement. A startup query cannot establish how a
+pool treats reused connections, so Spoonbill does not verify the claim; verify
+the pool's behavior before certifying it. Certify the work source and a separate
+`clockSource` independently, and pass each certified source to Spoonbill
+directly: another wrapper around it hides the certification, and the ordinary
+path then sets the level as before. A caller-supplied `existingRunner` keeps its
+own transaction setup.
+
+With `BrowserOwnership.SharedViews`, the check of an authenticated view
+normally resolves the host twice and commits a clock checkpoint for each of its
+five time samples. A host that implements `JdbcHeldHostSessions` lets that
+check resolve the host once and decide at one checkpoint: `authorize`, output
+admission, the guarded write observation and the check of `transact`, which
+also covers snapshot saves. For these the provider calls
+`lockResolution(connection, sessionId)` inside its transaction, after the
+browser token row and before the slot and view locks. The host acquires its
+locks there and returns the principal and an exclusive cutoff,
+`validUntilExclusive`, without deciding by time, or `None` for a stable denial,
+which the provider then refuses without taking the slot and view locks.
+The provider then takes one checkpoint in its own transaction on the clock
+source: it locks the scope's clock row, samples the wall clock after the lock,
+and commits the latest of the stored floor, its own floor and that sample. That
+instant decides session expiry, the principal's expiry, the host cutoff and the
+idle view lease, each failing at equality, and both `last_seen` renewals use
+it. The host's `onAcceptedAt(now)` runs last, in the same transaction, after
+every check passed; it may stage a conditional idle refresh on the rows it
+locked, and the provider never replays a check once it has started. Keep the
+stable absolute expiry in `HostPrincipal.expiresAt`, since it is part of the
+captured authority. Sign-in ceremonies, pending continuations, replacement and
+successor-completion flows, activation, anonymous views, `ExclusiveScope`
+providers and `tx.now` keep `resolve` and the ordinary clock, and never call
+`onAcceptedAt`; a host without the capability is resolved twice as before.
 
 ## Recovery and release
 

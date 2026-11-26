@@ -53,7 +53,7 @@ final class BrowserAuthenticationIOSpec extends AnyFlatSpec with Matchers {
         val persistence = new BrowserPersistence[IO, String] {
           def scope                                                  = underlying.scope
           def capabilities                                           = underlying.capabilities
-          override private[spoonbill] def checkConcurrency           = Some(BrowserCheckConcurrency(2))
+          override def checkConcurrency                              = Some(BrowserCheckConcurrency(2))
           def accepts(receipt: CommittedAuthentication)              = underlying.accepts(receipt)
           def capture(binding: String, token: Option[String], activate: Boolean) =
             underlying.capture(binding, token, activate)

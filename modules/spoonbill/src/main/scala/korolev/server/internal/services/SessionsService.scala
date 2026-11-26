@@ -445,6 +445,15 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
       requireLive().flatMap(_ => required(guard.authorizeEach(states))).flatMap(_ => requireLive()).recoverF {
         case error => deny(error)
       }
+    // A queued top-level write paired with a snapshot session that skips unchanged
+    // projections. Its observation is a guard call like authorizeAll; the
+    // snapshot write that follows fails like any other persistence failure.
+    def observedWrite(write: spoonbill.server.ObservedRootWrite[F, S], current: S, candidate: S): F[Unit] =
+      requireLive()
+        .flatMap(_ => required(write.observe(current, candidate)))
+        .flatMap(receipt => requireLive().as(receipt))
+        .recoverF { case error => deny(error).flatMap(_ => Effect[F].fail(error)) }
+        .flatMap(receipt => write.commit(receipt, candidate))
 
     final class OutputAuthorization(raw: StateManager[F], guard: SessionGuard[F, S]) {
       private def current: F[S] = raw.read[S](avocet.Id.TopLevel).flatMap {
@@ -586,7 +595,8 @@ private[spoonbill] final class SessionsService[F[_]: Effect, S: StateSerializer:
                   state => authorize(guard, state),
                   snapshots.map(session => (state: S) => session.commit(state)),
                   snapshots.map(_ => (error: Throwable) => deny(error)),
-                  Some(states => authorizeAll(guard, states))
+                  Some(states => authorizeAll(guard, states)),
+                  guard.observedRootWrite.map(write => (current: S, candidate: S) => observedWrite(write, current, candidate))
                 )
       _ <- Effect[F].delay(managerRef.set(Some(manager)))
       authorizeCurrent = () =>

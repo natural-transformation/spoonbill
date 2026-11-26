@@ -10,7 +10,7 @@ import spoonbill.effect.syntax.*
 import spoonbill.security.Identifiers.ConnectionId
 import spoonbill.sensitive.SensitiveAccess
 import spoonbill.server.*
-import spoonbill.snapshot.ViewSnapshotSession
+import spoonbill.snapshot.{ObservedSnapshotWrites, ViewSnapshotSession}
 import spoonbill.state.{BoundedPresentationStore, StateStorage}
 import spoonbill.web.Request
 
@@ -376,6 +376,30 @@ final class BrowserAuthentication[F[_], S, P](
                       }
                     }
                     override val viewSnapshots: Option[ViewSnapshotSession[F, S]] = snapshots(view)
+                    // Decided before any write: the provider's guarded write observation
+                    // paired with a session that skips unchanged projections. A missing
+                    // capability or a wrapped session keeps authorizeEach and commit.
+                    override private[spoonbill] val observedRootWrite: Option[ObservedRootWrite[F, S]] =
+                      for {
+                        observations <- persistence.guardedWriteObservations
+                        session <- viewSnapshots.collect { case paired: ObservedSnapshotWrites[F, S] @unchecked => paired }
+                      } yield new ObservedRootWrite[F, S] {
+                        // The same turn, live check, authority comparison, denial handling and
+                        // presentation checks as authorizeEach, for both presentations.
+                        def observe(current: S, candidate: S): F[SnapshotRevisionReceipt] = observed(owner) { observation =>
+                          val actual = observation.value
+                          observations.observeWrite(actual.view).recoverF { case error => observation.fail(error) }.flatMap {
+                            case Right(result) if actual.view.identity.sameAuthority(result.identity) =>
+                              val who = principal(result.identity)
+                              if (presentation.allowed(current, who) && presentation.allowed(candidate, who))
+                                F.pure(result.receipt)
+                              else observation.deny
+                            case _ => observation.deny
+                          }
+                        }
+                        def commit(receipt: SnapshotRevisionReceipt, candidate: S): F[Unit] =
+                          session.commitObserved(receipt, candidate)
+                      }
                     override val ownershipEpoch: Option[spoonbill.security.Versions.ViewOwnershipEpoch] =
                       Option.when(shared || lease.resetBrowser)(view.fence.epoch)
                     override val outputAdmission: Option[SessionOutputAdmission[F, S]] =

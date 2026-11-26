@@ -40,3 +40,17 @@ object JdbcBrowserAuthorization {
     def generation: Long = session.generation
   }
 }
+
+/**
+ * The outcome of one held shared-view check: the active session, the host
+ * resolution held until settlement, the one durable instant that decided
+ * every time rule, and the view's snapshot revision read under its lock. The
+ * caller uses that instant for its renewals and the host's accepted hook, and
+ * for nothing after the check.
+ */
+private[jdbc] final case class JdbcHeldAuthorization[P](
+  session: ActiveBrowserSession,
+  resolution: JdbcHeldResolution[P],
+  at: Instant,
+  snapshotRevision: Long
+)

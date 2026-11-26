@@ -137,6 +137,23 @@ requires an application to extract or serialize live capabilities. Anonymous
 views restore authentication continuation through the coordinator but do not
 persist arbitrary anonymous drafts with this helper.
 
+`provider.projectedSnapshotsIfChanged` takes the same arguments and skips
+the save when a write keeps the projection: a counter that is not projected, a
+page that loads its data, a chat that grows. For each queued top-level write
+the coordinator checks the view's authority and owner and reads its snapshot
+revision in one provider transaction. When that revision is the session's
+expected revision and the candidate's encoded bytes equal those of the
+session's last acknowledged write, nothing is saved, and the write takes that
+one transaction. Otherwise the bytes are saved once in a second, fenced
+transaction, with the expected revision, and a revision conflict fails the
+write. Bytes are compared, not values, so a projection
+whose `equals` ignores a serialized field is still saved when that field
+changes. A restored projection has no acknowledged copy, so its first write
+saves. The session's public `commit` always performs the ordinary fenced save.
+A session wrapped by application code, a reference-backed session and a
+provider decorator that does not forward `guardedWriteObservations` keep the
+ordinary path, as does `projectedSnapshots`.
+
 The [reference application](../examples/browser-auth/src/main/scala/example/browserauth/)
 uses the same generic Scala UI for memory and JDBC providers. Its clustered mode
 adds a bounded draft/selection schema and the factory call above. It reloads the

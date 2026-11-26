@@ -1,0 +1,2042 @@
+{
+ "description": "jdbc-shared click-latency matrix: SharedViews ownership, a host that locks and reads one row per resolution, separate provider and clock pools, inline presentation snapshots of 1 KiB. Each constant-projection configuration ran three times, interleaved by mode; each changing-projection configuration ran once.",
+ "note": "The per-click counts of these runs include one view release per user after the last click: at most 0.02 provider transactions and 0.3 round trips per click. The harness now reads its final counters before the clients disconnect; throughput and latency are not affected.",
+ "date": "2026-11-25",
+ "environment": {
+  "machine": "Apple M4 Max, 16 cores, 128 GiB, macOS 27.2.1",
+  "postgresql": "14.20, loopback, statement logging on in every run",
+  "jdk": "OpenJDK 21.0.8",
+  "node": "24.12.0",
+  "pgDelayMs": 0.25,
+  "providerPool": 32,
+  "clockPool": 4,
+  "blockingThreads": 16,
+  "maintenanceMs": 30000
+ },
+ "modes": {
+  "baseline": {
+   "host": "legacy",
+   "isolation": "neither",
+   "snapshots": "ordinary",
+   "cap": 0
+  },
+  "serialized": {
+   "host": "held",
+   "isolation": "both",
+   "snapshots": "guarded",
+   "cap": 0
+  },
+  "concurrent": {
+   "host": "held",
+   "isolation": "both",
+   "snapshots": "guarded",
+   "cap": 8
+  }
+ },
+ "runs": {
+  "users1": {
+   "clicks": 100,
+   "warmup": 30
+  },
+  "users4": {
+   "clicks": 50,
+   "warmup": 20
+  }
+ },
+ "command": "nix develop --no-write-lock-file --command env SPOONBILL_BENCH_SQL_PROFILE=1 bash scripts/with-test-postgres.sh env PG_DELAY_MS=0.25 BENCH_SHARED_HOST=<host> BENCH_SHARED_ISOLATION=<isolation> BENCH_SHARED_SNAPSHOTS=<snapshots> BENCH_SHARED_CAP=<cap> BENCH_SHARED_LOCK=<session|global> BENCH_SHARED_PROJECTION=<constant|changing> bash misc/event-latency/run.sh local jdbc-shared <users> <clicks> <warmup>",
+ "medians": {
+  "baseline-global-u1": {
+   "runs": 3,
+   "statementsPerObservation": 35,
+   "clicksPerSecond": 12.8,
+   "p50": 78.19,
+   "p95": 82.43,
+   "p99": 82.92,
+   "roundTripsPerClick": 214.1,
+   "providerTransactionsPerClick": 6.01,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "baseline-global-u4": {
+   "runs": 3,
+   "statementsPerObservation": 35,
+   "clicksPerSecond": 13,
+   "p50": 306.14,
+   "p95": 325.14,
+   "p99": 339.81,
+   "roundTripsPerClick": 214.2,
+   "providerTransactionsPerClick": 6.02,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "baseline-session-u1": {
+   "runs": 3,
+   "statementsPerObservation": 33,
+   "clicksPerSecond": 13.7,
+   "p50": 73.18,
+   "p95": 77.91,
+   "p99": 79.43,
+   "roundTripsPerClick": 202.1,
+   "providerTransactionsPerClick": 6.01,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "baseline-session-u4-changing": {
+   "runs": 1,
+   "statementsPerObservation": 33,
+   "clicksPerSecond": 14.5,
+   "p50": 274.63,
+   "p95": 290.06,
+   "p99": 298.82,
+   "roundTripsPerClick": 202.2,
+   "providerTransactionsPerClick": 6.02,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "baseline-session-u4": {
+   "runs": 3,
+   "statementsPerObservation": 33,
+   "clicksPerSecond": 13.9,
+   "p50": 284.88,
+   "p95": 305.51,
+   "p99": 315.94,
+   "roundTripsPerClick": 202.2,
+   "providerTransactionsPerClick": 6.02,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "concurrent-global-u1": {
+   "runs": 3,
+   "statementsPerObservation": 15,
+   "clicksPerSecond": 36.2,
+   "p50": 27.45,
+   "p95": 29.1,
+   "p99": 30.76,
+   "roundTripsPerClick": 75.08,
+   "providerTransactionsPerClick": 5.01,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "concurrent-global-u4": {
+   "runs": 3,
+   "statementsPerObservation": 15,
+   "clicksPerSecond": 49.6,
+   "p50": 79.77,
+   "p95": 84.03,
+   "p99": 95.56,
+   "roundTripsPerClick": 75.16,
+   "providerTransactionsPerClick": 5.02,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "concurrent-session-u1": {
+   "runs": 3,
+   "statementsPerObservation": 14,
+   "clicksPerSecond": 38.8,
+   "p50": 25.45,
+   "p95": 26.92,
+   "p99": 28.47,
+   "roundTripsPerClick": 70.08,
+   "providerTransactionsPerClick": 5.01,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "concurrent-session-u4-changing": {
+   "runs": 1,
+   "statementsPerObservation": 14,
+   "clicksPerSecond": 85.2,
+   "p50": 45.14,
+   "p95": 54.03,
+   "p99": 61.65,
+   "roundTripsPerClick": 89.16,
+   "providerTransactionsPerClick": 6.02,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "concurrent-session-u4": {
+   "runs": 3,
+   "statementsPerObservation": 14,
+   "clicksPerSecond": 185.5,
+   "p50": 21.34,
+   "p95": 22.17,
+   "p99": 26.68,
+   "roundTripsPerClick": 70.16,
+   "providerTransactionsPerClick": 5.02,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "serialized-global-u1": {
+   "runs": 3,
+   "statementsPerObservation": 16,
+   "clicksPerSecond": 33.7,
+   "p50": 29.3,
+   "p95": 31.72,
+   "p99": 33.11,
+   "roundTripsPerClick": 80.08,
+   "providerTransactionsPerClick": 5.01,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "serialized-global-u4": {
+   "runs": 3,
+   "statementsPerObservation": 16,
+   "clicksPerSecond": 33.6,
+   "p50": 118.97,
+   "p95": 125.83,
+   "p99": 127.01,
+   "roundTripsPerClick": 80.16,
+   "providerTransactionsPerClick": 5.02,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "serialized-session-u1": {
+   "runs": 3,
+   "statementsPerObservation": 15,
+   "clicksPerSecond": 36.2,
+   "p50": 27.31,
+   "p95": 28.67,
+   "p99": 29.78,
+   "roundTripsPerClick": 75.08,
+   "providerTransactionsPerClick": 5.01,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "serialized-session-u4-changing": {
+   "runs": 1,
+   "statementsPerObservation": 15,
+   "clicksPerSecond": 28.8,
+   "p50": 138.09,
+   "p95": 148.12,
+   "p99": 161.61,
+   "roundTripsPerClick": 94.16,
+   "providerTransactionsPerClick": 6.02,
+   "snapshotSavesPerClick": 1,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  },
+  "serialized-session-u4": {
+   "runs": 3,
+   "statementsPerObservation": 15,
+   "clicksPerSecond": 36,
+   "p50": 110.76,
+   "p95": 118.05,
+   "p99": 122.81,
+   "roundTripsPerClick": 75.16,
+   "providerTransactionsPerClick": 5.02,
+   "snapshotSavesPerClick": 0,
+   "failures": 0,
+   "reconnects": 0,
+   "allOk": true
+  }
+ },
+ "observationProfiles": {
+  "baseline": {
+   "budget": {
+    "resolves": 2,
+    "clockTransactions": 5,
+    "clockStatementsPerTransaction": 3,
+    "framework": 8,
+    "hostStatements": 2,
+    "isolationSets": 6,
+    "statements": 33
+   },
+   "perObservation": {
+    "statements": {
+     "min": 33,
+     "max": 33,
+     "mean": 33
+    },
+    "work": {
+     "min": 13,
+     "max": 13,
+     "mean": 13
+    },
+    "clock": {
+     "min": 20,
+     "max": 20,
+     "mean": 20
+    },
+    "framework": {
+     "min": 8,
+     "max": 8,
+     "mean": 8
+    },
+    "hostResolves": {
+     "min": 2,
+     "max": 2,
+     "mean": 2
+    },
+    "hostPolicyLocks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "clockCommits": {
+     "min": 5,
+     "max": 5,
+     "mean": 5
+    },
+    "isolationSets": {
+     "min": 6,
+     "max": 6,
+     "mean": 6
+    },
+    "isolationShows": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "rollbacks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "pings": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "errors": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    }
+   },
+   "shapes": [
+    {
+     "role": "clock",
+     "kind": "begin",
+     "perObservation": 5,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "clock",
+     "kind": "clock",
+     "perObservation": 5,
+     "sql": "INSERT INTO spoonbill_auth_clock(realm,namespace,epoch_second,nano) VALUES ($1,$2,$3,$4) ON CONFLICT(realm,namespace) DO UPDATE SET epoch_second=CASE WHEN (E..."
+    },
+    {
+     "role": "clock",
+     "kind": "commit",
+     "perObservation": 5,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "clock",
+     "kind": "isolationSet",
+     "perObservation": 5,
+     "sql": "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED"
+    },
+    {
+     "role": "work",
+     "kind": "begin",
+     "perObservation": 1,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "work",
+     "kind": "commit",
+     "perObservation": 1,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT binding_hash, owner_id, epoch, snapshot_revision FROM spoonbill_browser_view WHERE realm = $1 AND cookie_namespace = $2 AND view_id = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 2,
+     "sql": "SELECT c.completion_id, c.host_completion_id, s.host_session_id, s.binding_hash, s.token_hash, s.origin_generation, s.expires_at AS session_expiry, c.expires..."
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT generation, current_session_id FROM spoonbill_browser_slot WHERE realm = $1 AND cookie_namespace = $2 AND binding_hash = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT id_prefix FROM spoonbill_browser_retention WHERE realm=$1 AND namespace=$2 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1,0))"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_slot SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND binding_hash=$4"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_view SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND view_id=$4 AND owner_id=$5 AND epoch=$6 AND las..."
+    },
+    {
+     "role": "work",
+     "kind": "hostRead",
+     "perObservation": 2,
+     "sql": "SELECT subject,expires_at FROM bench_host_session WHERE id=$1 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "isolationSet",
+     "perObservation": 1,
+     "sql": "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED"
+    }
+   ]
+  },
+  "serialized": {
+   "budget": {
+    "resolves": 1,
+    "clockTransactions": 1,
+    "clockStatementsPerTransaction": 4,
+    "framework": 8,
+    "hostStatements": 1,
+    "isolationSets": 0,
+    "statements": 15
+   },
+   "perObservation": {
+    "statements": {
+     "min": 15,
+     "max": 15,
+     "mean": 15
+    },
+    "work": {
+     "min": 11,
+     "max": 11,
+     "mean": 11
+    },
+    "clock": {
+     "min": 4,
+     "max": 4,
+     "mean": 4
+    },
+    "framework": {
+     "min": 8,
+     "max": 8,
+     "mean": 8
+    },
+    "hostResolves": {
+     "min": 1,
+     "max": 1,
+     "mean": 1
+    },
+    "hostPolicyLocks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "clockCommits": {
+     "min": 1,
+     "max": 1,
+     "mean": 1
+    },
+    "isolationSets": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "isolationShows": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "rollbacks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "pings": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "errors": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    }
+   },
+   "shapes": [
+    {
+     "role": "clock",
+     "kind": "begin",
+     "perObservation": 1,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "clock",
+     "kind": "clock",
+     "perObservation": 1,
+     "sql": "SELECT epoch_second,nano FROM spoonbill_auth_clock WHERE realm=$1 AND namespace=$2 FOR UPDATE"
+    },
+    {
+     "role": "clock",
+     "kind": "clock",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_auth_clock SET epoch_second=$1,nano=$2 WHERE realm=$3 AND namespace=$4 RETURNING epoch_second,nano"
+    },
+    {
+     "role": "clock",
+     "kind": "commit",
+     "perObservation": 1,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "work",
+     "kind": "begin",
+     "perObservation": 1,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "work",
+     "kind": "commit",
+     "perObservation": 1,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT binding_hash, owner_id, epoch, snapshot_revision FROM spoonbill_browser_view WHERE realm = $1 AND cookie_namespace = $2 AND view_id = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 2,
+     "sql": "SELECT c.completion_id, c.host_completion_id, s.host_session_id, s.binding_hash, s.token_hash, s.origin_generation, s.expires_at AS session_expiry, c.expires..."
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT generation, current_session_id FROM spoonbill_browser_slot WHERE realm = $1 AND cookie_namespace = $2 AND binding_hash = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT id_prefix FROM spoonbill_browser_retention WHERE realm=$1 AND namespace=$2 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1,0))"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_slot SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND binding_hash=$4"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_view SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND view_id=$4 AND owner_id=$5 AND epoch=$6 AND las..."
+    },
+    {
+     "role": "work",
+     "kind": "hostRead",
+     "perObservation": 1,
+     "sql": "SELECT subject,expires_at FROM bench_host_session WHERE id=$1 FOR UPDATE"
+    }
+   ]
+  },
+  "concurrent": {
+   "budget": {
+    "resolves": 1,
+    "clockTransactions": 1,
+    "clockStatementsPerTransaction": 4,
+    "framework": 7,
+    "hostStatements": 1,
+    "isolationSets": 0,
+    "statements": 14
+   },
+   "perObservation": {
+    "statements": {
+     "min": 14,
+     "max": 14,
+     "mean": 14
+    },
+    "work": {
+     "min": 10,
+     "max": 10,
+     "mean": 10
+    },
+    "clock": {
+     "min": 4,
+     "max": 4,
+     "mean": 4
+    },
+    "framework": {
+     "min": 7,
+     "max": 7,
+     "mean": 7
+    },
+    "hostResolves": {
+     "min": 1,
+     "max": 1,
+     "mean": 1
+    },
+    "hostPolicyLocks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "clockCommits": {
+     "min": 1,
+     "max": 1,
+     "mean": 1
+    },
+    "isolationSets": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "isolationShows": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "rollbacks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "pings": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "errors": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    }
+   },
+   "shapes": [
+    {
+     "role": "clock",
+     "kind": "begin",
+     "perObservation": 1,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "clock",
+     "kind": "clock",
+     "perObservation": 1,
+     "sql": "SELECT epoch_second,nano FROM spoonbill_auth_clock WHERE realm=$1 AND namespace=$2 FOR UPDATE"
+    },
+    {
+     "role": "clock",
+     "kind": "clock",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_auth_clock SET epoch_second=$1,nano=$2 WHERE realm=$3 AND namespace=$4 RETURNING epoch_second,nano"
+    },
+    {
+     "role": "clock",
+     "kind": "commit",
+     "perObservation": 1,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "work",
+     "kind": "begin",
+     "perObservation": 1,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "work",
+     "kind": "commit",
+     "perObservation": 1,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT binding_hash, owner_id, epoch, snapshot_revision FROM spoonbill_browser_view WHERE realm = $1 AND cookie_namespace = $2 AND view_id = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 2,
+     "sql": "SELECT c.completion_id, c.host_completion_id, s.host_session_id, s.binding_hash, s.token_hash, s.origin_generation, s.expires_at AS session_expiry, c.expires..."
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT generation, current_session_id FROM spoonbill_browser_slot WHERE realm = $1 AND cookie_namespace = $2 AND binding_hash = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_slot SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND binding_hash=$4"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_view SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND view_id=$4 AND owner_id=$5 AND epoch=$6 AND las..."
+    },
+    {
+     "role": "work",
+     "kind": "hostRead",
+     "perObservation": 1,
+     "sql": "SELECT subject,expires_at FROM bench_host_session WHERE id=$1 FOR UPDATE"
+    }
+   ]
+  },
+  "baselineWithPolicyLock": {
+   "budget": {
+    "resolves": 2,
+    "clockTransactions": 5,
+    "clockStatementsPerTransaction": 3,
+    "framework": 8,
+    "hostStatements": 4,
+    "isolationSets": 6,
+    "statements": 35
+   },
+   "perObservation": {
+    "statements": {
+     "min": 35,
+     "max": 35,
+     "mean": 35
+    },
+    "work": {
+     "min": 15,
+     "max": 15,
+     "mean": 15
+    },
+    "clock": {
+     "min": 20,
+     "max": 20,
+     "mean": 20
+    },
+    "framework": {
+     "min": 8,
+     "max": 8,
+     "mean": 8
+    },
+    "hostResolves": {
+     "min": 2,
+     "max": 2,
+     "mean": 2
+    },
+    "hostPolicyLocks": {
+     "min": 2,
+     "max": 2,
+     "mean": 2
+    },
+    "clockCommits": {
+     "min": 5,
+     "max": 5,
+     "mean": 5
+    },
+    "isolationSets": {
+     "min": 6,
+     "max": 6,
+     "mean": 6
+    },
+    "isolationShows": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "rollbacks": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "pings": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    },
+    "errors": {
+     "min": 0,
+     "max": 0,
+     "mean": 0
+    }
+   },
+   "shapes": [
+    {
+     "role": "clock",
+     "kind": "begin",
+     "perObservation": 5,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "clock",
+     "kind": "clock",
+     "perObservation": 5,
+     "sql": "INSERT INTO spoonbill_auth_clock(realm,namespace,epoch_second,nano) VALUES ($1,$2,$3,$4) ON CONFLICT(realm,namespace) DO UPDATE SET epoch_second=CASE WHEN (E..."
+    },
+    {
+     "role": "clock",
+     "kind": "commit",
+     "perObservation": 5,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "clock",
+     "kind": "isolationSet",
+     "perObservation": 5,
+     "sql": "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED"
+    },
+    {
+     "role": "work",
+     "kind": "begin",
+     "perObservation": 1,
+     "sql": "BEGIN"
+    },
+    {
+     "role": "work",
+     "kind": "commit",
+     "perObservation": 1,
+     "sql": "COMMIT"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT binding_hash, owner_id, epoch, snapshot_revision FROM spoonbill_browser_view WHERE realm = $1 AND cookie_namespace = $2 AND view_id = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 2,
+     "sql": "SELECT c.completion_id, c.host_completion_id, s.host_session_id, s.binding_hash, s.token_hash, s.origin_generation, s.expires_at AS session_expiry, c.expires..."
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT generation, current_session_id FROM spoonbill_browser_slot WHERE realm = $1 AND cookie_namespace = $2 AND binding_hash = $3 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT id_prefix FROM spoonbill_browser_retention WHERE realm=$1 AND namespace=$2 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1,0))"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_slot SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND binding_hash=$4"
+    },
+    {
+     "role": "work",
+     "kind": "framework",
+     "perObservation": 1,
+     "sql": "UPDATE spoonbill_browser_view SET last_seen=GREATEST(last_seen,$1) WHERE realm=$2 AND cookie_namespace=$3 AND view_id=$4 AND owner_id=$5 AND epoch=$6 AND las..."
+    },
+    {
+     "role": "work",
+     "kind": "hostPolicyLock",
+     "perObservation": 2,
+     "sql": "SELECT pg_advisory_xact_lock(hashtextextended('bench-host-policy',0))"
+    },
+    {
+     "role": "work",
+     "kind": "hostRead",
+     "perObservation": 2,
+     "sql": "SELECT subject,expires_at FROM bench_host_session WHERE id=$1 FOR UPDATE"
+    },
+    {
+     "role": "work",
+     "kind": "isolationSet",
+     "perObservation": 1,
+     "sql": "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED"
+    }
+   ]
+  }
+ },
+ "runsDetail": [
+  {
+   "name": "baseline-global-u1-r1",
+   "probeOk": true,
+   "statements": 35,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 7.849,
+   "clicksPerSecond": 12.7,
+   "patchMs": {
+    "p50": 78.79,
+    "p95": 82.43,
+    "p99": 82.65
+   },
+   "perClick": {
+    "providerTransactions": 6.01,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 214.1
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-global-u1-r2",
+   "probeOk": true,
+   "statements": 35,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 7.831,
+   "clicksPerSecond": 12.8,
+   "patchMs": {
+    "p50": 78.19,
+    "p95": 82.71,
+    "p99": 86.64
+   },
+   "perClick": {
+    "providerTransactions": 6.01,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 214.1
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-global-u1-r3",
+   "probeOk": true,
+   "statements": 35,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 7.684,
+   "clicksPerSecond": 13,
+   "patchMs": {
+    "p50": 75.85,
+    "p95": 82.07,
+    "p99": 82.92
+   },
+   "perClick": {
+    "providerTransactions": 6.01,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 214.1
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-global-u4-r1",
+   "probeOk": true,
+   "statements": 35,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 15.346,
+   "clicksPerSecond": 13,
+   "patchMs": {
+    "p50": 305.98,
+    "p95": 322.54,
+    "p99": 328.88
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 214.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-global-u4-r2",
+   "probeOk": true,
+   "statements": 35,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 15.304,
+   "clicksPerSecond": 13.1,
+   "patchMs": {
+    "p50": 307.32,
+    "p95": 325.14,
+    "p99": 342.71
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 214.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-global-u4-r3",
+   "probeOk": true,
+   "statements": 35,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 15.434,
+   "clicksPerSecond": 13,
+   "patchMs": {
+    "p50": 306.14,
+    "p95": 328.81,
+    "p99": 339.81
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 214.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u1-r1",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 7.323,
+   "clicksPerSecond": 13.7,
+   "patchMs": {
+    "p50": 73.18,
+    "p95": 76.97,
+    "p99": 77.98
+   },
+   "perClick": {
+    "providerTransactions": 6.01,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.1
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u1-r2",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 7.245,
+   "clicksPerSecond": 13.8,
+   "patchMs": {
+    "p50": 71.79,
+    "p95": 79.1,
+    "p99": 83.06
+   },
+   "perClick": {
+    "providerTransactions": 6.01,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.1
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u1-r3",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 7.34,
+   "clicksPerSecond": 13.6,
+   "patchMs": {
+    "p50": 73.52,
+    "p95": 77.91,
+    "p99": 79.43
+   },
+   "perClick": {
+    "providerTransactions": 6.01,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.1
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u4-changing",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 13.759,
+   "clicksPerSecond": 14.5,
+   "patchMs": {
+    "p50": 274.63,
+    "p95": 290.06,
+    "p99": 298.82
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u4-r1",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 14.383,
+   "clicksPerSecond": 13.9,
+   "patchMs": {
+    "p50": 284.88,
+    "p95": 305.51,
+    "p99": 315.95
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u4-r2",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 13.981,
+   "clicksPerSecond": 14.3,
+   "patchMs": {
+    "p50": 279.67,
+    "p95": 293.2,
+    "p99": 297.69
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "baseline-session-u4-r3",
+   "probeOk": true,
+   "statements": 33,
+   "hostResolves": 2,
+   "clockCommits": 5,
+   "isolationSets": 6,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 14.341,
+   "clicksPerSecond": 13.9,
+   "patchMs": {
+    "p50": 284.9,
+    "p95": 312.98,
+    "p99": 315.94
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 30.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 12,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 202.2
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-global-u1-r1",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.763,
+   "clicksPerSecond": 36.2,
+   "patchMs": {
+    "p50": 27.35,
+    "p95": 29.1,
+    "p99": 30.67
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-global-u1-r2",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.782,
+   "clicksPerSecond": 36,
+   "patchMs": {
+    "p50": 27.47,
+    "p95": 29.83,
+    "p99": 30.76
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-global-u1-r3",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.765,
+   "clicksPerSecond": 36.2,
+   "patchMs": {
+    "p50": 27.45,
+    "p95": 28.87,
+    "p99": 31.99
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-global-u4-r1",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 4.031,
+   "clicksPerSecond": 49.6,
+   "patchMs": {
+    "p50": 79.81,
+    "p95": 84.03,
+    "p99": 96.92
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-global-u4-r2",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 4.01,
+   "clicksPerSecond": 49.9,
+   "patchMs": {
+    "p50": 79.55,
+    "p95": 82.49,
+    "p99": 85.32
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-global-u4-r3",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 4.031,
+   "clicksPerSecond": 49.6,
+   "patchMs": {
+    "p50": 79.77,
+    "p95": 84.23,
+    "p99": 95.56
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u1-r1",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.577,
+   "clicksPerSecond": 38.8,
+   "patchMs": {
+    "p50": 25.5,
+    "p95": 27.51,
+    "p99": 28.1
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 70.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u1-r2",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.577,
+   "clicksPerSecond": 38.8,
+   "patchMs": {
+    "p50": 25.33,
+    "p95": 26.92,
+    "p99": 32.38
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 70.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u1-r3",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.55,
+   "clicksPerSecond": 39.2,
+   "patchMs": {
+    "p50": 25.45,
+    "p95": 26.5,
+    "p99": 28.47
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 70.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u4-changing",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 2.346,
+   "clicksPerSecond": 85.2,
+   "patchMs": {
+    "p50": 45.14,
+    "p95": 54.03,
+    "p99": 61.65
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 6.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 6,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 89.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u4-r1",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 1.079,
+   "clicksPerSecond": 185.4,
+   "patchMs": {
+    "p50": 21.34,
+    "p95": 22.17,
+    "p99": 26.68
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 70.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u4-r2",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 1.077,
+   "clicksPerSecond": 185.7,
+   "patchMs": {
+    "p50": 20.76,
+    "p95": 26.13,
+    "p99": 30.75
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 70.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "concurrent-session-u4-r3",
+   "probeOk": true,
+   "statements": 14,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 1.078,
+   "clicksPerSecond": 185.5,
+   "patchMs": {
+    "p50": 21.41,
+    "p95": 22.14,
+    "p99": 25.95
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 70.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-global-u1-r1",
+   "probeOk": true,
+   "statements": 16,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.967,
+   "clicksPerSecond": 33.7,
+   "patchMs": {
+    "p50": 29.28,
+    "p95": 30.88,
+    "p99": 33.04
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 80.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-global-u1-r2",
+   "probeOk": true,
+   "statements": 16,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.985,
+   "clicksPerSecond": 33.5,
+   "patchMs": {
+    "p50": 29.43,
+    "p95": 32.13,
+    "p99": 33.11
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 80.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-global-u1-r3",
+   "probeOk": true,
+   "statements": 16,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.96,
+   "clicksPerSecond": 33.8,
+   "patchMs": {
+    "p50": 29.3,
+    "p95": 31.72,
+    "p99": 36.33
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 80.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-global-u4-r1",
+   "probeOk": true,
+   "statements": 16,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 5.96,
+   "clicksPerSecond": 33.6,
+   "patchMs": {
+    "p50": 118.97,
+    "p95": 125.83,
+    "p99": 127.01
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 80.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-global-u4-r2",
+   "probeOk": true,
+   "statements": 16,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 5.905,
+   "clicksPerSecond": 33.9,
+   "patchMs": {
+    "p50": 118.06,
+    "p95": 124.39,
+    "p99": 126.18
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 80.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-global-u4-r3",
+   "probeOk": true,
+   "statements": 16,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 5.986,
+   "clicksPerSecond": 33.4,
+   "patchMs": {
+    "p50": 119,
+    "p95": 127.27,
+    "p99": 127.98
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 80.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u1-r1",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.77,
+   "clicksPerSecond": 36.1,
+   "patchMs": {
+    "p50": 27.22,
+    "p95": 30.04,
+    "p99": 31.72
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u1-r2",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.76,
+   "clicksPerSecond": 36.2,
+   "patchMs": {
+    "p50": 27.39,
+    "p95": 28.55,
+    "p99": 29.45
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u1-r3",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 100,
+   "measuredSeconds": 2.753,
+   "clicksPerSecond": 36.3,
+   "patchMs": {
+    "p50": 27.31,
+    "p95": 28.67,
+    "p99": 29.78
+   },
+   "perClick": {
+    "providerTransactions": 5.01,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.01,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.08
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u4-changing",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 6.951,
+   "clicksPerSecond": 28.8,
+   "patchMs": {
+    "p50": 138.09,
+    "p95": 148.12,
+    "p99": 161.61
+   },
+   "perClick": {
+    "providerTransactions": 6.02,
+    "snapshotSaves": 1,
+    "clockTransactions": 6.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 6,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 94.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u4-r1",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 5.327,
+   "clicksPerSecond": 37.5,
+   "patchMs": {
+    "p50": 105.08,
+    "p95": 114.7,
+    "p99": 127.43
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u4-r2",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 5.55,
+   "clicksPerSecond": 36,
+   "patchMs": {
+    "p50": 110.76,
+    "p95": 118.05,
+    "p99": 119.84
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  },
+  {
+   "name": "serialized-session-u4-r3",
+   "probeOk": true,
+   "statements": 15,
+   "hostResolves": 1,
+   "clockCommits": 1,
+   "isolationSets": 0,
+   "clicksOk": true,
+   "completed": 200,
+   "measuredSeconds": 5.587,
+   "clicksPerSecond": 35.8,
+   "patchMs": {
+    "p50": 111.57,
+    "p95": 119.79,
+    "p99": 122.81
+   },
+   "perClick": {
+    "providerTransactions": 5.02,
+    "snapshotSaves": 0,
+    "clockTransactions": 5.02,
+    "otherClockPoolTransactions": 0,
+    "hostResolves": 5,
+    "rollbacks": 0,
+    "maintenanceRuns": 0,
+    "roundTrips": 75.16
+   },
+   "failures": 0,
+   "reconnects": 0
+  }
+ ]
+}

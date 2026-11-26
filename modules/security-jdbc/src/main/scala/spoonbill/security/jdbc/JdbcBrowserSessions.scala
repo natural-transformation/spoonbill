@@ -66,7 +66,7 @@ final class JdbcBrowserSessions private[jdbc] (
     acknowledged: Boolean,
     replacement: Option[HostPrincipalStamp]
   )
-  private case class View(binding: Digest256, owner: Option[UUID], epoch: Long)
+  private case class View(binding: Digest256, owner: Option[UUID], epoch: Long, snapshotRevision: Long)
 
   private[jdbc] def snapshotRealm: String           = realm
   private[jdbc] def snapshotCookieNamespace: String = cookieNamespace
@@ -471,7 +471,22 @@ final class JdbcBrowserSessions private[jdbc] (
     expectedGeneration: Option[Long] = None,
     viewFence: Option[JdbcViewFence] = None,
     allowPending: Boolean = false
-  ): JdbcBrowserAuthorization[P] = {
+  ): JdbcBrowserAuthorization[P] =
+    authorizeObservedIn(connection, bindingHash, tokenHash, authorization, expectedGeneration, viewFence, allowPending)._1
+
+  /**
+   * authorizeIn, also returning the fenced view's snapshot revision, read in
+   * the same locked view read; None without a view fence.
+   */
+  private[jdbc] def authorizeObservedIn[P](
+    connection: Connection,
+    bindingHash: Digest256,
+    tokenHash: Option[Digest256],
+    authorization: HostSessionAuthorization[P],
+    expectedGeneration: Option[Long],
+    viewFence: Option[JdbcViewFence],
+    allowPending: Boolean
+  ): (JdbcBrowserAuthorization[P], Option[Long]) = {
     checkManagedCreation(connection)
     def reject(error: JdbcAuthError): Nothing            = throw new JdbcAuthException(error)
     def required[A](result: Either[JdbcAuthError, A]): A = result.fold(reject, identity)
@@ -494,11 +509,12 @@ final class JdbcBrowserSessions private[jdbc] (
       }
       val current = slot(connection, bindingHash).getOrElse(reject(JdbcAuthError.NotFound))
       if (expectedGeneration.exists(_ != current.generation)) reject(JdbcAuthError.StaleGeneration)
-      viewFence.foreach { fence =>
+      val revision = viewFence.map { fence =>
         val owned = view(connection, fence.viewId).getOrElse(reject(JdbcAuthError.NotFound))
         required(checkView(owned, bindingHash, fence.ownerId, fence.epoch))
+        owned.snapshotRevision
       }
-      initial match {
+      val decided = initial match {
         case None =>
           if (current.current.nonEmpty) reject(JdbcAuthError.HostDenied)
           JdbcBrowserAuthorization.Anonymous(current.generation)
@@ -517,9 +533,74 @@ final class JdbcBrowserSessions private[jdbc] (
             JdbcBrowserAuthorization.Anonymous(current.generation)
           } else JdbcBrowserAuthorization.Authenticated(required(active(current, latest)), fresh)
       }
+      decided -> revision
     } catch {
       case error: JdbcAuthException => throw error
       // Keep the cause: a deadlock abort is recognized by its SQLSTATE and retried.
+      case NonFatal(cause) => throw new JdbcAuthException(JdbcAuthError.StorageFailure, cause)
+    }
+  }
+
+  /**
+   * The managed provider's check of an active view captured as authenticated,
+   * with a host that holds its resolution. It takes the locks of authorizeIn in
+   * the same order, host -> slot -> view, but resolves the host once: lockHost
+   * runs after the token row and before the slot lock, and its resolution stays
+   * valid until settlement. Every time rule is decided at one instant from
+   * checkpoint, sampled after the last lock and returned for the caller's
+   * renewals. The first structural failure found under the locks is kept until
+   * that instant, so expiry and host denial keep the priority that authorizeIn
+   * gives them when its time samples are equal. A stable host denial, which only
+   * expiry outranks, takes the instant without the slot and view locks. A
+   * rejection that authorizeIn makes before it samples any time takes no
+   * checkpoint here either.
+   */
+  private[jdbc] def authorizeHeldIn[P](
+    connection: Connection,
+    bindingHash: Digest256,
+    tokenHash: Digest256,
+    expectedGeneration: Long,
+    fence: JdbcViewFence,
+    lockHost: UUID => Option[JdbcHeldResolution[P]],
+    checkpoint: () => Instant
+  ): JdbcHeldAuthorization[P] = {
+    checkManagedCreation(connection)
+    def reject(error: JdbcAuthError): Nothing = throw new JdbcAuthException(error)
+    try {
+      if (connection.getAutoCommit) reject(JdbcAuthError.TransactionRequired)
+      if (expectedGeneration < 0) reject(JdbcAuthError.StaleGeneration)
+      if (!validViewId(fence.viewId)) reject(JdbcAuthError.InvalidViewId)
+      if (fence.epoch <= 0) reject(JdbcAuthError.StaleViewFence)
+      val before = rowByToken(connection, tokenHash).getOrElse(reject(JdbcAuthError.NotFound))
+      JdbcHeldAuthority.untimed(before.prepared.bindingHash == bindingHash, before.revoked).foreach(reject)
+      // Host locks come before the framework's slot and view locks.
+      lockHost(before.prepared.hostSessionId) match {
+        case None =>
+          // A stable host denial: only session expiry outranks it, so it takes
+          // the instant without waiting for the slot and view locks.
+          reject(JdbcHeldAuthority.denied(before.prepared.sessionExpiresAt, checkpoint()))
+        case Some(held) =>
+          val structural = for {
+            current <- slot(connection, bindingHash).toRight(JdbcAuthError.NotFound)
+            _       <- Either.cond(current.generation == expectedGeneration, (), JdbcAuthError.StaleGeneration)
+            owned   <- view(connection, fence.viewId).toRight(JdbcAuthError.NotFound)
+            _       <- checkView(owned, bindingHash, fence.ownerId, fence.epoch)
+            latest  <- rowByToken(connection, tokenHash).toRight(JdbcAuthError.NotFound)
+            _       <- Either.cond(latest.prepared == before.prepared, (), JdbcAuthError.Conflict)
+            _       <- Either.cond(!latest.revoked, (), JdbcAuthError.Revoked)
+            session <- active(current, latest)
+          } yield session -> owned.snapshotRevision
+          // The one durable instant, after every lock this check waits for.
+          val at        = checkpoint()
+          val deadlines = JdbcHeldAuthority.HostDeadlines(held.principal.expiresAt, held.validUntilExclusive)
+          JdbcHeldAuthority
+            .decide(before.prepared.sessionExpiresAt, deadlines, structural, at)
+            .map { case (session, revision) => JdbcHeldAuthorization(session, held, at, revision) }
+            .fold(reject, identity)
+      }
+    } catch {
+      case error: JdbcAuthException => throw error
+      // Keep the cause: a deadlock abort is recognized by its SQLSTATE.
       case NonFatal(cause) => throw new JdbcAuthException(JdbcAuthError.StorageFailure, cause)
     }
   }
@@ -692,7 +773,7 @@ final class JdbcBrowserSessions private[jdbc] (
   private def view(connection: Connection, id: String): Option[View] =
     statement(
       connection,
-      """SELECT binding_hash, owner_id, epoch FROM spoonbill_browser_view
+      """SELECT binding_hash, owner_id, epoch, snapshot_revision FROM spoonbill_browser_view
       WHERE realm = ? AND cookie_namespace = ? AND view_id = ? FOR UPDATE"""
     ) { query =>
       scope(query); query.setString(3, id)
@@ -702,7 +783,7 @@ final class JdbcBrowserSessions private[jdbc] (
           val binding = Digest256
             .fromBytes(result.getBytes(1))
             .fold(_ => throw new JdbcAuthException(JdbcAuthError.StorageFailure), identity)
-          Some(View(binding, Option(result.getObject(2, classOf[UUID])), result.getLong(3)))
+          Some(View(binding, Option(result.getObject(2, classOf[UUID])), result.getLong(3), result.getLong(4)))
         }
       }
     }
