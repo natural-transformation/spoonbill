@@ -33,35 +33,47 @@ private[jdbc] final class JdbcObservedSnapshotSession[F[_], P, S, D](
   }
   private def encoded(candidate: S): F[Array[Byte]] = F.delay(store.encode(project(candidate))).flatMap(accepted)
 
+  /**
+   * One attempt claims the empty session and, whether it fails or is
+   * cancelled, puts its own unfinished claim back, so a later attempt can
+   * reload storage and start again. A published Ready state stays. An initial
+   * save that committed before a cancellation is found by that reload.
+   */
   def initialize(fresh: S): F[S] =
     F.delay {
-      if (!state.compareAndSet(Empty, Starting))
+      val attempt = new Starting
+      if (!state.compareAndSet(Empty, attempt))
         throw new IllegalStateException("View snapshot session initialization is already started or complete")
-    }.flatMap { _ =>
-      restoreInitial(fresh).recoverF { case error => F.delay(state.set(Empty)).flatMap(_ => F.fail(error)) }
+      attempt
+    }.flatMap { attempt =>
+      F.guarantee(restoreInitial(fresh, attempt))(F.delay { state.compareAndSet(attempt, Empty); () })
     }
 
-  private def restoreInitial(fresh: S): F[S] =
+  private def restoreInitial(fresh: S, attempt: Starting): F[S] =
     F.delayAsync(store.load()).flatMap(accepted).flatMap {
       case SnapshotLoad.Restored(current, value) =>
-        F.delay {
-          val restored = restore(fresh, value)
-          state.set(JdbcSnapshotSessionMachine.restored(current))
-          restored
-        }
-      case SnapshotLoad.Empty(current) => seed(current, fresh, resetting = false)
+        F.delay(restore(fresh, value)).flatMap(restored => publish(attempt, JdbcSnapshotSessionMachine.restored(current), restored))
+      case SnapshotLoad.Empty(current) => seed(current, fresh, resetting = false, attempt)
       case SnapshotLoad.ResetRequired(_, SnapshotResetReason.SchemaChanged) =>
         F.fail(new ViewSnapshotException(ViewSnapshotError.SchemaIncompatible))
       case SnapshotLoad.ResetRequired(current, SnapshotResetReason.IdentityChanged) =>
-        seed(current, fresh, resetting = true)
+        seed(current, fresh, resetting = true, attempt)
     }
 
   /** The initial save or identity reset, which seeds the confirmed copy. */
-  private def seed(current: ViewRevision, fresh: S, resetting: Boolean): F[S] =
+  private def seed(current: ViewRevision, fresh: S, resetting: Boolean, attempt: Starting): F[S] =
     encoded(fresh).flatMap { bytes =>
       F.delayAsync(store.writeEncoded(current, bytes, resetting)).flatMap(accepted).flatMap { next =>
-        F.delay { state.set(JdbcSnapshotSessionMachine.acknowledged(next, bytes)); fresh }
+        publish(attempt, JdbcSnapshotSessionMachine.acknowledged(next, bytes), fresh)
       }
+    }
+
+  /** Only the attempt that claimed the session publishes its result. */
+  private def publish(attempt: Starting, ready: Ready, value: S): F[S] =
+    F.delay {
+      if (!state.compareAndSet(attempt, ready))
+        throw new IllegalStateException("View snapshot session initialization was taken over")
+      value
     }
 
   private def ready: F[Ready] = F.delay(state.get()).flatMap {

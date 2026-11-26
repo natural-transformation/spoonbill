@@ -299,7 +299,8 @@ lazy val securityJdbc = project
     Test / parallelExecution := false,
     libraryDependencies += "org.postgresql" % "postgresql" % "42.7.13" % Test
   )
-  .dependsOn(spoonbill, recoveryTestkit % "test->compile")
+  // Cats Effect for the tests that cancel a provider call; a test dependency only.
+  .dependsOn(spoonbill, recoveryTestkit % "test->compile", ce3 % "test->compile")
 
 // Published conformance kit for portable UI recovery adapters: payload laws,
 // the fixture contract and the in-memory reference host live in main sources

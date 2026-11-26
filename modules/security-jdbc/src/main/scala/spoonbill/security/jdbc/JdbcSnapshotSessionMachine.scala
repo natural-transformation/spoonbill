@@ -21,8 +21,14 @@ private[jdbc] object JdbcSnapshotSessionMachine {
   }
 
   sealed trait State
-  case object Empty    extends State
-  case object Starting extends State
+  case object Empty extends State
+
+  /**
+   * One initialization attempt in progress. Each attempt is its own value, so
+   * only the attempt that claimed the session can publish its result or put
+   * its unfinished claim back.
+   */
+  final class Starting extends State
   final class Ready(val revision: ViewRevision, val confirmed: Option[Confirmed]) extends State
 
   /** A restored or converted projection: its stored bytes may differ from what this node writes. */

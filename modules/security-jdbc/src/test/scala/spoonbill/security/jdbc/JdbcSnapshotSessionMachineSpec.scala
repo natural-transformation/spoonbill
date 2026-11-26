@@ -50,7 +50,7 @@ class JdbcSnapshotSessionMachineSpec extends AnyFlatSpec with Matchers {
     // A result for a revision the session no longer expects, or a session that is not ready, changes nothing.
     val later = JdbcSnapshotSessionMachine.acknowledged(third, bytes)
     JdbcSnapshotSessionMachine.acknowledge(later, second, third, Array[Byte](4)) should be theSameInstanceAs later
-    JdbcSnapshotSessionMachine.acknowledge(JdbcSnapshotSessionMachine.Starting, second, third, bytes) shouldBe
-      JdbcSnapshotSessionMachine.Starting
+    val starting = new JdbcSnapshotSessionMachine.Starting
+    JdbcSnapshotSessionMachine.acknowledge(starting, second, third, bytes) should be theSameInstanceAs starting
   }
 }
