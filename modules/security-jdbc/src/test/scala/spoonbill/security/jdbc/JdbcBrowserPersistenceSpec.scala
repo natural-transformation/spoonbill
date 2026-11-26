@@ -3,6 +3,8 @@ package spoonbill.security.jdbc
 import avocet.Id
 import avocet.dsl.*
 import avocet.dsl.html.*
+import cats.effect.{FiberIO, IO}
+import cats.effect.unsafe.{IORuntime, IORuntimeConfig}
 import java.io.PrintWriter
 import java.lang.reflect.{InvocationHandler, InvocationTargetException, Method, Proxy}
 import java.security.{MessageDigest, SecureRandom}
@@ -3895,104 +3897,137 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       } finally await(provider.close())
     }
 
+  /** Runs a fiber's tasks one at a time on the test's thread, so the test chooses where a cancellation lands. */
+  private final class SteppedExecutor extends ExecutionContext {
+    private val tasks                         = new LinkedBlockingQueue[Runnable]()
+    def execute(task: Runnable): Unit         = tasks.put(task)
+    def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
+    /** Runs the next task; after a blocking call, it waits until the call hands the fiber back. */
+    def step(): Unit = Option(tasks.poll(10, TimeUnit.SECONDS)).fold(fail("The stepped fiber made no progress"))(_.run())
+    /** Takes the queued tasks out, so that a task queued after them runs first. */
+    def hold(): List[Runnable] = { val held = new java.util.ArrayList[Runnable](); tasks.drainTo(held); held.asScala.toList }
+    def resume(held: List[Runnable]): Unit = held.foreach(tasks.put)
+    /** A Cats Effect runtime whose fibers run here; blocking calls and timers use the global ones. */
+    def runtime(config: IORuntimeConfig): IORuntime =
+      IORuntime(this, ExecutionContext.global, IORuntime.global.scheduler, () => (), config)
+  }
+
+  /**
+   * A Cats Effect runner that, once armed, holds the result of the next
+   * settled transaction until `delivery` completes. The transaction has
+   * committed by then; only its result waits.
+   */
+  private final class HeldResultRunner(source: DataSource)(using Effect[IO]) extends TransactionExecutor[IO, Direct, Connection] {
+    val armed         = new AtomicBoolean()
+    val settled       = new CountDownLatch(1)
+    val delivery      = Promise[Unit]()
+    private val inner = new JdbcTransactionExecutor[IO](source, ExecutionContext.global)
+    val program       = TransactionProgram.direct
+    val scopePolicy   = TransactionScopePolicy.ThreadConfined
+    def transact[A](body: Connection => A): IO[Either[TransactionFailure, A]] =
+      inner.transact(body).flatMap { result =>
+        if (armed.compareAndSet(true, false)) IO(settled.countDown()) *> IO.fromFuture(IO(delivery.future)).as(result)
+        else IO.pure(result)
+      }
+    /**
+     * Cancels `fiber` while the held result waits, then hands the result
+     * back. The cancellation runs on the test's own executor, so it is in
+     * place before the result arrives.
+     */
+    def cancelBeforeDelivery(fiber: FiberIO[?]): Unit = {
+      val stepped   = new SteppedExecutor
+      val cancelled = fiber.cancel.unsafeToFuture()(stepped.runtime(IORuntimeConfig()))
+      stepped.step() // Marks the fiber cancelled, then waits for it to end.
+      delivery.success(())
+      while (!cancelled.isCompleted) stepped.step()
+    }
+  }
+
+  /** Runs body, then close. A failure of close is attached to a failure of body instead of replacing it. */
+  private def closing[A](close: => Unit)(body: => A): A = {
+    val result =
+      try body
+      catch {
+        case failure: Throwable =>
+          try close
+          catch { case suppressed: Throwable => failure.addSuppressed(suppressed) }
+          throw failure
+      }
+    close
+    result
+  }
+
+  /** The shared-view provider on Cats Effect, with the fixture's held host. */
+  private def ioProvider(db: Fixture, runner: Option[TransactionExecutor[IO, Direct, Connection]] = None)(using
+    Effect[IO]
+  ): JdbcBrowserPersistence[IO, String] =
+    JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[IO, String](
+      db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
+      JdbcConcurrentChecks(db.source, 4), existingRunner = runner
+    )
+  private def ifChangedIO(provider: JdbcBrowserPersistence[IO, String], view: BrowserView[String])(using
+    Effect[IO]
+  ): ViewSnapshotSession[IO, Page] =
+    provider.projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view).get
+
   it should "let a cancelled initialization be retried, and commit after it, on the same session" in Using.resource(
     new Fixture(exclusive = false, held = true)
   ) { db =>
-    import cats.effect.IO
     import cats.effect.kernel.Outcome
     import cats.effect.unsafe.implicits.global as runtime
     given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
     val (_, token) = signedIn(db, db.persistence)
-    // A runner that, once armed, holds a settled transaction's result before handing it back.
-    val armed    = new AtomicBoolean()
-    val settled  = new CountDownLatch(1)
-    val delivery = Promise[Unit]()
-    val inner    = new JdbcTransactionExecutor[IO](db.source, ExecutionContext.global)
-    val runner = new TransactionExecutor[IO, Direct, Connection] {
-      val program     = TransactionProgram.direct
-      val scopePolicy = TransactionScopePolicy.ThreadConfined
-      def transact[A](body: Connection => A): IO[Either[TransactionFailure, A]] =
-        inner.transact(body).flatMap { result =>
-          if (armed.compareAndSet(true, false)) IO(settled.countDown()) *> IO.fromFuture(IO(delivery.future)).as(result)
-          else IO.pure(result)
-        }
-    }
-    val provider = JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[IO, String](
-      db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
-      JdbcConcurrentChecks(db.source, 4), existingRunner = Some(runner)
-    )
-    try {
-      val identity = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
-      val view     = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
-      val session = provider
-        .projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (fresh, draft) => fresh.copy(draft = draft))(view)
-        .get
-      armed.set(true)
-      val fiber = session.initialize(Page("", "draft")).start.unsafeRunSync()
-      settled.await(10, TimeUnit.SECONDS) shouldBe true
-      // While the attempt holds the session, another is refused twice: a refused attempt leaves the claim alone.
+    val runner     = new HeldResultRunner(db.source)
+    val provider   = ioProvider(db, Some(runner))
+    // A held result is handed back first, so closing never waits for it, also when a check below failed.
+    closing { runner.delivery.trySuccess(()); await(provider.close().unsafeToFuture()) } {
+      val identity       = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
+      val view           = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
+      val session        = ifChangedIO(provider, view)
+      val initialization = session.initialize(Page("", "draft"))
+      runner.armed.set(true)
+      val fiber = initialization.start.unsafeRunSync()
+      runner.settled.await(10, TimeUnit.SECONDS) shouldBe true
+      // While the attempt holds the session, the same effect runs twice more and is refused both times: each
+      // execution is its own attempt, and a refused attempt leaves the running attempt's claim alone.
       for (_ <- 1 to 2)
-        session.initialize(Page("", "draft")).attempt.unsafeRunSync() should matchPattern {
-          case Left(_: IllegalStateException) =>
-        }
+        initialization.attempt.unsafeRunSync() should matchPattern { case Left(_: IllegalStateException) => }
       // The load settled; its result waits. Cancel the initialization, then let the result arrive.
-      val cancelled = fiber.cancel.unsafeToFuture()
-      delivery.success(())
-      await(cancelled)
+      runner.cancelBeforeDelivery(fiber)
       fiber.join.unsafeRunSync() shouldBe Outcome.Canceled()
       session.initialize(Page("", "draft")).unsafeRunSync() shouldBe Page("", "draft")
       session.commit(Page("typed", "draft")).unsafeRunSync()
       db.viewRevision() should be > 0L
-    } finally {
-      // A held result is handed back first, so closing never waits for it, also when a check above failed.
-      delivery.trySuccess(())
-      await(provider.close().unsafeToFuture())
     }
   }
 
   it should "leave the same session usable after a cancellation at any scheduling point of its initialization" in Using
     .resource(new Fixture(exclusive = false, held = true)) { db =>
-      import cats.effect.IO
-      import cats.effect.unsafe.{IORuntime, IORuntimeConfig}
       import cats.effect.unsafe.implicits.global as runtime
       given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
       val (_, token) = signedIn(db, db.persistence)
-      val provider = JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[IO, String](
-        db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions,
-        db.credentialVault, JdbcConcurrentChecks(db.source, 4)
-      )
-      /** Runs a fiber's tasks one at a time on the test's thread, so the test chooses where a cancellation lands. */
-      final class SteppedExecutor extends ExecutionContext {
-        private val tasks                         = new LinkedBlockingQueue[Runnable]()
-        def execute(task: Runnable): Unit         = tasks.put(task)
-        def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
-        /** Runs the next task; after a blocking call, it waits until the call hands the fiber back. */
-        def step(): Unit = Option(tasks.poll(10, TimeUnit.SECONDS)).fold(fail("The initialization made no progress"))(_.run())
-        /** Takes the queued tasks out, so that a task queued after them runs first. */
-        def hold(): List[Runnable] = { val held = new java.util.ArrayList[Runnable](); tasks.drainTo(held); held.asScala.toList }
-        def resume(held: List[Runnable]): Unit = held.foreach(tasks.put)
-      }
-      try {
+      val provider   = ioProvider(db)
+      closing(await(provider.close().unsafeToFuture())) {
         val identity = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
-        val view     = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
-        val fresh    = Page("", "draft")
+        def claimed(id: Qsid, existingOnly: Boolean): BrowserView[String] =
+          accepted(provider.claim(identity, id, ConnectionId.fromUuid(UUID.randomUUID()), existingOnly).unsafeRunSync())
+        val fresh = Page("", "draft")
         // Steps before the task move its scheduling points against the yields.
         def shifted(prefix: Int, task: IO[Page]): IO[Page] =
           if (prefix == 0) task else IO.unit.flatMap(_ => shifted(prefix - 1, task))
         /*
-         * One initialization of a new session, cancelled after `steps` of its
-         * tasks; then the same session must go on. False when the
-         * initialization finished within those steps.
+         * One initialization of a new session on `view`, cancelled after
+         * `steps` of its tasks; then the same session must go on. False when
+         * the initialization finished within those steps.
          */
-        def cancelledAfter(prefix: Int, steps: Int): Boolean = {
-          val session = provider
-            .projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view)
-            .get
+        def cancelledAfter(view: BrowserView[String], prefix: Int, steps: Int): Boolean = {
+          val before  = db.viewRevision(view.qsid)
+          val session = ifChangedIO(provider, view)
           val stepped = new SteppedExecutor
           // A cancellation check at every step of the fiber, and a yield to the executor after each step on the
           // pinned Cats Effect (after a few on some versions), so the test can cancel between any two steps.
-          val stepping         = IORuntime(stepped, ExecutionContext.global, runtime.scheduler, () => (), IORuntimeConfig(1, 2))
-          val (outcome, cancel) = shifted(prefix, session.initialize(fresh)).unsafeToFutureCancelable()(stepping)
+          val (outcome, cancel) =
+            shifted(prefix, session.initialize(fresh)).unsafeToFutureCancelable()(stepped.runtime(IORuntimeConfig(1, 2)))
           (1 to steps).iterator.takeWhile(_ => !outcome.isCompleted).foreach(_ => stepped.step())
           val cancelling = !outcome.isCompleted
           if (cancelling) {
@@ -4003,69 +4038,56 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
             stepped.resume(paused)
             while (!cancelled.isCompleted || !outcome.isCompleted) stepped.step()
           }
-          withClue(s"Cancelled after $steps steps, with $prefix steps before the initialization: ") {
+          withClue(s"Cancelled after $steps steps, with $prefix steps before the initialization, at revision $before: ") {
             val retried = session.initialize(fresh).attempt.unsafeRunSync()
             // A finished initialization refuses another. A cancelled one put its claim back, or it had published first.
             if (outcome.value.exists(_.isSuccess)) retried.isLeft shouldBe true
             retried.left.foreach(_ shouldBe an[IllegalStateException])
+            // One initial save at most: a retry finds the save that a cancelled attempt committed.
+            db.viewRevision(view.qsid) shouldBe (if (before == 0L) 1L else before)
             session.commit(Page("typed", "draft")).attempt.unsafeRunSync() shouldBe Right(())
           }
           cancelling
         }
         // Each shift moves the yields by one step, for a Cats Effect version that yields only every few steps.
-        val cancellations = (0 until 3).map(prefix => Iterator.from(1).takeWhile(cancelledAfter(prefix, _)).size)
-        info(s"Cancellation points for each shift: ${cancellations.mkString(", ")}")
-        all(cancellations) should be > 1
-      } finally await(provider.close().unsafeToFuture())
+        // On a view with a stored projection, every attempt after the first restores it.
+        val stored    = claimed(qsid, existingOnly = true)
+        val restoring = (0 until 3).map(prefix => Iterator.from(1).takeWhile(cancelledAfter(stored, prefix, _)).size)
+        // On a new view, every attempt makes the initial save. Each round releases its view, to stay within the limit.
+        def onNewView(prefix: Int)(steps: Int): Boolean = {
+          val view = claimed(Qsid("provider-device", s"seed-$prefix-$steps"), existingOnly = false)
+          closing(provider.release(view).unsafeRunSync())(cancelledAfter(view, prefix, steps))
+        }
+        val seeding = (0 until 3).map(prefix => Iterator.from(1).takeWhile(onNewView(prefix)).size)
+        info(s"Cancellation points for each shift: restoring ${restoring.mkString(", ")}; seeding ${seeding.mkString(", ")}")
+        all(restoring ++ seeding) should be > 1
+      }
     }
 
   it should "go on committing on the same session after a cancelled commit whose write landed" in Using.resource(
     new Fixture(exclusive = false, held = true)
   ) { db =>
-    import cats.effect.IO
     import cats.effect.unsafe.implicits.global as runtime
     given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
     val (_, token) = signedIn(db, db.persistence)
-    // A runner that, once armed, holds a settled transaction's result before handing it back.
-    val armed    = new AtomicBoolean()
-    val settled  = new CountDownLatch(1)
-    val delivery = Promise[Unit]()
-    val inner    = new JdbcTransactionExecutor[IO](db.source, ExecutionContext.global)
-    val runner = new TransactionExecutor[IO, Direct, Connection] {
-      val program     = TransactionProgram.direct
-      val scopePolicy = TransactionScopePolicy.ThreadConfined
-      def transact[A](body: Connection => A): IO[Either[TransactionFailure, A]] =
-        inner.transact(body).flatMap { result =>
-          if (armed.compareAndSet(true, false)) IO(settled.countDown()) *> IO.fromFuture(IO(delivery.future)).as(result)
-          else IO.pure(result)
-        }
-    }
-    val provider = JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[IO, String](
-      db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
-      JdbcConcurrentChecks(db.source, 4), existingRunner = Some(runner)
-    )
-    try {
+    val runner     = new HeldResultRunner(db.source)
+    val provider   = ioProvider(db, Some(runner))
+    // A held result is handed back first, so closing never waits for it, also when a check below failed.
+    closing { runner.delivery.trySuccess(()); await(provider.close().unsafeToFuture()) } {
       val identity = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
       val view     = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
-      val session = provider
-        .projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view)
-        .get
+      val session  = ifChangedIO(provider, view)
       session.initialize(Page("", "draft")).unsafeRunSync()
       val before = db.viewRevision()
-      armed.set(true)
+      runner.armed.set(true)
       val fiber = session.commit(Page("typed", "draft")).start.unsafeRunSync()
-      settled.await(10, TimeUnit.SECONDS) shouldBe true
+      runner.settled.await(10, TimeUnit.SECONDS) shouldBe true
       // The write committed and its result waits. Cancel the commit, then let the result arrive.
-      val cancelled = fiber.cancel.unsafeToFuture()
-      delivery.success(())
-      await(cancelled)
+      runner.cancelBeforeDelivery(fiber)
       db.viewRevision() shouldBe before + 1
       // The session recorded the write it made, so its next commit expects the stored revision.
       session.commit(Page("again", "draft")).attempt.unsafeRunSync() shouldBe Right(())
       db.viewRevision() shouldBe before + 2
-    } finally {
-      delivery.trySuccess(())
-      await(provider.close().unsafeToFuture())
     }
   }
 

@@ -41,7 +41,11 @@ private[jdbc] final class JdbcObservedSnapshotSession[F[_], P, S, D](
    * finalizer is installed first and the claim is made inside the guarded
    * task, so no cancellation can land between the claim and the finalizer
    * that puts it back. Each execution of the returned effect is its own
-   * attempt.
+   * attempt. The Cats Effect 2 and Monix instances run that finalizer as soon
+   * as the cancellation is requested, while a provider call that has started
+   * still runs to its end. There the cancelled attempt can still make its
+   * initial save, so a retry on the same session can run beside it and fail
+   * once with RevisionConflict; the retry after that restores the save.
    */
   def initialize(fresh: S): F[S] =
     F.delayAsync {
