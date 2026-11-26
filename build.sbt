@@ -27,7 +27,7 @@ scalaVersion := scala3Version
 
 def releaseVersion: String = sys.env.getOrElse("RELEASE_VERSION", "")
 def isRelease: Boolean     = releaseVersion != ""
-val BaseVersion            = "11.0.1"
+val BaseVersion            = "11.1.0"
 def publishVersion: String = if (isRelease) releaseVersion else s"$BaseVersion-SNAPSHOT"
 
 ThisBuild / version := publishVersion

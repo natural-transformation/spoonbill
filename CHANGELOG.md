@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 11.1.0 — 2026-11-26
 
-These changes reduce the database round trips of JDBC authority checks.
+This release reduces the database round trips of JDBC authority checks.
 Applications upgrading from 11.0.1 keep their database schema; every change is
 an opt-in, and the existing behavior stays the default.
 
