@@ -109,13 +109,19 @@ private[jdbc] final class JdbcObservedSnapshotSession[F[_], P, S, D](
    * invalid while the save runs. Its acknowledgment publishes the next revision
    * with these bytes while the session still expects the revision this save
    * expected, also when another commit of the session started meanwhile: that
-   * one expects the same revision and loses the database's comparison.
+   * one expects the same revision and loses the database's comparison. The
+   * provider's transaction cannot be cancelled once it runs, so the save and
+   * its acknowledgment are one uncancelable step: a cancellation requested
+   * meanwhile is honored only after the session has recorded the result that
+   * the save returned.
    */
   private def write(current: Ready, bytes: Array[Byte]): F[Unit] = {
     val expected = current.revision
-    F.delay(state.updateAndGet(JdbcSnapshotSessionMachine.begin(_, expected))).flatMap { _ =>
-      F.delayAsync(store.writeEncoded(expected, bytes, resetting = false)).flatMap(accepted).flatMap { next =>
-        F.delay { state.updateAndGet(JdbcSnapshotSessionMachine.acknowledge(_, expected, next, bytes)); () }
+    F.uncancelable {
+      F.delay(state.updateAndGet(JdbcSnapshotSessionMachine.begin(_, expected))).flatMap { _ =>
+        F.delayAsync(store.writeEncoded(expected, bytes, resetting = false)).flatMap(accepted).flatMap { next =>
+          F.delay { state.updateAndGet(JdbcSnapshotSessionMachine.acknowledge(_, expected, next, bytes)); () }
+        }
       }
     }
   }

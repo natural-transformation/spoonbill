@@ -4019,6 +4019,56 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       } finally await(provider.close().unsafeToFuture())
     }
 
+  it should "go on committing on the same session after a cancelled commit whose write landed" in Using.resource(
+    new Fixture(exclusive = false, held = true)
+  ) { db =>
+    import cats.effect.IO
+    import cats.effect.unsafe.implicits.global as runtime
+    given Effect[IO] = new spoonbill.cats.IO3Effect(runtime)
+    val (_, token) = signedIn(db, db.persistence)
+    // A runner that, once armed, holds a settled transaction's result before handing it back.
+    val armed    = new AtomicBoolean()
+    val settled  = new CountDownLatch(1)
+    val delivery = Promise[Unit]()
+    val inner    = new JdbcTransactionExecutor[IO](db.source, ExecutionContext.global)
+    val runner = new TransactionExecutor[IO, Direct, Connection] {
+      val program     = TransactionProgram.direct
+      val scopePolicy = TransactionScopePolicy.ThreadConfined
+      def transact[A](body: Connection => A): IO[Either[TransactionFailure, A]] =
+        inner.transact(body).flatMap { result =>
+          if (armed.compareAndSet(true, false)) IO(settled.countDown()) *> IO.fromFuture(IO(delivery.future)).as(result)
+          else IO.pure(result)
+        }
+    }
+    val provider = JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[IO, String](
+      db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
+      JdbcConcurrentChecks(db.source, 4), existingRunner = Some(runner)
+    )
+    try {
+      val identity = accepted(provider.capture(binding, Some(token.value), activate = true).unsafeRunSync())
+      val view     = accepted(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true).unsafeRunSync())
+      val session = provider
+        .projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view)
+        .get
+      session.initialize(Page("", "draft")).unsafeRunSync()
+      val before = db.viewRevision()
+      armed.set(true)
+      val fiber = session.commit(Page("typed", "draft")).start.unsafeRunSync()
+      settled.await(10, TimeUnit.SECONDS) shouldBe true
+      // The write committed and its result waits. Cancel the commit, then let the result arrive.
+      val cancelled = fiber.cancel.unsafeToFuture()
+      delivery.success(())
+      await(cancelled)
+      db.viewRevision() shouldBe before + 1
+      // The session recorded the write it made, so its next commit expects the stored revision.
+      session.commit(Page("again", "draft")).attempt.unsafeRunSync() shouldBe Right(())
+      db.viewRevision() shouldBe before + 2
+    } finally {
+      delivery.trySuccess(())
+      await(provider.close().unsafeToFuture())
+    }
+  }
+
   private val secondBinding = "B" * 43
   private val secondView    = Qsid("provider-device", "second-view")
   private def realmKey(db: Fixture): String = s"spoonbill-auth:${db.realm.length}:${db.realm}session"
