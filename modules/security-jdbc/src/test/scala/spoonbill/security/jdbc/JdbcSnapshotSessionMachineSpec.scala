@@ -53,4 +53,14 @@ class JdbcSnapshotSessionMachineSpec extends AnyFlatSpec with Matchers {
     val starting = new JdbcSnapshotSessionMachine.Starting
     JdbcSnapshotSessionMachine.acknowledge(starting, second, third, bytes) should be theSameInstanceAs starting
   }
+
+  it should "let an initialization attempt keep its claim only while its finalizer has not run first" in {
+    import JdbcSnapshotSessionMachine.{AttemptPhase, claimed, released}
+    // The claim comes first: the attempt keeps the session, and its finalizer later puts the claim back.
+    claimed(AttemptPhase.Pending) shouldBe AttemptPhase.Claimed
+    released(AttemptPhase.Claimed) shouldBe AttemptPhase.Claimed
+    // The finalizer comes first: the attempt is marked, and a claim it makes afterwards is given back.
+    released(AttemptPhase.Pending) shouldBe AttemptPhase.Released
+    claimed(AttemptPhase.Released) shouldBe AttemptPhase.Released
+  }
 }

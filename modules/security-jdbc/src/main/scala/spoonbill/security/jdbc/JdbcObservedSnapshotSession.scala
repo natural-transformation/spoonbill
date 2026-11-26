@@ -42,24 +42,47 @@ private[jdbc] final class JdbcObservedSnapshotSession[F[_], P, S, D](
    * task, so no cancellation can land between the claim and the finalizer
    * that puts it back. Each execution of the returned effect is its own
    * attempt. The Cats Effect 2 and Monix instances run that finalizer as soon
-   * as the cancellation is requested, while a provider call that has started
-   * still runs to its end. There the cancelled attempt can still make its
-   * initial save, so a retry on the same session can run beside it and fail
-   * once with RevisionConflict; the retry after that restores the save.
+   * as the cancellation is requested, on the cancelling thread, while the
+   * attempt runs on. If it runs before the claim, the attempt gives the
+   * session back as soon as it has taken it. If it runs after, a provider call
+   * that has started still runs to its end, and the cancelled attempt can
+   * still make its initial save; so a retry on the same session can run beside
+   * it and fail once with RevisionConflict, and the retry after that restores
+   * the save.
    */
   def initialize(fresh: S): F[S] =
     F.delayAsync {
       val attempt = new Starting
-      F.guarantee(F.delay(claim(attempt)).flatMap(_ => restoreInitial(fresh, attempt)))(F.delay(release(attempt)))
+      val phase   = new AtomicReference(AttemptPhase.Pending)
+      F.guarantee(F.delay(claim(attempt, phase)).flatMap(_ => restoreInitial(fresh, attempt)))(
+        F.delay(release(attempt, phase))
+      )
     }
 
-  /** The attempt takes the session only while it is empty. */
-  private def claim(attempt: Starting): Unit =
+  /**
+   * The attempt takes the session only while it is empty, and keeps it only if
+   * its finalizer has not run first. It takes the session before it marks its
+   * claim: a finalizer that runs in between finds the attempt pending and marks
+   * it released, and the attempt then gives the session back here.
+   */
+  private def claim(attempt: Starting, phase: AtomicReference[AttemptPhase]): Unit = {
     if (!state.compareAndSet(Empty, attempt))
       throw new IllegalStateException("View snapshot session initialization is already started or complete")
+    if (phase.updateAndGet(JdbcSnapshotSessionMachine.claimed) != AttemptPhase.Claimed) {
+      state.compareAndSet(attempt, Empty)
+      throw new IllegalStateException("View snapshot session initialization was cancelled")
+    }
+  }
 
-  /** An attempt that did not publish puts its claim back; a published or another attempt's state stays. */
-  private def release(attempt: Starting): Unit = { state.compareAndSet(attempt, Empty); () }
+  /**
+   * An attempt that marked its claim and did not publish puts the claim back;
+   * a published or another attempt's state stays. A pending attempt is only
+   * marked released.
+   */
+  private def release(attempt: Starting, phase: AtomicReference[AttemptPhase]): Unit =
+    if (phase.getAndUpdate(JdbcSnapshotSessionMachine.released) == AttemptPhase.Claimed) {
+      state.compareAndSet(attempt, Empty); ()
+    }
 
   private def restoreInitial(fresh: S, attempt: Starting): F[S] =
     F.delayAsync(store.load()).flatMap(accepted).flatMap {

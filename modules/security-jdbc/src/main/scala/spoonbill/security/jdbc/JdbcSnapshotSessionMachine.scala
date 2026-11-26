@@ -31,6 +31,36 @@ private[jdbc] object JdbcSnapshotSessionMachine {
   final class Starting extends State
   final class Ready(val revision: ViewRevision, val confirmed: Option[Confirmed]) extends State
 
+  /**
+   * Where one initialization attempt stands against its own finalizer. The
+   * Cats Effect 2 and Monix instances run a finalizer on the cancelling
+   * thread, so it can run before the attempt has claimed the session, or
+   * while it does. The attempt takes the session first and marks itself
+   * claimed second; whichever of the two marks comes first decides who
+   * gives the session back.
+   */
+  enum AttemptPhase { case Pending, Claimed, Released }
+
+  /**
+   * The attempt has just taken the empty session. It keeps the session only
+   * while its finalizer has not run; an attempt released first stays released
+   * and gives the session back at once.
+   */
+  def claimed(phase: AttemptPhase): AttemptPhase = phase match {
+    case AttemptPhase.Pending => AttemptPhase.Claimed
+    case other                => other
+  }
+
+  /**
+   * The attempt's finalizer runs. Only an attempt that has marked its claim has
+   * a claim to put back. A pending attempt is marked released, so a claim that
+   * it makes later is given back by the attempt itself.
+   */
+  def released(phase: AttemptPhase): AttemptPhase = phase match {
+    case AttemptPhase.Pending => AttemptPhase.Released
+    case other                => other
+  }
+
   /** A restored or converted projection: its stored bytes may differ from what this node writes. */
   def restored(revision: ViewRevision): Ready = new Ready(revision, None)
 

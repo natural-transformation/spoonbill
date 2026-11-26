@@ -11,7 +11,7 @@ import java.security.{MessageDigest, SecureRandom}
 import java.sql.{Connection, PreparedStatement, SQLException, SQLFeatureNotSupportedException, Timestamp}
 import java.time.Instant
 import java.util.{Base64, Properties, UUID}
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, LinkedBlockingQueue, TimeUnit, TimeoutException}
+import java.util.concurrent.{CancellationException, ConcurrentLinkedQueue, CountDownLatch, LinkedBlockingQueue, TimeUnit, TimeoutException}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
 import java.util.logging.Logger
 import javax.sql.DataSource
@@ -139,6 +139,18 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       underlying.runAsync(value())(callback)
     def run[A](value: Deferred[A]): Either[Throwable, A] = underlying.run(value())
     def toFuture[A](value: Deferred[A]): Future[A]       = value()
+  }
+
+  /**
+   * While `early` is set, runs a guarantee's finalizer before its task, and the
+   * task still runs once afterwards. The Cats Effect 2 and Monix instances do
+   * this when another thread cancels a task that has installed its finalizer
+   * and not yet claimed what the finalizer gives back.
+   */
+  private final class EarlyFinalizerEffect extends DeferredFutureEffect {
+    val early = new AtomicBoolean()
+    override def guarantee[A](task: Deferred[A])(finalizer: => Deferred[Unit]): Deferred[A] =
+      () => if (early.get()) flatMap(finalizer)(_ => task)() else super.guarantee(task)(finalizer)()
   }
 
   /**
@@ -4039,6 +4051,10 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
             while (!cancelled.isCompleted || !outcome.isCompleted) stepped.step()
           }
           withClue(s"Cancelled after $steps steps, with $prefix steps before the initialization, at revision $before: ") {
+            // An initialization that finished before the cancellation succeeded. A cancelled one ended by the
+            // cancellation, or it had succeeded first; no other failure counts as a pass.
+            if (!cancelling) outcome.value.exists(_.isSuccess) shouldBe true
+            outcome.value.foreach(_.failed.foreach(_ shouldBe a[CancellationException]))
             val retried = session.initialize(fresh).attempt.unsafeRunSync()
             // A finished initialization refuses another. A cancelled one put its claim back, or it had published first.
             if (outcome.value.exists(_.isSuccess)) retried.isLeft shouldBe true
@@ -4090,6 +4106,44 @@ class JdbcBrowserPersistenceSpec extends BrowserReplacementConformance {
       db.viewRevision() shouldBe before + 2
     }
   }
+
+  it should "give the session back when a cancelled initialization's finalizer runs before its claim" in Using
+    .resource(new Fixture(exclusive = false, held = true)) { db =>
+      val effect             = new EarlyFinalizerEffect
+      given Effect[Deferred] = effect
+      val (_, token) = signedIn(db, db.persistence)
+      // Once armed, the next transaction fails without running: a load failure after such a claim kept it for good.
+      val failNext = new AtomicBoolean()
+      val inner    = new JdbcTransactionExecutor[Deferred](db.source, ExecutionContext.global)
+      val runner = new TransactionExecutor[Deferred, Direct, Connection] {
+        val program     = TransactionProgram.direct
+        val scopePolicy = TransactionScopePolicy.ThreadConfined
+        def transact[A](body: Connection => A): Deferred[Either[TransactionFailure, A]] =
+          if (failNext.compareAndSet(true, false)) effect.pure[Either[TransactionFailure, A]](Left(TransactionFailure.StorageFailure))
+          else inner.transact(body)
+      }
+      val provider = JdbcBrowserPersistence.sharedViewsWithConcurrentChecks[Deferred, String](
+        db.source, ExecutionContext.global, db.realm, "session", () => db.clock.get(), db.heldHostSessions, db.credentialVault,
+        JdbcConcurrentChecks(db.source, 4), existingRunner = Some(runner)
+      )
+      closing(await(provider.close().apply())) {
+        val identity = accepted(await(provider.capture(binding, Some(token.value), activate = true)()))
+        val view     = accepted(await(provider.claim(identity, qsid, ConnectionId.fromUuid(UUID.randomUUID()), true)()))
+        val session = provider
+          .projectedSnapshotsIfChanged[Page, String](draftFormat, _.draft, (page, draft) => page.copy(draft = draft))(view)
+          .get
+        // The cancelling thread runs the finalizer first. The attempt runs on: it claims, and its load fails.
+        effect.early.set(true)
+        failNext.set(true)
+        scala.util.Try(await(session.initialize(Page("", "draft"))())).isFailure shouldBe true
+        effect.early.set(false)
+        failNext.set(false)
+        // The same session object initializes and commits.
+        await(session.initialize(Page("", "draft"))()) shouldBe Page("", "draft")
+        await(session.commit(Page("typed", "draft"))())
+        db.viewRevision() should be > 0L
+      }
+    }
 
   private val secondBinding = "B" * 43
   private val secondView    = Qsid("provider-device", "second-view")
