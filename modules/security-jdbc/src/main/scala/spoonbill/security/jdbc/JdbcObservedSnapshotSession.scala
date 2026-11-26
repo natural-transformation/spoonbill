@@ -37,17 +37,25 @@ private[jdbc] final class JdbcObservedSnapshotSession[F[_], P, S, D](
    * One attempt claims the empty session and, whether it fails or is
    * cancelled, puts its own unfinished claim back, so a later attempt can
    * reload storage and start again. A published Ready state stays. An initial
-   * save that committed before a cancellation is found by that reload.
+   * save that committed before a cancellation is found by that reload. The
+   * finalizer is installed first and the claim is made inside the guarded
+   * task, so no cancellation can land between the claim and the finalizer
+   * that puts it back. Each execution of the returned effect is its own
+   * attempt.
    */
   def initialize(fresh: S): F[S] =
-    F.delay {
+    F.delayAsync {
       val attempt = new Starting
-      if (!state.compareAndSet(Empty, attempt))
-        throw new IllegalStateException("View snapshot session initialization is already started or complete")
-      attempt
-    }.flatMap { attempt =>
-      F.guarantee(restoreInitial(fresh, attempt))(F.delay { state.compareAndSet(attempt, Empty); () })
+      F.guarantee(F.delay(claim(attempt)).flatMap(_ => restoreInitial(fresh, attempt)))(F.delay(release(attempt)))
     }
+
+  /** The attempt takes the session only while it is empty. */
+  private def claim(attempt: Starting): Unit =
+    if (!state.compareAndSet(Empty, attempt))
+      throw new IllegalStateException("View snapshot session initialization is already started or complete")
+
+  /** An attempt that did not publish puts its claim back; a published or another attempt's state stays. */
+  private def release(attempt: Starting): Unit = { state.compareAndSet(attempt, Empty); () }
 
   private def restoreInitial(fresh: S, attempt: Starting): F[S] =
     F.delayAsync(store.load()).flatMap(accepted).flatMap {
