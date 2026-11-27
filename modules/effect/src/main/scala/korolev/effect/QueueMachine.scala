@@ -9,7 +9,9 @@ private[effect] object QueueMachine {
   final case class State(
     admission: Admission = Admission.Open,
     error: Option[Throwable] = None,
-    cancellation: CompletionLatchMachine.State = CompletionLatchMachine.State.Pending
+    cancellation: CompletionLatchMachine.State = CompletionLatchMachine.State.Pending,
+    // What a stopped queue ends with once its accepted values are taken.
+    endFailure: Option[Throwable] = None
   )
   enum Pull {
     case Buffered, End, Wait
@@ -17,7 +19,10 @@ private[effect] object QueueMachine {
   }
 
   /** Stop releases producer obligations even while accepted values remain. */
-  enum StopCommand { case ReleaseProducers, ReleaseProducersAndEndPulls }
+  enum StopCommand {
+    case ReleaseProducers, ReleaseProducersAndEndPulls
+    case ReleaseProducersAndFailPulls(error: Throwable)
+  }
   val initial: State = State()
 
   def isClosed(state: State): Boolean = state.admission == Admission.Closed
@@ -44,13 +49,27 @@ private[effect] object QueueMachine {
     case Some(error)              => Pull.Failed(error)
     case None if isClosed(state)  => Pull.End
     case None if buffered         => Pull.Buffered
-    case None if !mayOffer(state) => Pull.End
+    case None if !mayOffer(state) => state.endFailure.fold[Pull](Pull.End)(Pull.Failed(_))
     case None                     => Pull.Wait
   }
 
-  def stop(state: State, buffered: Boolean): (State, StopCommand) = {
-    val next    = if (isClosed(state)) state else state.copy(admission = Admission.Stopped)
-    val command = if (buffered) StopCommand.ReleaseProducers else StopCommand.ReleaseProducersAndEndPulls
+  /**
+   * With a `failure` the queue ends with it: pulls take the accepted values
+   * first and fail afterwards. Only the stop that ends admission decides how
+   * the queue ends. A later stop keeps that end, because consumers may have
+   * been told it already. Close and cancel end a queue without a failure, and
+   * `fail` still answers every pull at once.
+   */
+  def stop(state: State, buffered: Boolean, failure: Option[Throwable] = None): (State, StopCommand) = {
+    val next = if (mayOffer(state)) state.copy(admission = Admission.Stopped, endFailure = failure) else state
+    val command =
+      if (buffered) StopCommand.ReleaseProducers
+      else
+        // Waiting pulls are told what a new pull would be told.
+        next.endFailure match {
+          case Some(error) if next.error.isEmpty && !isClosed(next) => StopCommand.ReleaseProducersAndFailPulls(error)
+          case _                                                    => StopCommand.ReleaseProducersAndEndPulls
+        }
     (next, command)
   }
   def close(state: State): State                  = state.copy(admission = Admission.Closed)
