@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fix: every run of the effect that `toSpoonbill` returns for an fs2 stream
+  converts the stream anew. A second run used to give the stream of the first
+  run again, which had ended. Two runs at the same time fed one queue, so one
+  consumer got the values of both.
+
 ## 11.1.0 — 2026-11-26
 
 This release reduces the database round trips of JDBC authority checks.
