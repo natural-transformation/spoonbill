@@ -10,7 +10,7 @@
   cancelled before its end. The consumer gets the emitted values, then every
   `pull` fails with a `CancellationException`. Such a `pull` used to stay
   pending for ever. An effect of the stream that cancels itself cancels the
-  stream only with fs2 3.2.14 or later; an older fs2 never ends such a stream.
+  stream only with fs2 3.2.13 or later; an older fs2 never ends such a stream.
 
 ## 11.1.0 — 2026-11-26
 

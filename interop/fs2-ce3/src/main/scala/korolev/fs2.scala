@@ -20,7 +20,7 @@ object fs2 {
      * with the error of the stream. A stream that is cancelled before its end
      * is told in the same way: after the emitted values every `pull` fails with
      * a `CancellationException`. An effect of the stream that cancels itself
-     * cancels the stream with fs2 3.2.14 or later. An older fs2 never ends such
+     * cancels the stream with fs2 3.2.13 or later. An older fs2 never ends such
      * a stream, and then the result has no end either. `cancel` interrupts the
      * stream and ends the result.
      *
