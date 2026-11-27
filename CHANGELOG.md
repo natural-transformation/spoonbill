@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Fix: every run of the effect that `toSpoonbill` returns for an fs2 stream
+  converts the stream anew. A second run used to give the stream of the first
+  run again, which had ended. Two runs at the same time fed one queue, so one
+  consumer got the values of both.
+- Fix: `toSpoonbill` for an fs2 stream tells its consumer when the stream was
+  cancelled before its end. The consumer gets the emitted values, then every
+  `pull` fails with a `CancellationException`. Such a `pull` used to stay
+  pending for ever. An effect of the stream that cancels itself cancels the
+  stream only with fs2 3.2.13 or later; an older fs2 never ends such a stream.
+
 ## 11.1.0 — 2026-11-26
 
 This release reduces the database round trips of JDBC authority checks.

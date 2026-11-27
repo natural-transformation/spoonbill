@@ -161,20 +161,32 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
     aux()
   }
 
-  def unsafeStop(): Unit = {
+  def unsafeStop(): Unit = stopUnsafe(None)
+
+  /**
+   * The stop behind [[stop]] and [[stopWithFailure]]. With a failure, the pulls
+   * that wait are told that failure, as every later pull is.
+   */
+  private def stopUnsafe(failure: Option[Throwable]): Unit = {
     @tailrec def aux(): Unit = {
       val ref                  = state.get
-      val (lifecycle, command) = QueueMachine.stop(ref.lifecycle, ref.queue.nonEmpty)
-      val endPulls             = command == QueueMachine.StopCommand.ReleaseProducersAndEndPulls
+      val (lifecycle, command) = QueueMachine.stop(ref.lifecycle, ref.queue.nonEmpty, failure)
+      val settlePulls          = command != QueueMachine.StopCommand.ReleaseProducers
       val next = ref.copy(
         lifecycle = lifecycle,
         canOfferCallbacks = Nil,
-        pullCallbacks = if (endPulls) Nil else ref.pullCallbacks
+        pullCallbacks = if (settlePulls) Nil else ref.pullCallbacks
       )
       if (state.compareAndSet(ref, next)) {
         // Detach before notification: callbacks may reenter stop or admission.
         ref.canOfferCallbacks.foreach(cb => cb(unitToken))
-        if (endPulls) ref.pullCallbacks.foreach(cb => cb(noneToken))
+        command match {
+          case QueueMachine.StopCommand.ReleaseProducers            => ()
+          case QueueMachine.StopCommand.ReleaseProducersAndEndPulls => ref.pullCallbacks.foreach(cb => cb(noneToken))
+          case QueueMachine.StopCommand.ReleaseProducersAndFailPulls(error) =>
+            val failed = Left(error)
+            ref.pullCallbacks.foreach(cb => cb(failed))
+        }
       } else {
         aux()
       }
@@ -296,6 +308,21 @@ class Queue[F[_]: Effect, T](maxSize: Int) {
    */
   def stop(): F[Unit] =
     Effect[F].delay(unsafeStop())
+
+  /**
+   * Like [[stop]], but the stream ends with `error` and not with the last item.
+   * A pull takes the accepted items first. When none is left it fails with
+   * `error`, now and later.
+   *
+   * The stop that ends admission decides how the stream ends. So this changes
+   * nothing on a queue that is stopped or closed already. [[close]] and
+   * `stream.cancel` still end the stream without a failure, and [[fail]] still
+   * fails every pull at once.
+   *
+   * `error` is evaluated when the effect runs.
+   */
+  private[spoonbill] def stopWithFailure(error: => Throwable): F[Unit] =
+    Effect[F].delay(stopUnsafe(Some(error)))
 
   /**
    * Immediately stop offering and pulling items from the queue.

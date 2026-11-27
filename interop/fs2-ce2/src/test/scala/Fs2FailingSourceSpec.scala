@@ -6,6 +6,7 @@ import org.scalatest.matchers.should.Matchers
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
 import spoonbill.cats.*
+import spoonbill.effect.Effect
 import spoonbill.fs2.*
 
 /**
@@ -50,13 +51,20 @@ class Fs2FailingSourceSpec extends AnyFlatSpec with Matchers {
     pulls shouldBe List(Right(Some(1)), Right(Some(2)), Right(Some(3)), Left(error))
   }
 
-  it should "answer a pull that is under way when it fails" in {
+  it should "answer a pull that waits when it fails" in {
+    val effect       = new PumpObservingEffect
+    given Effect[IO] = effect
     val pulled = run(for {
-      fail    <- Deferred[IO, Unit]
-      stream  <- Fs2Stream.eval(fail.get.flatMap(_ => IO.raiseError[Int](error))).toSpoonbill()
+      fail   <- Deferred[IO, Unit]
+      stream <- Fs2Stream.eval(fail.get.flatMap(_ => IO.raiseError[Int](error))).toSpoonbill()
+      // The first promise is the cancel signal of the queue.
+      _       <- effect.awaitRegistered(1)
       waiting <- stream.pull().attempt.start
-      _       <- fail.complete(())
-      result  <- waiting.join
+      // The second promise is the pull. So the queue holds it when the source
+      // fails, whatever the scheduler does.
+      _      <- effect.awaitRegistered(2)
+      _      <- fail.complete(())
+      result <- waiting.join
     } yield result)
     pulled shouldBe Left(error)
   }
